@@ -89,6 +89,16 @@ class SwarmExecuteOptions:
     material is written once.
     """
 
+    batch_size: int | None = None
+    """Number of rows to group into a single subagent call.
+
+    Defaults to 1 (one row per call). When ``> 1``, requires
+    ``response_schema`` — the executor wraps it into a
+    ``{results: [{id, ...}]}`` envelope, dispatches one subagent per
+    batch with a combined prompt, and unpacks results back to rows by
+    id.
+    """
+
 
 @dataclass
 class SwarmResultEntry:

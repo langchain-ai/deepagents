@@ -397,6 +397,76 @@ async def test_swarm_execute_rejects_non_string_context(runtime: Runtime) -> Non
     assert "context" in (out.result or "")
 
 
+async def test_swarm_execute_batch_size_dispatches_in_batches(runtime: Runtime) -> None:
+    """`batchSize` from JS groups rows into combined subagent calls."""
+    subagent = AsyncMock(spec=Runnable)
+    # The mock returns a wrapped batch shape regardless of input size; we
+    # only need to verify the call count drops from 4 → 2.
+    async def _ainvoke(state: dict, config: Any = None) -> dict:
+        return {
+            "messages": [
+                AIMessage(
+                    json.dumps(
+                        {
+                            "results": [
+                                {"id": "a", "label": "x"},
+                                {"id": "b", "label": "y"},
+                            ]
+                        }
+                    )
+                )
+            ]
+        }
+
+    subagent.ainvoke.side_effect = _ainvoke
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": subagent}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", {
+            tasks: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }],
+        });
+        await swarm.execute("/t.jsonl", {
+            instruction: "do {id}",
+            batchSize: 2,
+            responseSchema: {
+                type: "object",
+                properties: { label: { type: "string" } },
+                required: ["label"],
+            },
+        });
+        """
+    )
+    # 4 rows / batchSize=2 = 2 subagent invocations.
+    assert subagent.ainvoke.call_count == 2
+
+
+async def test_swarm_execute_batch_size_without_schema_rejected(runtime: Runtime) -> None:
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": _mock_subagent()}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    out = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }] });
+        try {
+            await swarm.execute("/t.jsonl", {
+                instruction: "do {id}",
+                batchSize: 2,
+            });
+            "unexpected"
+        } catch (e) {
+            e.message
+        }
+        """
+    )
+    assert "batch_size requires response_schema" in (out.result or "")
+
+
 async def test_swarm_execute_rejects_missing_instruction(runtime: Runtime) -> None:
     backend = _StubBackend()
     binding = SwarmBinding(

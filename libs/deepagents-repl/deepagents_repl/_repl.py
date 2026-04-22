@@ -642,6 +642,9 @@ class _ThreadREPL:
             if context_opt is not None and not isinstance(context_opt, str):
                 msg = "swarm.execute: `context` must be a string when provided"
                 raise ValueError(msg)
+            batch_size = options.get("batchSize") or options.get("batch_size")
+            if batch_size is not None and not isinstance(batch_size, int):
+                batch_size = int(batch_size)
             exec_opts = SwarmExecutionOptions(
                 file=file,
                 instruction=options.get("instruction") or "",
@@ -655,6 +658,7 @@ class _ThreadREPL:
                 or options.get("response_schema"),
                 concurrency=concurrency,
                 context=context_opt,
+                batch_size=batch_size,
                 current_state=current_state,
                 subagent_factories=binding.subagent_factories,
                 cancel_event=self._eval_cancel_event,

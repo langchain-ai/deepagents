@@ -178,6 +178,25 @@ await swarm.execute("/items.jsonl", {{
 
 Tips: use `enum` to prevent drift; add `description` on properties (models read them during generation); top-level `type` must be `"object"`; `properties` must have at least one explicit field.
 
+### Batching
+
+Set `batchSize` with `responseSchema` to group N rows per subagent call. The executor batches automatically and unpacks results by id.
+
+```typescript
+await swarm.execute("/items.jsonl", {{
+  instruction: "Classify: {{text}}",
+  context: "Each item is a customer review. Classify sentiment based on overall tone, not individual phrases.",
+  batchSize: 50,
+  responseSchema: {{
+    type: "object",
+    properties: {{ label: {{ type: "string", enum: ["positive", "negative", "neutral"] }} }},
+    required: ["label"],
+  }},
+}});
+```
+
+Sizing: short items 40–80, medium items 20–40, complex items leave at 1. If accuracy drops, enrich `context` first, then reduce `batchSize`.
+
 ### Chaining passes
 
 Results are columns, so a second `swarm.execute` can reference them: `"Given {{summary}}, classify ..."`. Use `filter` to target rows missing a column. One operation per pass.
@@ -205,6 +224,7 @@ const swarm: {{
     subagentType?: string;     // default: "general-purpose"
     responseSchema?: object;   // JSON Schema (type: "object"); properties become columns
     concurrency?: number;      // default: {default_concurrency}
+    batchSize?: number;        // rows per subagent call; requires responseSchema
   }}): Promise<string>;        // JSON string of SwarmSummary
 }};
 // SwarmSummary: {{ total, completed, failed, skipped, file, column, failedTasks: [{{id, error}}] }}

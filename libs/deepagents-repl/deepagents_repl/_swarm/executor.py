@@ -323,6 +323,8 @@ class SwarmExecutionOptions:
     concurrency: int | None = None
     context: str | None = None
     """Prose prepended to every subagent prompt. See ``SwarmExecuteOptions.context``."""
+    batch_size: int | None = None
+    """Rows per batched subagent call. See ``SwarmExecuteOptions.batch_size``."""
     current_state: dict[str, Any] = field(default_factory=dict)
     subagent_factories: Mapping[str, SubagentFactory] | None = None
     task_timeout_seconds: float = TASK_TIMEOUT_SECONDS
@@ -459,6 +461,16 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmSummary:
             when ``response_schema`` is malformed, or when the table
             cannot be read / parsed.
     """
+    raw_batch_size = options.batch_size
+    if raw_batch_size is not None:
+        if not isinstance(raw_batch_size, int) or raw_batch_size < 1:
+            msg = f"batch_size must be a positive integer, got {raw_batch_size}"
+            raise ValueError(msg)
+        if options.response_schema is None:
+            msg = "batch_size requires response_schema"
+            raise ValueError(msg)
+    effective_batch_size = raw_batch_size or 1
+
     prepared = await _prepare_swarm(
         options.read,
         options.file,
@@ -476,12 +488,42 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmSummary:
         effective_concurrency = 1
 
     _validate_subagent_types(prepared.tasks, options.subagent_graphs)
+    if options.response_schema is not None:
+        _validate_response_schema("(global)", options.response_schema)
     for task in prepared.tasks:
         if task.response_schema is not None:
             _validate_response_schema(task.id, task.response_schema)
 
     resolve = _build_subagent_resolver(options.subagent_graphs, options.subagent_factories)
     filtered_state = _filter_state_for_subagent(options.current_state)
+
+    if effective_batch_size > 1:
+        from deepagents_repl._swarm.batching import dispatch_batched  # noqa: PLC0415
+
+        results = await dispatch_batched(
+            tasks=prepared.tasks,
+            rows=prepared.rows,
+            row_index_by_id=prepared.row_index_by_id,
+            column=options.column,
+            file=options.file,
+            write=options.write,
+            resolve_subagent=resolve,
+            filtered_state=filtered_state,
+            context=options.context,
+            response_schema=options.response_schema,  # type: ignore[arg-type]
+            subagent_type=options.subagent_type,
+            batch_size=effective_batch_size,
+            concurrency=effective_concurrency,
+            task_timeout_seconds=options.task_timeout_seconds,
+            cancel_event=options.cancel_event,
+        )
+        return _build_summary(
+            results,
+            prepared.interpolation_errors,
+            options.file,
+            options.column,
+            prepared.skipped,
+        )
 
     semaphore = asyncio.Semaphore(effective_concurrency)
     rows = prepared.rows

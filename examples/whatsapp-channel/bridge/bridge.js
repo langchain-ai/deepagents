@@ -4,6 +4,15 @@ const express = require("express");
 const path = require("path");
 const fs = require("fs");
 
+// whatsapp-web.js can throw "data passed to getter must include an id property"
+// from its Store module when a message event fires with partial state (common
+// after a WhatsApp Web update vs. the pinned library version). Those become
+// unhandled rejections from our async handlers — swallow here so one bad
+// event never crashes the bridge.
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason && reason.message ? reason.message : reason);
+});
+
 // --- CLI args ---
 const args = process.argv.slice(2);
 function getArg(name, defaultVal) {
@@ -143,8 +152,14 @@ client.on("message_create", async (msg) => {
     if (msg.fromMe) return;
   }
 
-  const chat = await msg.getChat();
-  const contact = await msg.getContact();
+  let chat, contact;
+  try {
+    chat = await msg.getChat();
+    contact = await msg.getContact();
+  } catch (e) {
+    console.error(`Skipping message ${msg.id && msg.id._serialized}: getter failed (${e.message})`);
+    return;
+  }
 
   const entry = {
     messageId: msg.id._serialized,

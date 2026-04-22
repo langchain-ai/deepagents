@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langchain-agent-sandbox"
+version = "0.1.0"
+description = "LangChain DeepAgents backend for Kubernetes agent-sandbox."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "k8s-agent-sandbox",
+    "deepagents>=0.5.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/kubernetes-sigs/agent-sandbox"
+"Bug Tracker" = "https://github.com/kubernetes-sigs/agent-sandbox/issues"
+
+[tool.setuptools]
+packages = ["langchain_agent_sandbox"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.uv.sources]
+k8s-agent-sandbox = { path = "../agentic-sandbox-client", editable = true }
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["k8s_agent_sandbox.*", "deepagents.*", "pytest.*"]
+ignore_missing_imports = true

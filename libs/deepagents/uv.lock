@@ -13,6 +13,9 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" }]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -419,6 +422,8 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
+    { name = "langgraph" },
+    { name = "langgraph-sdk" },
     { name = "langsmith" },
     { name = "wcmatch" },
 ]
@@ -444,11 +449,13 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdelta-channel-messages" },
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
+    { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
-    { name = "langsmith", specifier = ">=0.3.0" },
+    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeferred-imports" },
+    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeferred-imports" },
+    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=sr%2Fdeferred-imports" },
     { name = "wcmatch" },
 ]
 
@@ -806,15 +813,11 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.2.15"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdelta-channel-messages#e5791e9835d5a3d6514386c45cc9a4db0567c668" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/98/3f/888a7099d2bd2917f8b0c3ffc7e347f1e664cf64267820b0b923c4f339fc/langchain-1.2.15.tar.gz", hash = "sha256:1717b6719daefae90b2728314a5e2a117ff916291e2862595b6c3d6fba33d652", size = 574732, upload-time = "2026-04-03T14:26:03.994Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/e8/a3b8cb0005553f6a876865073c81ef93bd7c5b18381bcb9ba4013af96ebc/langchain-1.2.15-py3-none-any.whl", hash = "sha256:e349db349cb3e9550c4044077cf90a1717691756cc236438404b23500e615874", size = 112714, upload-time = "2026-04-03T14:26:02.557Z" },
 ]
 
 [[package]]
@@ -834,7 +837,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.3.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages#e5791e9835d5a3d6514386c45cc9a4db0567c668" }
 dependencies = [
     { name = "jsonpatch" },
     { name = "langsmith" },
@@ -844,10 +847,6 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/92/fe/20190232d9b513242899dbb0c2bb77e31b4d61e343743adbe90ebc2603d2/langchain_core-1.3.0.tar.gz", hash = "sha256:14a39f528bf459aa3aa40d0a7f7f1bae7520d435ef991ae14a4ceb74d8c49046", size = 860755, upload-time = "2026-04-17T14:51:38.298Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/e2/dbfa347aa072a6dc4cd38d6f9ebfc730b4c14c258c47f480f4c5c546f177/langchain_core-1.3.0-py3-none-any.whl", hash = "sha256:baf16ee028475df177b9ab8869a751c79406d64a6f12125b93802991b566cced", size = 515140, upload-time = "2026-04-17T14:51:36.274Z" },
 ]
 
 [[package]]
@@ -903,8 +902,8 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.1.8"
-source = { registry = "https://pypi.org/simple" }
+version = "1.1.7a2"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -913,54 +912,38 @@ dependencies = [
     { name = "pydantic" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/02/196eff4f673fd461f8780930c3bfa7f27d6533a48e4f1104d544e843b093/langgraph-1.1.8.tar.gz", hash = "sha256:a97b8248129f2e007b81eef8277009ad1e1280b75fa2175889ab5aff5dcc4578", size = 560389, upload-time = "2026-04-17T19:45:50.301Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/38/c72e795f6f8fd05a8e7c3be32c04ea8534294decc6785f3b04e0ce932e8a/langgraph-1.1.8-py3-none-any.whl", hash = "sha256:3278c7e335da25eac3327bb474c502d4cab94ae6dcc685fbf93be2bbf7664cd5", size = 173678, upload-time = "2026-04-17T19:45:48.991Z" },
-]
 
 [[package]]
 name = "langgraph-checkpoint"
-version = "4.0.1"
-source = { registry = "https://pypi.org/simple" }
+version = "4.0.2"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/44/a8df45d1e8b4637e29789fa8bae1db022c953cc7ac80093cfc52e923547e/langgraph_checkpoint-4.0.1.tar.gz", hash = "sha256:b433123735df11ade28829e40ce25b9be614930cd50245ff2af60629234befd9", size = 158135, upload-time = "2026-02-27T21:06:16.092Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/4c/09a4a0c42f5d2fc38d6c4d67884788eff7fd2cfdf367fdf7033de908b4c0/langgraph_checkpoint-4.0.1-py3-none-any.whl", hash = "sha256:e3adcd7a0e0166f3b48b8cf508ce0ea366e7420b5a73aa81289888727769b034", size = 50453, upload-time = "2026-02-27T21:06:14.293Z" },
 ]
 
 [[package]]
 name = "langgraph-prebuilt"
 version = "1.0.9"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/4c/06dac899f4945bedb0c3a1583c19484c2cc894114ea30d9a538dd270086e/langgraph_prebuilt-1.0.9.tar.gz", hash = "sha256:93de7512e9caade4b77ead92428f6215c521fdb71b8ffda8cd55f0ad814e64de", size = 165850, upload-time = "2026-04-03T14:06:37.721Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/a2/8368ac187b75e7f9d938ca075d34f116683f5cfc48d924029ee79aea147b/langgraph_prebuilt-1.0.9-py3-none-any.whl", hash = "sha256:776c8e3154a5aef5ad0e5bf3f263f2dcaab3983786cc20014b7f955d99d2d1b2", size = 35958, upload-time = "2026-04-03T14:06:36.58Z" },
-]
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.11"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.13"
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/cd/a019f1b1e97c519f2425593f9bccd3ac463a18fb5d2111cff59ce1ef62fe/langgraph_sdk-0.3.11.tar.gz", hash = "sha256:3640134835d89d2c7c8bb7de73bd10673d4b282db3ff0e2fdaf1cee9e50cb1eb", size = 190387, upload-time = "2026-03-11T00:46:45.25Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/c8/b8d15d4b9a320a3f57a851030a371066b91dbd1420f097d3d0338da9adc9/langgraph_sdk-0.3.11-py3-none-any.whl", hash = "sha256:18905fd6248ade98b0995d859a98672d57c811fbfffc0d63d1c107a512351b26", size = 94887, upload-time = "2026-03-11T00:46:43.855Z" },
-]
 
 [[package]]
 name = "langsmith"
-version = "0.7.31"
-source = { registry = "https://pypi.org/simple" }
+version = "0.7.1"
+source = { git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=sr%2Fdeferred-imports#518b88a50b786a2185af93a863fe773c9a721ff1" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
@@ -971,10 +954,6 @@ dependencies = [
     { name = "uuid-utils" },
     { name = "xxhash" },
     { name = "zstandard" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e6/11/696019490992db5c87774dc20515529ef42a01e1d770fb754ed6d9b12fb0/langsmith-0.7.31.tar.gz", hash = "sha256:331ee4f7c26bb5be4022b9859b7d7b122cbf8c9d01d9f530114c1914b0349ffb", size = 1178480, upload-time = "2026-04-14T17:55:41.242Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/a1/a013cf458c301cda86a213dd153ce0a01c93f1ab5833f951e6a44c9763ce/langsmith-0.7.31-py3-none-any.whl", hash = "sha256:0291d49203f6e80dda011af1afda61eb0595a4d697adb684590a8805e1d61fb6", size = 373276, upload-time = "2026-04-14T17:55:39.677Z" },
 ]
 
 [[package]]

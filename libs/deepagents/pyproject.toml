@@ -26,6 +26,8 @@ dependencies = [
     "langchain-anthropic>=1.4.0,<2.0.0",
     "langchain-google-genai>=4.2.1,<5.0.0",
     "wcmatch",
+    "langgraph",
+    "langgraph-sdk",
 ]
 
 
@@ -140,5 +142,16 @@ python-version = "3.11"
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"
+
+[tool.uv]
+# langgraph sr/deferred-imports pins langchain-core==1.3.0a2; our branch provides 1.3.0 (the final release)
+override-dependencies = ["langchain-core>=1.3.0a2"]
+
+[tool.uv.sources]
+langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core", branch = "sr/delta-channel-messages" }
+langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", branch = "sr/delta-channel-messages" }
+langsmith = { git = "https://github.com/langchain-ai/langsmith-sdk", subdirectory = "python", branch = "sr/deferred-imports" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/langgraph", branch = "sr/deferred-imports" }
+langgraph-sdk = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/sdk-py", branch = "sr/deferred-imports" }
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"

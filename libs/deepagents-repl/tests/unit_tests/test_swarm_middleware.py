@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from deepagents.backends import StoreBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
     GlobResult,
@@ -21,9 +22,11 @@ from deepagents.backends.protocol import (
 )
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
+from langgraph.store.memory import InMemoryStore
 from quickjs_rs import Runtime
 
 from deepagents_repl._repl import SwarmBinding, _ThreadREPL
+from deepagents_repl.middleware import _flush_swarm_writes
 
 
 class _StubBackend(BackendProtocol):
@@ -485,3 +488,60 @@ async def test_swarm_execute_rejects_missing_instruction(runtime: Runtime) -> No
         """
     )
     assert "instruction" in (out.result or "")
+
+
+# ---------------------------------------------------------------------------
+# _flush_swarm_writes: overwrite fallback
+# ---------------------------------------------------------------------------
+
+
+class _StubREPL:
+    """Minimal stand-in exposing just ``_drain_pending_writes``."""
+
+    def __init__(self, writes: list[tuple[str, str]]) -> None:
+        self._writes = list(writes)
+
+    def _drain_pending_writes(self) -> list[tuple[str, str]]:
+        drained = self._writes
+        self._writes = []
+        return drained
+
+
+def _store_backend() -> StoreBackend:
+    return StoreBackend(
+        store=InMemoryStore(),
+        namespace=lambda _rt: ("test",),
+    )
+
+
+async def test_flush_swarm_writes_first_write_uses_awrite() -> None:
+    backend = _store_backend()
+    repl = _StubREPL([("/t.jsonl", "a=1")])
+    await _flush_swarm_writes(repl, backend)
+    read = await backend.aread("/t.jsonl")
+    assert read.error is None
+    assert read.file_data["content"] == "a=1"
+
+
+async def test_flush_swarm_writes_falls_back_to_aedit_on_clobber() -> None:
+    """StoreBackend's ``awrite`` refuses to overwrite existing paths.
+    Flush should read the current content and ``aedit`` it to the new value."""
+    backend = _store_backend()
+    await backend.awrite("/t.jsonl", "a=1")
+
+    repl = _StubREPL([("/t.jsonl", "a=2")])
+    await _flush_swarm_writes(repl, backend)
+
+    read = await backend.aread("/t.jsonl")
+    assert read.file_data["content"] == "a=2"
+
+
+async def test_flush_swarm_writes_skips_aedit_when_content_unchanged() -> None:
+    backend = _store_backend()
+    await backend.awrite("/t.jsonl", "a=1")
+
+    repl = _StubREPL([("/t.jsonl", "a=1")])
+    await _flush_swarm_writes(repl, backend)
+
+    read = await backend.aread("/t.jsonl")
+    assert read.file_data["content"] == "a=1"

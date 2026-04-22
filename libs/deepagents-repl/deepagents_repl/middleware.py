@@ -42,7 +42,7 @@ from deepagents_repl._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from deepagents_repl._repl import SwarmBinding, _Registry, format_outcome
+from deepagents_repl._repl import SwarmBinding, _Registry, _ThreadREPL, format_outcome
 from deepagents_repl._swarm.executor import SubagentFactory
 from deepagents_repl._swarm.types import DEFAULT_CONCURRENCY
 
@@ -243,6 +243,29 @@ class EvalSchema(BaseModel):
             "State persists across calls. No fs/network/real-clock access."
         ),
     )
+
+
+async def _flush_swarm_writes(
+    repl: _ThreadREPL,
+    backend: BackendProtocol,
+) -> None:
+    """Persist the REPL's pending-write buffer to ``backend``.
+
+    ``awrite`` refuses to clobber existing files on some backends (e.g.
+    ``StoreBackend``). We fall back to ``aedit`` with the current file
+    content as ``old_string`` when that happens — swarm owns its tables
+    and is expected to rewrite them each time a batch/task completes.
+    """
+    for path, pending_content in repl._drain_pending_writes():
+        result = await backend.awrite(path, pending_content)
+        if not (result.error and "already exists" in result.error):
+            continue
+        existing = await backend.aread(path)
+        if existing.error is not None or existing.file_data is None:
+            continue
+        current = existing.file_data.get("content")
+        if isinstance(current, str) and current != pending_content:
+            await backend.aedit(path, current, pending_content)
 
 
 def _resolve_thread_id(fallback: str) -> str:
@@ -450,13 +473,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                     await repl.eval_async(code),
                     max_result_chars=max_chars,
                 )
-                # Flush any table writes the eval accumulated via
-                # `swarm.create` / `swarm.execute`. Done outside the
-                # eval so a crash mid-flush doesn't leave the REPL in
-                # an inconsistent state relative to its pending buffer.
                 if backend is not None:
-                    for path, pending_content in repl._drain_pending_writes():
-                        await backend.awrite(path, pending_content)
+                    await _flush_swarm_writes(repl, backend)
             finally:
                 repl.set_outer_runtime(None)
             return ToolMessage(content=content, tool_call_id=runtime.tool_call_id, name=tool_name)

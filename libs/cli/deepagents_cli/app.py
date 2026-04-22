@@ -6374,6 +6374,24 @@ class DeepAgentsApp(App):
             model_spec = model_spec.removeprefix(":")
 
             if not self._remote_agent():
+                if self._connecting:
+                    from functools import partial
+
+                    self._defer_action(
+                        DeferredAction(
+                            kind="model_switch",
+                            execute=partial(
+                                self._switch_model,
+                                model_spec,
+                                extra_kwargs=extra_kwargs,
+                            ),
+                        )
+                    )
+                    self.notify(
+                        "Model will switch once the session is ready.",
+                        timeout=3,
+                    )
+                    return
                 await self._mount_message(
                     ErrorMessage("Model switching requires a server-backed session.")
                 )

@@ -453,9 +453,9 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
-    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeferred-imports" },
-    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeferred-imports" },
-    { name = "langsmith", git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=sr%2Fdeferred-imports" },
+    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=diff-channel-incremental-checkpointing" },
+    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=diff-channel-incremental-checkpointing" },
+    { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]
 
@@ -903,7 +903,7 @@ wheels = [
 [[package]]
 name = "langgraph"
 version = "1.1.7a2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -916,7 +916,7 @@ dependencies = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.0.2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "langgraph-prebuilt"
 version = "1.0.9"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -934,7 +934,7 @@ dependencies = [
 [[package]]
 name = "langgraph-sdk"
 version = "0.3.13"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeferred-imports#186d045947aca116de9eb01bdb82b487689b189b" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=diff-channel-incremental-checkpointing#57be304f55f7e0592e1adae6b8ebb0870af5c56f" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
@@ -943,7 +943,7 @@ dependencies = [
 [[package]]
 name = "langsmith"
 version = "0.7.1"
-source = { git = "https://github.com/langchain-ai/langsmith-sdk?subdirectory=python&branch=sr%2Fdeferred-imports#518b88a50b786a2185af93a863fe773c9a721ff1" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
@@ -954,6 +954,10 @@ dependencies = [
     { name = "uuid-utils" },
     { name = "xxhash" },
     { name = "zstandard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/67/48/3151de6df96e0977b8d319b03905e29db0df6929a85df1d922a030b7e68d/langsmith-0.7.1.tar.gz", hash = "sha256:e3fec2f97f7c5192f192f4873d6a076b8c6469768022323dded07087d8cb70a4", size = 984367, upload-time = "2026-02-10T01:55:24.696Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ce/87/6f2b008a456b4f5fd0fb1509bb7e1e9368c1a0c9641a535f224a9ddc10f3/langsmith-0.7.1-py3-none-any.whl", hash = "sha256:92cfa54253d35417184c297ad25bfd921d95f15d60a1ca75f14d4e7acd152a29", size = 322515, upload-time = "2026-02-10T01:55:22.531Z" },
 ]
 
 [[package]]

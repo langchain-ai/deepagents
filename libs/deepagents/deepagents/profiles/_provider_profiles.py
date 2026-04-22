@@ -12,14 +12,11 @@ behavior.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -32,7 +29,11 @@ class _ProviderProfile:
     """
 
     init_kwargs: dict[str, Any] = field(default_factory=dict)
-    """Extra keyword arguments forwarded to `init_chat_model`."""
+    """Extra keyword arguments forwarded to `init_chat_model`.
+
+    When both `init_kwargs` and `init_kwargs_factory` are set on the same
+    profile, the factory's output overrides `init_kwargs` on key collision.
+    """
 
     pre_init: Callable[[str], None] | None = None
     """Optional callable invoked with the raw model spec before initialization."""
@@ -42,6 +43,9 @@ class _ProviderProfile:
 
     Use when values depend on runtime state like environment variables
     (e.g. OpenRouter attribution headers that defer to env var overrides).
+
+    Factory output overrides static `init_kwargs` on any key collision within
+    the same profile.
     """
 
 
@@ -60,8 +64,20 @@ def _get_provider_profile(spec: str) -> _ProviderProfile:
     Resolution order:
 
     1. Exact match on `spec`.
-    2. Provider prefix (text before the first `:`).
+    2. Provider prefix (everything before the first `:`), when `spec` contains a colon.
     3. A default empty `_ProviderProfile`.
+
+    When both an exact-model profile and a provider-level profile exist, they
+    are merged via `_merge_provider_profiles` with the exact-model entry
+    overriding the provider-level entry on conflicts.
+
+    Args:
+        spec: Model spec in `provider:model` format, or a bare provider/model
+            identifier.
+
+    Returns:
+        The matching `_ProviderProfile`, or an empty default when no registered
+        profile matches.
     """
     exact = _PROVIDER_PROFILES.get(spec)
 
@@ -78,7 +94,26 @@ def _get_provider_profile(spec: str) -> _ProviderProfile:
 
 
 def _merge_provider_profiles(base: _ProviderProfile, override: _ProviderProfile) -> _ProviderProfile:
-    """Merge two provider profiles, layering `override` on top of `base`."""
+    """Merge two provider profiles, layering `override` on top of `base`.
+
+    `init_kwargs` dicts are merged with override winning per key. For example,
+    `{"a": 1, "shared": "base"}` merged with `{"b": 2, "shared": "over"}`
+    yields `{"a": 1, "b": 2, "shared": "over"}`.
+
+    `pre_init` callables chain: both run in order (base first, then override)
+    when both are set. Exceptions from either propagate and halt the chain.
+
+    `init_kwargs_factory` callables chain: both are invoked at resolution time
+    and their outputs merged with override winning per key. When only one
+    profile sets a field, the merged profile uses that side directly.
+
+    Args:
+        base: Lower-priority profile, typically from the provider.
+        override: Higher-priority profile, typically from the exact model.
+
+    Returns:
+        A merged `_ProviderProfile`.
+    """
     if base.pre_init is not None and override.pre_init is not None:
         base_pre = base.pre_init
         over_pre = override.pre_init

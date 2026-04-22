@@ -1,6 +1,5 @@
 """Tests for deepagents._models helpers and internal profile registries."""
 
-import logging
 import os
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
@@ -350,18 +349,6 @@ class TestProviderProfileRegistry:
         """Empty spec has no colon and no exact match; the default profile wins."""
         assert _get_provider_profile("") == _ProviderProfile()
 
-    def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Re-registering an existing key should warn rather than silently overwrite."""
-        original = dict(_PROVIDER_PROFILES)
-        try:
-            _register_provider_profile("dup_prov", _ProviderProfile(init_kwargs={"v": 1}))
-            with caplog.at_level(logging.WARNING, logger="deepagents.profiles._provider_profiles"):
-                _register_provider_profile("dup_prov", _ProviderProfile(init_kwargs={"v": 2}))
-            assert any("Overwriting existing provider profile" in record.message for record in caplog.records)
-        finally:
-            _PROVIDER_PROFILES.clear()
-            _PROVIDER_PROFILES.update(original)
-
 
 class TestMergeProviderProfiles:
     """Tests for `_merge_provider_profiles`."""
@@ -468,18 +455,6 @@ class TestHarnessProfileRegistry:
 
     def test_bare_model_name_without_colon(self) -> None:
         assert _get_harness_profile("claude-sonnet-4-6") == _HarnessProfile()
-
-    def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
-        """Re-registering an existing key should warn rather than silently overwrite."""
-        original = dict(_HARNESS_PROFILES)
-        try:
-            _register_harness_profile("dup_harness", _HarnessProfile(system_prompt_suffix="first"))
-            with caplog.at_level(logging.WARNING, logger="deepagents.profiles._harness_profiles"):
-                _register_harness_profile("dup_harness", _HarnessProfile(system_prompt_suffix="second"))
-            assert any("Overwriting existing harness profile" in record.message for record in caplog.records)
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
 
 
 class TestMergeHarnessProfiles:

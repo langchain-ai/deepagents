@@ -111,6 +111,16 @@ if (chromePath) {
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: SESSION_DIR }),
   puppeteer: puppeteerOpts,
+  // whatsapp-web.js is tightly coupled to the WhatsApp Web HTML/JS shipped by
+  // the server; when the server ships a newer build than the library knows
+  // about, Store getters start throwing "must include an id property". Loading
+  // a pinned HTML from wa-version bypasses the broken server build.
+  // See https://github.com/pedroslopez/whatsapp-web.js/issues/3120
+  webVersionCache: {
+    type: "remote",
+    remotePath:
+      "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html",
+  },
 });
 
 client.on("qr", (qr) => {
@@ -152,23 +162,36 @@ client.on("message_create", async (msg) => {
     if (msg.fromMe) return;
   }
 
-  let chat, contact;
-  try {
-    chat = await msg.getChat();
-    contact = await msg.getContact();
-  } catch (e) {
-    console.error(`Skipping message ${msg.id && msg.id._serialized}: getter failed (${e.message})`);
-    return;
+  // Try the rich getters, but fall back to msg fields when WhatsApp Web's
+  // Store is in a state whatsapp-web.js can't index into (the "must include
+  // an id property" / "_serialized of undefined" class of errors). Chat id
+  // in group messages is msg.from; in 1:1 it's also msg.from (from our side
+  // it's msg.to, but we've already skipped fromMe above unless SELF_ONLY).
+  let chat = null;
+  let contact = null;
+  try { chat = await msg.getChat(); } catch (e) {
+    console.error(`getChat failed for ${msg.from}: ${e.message}`);
+  }
+  try { contact = await msg.getContact(); } catch (e) {
+    console.error(`getContact failed for ${msg.from}: ${e.message}`);
   }
 
+  const chatIdSerialized =
+    (chat && chat.id && chat.id._serialized) || msg.from;
+  const isGroup =
+    (chat && typeof chat.isGroup === "boolean"
+      ? chat.isGroup
+      : typeof chatIdSerialized === "string" && chatIdSerialized.endsWith("@g.us"));
+
   const entry = {
-    messageId: msg.id._serialized,
-    chatId: chat.id._serialized,
-    chatName: chat.name || chat.id._serialized,
+    messageId: (msg.id && msg.id._serialized) || null,
+    chatId: chatIdSerialized,
+    chatName: (chat && chat.name) || chatIdSerialized,
     senderId: msg.author || msg.from,
-    senderName: contact.pushname || contact.name || msg.from,
+    senderName:
+      (contact && (contact.pushname || contact.name)) || msg.from,
     body: msg.body || "",
-    isGroup: chat.isGroup,
+    isGroup,
     hasMedia: msg.hasMedia,
     mediaType: msg.type !== "chat" ? msg.type : null,
     mediaUrls: [],
@@ -179,6 +202,12 @@ client.on("message_create", async (msg) => {
     quotedParticipant: null,
     timestamp: msg.timestamp,
   };
+
+  // Drop if we couldn't resolve the bare minimum to route the message.
+  if (!entry.messageId || !entry.chatId) {
+    console.error("Skipping message with no resolvable id/chat");
+    return;
+  }
 
   // Handle quoted message
   if (msg.hasQuotedMsg) {

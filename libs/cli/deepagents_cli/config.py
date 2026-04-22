@@ -1936,9 +1936,16 @@ def _get_provider_kwargs(
             result["api_key"] = api_key
 
     if provider == "openrouter":
-        from deepagents.profiles.provider._openrouter import (
-            check_openrouter_version,  # noqa: PLC2701
-        )
+        try:
+            # SDK >= profiles-subpackage layout.
+            from deepagents.profiles.provider._openrouter import (
+                check_openrouter_version,
+            )
+        except ImportError:
+            # Fallback for older SDK versions that hadn't nested provider built-ins.
+            from deepagents.profiles._openrouter import (  # ty: ignore[unresolved-import]
+                check_openrouter_version,  # noqa: PLC2701
+            )
 
         check_openrouter_version()
         _apply_openrouter_defaults(result)

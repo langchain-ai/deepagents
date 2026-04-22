@@ -370,7 +370,9 @@ class ContextHubBackend(BackendProtocol):
                 continue
             res = self.write(path, text)
             if res.error:
-                results.append(FileUploadResponse(path=path, error=res.error))
+                # Backend-specific error string passed through per protocol docs
+                # (FileOperationError literal union doesn't cover hub failures).
+                results.append(FileUploadResponse(path=path, error=res.error))  # type: ignore[arg-type]
             else:
                 results.append(FileUploadResponse(path=path))
         return results
@@ -388,8 +390,10 @@ class ContextHubBackend(BackendProtocol):
             cache = self._ensure_cache()
         except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
             logger.exception("Hub pull failed for %r", self._identifier)
+            # Backend-specific error string per protocol docs (FileOperationError
+            # literal union doesn't cover hub failures).
             return [
-                FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")
+                FileDownloadResponse(path=p, error=f"Hub unavailable: {exc}")  # type: ignore[arg-type]
                 for p in paths
             ]
         results: list[FileDownloadResponse] = []

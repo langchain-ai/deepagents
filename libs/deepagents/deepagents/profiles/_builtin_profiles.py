@@ -1,8 +1,7 @@
 """Internal bootstrap for built-in profile registrations.
 
 Imports built-in provider modules whose top-level code registers default
-`ProviderProfile` entries. Kept separate from `deepagents.profiles.__init__`
-so the public package surface stays focused on the public beta APIs.
+`ProviderProfile` entries.
 """
 
 from importlib import import_module

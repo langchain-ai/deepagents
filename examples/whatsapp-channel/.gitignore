@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+session/
+media/
+.venv/
+cron/jobs.json
+cron/jobs.json.tmp

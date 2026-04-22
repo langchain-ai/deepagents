@@ -1,0 +1,28 @@
+services:
+  whatsapp-agent:
+    build:
+      # Context is the repo root so the Dockerfile can access libs/
+      context: ../..
+      dockerfile: examples/whatsapp-channel/Dockerfile
+    # Interactive terminal needed for QR code display on first login
+    stdin_open: true
+    tty: true
+    env_file: .env
+    environment:
+      - WHATSAPP_SESSION_PATH=/app/session
+    volumes:
+      # Persist WhatsApp session across rebuilds
+      - whatsapp-session:/app/session
+      # Persist downloaded media
+      - whatsapp-media:/app/media
+      # Share the host's deepagents-cli config dir (skills, memory, MCP).
+      # Host path resolves via ${HOME}; the container always sees it at
+      # /root/.deepagents (agent runs as root). Create ~/.deepagents on the
+      # host before `docker compose up` or docker will mount an empty dir.
+      - ${HOME:-/root}/.deepagents:/root/.deepagents
+    # No ports exposed — bridge runs on localhost inside the container
+
+volumes:
+  whatsapp-session:
+  whatsapp-media:
+

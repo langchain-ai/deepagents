@@ -9,6 +9,7 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import re
@@ -179,6 +180,46 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
             )
             raise ValueError(msg)
 
+    _validate_tool_filter_fields(server_name, server_config)
+
+
+def _validate_tool_filter_fields(
+    server_name: str, server_config: dict[str, Any]
+) -> None:
+    """Validate optional `allowedTools` / `disabledTools` fields.
+
+    Both fields, when present, must be lists of strings. Setting both on the
+    same server is rejected to keep the filter semantics unambiguous.
+
+    Args:
+        server_name: Name of the server (for error messages).
+        server_config: Server configuration dictionary.
+
+    Raises:
+        TypeError: If a field is not a list of strings.
+        ValueError: If both fields are set on the same server.
+    """
+    has_allowed = "allowedTools" in server_config
+    has_disabled = "disabledTools" in server_config
+    if has_allowed and has_disabled:
+        error_msg = (
+            f"Server '{server_name}' cannot set both 'allowedTools' and"
+            " 'disabledTools' — pick one."
+        )
+        raise ValueError(error_msg)
+
+    for field_name in ("allowedTools", "disabledTools"):
+        if field_name not in server_config:
+            continue
+        value = server_config[field_name]
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            error_msg = (
+                f"Server '{server_name}' '{field_name}' must be a list of strings"
+            )
+            raise TypeError(error_msg)
+
 
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from JSON file.
@@ -188,6 +229,17 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
     - stdio: Process-based servers with `command`, `args`, `env` fields (default)
     - sse: Server-Sent Events servers with `type: "sse"`, `url`, and optional `headers`
     - http: HTTP-based servers with `type: "http"`, `url`, and optional `headers`
+
+    Any server type may also set an optional tool filter:
+
+    - `allowedTools`: list of tool names or patterns to keep (all others dropped)
+    - `disabledTools`: list of tool names or patterns to drop (all others kept)
+
+    Entries are either literal tool names or `fnmatch`-style glob patterns
+    (entries containing `*`, `?`, or `[`). Each entry is matched against both
+    the bare MCP tool name and the server-prefixed form
+    (`f"{server_name}_{tool}"`), so either `read_*` or `fs_read_*` works.
+    Setting both fields on a single server is an error.
 
     Args:
         config_path: Path to MCP JSON configuration file (Claude Desktop format).
@@ -773,6 +825,87 @@ def _build_cached_mcp_tool(
     )
 
 
+_GLOB_METACHARS = frozenset("*?[")
+
+
+def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
+    """Return True if a single filter entry matches a tool name.
+
+    An entry containing `*`, `?`, or `[` is treated as an `fnmatch`-style glob;
+    otherwise it is matched literally. Each entry is tried against both the
+    bare MCP tool name and the server-prefixed form (`f"{prefix}{tool}"`), so
+    users can write either `read_*` or `fs_read_*`.
+
+    Args:
+        entry: Filter list entry from `allowedTools` / `disabledTools`.
+        tool_name: Adapter-supplied tool name (already server-prefixed).
+        prefix: Server prefix (`f"{server_name}_"`).
+
+    Returns:
+        True if the entry matches this tool under either match mode.
+    """
+    is_glob = any(ch in _GLOB_METACHARS for ch in entry)
+    if is_glob:
+        if fnmatch.fnmatchcase(tool_name, entry):
+            return True
+        if tool_name.startswith(prefix):
+            return fnmatch.fnmatchcase(tool_name[len(prefix) :], entry)
+        return False
+    if tool_name == entry:
+        return True
+    return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
+
+
+def _apply_tool_filter(
+    tools: list[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> list[BaseTool]:
+    """Filter a server's loaded tools by its `allowedTools` / `disabledTools`.
+
+    Entries may be literal tool names or `fnmatch`-style glob patterns
+    (entries containing `*`, `?`, or `[`). Each entry is tried against both
+    the bare MCP tool name and the server-prefixed name produced by
+    `tool_name_prefix=True` (`f"{server_name}_{tool}"`). Entries that match
+    no loaded tool are logged but not an error — the underlying MCP server
+    may expose different tools across versions.
+
+    Args:
+        tools: Tools returned by `load_mcp_tools` for a single server.
+        server_name: Server name used by the adapter to build the prefix.
+        server_config: Server config dict (read for filter fields).
+
+    Returns:
+        Filtered tool list preserving input order.
+    """
+    allowed = server_config.get("allowedTools")
+    disabled = server_config.get("disabledTools")
+    if allowed is None and disabled is None:
+        return tools
+
+    prefix = f"{server_name}_"
+
+    def _any_entry_matches(tool_name: str, entries: list[str]) -> bool:
+        return any(_entry_matches_tool(e, tool_name, prefix) for e in entries)
+
+    if allowed is not None:
+        filtered = [t for t in tools if _any_entry_matches(t.name, allowed)]
+        missing = [
+            e
+            for e in allowed
+            if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
+        ]
+        if missing:
+            logger.warning(
+                "MCP server '%s' allowedTools entries matched no tools: %s",
+                server_name,
+                ", ".join(missing),
+            )
+        return filtered
+
+    return [t for t in tools if not _any_entry_matches(t.name, disabled or [])]
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
@@ -938,6 +1071,7 @@ async def _load_tools_from_config(
             )
             for mcp_tool in mcp_tools
         ]
+        server_tools = _apply_tool_filter(server_tools, server_name, server_config)
         all_tools.extend(server_tools)
         server_infos.append(
             MCPServerInfo(

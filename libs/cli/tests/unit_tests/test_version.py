@@ -20,7 +20,13 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
-    """Prevent `/version` tests from hitting real PyPI for SDK release age.
+    """Prevent `/version` tests from hitting real PyPI for CLI or SDK release age.
+
+    The `DeepAgentsApp` background `_check_for_updates()` worker calls
+    `is_update_available()` on startup, which makes a live PyPI request.
+    Without blocking this, a newly published CLI version on PyPI mutates
+    `app._update_available` mid-test, breaking assertions that assume the
+    initial `(False, None)` state.
 
     Tests that exercise SDK release-age behavior directly override
     `CACHE_FILE` themselves; this fixture only ensures tests that don't care
@@ -30,6 +36,10 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
     with (
         patch("deepagents_cli.update_check.CACHE_FILE", cache_path),
         patch("deepagents_cli.update_check.get_sdk_release_time", return_value=None),
+        patch(
+            "deepagents_cli.update_check.is_update_available",
+            return_value=(False, None),
+        ),
     ):
         yield
 

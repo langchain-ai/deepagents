@@ -134,12 +134,27 @@ def _block_text(block: Any) -> str | None:
     return getattr(block, "text", None)
 
 
+def _prepend_context(prompt: str, context: str | None) -> str:
+    """Prepend orchestrator-supplied ``context`` to a subagent prompt.
+
+    Returns the prompt unchanged when no context is supplied or when
+    it's whitespace-only.
+    """
+    if context is None:
+        return prompt
+    trimmed = context.strip()
+    if not trimmed:
+        return prompt
+    return f"{trimmed}\n\n---\n\n{prompt}"
+
+
 async def _dispatch_task(
     task: SwarmTaskSpec,
     subagent: Runnable,
     filtered_state: dict[str, Any],
     task_timeout_seconds: float,
     cancel_event: asyncio.Event | None = None,
+    context: str | None = None,
 ) -> SwarmTaskResult:
     subagent_type = task.subagent_type or "general-purpose"
     # Short-circuit: if the outer eval has already aborted, don't start a
@@ -153,9 +168,10 @@ async def _dispatch_task(
             status="failed",
             error="Aborted",
         )
+    prompt = _prepend_context(task.description, context)
     subagent_state = {
         **filtered_state,
-        "messages": [HumanMessage(content=task.description)],
+        "messages": [HumanMessage(content=prompt)],
     }
     try:
         result = await asyncio.wait_for(
@@ -305,6 +321,8 @@ class SwarmExecutionOptions:
     subagent_type: str | None = None
     response_schema: dict[str, Any] | None = None
     concurrency: int | None = None
+    context: str | None = None
+    """Prose prepended to every subagent prompt. See ``SwarmExecuteOptions.context``."""
     current_state: dict[str, Any] = field(default_factory=dict)
     subagent_factories: Mapping[str, SubagentFactory] | None = None
     task_timeout_seconds: float = TASK_TIMEOUT_SECONDS
@@ -486,6 +504,7 @@ async def execute_swarm(options: SwarmExecutionOptions) -> SwarmSummary:
                 filtered_state,
                 options.task_timeout_seconds,
                 options.cancel_event,
+                options.context,
             )
             # Merge the result into the row and re-serialise the full
             # table. The lock keeps concurrent completions from

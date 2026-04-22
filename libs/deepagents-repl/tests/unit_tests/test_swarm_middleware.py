@@ -350,6 +350,53 @@ async def test_swarm_execute_summary_wire_omits_results(runtime: Runtime) -> Non
     assert parsed == {"hasResults": False, "total": 2, "completed": 2}
 
 
+async def test_swarm_execute_context_flows_to_subagent(runtime: Runtime) -> None:
+    """`context` on swarm.execute is prepended to every subagent prompt."""
+    subagent = _mock_subagent()
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": subagent}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }, { id: "b" }] });
+        await swarm.execute("/t.jsonl", {
+            instruction: "handle {id}",
+            context: "These are customer reviews. Classify sentiment.",
+        });
+        """
+    )
+    assert subagent.ainvoke.call_count == 2
+    first_content = subagent.ainvoke.call_args_list[0].args[0]["messages"][0].content
+    assert first_content.startswith("These are customer reviews. Classify sentiment.")
+    assert "---" in first_content
+    assert first_content.endswith("handle a")
+
+
+async def test_swarm_execute_rejects_non_string_context(runtime: Runtime) -> None:
+    backend = _StubBackend()
+    binding = SwarmBinding(
+        backend=backend, subagent_graphs={"general-purpose": _mock_subagent()}
+    )
+    repl = _ThreadREPL(runtime, timeout=10.0, capture_console=True, swarm_binding=binding)
+    out = await repl.eval_async(
+        """
+        await swarm.create("/t.jsonl", { tasks: [{ id: "a" }] });
+        try {
+            await swarm.execute("/t.jsonl", {
+                instruction: "do {id}",
+                context: 42,
+            });
+            "unexpected"
+        } catch (e) {
+            e.message
+        }
+        """
+    )
+    assert "context" in (out.result or "")
+
+
 async def test_swarm_execute_rejects_missing_instruction(runtime: Runtime) -> None:
     backend = _StubBackend()
     binding = SwarmBinding(

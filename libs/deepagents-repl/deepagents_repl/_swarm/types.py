@@ -79,6 +79,16 @@ class SwarmExecuteOptions:
     concurrency: int | None = None
     """Max concurrent subagent dispatches. Defaults to ``DEFAULT_CONCURRENCY``."""
 
+    context: str | None = None
+    """Free-form prose prepended to every subagent prompt.
+
+    Use for dataset-wide rules, domain terms, classification criteria, or
+    examples that apply across all rows — anything you'd otherwise have
+    to duplicate inside each per-row ``instruction`` template. Kept
+    separate so per-row context windows are smaller and the shared
+    material is written once.
+    """
+
 
 @dataclass
 class SwarmResultEntry:

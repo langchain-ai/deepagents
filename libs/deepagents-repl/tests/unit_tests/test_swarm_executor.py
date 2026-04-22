@@ -123,6 +123,45 @@ class TestHappyPath:
         assert call_state["messages"][0].content == "Process /data/one.txt."
 
 
+class TestContext:
+    async def test_context_prepended_to_every_prompt(self) -> None:
+        store = _seed_table([{"id": "a"}, {"id": "b"}])
+        subagent = _mock_subagent()
+        await execute_swarm(
+            _table_options(
+                store,
+                instruction="Do thing for {id}.",
+                context="Domain rules: A means alpha, B means beta.",
+                subagent_graphs={"general-purpose": subagent},
+            )
+        )
+        assert subagent.ainvoke.call_count == 2
+        contents = [
+            call.args[0]["messages"][0].content
+            for call in subagent.ainvoke.call_args_list
+        ]
+        # Context goes at the top, separator, then the per-row instruction.
+        for content in contents:
+            assert content.startswith("Domain rules: A means alpha, B means beta.\n\n---\n\n")
+        assert contents[0].endswith("Do thing for a.")
+        assert contents[1].endswith("Do thing for b.")
+
+    async def test_empty_context_is_no_op(self) -> None:
+        """Whitespace-only / empty context passes through unchanged."""
+        store = _seed_table([{"id": "a"}])
+        subagent = _mock_subagent()
+        await execute_swarm(
+            _table_options(
+                store,
+                instruction="Do {id}.",
+                context="   \n  ",
+                subagent_graphs={"general-purpose": subagent},
+            )
+        )
+        content = subagent.ainvoke.call_args.args[0]["messages"][0].content
+        assert content == "Do a."
+
+
 class TestFilter:
     async def test_skips_non_matching_rows(self) -> None:
         store = _seed_table([

@@ -638,6 +638,10 @@ class _ThreadREPL:
             concurrency = options.get("concurrency")
             if concurrency is not None and not isinstance(concurrency, int):
                 concurrency = int(concurrency)
+            context_opt = options.get("context")
+            if context_opt is not None and not isinstance(context_opt, str):
+                msg = "swarm.execute: `context` must be a string when provided"
+                raise ValueError(msg)
             exec_opts = SwarmExecutionOptions(
                 file=file,
                 instruction=options.get("instruction") or "",
@@ -650,6 +654,7 @@ class _ThreadREPL:
                 response_schema=options.get("responseSchema")
                 or options.get("response_schema"),
                 concurrency=concurrency,
+                context=context_opt,
                 current_state=current_state,
                 subagent_factories=binding.subagent_factories,
                 cancel_event=self._eval_cancel_event,

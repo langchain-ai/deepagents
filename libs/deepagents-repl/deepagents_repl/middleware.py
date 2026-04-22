@@ -280,7 +280,8 @@ async function swarm.create(file: string, source: {{
 }}): Promise<void>
 
 async function swarm.execute(file: string, options: {{
-  instruction: string;
+  instruction: string;           // template with {{column}} placeholders
+  context?: string;              // prose prepended to every subagent prompt
   column?: string;               // default: "result"
   filter?: SwarmFilter;
   subagentType?: string;         // default: "general-purpose"

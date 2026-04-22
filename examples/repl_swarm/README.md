@@ -2,9 +2,7 @@
 
 Dispatch many subagent calls in parallel from inside the REPL, with
 bounded concurrency, by importing a skill the agent pulls in on
-demand. Inspired by the swarm work in
-[deepagentsjs #472](https://github.com/langchain-ai/deepagentsjs/pull/472),
-re-shaped around the skill-module loader in `deepagents-repl`.
+demand.
 
 The interesting part is that the orchestration logic — the semaphore
 pool, task dispatch, result collection — lives inside a skill

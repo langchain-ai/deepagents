@@ -1,7 +1,7 @@
 # Recursive REPL Mode (RLM)
 
 `create_rlm_agent` is a wrapper over `create_deep_agent` that adds
-[`REPLMiddleware`](../../libs/deepagents-repl) to the agent and — for
+[`REPLMiddleware`](../../libs/partners/quickjs) to the agent and — for
 `max_depth > 0` — replaces the default `general-purpose` subagent
 with a `CompiledSubAgent` whose runnable is a depth-(N-1) RLM agent.
 

@@ -12,9 +12,10 @@ prompt assembly, tool visibility, middleware, and default subagent behavior
 *after* the chat model has been constructed — orthogonal to
 `ProviderProfile`, which controls the model-construction phase.
 
-Users may register profiles via `register_harness_profile`.
+Users may register profiles via `register_harness_profile`. Deep Agents
+ships no built-in harness profiles; the registry is empty until a caller
+registers one.
 """
-# Built-in profiles register during package import (see `deepagents.profiles._builtin_profiles`).
 
 from __future__ import annotations
 
@@ -64,10 +65,16 @@ class GeneralPurposeSubagentProfile:
     """
 
     description: str | None = None
-    """Override for the default subagent description."""
+    """Override for the default subagent description.
+
+    `None` means keep the default description.
+    """
 
     system_prompt: str | None = None
-    """Override for the default subagent system prompt."""
+    """Override for the default subagent system prompt.
+
+    `None` means keep the default system prompt.
+    """
 
 
 @dataclass(frozen=True)
@@ -197,7 +204,7 @@ class HarnessProfile:
     """
 
     def __post_init__(self) -> None:
-        """Freeze the tool-description override mapping.
+        """Freeze mutable container fields to prevent post-construction mutation.
 
         `@dataclass(frozen=True)` only prevents rebinding attributes; it does
         not prevent mutating the contents of a mutable value. Without this
@@ -213,11 +220,17 @@ class HarnessProfile:
         profile.tool_description_overrides["ls"] = "x"  # via direct write
         ```
 
-        This method defensively copies the dict into a fresh one and wraps
-        it in `MappingProxyType` — a read-only view — so both scenarios
-        become errors: the first because the registry holds its own copy
-        independent of `shared`, and the second because item assignment on
-        a `MappingProxyType` raises `TypeError`.
+        This method defensively copies `tool_description_overrides` into a
+        fresh dict wrapped in `MappingProxyType` — a read-only view — so both
+        scenarios become errors: the first because the registry holds its own
+        copy independent of `shared`, and the second because item assignment
+        on a `MappingProxyType` raises `TypeError`.
+
+        `extra_middleware` receives the same treatment when supplied as a
+        sequence: the contents are copied into a tuple so a caller who retains
+        a reference to the original list cannot extend the registered profile
+        after the fact. A callable factory is stored as-is since its output is
+        resolved at each lookup.
         """
         if not isinstance(self.tool_description_overrides, MappingProxyType):
             object.__setattr__(
@@ -225,6 +238,9 @@ class HarnessProfile:
                 "tool_description_overrides",
                 MappingProxyType(dict(self.tool_description_overrides)),
             )
+        extra = self.extra_middleware
+        if not callable(extra) and not isinstance(extra, tuple):
+            object.__setattr__(self, "extra_middleware", tuple(extra))
 
 
 _HARNESS_PROFILES: dict[str, HarnessProfile] = {}
@@ -245,18 +261,21 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    Registrations are **additive**: if a profile is already registered under
-    `key`, the new profile is merged on top rather than replacing it.
-    The incoming profile's fields win on conflicts; unspecified fields inherit
-    from the existing profile. Excluded-tool sets union, middleware sequences
-    merge by type, and `general_purpose_subagent` settings merge field-wise.
+    Deep Agents ships no built-in harness profiles, so the first call under
+    `key` acts as a fresh registration. Subsequent calls are **additive**: the
+    new profile is merged on top of the existing registration rather than
+    replacing it. The incoming profile's fields win on conflicts; unspecified
+    fields inherit from the existing profile. Excluded-tool sets union,
+    middleware sequences merge by type, and `general_purpose_subagent`
+    settings merge field-wise.
 
-    To layer onto a built-in, register under the same key:
+    To extend an existing registration, call `register_harness_profile` again
+    under the same key:
 
     ```python
     from deepagents import HarnessProfile, register_harness_profile
 
-    # Adds a system-prompt suffix alongside any built-in harness defaults.
+    # Layer a system-prompt suffix on top of the previous registration.
     register_harness_profile(
         "openai:gpt-5.4",
         HarnessProfile(system_prompt_suffix="Respond in under 100 words."),
@@ -283,6 +302,17 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
     _HARNESS_PROFILES[key] = profile
 
 
+def _has_any_harness_profile() -> bool:
+    """Return `True` when at least one harness profile is registered.
+
+    Narrow helper for modules (e.g. `graph.py`) that need to adjust logging
+    verbosity based on whether the user has registered any harness profile.
+    Exists so callers do not have to import the private `_HARNESS_PROFILES`
+    registry directly.
+    """
+    return bool(_HARNESS_PROFILES)
+
+
 def _get_harness_profile(spec: str) -> HarnessProfile | None:
     """Look up the `HarnessProfile` for a model spec.
 
@@ -290,7 +320,7 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
 
     1. Exact match on `spec`.
     2. Provider prefix (everything before the first `:`), when `spec`
-        contains a colon.
+        contains a colon and both halves are non-empty.
     3. `None` when neither matches.
 
     When both an exact-model profile and a provider-level profile exist, they
@@ -302,6 +332,11 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
+    Malformed specs (empty string, more than one `:`, or a `:` with an empty
+    provider/model half) return `None` without consulting the registry. This
+    prevents a spec like `"openai:"` from silently matching the provider-wide
+    `"openai"` registration.
+
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
             identifier.
@@ -309,9 +344,14 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     Returns:
         The matching `HarnessProfile`, or `None` when no registered profile matches.
     """
-    exact = _HARNESS_PROFILES.get(spec)
+    if not spec or spec.count(":") > 1:
+        return None
 
-    provider, sep, _ = spec.partition(":")
+    provider, sep, model = spec.partition(":")
+    if sep and (not provider or not model):
+        return None
+
+    exact = _HARNESS_PROFILES.get(spec)
     base = _HARNESS_PROFILES.get(provider) if sep else None
 
     if exact is not None and base is not None:

@@ -44,7 +44,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile
-from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
+from deepagents.profiles.harness_profiles import _get_harness_profile, _has_any_harness_profile
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,15 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     and combined into a `provider:identifier` key so that model-level profiles
     registered under the canonical `provider:model` shape still resolve when
     the caller hands in a pre-built model. The combined lookup is followed by
-    identifier-only and provider-only fallbacks for less-typical registrations.
+    an identifier-only lookup (when the identifier is already in
+    `provider:model` shape) and a provider-only fallback.
+
+    A *bare* identifier (no `:`) is deliberately not consulted against the
+    registry. If it were, a pre-built model whose `model_name` happened to
+    coincide with a registered provider key (e.g. an in-house proxy whose
+    identifier is `"openai"`) would silently pick up that provider's profile.
+    Registering under a bare key is supported via the `spec` path, not
+    inferred from a model's identifier.
 
     Args:
         model: Resolved chat model instance.
@@ -165,7 +173,10 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         profile = _get_harness_profile(f"{provider}:{identifier}")
         if profile is not None:
             return profile
-    if identifier is not None:
+    # Only consult identifier-only lookup when the identifier itself is in
+    # `provider:model` shape — otherwise a bare identifier could accidentally
+    # match a provider-wide registration (see docstring).
+    if identifier is not None and ":" in identifier:
         profile = _get_harness_profile(identifier)
         if profile is not None:
             return profile
@@ -176,7 +187,7 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
     # Only surface at info when the user has registered profiles but none
     # matched. With an empty registry, no profile was ever going to apply, so
     # the miss is unsurprising and stays at debug.
-    level = logging.INFO if _HARNESS_PROFILES else logging.DEBUG
+    level = logging.INFO if _has_any_harness_profile() else logging.DEBUG
     logger.log(
         level,
         "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults.",
@@ -373,7 +384,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Display names are automatically derived from paths.
 
             Memory is loaded at agent startup and added into the system prompt.
-        permissions: List of ``FilesystemPermission`` rules for the main agent
+        permissions: List of `FilesystemPermission` rules for the main agent
             and its subagents.
 
             Rules are evaluated in declaration order; the first match wins.
@@ -469,8 +480,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
-    # override, and so its (expensive) middleware stack can be skipped
-    # entirely when it won't be attached.
+    # override, and so its middleware stack (including any factory-based
+    # `extra_middleware`) isn't built and then discarded.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
     for spec in subagents or []:
@@ -539,9 +550,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Auto-add the default general-purpose subagent unless the harness profile
     # disables it or the caller already supplied their own — an explicit spec
-    # is how callers override the default. Building its middleware stack is
-    # skipped entirely in those cases so the work isn't paid for and then
-    # discarded (including factory-based `extra_middleware`).
+    # is how callers override the default. Skipping in those cases also avoids
+    # invoking factory-based `extra_middleware` whose output would be thrown
+    # away.
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [

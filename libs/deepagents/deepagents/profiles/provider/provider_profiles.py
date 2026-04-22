@@ -62,7 +62,7 @@ class ProviderProfile:
     profile system consumed by `create_deep_agent`, not here.
 
     Example:
-        Register custom attribution headers for a hypothetical provider:
+        Set a default temperature for a hypothetical provider:
 
         ```python
         from deepagents import ProviderProfile, register_provider_profile
@@ -91,8 +91,11 @@ class ProviderProfile:
     pre_init: Callable[[str], None] | None = None
     """Optional callable invoked with the raw model spec before initialization.
 
-    Use for side-effectful checks that must run before `init_chat_model` (e.g.
-    minimum-version enforcement). Raise to abort model construction.
+    Runs before `init_kwargs_factory` is invoked and before `init_chat_model`
+    is called; if it raises, the factory does not run and no model is
+    constructed. Use for side-effectful checks that must run before
+    `init_chat_model` (e.g. minimum-version enforcement). Raise to abort
+    model construction.
     """
 
     init_kwargs_factory: Callable[[], dict[str, Any]] | None = None
@@ -176,8 +179,9 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     is merged on top rather than replacing it. The incoming profile's fields
     win on conflicts; unspecified fields inherit from the existing profile.
     `pre_init` callables chain (existing runs first), and `init_kwargs_factory`
-    callables chain with the incoming factory's output overriding the
-    existing factory's output per key.
+    callables chain — both factories are invoked at every resolution (base
+    first, then override) and their outputs merge with the override's values
+    winning on shared keys.
 
     To layer additional kwargs onto a built-in profile, register under the
     same provider key. To override a built-in default (e.g. disable the
@@ -225,7 +229,7 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
 
     1. Exact match on `spec`.
     2. Provider prefix (everything before the first `:`), when `spec`
-        contains a colon.
+        contains a colon and both halves are non-empty.
     3. `None` when neither matches.
 
     When both an exact-model profile and a provider-level profile exist, they
@@ -236,6 +240,11 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
+    Malformed specs (empty string, more than one `:`, or a `:` with an empty
+    provider/model half) return `None` without consulting the registry. This
+    prevents a spec like `"openai:"` from silently matching the provider-wide
+    `"openai"` registration.
+
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
             identifier.
@@ -243,9 +252,14 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
     Returns:
         The matching `ProviderProfile`, or `None` when no registered profile matches.
     """
-    exact = _PROVIDER_PROFILES.get(spec)
+    if not spec or spec.count(":") > 1:
+        return None
 
-    provider, sep, _ = spec.partition(":")
+    provider, sep, model = spec.partition(":")
+    if sep and (not provider or not model):
+        return None
+
+    exact = _PROVIDER_PROFILES.get(spec)
     base = _PROVIDER_PROFILES.get(provider) if sep else None
 
     if exact is not None and base is not None:
@@ -288,8 +302,22 @@ def _merge_provider_profiles(base: ProviderProfile, override: ProviderProfile) -
         over_pre = override.pre_init
 
         def chained_pre_init(spec: str) -> None:
-            base_pre(spec)
-            over_pre(spec)
+            try:
+                base_pre(spec)
+            except Exception:
+                logger.exception(
+                    "Base pre_init in chained ProviderProfile raised for spec %r; override pre_init will not run.",
+                    spec,
+                )
+                raise
+            try:
+                over_pre(spec)
+            except Exception:
+                logger.exception(
+                    "Override pre_init in chained ProviderProfile raised for spec %r.",
+                    spec,
+                )
+                raise
 
         pre_init: Callable[[str], None] | None = chained_pre_init
     else:
@@ -300,8 +328,16 @@ def _merge_provider_profiles(base: ProviderProfile, override: ProviderProfile) -
         override_factory = override.init_kwargs_factory
 
         def chained_factory() -> dict[str, Any]:
-            result = {**base_factory()}
-            result.update(override_factory())
+            try:
+                result = {**base_factory()}
+            except Exception:
+                logger.exception("Base init_kwargs_factory in chained ProviderProfile raised; override factory will not run.")
+                raise
+            try:
+                result.update(override_factory())
+            except Exception:
+                logger.exception("Override init_kwargs_factory in chained ProviderProfile raised.")
+                raise
             return result
 
         init_kwargs_factory: Callable[[], dict[str, Any]] | None = chained_factory

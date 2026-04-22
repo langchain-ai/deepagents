@@ -44,13 +44,17 @@ def _openrouter_attribution_kwargs() -> dict[str, Any]:
     when the corresponding env var is **not** set — otherwise the user's env var
     would be overridden.
 
+    An explicitly empty string (`OPENROUTER_APP_URL=""`) is treated as "set"
+    and suppresses the SDK default. This lets a caller opt out of app
+    attribution without unsetting the variable.
+
     Returns:
         Dictionary of attribution kwargs to spread into `init_chat_model`.
     """
     kwargs: dict[str, Any] = {}
-    if not os.environ.get("OPENROUTER_APP_URL"):
+    if os.environ.get("OPENROUTER_APP_URL") is None:
         kwargs["app_url"] = _OPENROUTER_APP_URL
-    if not os.environ.get("OPENROUTER_APP_TITLE"):
+    if os.environ.get("OPENROUTER_APP_TITLE") is None:
         kwargs["app_title"] = _OPENROUTER_APP_TITLE
     return kwargs
 

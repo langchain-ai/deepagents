@@ -846,3 +846,229 @@ class TestModelNoneDeprecationWarning:
 
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 0
+
+
+class TestPrebuiltModelIdentifierDoesNotMatchProviderKey:
+    """Regression tests: a bare model identifier must not match a registered provider key.
+
+    Previously, `_harness_profile_for_model` would call `_get_harness_profile(identifier)`
+    for a pre-built model whose identifier happened to coincide with a registered
+    provider (e.g. an in-house proxy whose `model_name` is `"openai"`), silently
+    picking up that provider's profile. The fix skips bare-identifier lookups.
+    """
+
+    def test_bare_identifier_coinciding_with_provider_key_does_not_match(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            # A harness profile is registered under bare "openai".
+            register_harness_profile(
+                "openai",
+                HarnessProfile(system_prompt_suffix="openai-specific"),
+            )
+            # Build a pre-built model whose identifier happens to equal "openai"
+            # but whose provider (from _get_ls_params) is a different vendor.
+            model = _make_model({"model_name": "openai"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "custom_proxy"})
+
+            result = _harness_profile_for_model(model, None)
+            assert result == HarnessProfile(), "Bare-identifier lookup should not match the openai provider profile"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_colon_qualified_identifier_still_matches(self) -> None:
+        """If the identifier itself is in `provider:model` shape, lookup still resolves."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "colprov",
+                HarnessProfile(system_prompt_suffix="from provider"),
+            )
+            model = _make_model({"model_name": "colprov:some-model"})
+            # No ls_provider in _get_ls_params; the identifier alone carries the provider.
+            model._get_ls_params = MagicMock(return_value={})
+            result = _harness_profile_for_model(model, None)
+            assert result.system_prompt_suffix == "from provider"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSubagentLevelToolExclusionAndOverrides:
+    """Tests that sync subagents with their own profile get their own `excluded_tools` and `tool_description_overrides`."""
+
+    def test_subagent_excluded_tools_not_leaked_from_parent(self) -> None:
+        """A subagent's profile `excluded_tools` must apply to the subagent only, not inherit parent's."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentexcl",
+                HarnessProfile(excluded_tools=frozenset({"parent_only"})),
+            )
+            register_harness_profile(
+                "subexcl",
+                HarnessProfile(excluded_tools=frozenset({"child_only"})),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subexcl"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentexcl:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subexcl:worker-model",
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            exclusions = [m for m in worker["middleware"] if isinstance(m, _ToolExclusionMiddleware)]
+            assert len(exclusions) == 1
+            assert exclusions[0]._excluded == frozenset({"child_only"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_subagent_tool_description_overrides_not_leaked_from_parent(self) -> None:
+        """A subagent's profile `tool_description_overrides` must reach its FilesystemMiddleware, not the parent's."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentdesc",
+                HarnessProfile(tool_description_overrides={"ls": "parent ls"}),
+            )
+            register_harness_profile(
+                "subdesc",
+                HarnessProfile(tool_description_overrides={"ls": "child ls"}),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subdesc"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.FilesystemMiddleware", return_value=MagicMock()) as mock_fs,
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentdesc:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subdesc:worker-model",
+                        }
+                    ],
+                )
+
+            # The subagent's FilesystemMiddleware should receive the child overrides.
+            subagent_descriptions = [
+                call.kwargs["custom_tool_descriptions"]
+                for call in mock_fs.call_args_list
+                if dict(call.kwargs["custom_tool_descriptions"]) == {"ls": "child ls"}
+            ]
+            assert subagent_descriptions, "Subagent FilesystemMiddleware did not receive its own tool_description_overrides"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestPrebuiltSubagentModelResolvesProfile:
+    """A pre-built `BaseChatModel` passed as a subagent's `model` must still get a harness profile via identifier/provider extraction."""
+
+    def test_prebuilt_subagent_model_uses_provider_profile_by_ls_params(self) -> None:
+        subagent_mw = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "prebuiltprov",
+                HarnessProfile(extra_middleware=[subagent_mw]),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            # Subagent pre-built model: expose model_dump + _get_ls_params so
+            # `_harness_profile_for_model` can extract identifier and provider.
+            subagent_model = MagicMock(spec=BaseChatModel)
+            subagent_model.model_dump.return_value = {"model_name": "sub-model"}
+            subagent_model._get_ls_params = MagicMock(return_value={"ls_provider": "prebuiltprov"})
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model=parent_model,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": subagent_model,
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            assert any(m is subagent_mw for m in worker["middleware"]), "Pre-built subagent model did not pick up registered profile"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestHasAnyHarnessProfile:
+    """Regression test for `_has_any_harness_profile` helper."""
+
+    def test_reports_true_when_registered(self) -> None:
+        from deepagents.profiles.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            assert _has_any_harness_profile() is False
+            register_harness_profile("helperprov", HarnessProfile(system_prompt_suffix="x"))
+            assert _has_any_harness_profile() is True
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)

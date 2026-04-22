@@ -1106,3 +1106,188 @@ class TestGetModelProviderLogging:
             assert get_model_provider(model) is None
         messages = [r.getMessage() for r in caplog.records]
         assert any("_get_ls_params" in m and "boom" in m for m in messages)
+
+
+class TestProfileLookupKeyValidation:
+    """Tests that malformed lookup specs return `None` without matching bare-provider entries."""
+
+    def test_harness_lookup_rejects_empty_model_half(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("partprov", HarnessProfile(system_prompt_suffix="x"))
+            assert _get_harness_profile("partprov:") is None
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_harness_lookup_rejects_empty_provider_half(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("partprov", HarnessProfile(system_prompt_suffix="x"))
+            assert _get_harness_profile(":some-model") is None
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_harness_lookup_rejects_double_colon(self) -> None:
+        assert _get_harness_profile("a:b:c") is None
+
+    def test_harness_lookup_rejects_empty_string(self) -> None:
+        assert _get_harness_profile("") is None
+
+    def test_provider_lookup_rejects_empty_model_half(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
+            assert _get_provider_profile("partprov:") is None
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_provider_lookup_rejects_empty_provider_half(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
+            assert _get_provider_profile(":some-model") is None
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_provider_lookup_rejects_double_colon(self) -> None:
+        assert _get_provider_profile("a:b:c") is None
+
+
+class TestOpenRouterEmptyEnvVar:
+    """Tests that explicitly empty OpenRouter env vars suppress the SDK default."""
+
+    def test_empty_app_url_suppresses_default(self) -> None:
+        with patch.dict("os.environ", {"OPENROUTER_APP_URL": ""}):
+            result = _openrouter_attribution_kwargs()
+        assert "app_url" not in result
+        assert result["app_title"] == _OPENROUTER_APP_TITLE
+
+    def test_empty_app_title_suppresses_default(self) -> None:
+        with patch.dict("os.environ", {"OPENROUTER_APP_TITLE": ""}):
+            result = _openrouter_attribution_kwargs()
+        assert result["app_url"] == _OPENROUTER_APP_URL
+        assert "app_title" not in result
+
+
+class TestChainedPreInitAndFactoryErrorLogging:
+    """Tests that chained `pre_init` and `init_kwargs_factory` log context on failure."""
+
+    def test_chained_pre_init_logs_base_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+        def base_pre(_spec: str) -> None:
+            msg = "base boom"
+            raise RuntimeError(msg)
+
+        over_called: list[str] = []
+
+        def over_pre(spec: str) -> None:
+            over_called.append(spec)
+
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("chainprov", ProviderProfile(pre_init=base_pre))
+            register_provider_profile("chainprov", ProviderProfile(pre_init=over_pre))
+            merged = _get_provider_profile("chainprov")
+            assert merged is not None
+            assert merged.pre_init is not None
+            with (
+                caplog.at_level(logging.ERROR, logger="deepagents.profiles.provider.provider_profiles"),
+                pytest.raises(RuntimeError, match="base boom"),
+            ):
+                merged.pre_init("chainprov:some-model")
+            assert over_called == [], "Override pre_init must not run after base raised"
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("Base pre_init" in m and "chainprov:some-model" in m for m in messages)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_chained_pre_init_logs_override_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+        base_called: list[str] = []
+
+        def base_pre(spec: str) -> None:
+            base_called.append(spec)
+
+        def over_pre(_spec: str) -> None:
+            msg = "over boom"
+            raise RuntimeError(msg)
+
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("chainprov2", ProviderProfile(pre_init=base_pre))
+            register_provider_profile("chainprov2", ProviderProfile(pre_init=over_pre))
+            merged = _get_provider_profile("chainprov2")
+            assert merged is not None
+            assert merged.pre_init is not None
+            with (
+                caplog.at_level(logging.ERROR, logger="deepagents.profiles.provider.provider_profiles"),
+                pytest.raises(RuntimeError, match="over boom"),
+            ):
+                merged.pre_init("chainprov2:some-model")
+            assert base_called == ["chainprov2:some-model"]
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("Override pre_init" in m and "chainprov2:some-model" in m for m in messages)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_chained_factory_logs_base_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+        def base_factory() -> dict:
+            msg = "base factory boom"
+            raise RuntimeError(msg)
+
+        override_called: list[int] = []
+
+        def override_factory() -> dict:
+            override_called.append(1)
+            return {"x": 1}
+
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=base_factory))
+            register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=override_factory))
+            merged = _get_provider_profile("factprov")
+            assert merged is not None
+            assert merged.init_kwargs_factory is not None
+            with (
+                caplog.at_level(logging.ERROR, logger="deepagents.profiles.provider.provider_profiles"),
+                pytest.raises(RuntimeError, match="base factory boom"),
+            ):
+                merged.init_kwargs_factory()
+            assert override_called == [], "Override factory must not run after base raised"
+            messages = [r.getMessage() for r in caplog.records]
+            assert any("Base init_kwargs_factory" in m for m in messages)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestHarnessProfileExtraMiddlewareFreeze:
+    """Tests that `extra_middleware` sequences are defensively frozen in `__post_init__`."""
+
+    def test_sequence_stored_as_tuple(self) -> None:
+        class MW:
+            pass
+
+        mw = MW()
+        source: list[MW] = [mw]
+        profile = HarnessProfile(extra_middleware=source)
+        assert isinstance(profile.extra_middleware, tuple)
+        assert profile.extra_middleware == (mw,)
+        source.append(MW())
+        assert profile.extra_middleware == (mw,)
+
+    def test_factory_stored_as_is(self) -> None:
+        class MW:
+            pass
+
+        mw = MW()
+
+        def factory() -> list[MW]:
+            return [mw]
+
+        profile = HarnessProfile(extra_middleware=factory)
+        assert profile.extra_middleware is factory

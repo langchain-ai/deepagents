@@ -30,6 +30,9 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
+
 from langchain_quickjs._ptc import to_camel_case
 from langchain_quickjs._skills import LoadedSkill, SkillLoadError, aload_skill
 
@@ -201,14 +204,7 @@ def _coerce_tool_output(value: Any) -> str:
     """
     if isinstance(value, str):
         return value
-    # Delayed import: langgraph is always present as a langchain-quickjs
-    # transitive dep, but keeping the import local means this file can
-    # still be imported in environments where the type isn't needed.
-    try:
-        from langgraph.types import Command as _Command
-    except ImportError:  # pragma: no cover — we always ship langgraph
-        _Command = None  # type: ignore[assignment]
-    if _Command is not None and isinstance(value, _Command):
+    if isinstance(value, Command):
         update = value.update
         if isinstance(update, dict):
             messages = update.get("messages")
@@ -222,11 +218,7 @@ def _coerce_tool_output(value: Any) -> str:
     # When we invoke with a ToolCall-shaped input, BaseTool wraps the
     # return value in a ToolMessage. Unwrap its content so the JS side
     # sees the raw tool output, not a Python repr of the envelope.
-    try:
-        from langchain_core.messages import ToolMessage as _ToolMessage
-    except ImportError:  # pragma: no cover — langchain always present
-        _ToolMessage = None  # type: ignore[assignment]
-    if _ToolMessage is not None and isinstance(value, _ToolMessage):
+    if isinstance(value, ToolMessage):
         content = value.content
         if isinstance(content, str):
             return content

@@ -71,7 +71,7 @@ constraint-dependencies = ["urllib3>=2.6.3"]
 
 [tool.ty.environment]
 python-version = "3.11"
-extra-paths = ["../../deepagents/deepagents"]
+extra-paths = ["../../deepagents"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

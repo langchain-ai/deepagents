@@ -131,8 +131,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        if hasattr(tool.args_schema, "model_json_schema"):
-            return tool.args_schema.model_json_schema()
+        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
+        if callable(model_json_schema):
+            return model_json_schema()
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
         return None
     return None

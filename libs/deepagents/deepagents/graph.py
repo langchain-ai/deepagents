@@ -1,7 +1,7 @@
 """Primary graph assembly module for Deep Agents.
 
 Provides `create_deep_agent`, the main entry point for constructing a fully
-configured Deep Agent with planning, filesystem, subagent, and summarization
+configured deep agent with planning, filesystem, subagent, and summarization
 middleware.
 """
 
@@ -47,7 +47,7 @@ from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
 
-BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
+BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
 ## Core Behavior
 
@@ -89,7 +89,7 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default base system prompt for every Deep Agent.
+"""Default base system prompt for every deep agent.
 
 When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
 is prepended and this base prompt is appended. When `system_prompt` is `None`,
@@ -235,9 +235,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     name: str | None = None,
     cache: BaseCache | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
-    """Create a Deep Agent.
+    """Create a deep agent.
 
-    !!! warning "Deep Agents require a LLM that supports tool calling!"
+    !!! warning "Deep agents require a LLM that supports tool calling!"
 
     By default, this agent has access to the following tools:
 
@@ -275,7 +275,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
         system_prompt: Custom system instructions to prepend before the base
-            Deep Agent prompt.
+            deep agent prompt.
 
             If a string, it's concatenated with the base prompt.
         middleware: Additional middleware to apply after the base stack
@@ -407,7 +407,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Passed through to [`create_agent`][langchain.agents.create_agent].
 
     Returns:
-        A configured Deep Agent.
+        A configured deep agent.
 
     Raises:
         ImportError: If a required provider package is missing or below the

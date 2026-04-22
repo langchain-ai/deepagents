@@ -153,3 +153,10 @@ def _clear_kitty_kbd_probe_cache() -> None:
     from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
 
     supports_kitty_keyboard_protocol.cache_clear()
+
+
+@pytest.fixture
+def fake_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Redirect `~/.deepagents/` into a per-test tmp dir."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    return tmp_path

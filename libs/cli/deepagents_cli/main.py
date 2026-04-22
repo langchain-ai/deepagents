@@ -388,6 +388,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_cli.deploy import setup_deploy_parsers
+    from deepagents_cli.mcp_commands import setup_mcp_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
 
@@ -516,6 +517,8 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
     )
+
+    setup_mcp_parsers(subparsers, make_help_action=_make_help_action)
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -1799,6 +1802,24 @@ def cli_main() -> None:
             else:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
+        elif args.command == "mcp":
+            if args.mcp_command == "login":
+                from deepagents_cli.mcp_commands import run_mcp_login
+
+                # Subcommand-scoped `--config` wins over the global
+                # `--mcp-config` if both are set.
+                config_path = args.config_path or getattr(args, "mcp_config", None)
+                exit_code = asyncio.run(
+                    run_mcp_login(
+                        server=args.server,
+                        config_path=config_path,
+                    )
+                )
+                sys.exit(exit_code)
+            else:
+                from deepagents_cli.ui import show_mcp_help
+
+                show_mcp_help()
         elif args.non_interactive_message:
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)

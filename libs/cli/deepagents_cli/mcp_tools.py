@@ -8,8 +8,10 @@ and project-level locations.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -18,7 +20,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
-    from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
+    from langchain_mcp_adapters.client import Connection
+    from mcp import ClientSession
 
     from deepagents_cli.project_utils import ProjectContext
 
@@ -38,7 +41,7 @@ class MCPToolInfo:
 
 @dataclass
 class MCPServerInfo:
-    """Metadata for a connected MCP server and its tools."""
+    """Metadata for a configured MCP server and its tools."""
 
     name: str
     """Server name from the MCP configuration."""
@@ -47,11 +50,25 @@ class MCPServerInfo:
     """Transport type (`stdio`, `sse`, or `http`)."""
 
     tools: list[MCPToolInfo] = field(default_factory=list)
-    """Tools exposed by this server."""
+    """Tools exposed by this server (empty when `status != "ok"`)."""
+
+    status: str = "ok"
+    """Load status — `"ok"`, `"unauthenticated"`, or `"error"`. A non-`"ok"`
+    server is reported in the viewer but its tools are not mounted on the
+    agent, so a single failing server never blocks startup."""
+
+    error: str | None = None
+    """Human-readable reason when `status != "ok"`, suitable for display in
+    the TUI (e.g. `"Run: deepagents mcp login gh"`)."""
 
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
+
+
+_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+"""Server names become token-file basenames under ~/.deepagents/mcp-tokens/;
+restricting to alphanumerics, hyphens, and underscores keeps them path-safe."""
 
 
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
@@ -82,6 +99,13 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         TypeError: If config fields have wrong types.
         ValueError: If required fields are missing or server type is unsupported.
     """
+    if not _SERVER_NAME_RE.fullmatch(server_name):
+        error_msg = (
+            f"Invalid server name {server_name!r}: server names must contain "
+            "only alphanumerics, hyphens, and underscores."
+        )
+        raise ValueError(error_msg)
+
     if not isinstance(server_config, dict):
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)
@@ -102,6 +126,14 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         if headers is not None and not isinstance(headers, dict):
             error_msg = f"Server '{server_name}' 'headers' must be a dictionary"
             raise TypeError(error_msg)
+
+        # Fail fast on unset env-var references in header values.
+        # We discard the resolved result; real resolution happens at
+        # connection time (see _load_tools_from_config).
+        if headers is not None:
+            from deepagents_cli.mcp_auth import resolve_headers
+
+            resolve_headers(headers, server_name=server_name)
     elif server_type == "stdio":
         # stdio server validation
         if "command" not in server_config:
@@ -122,6 +154,30 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
             "Supported types: stdio, sse, http"
         )
         raise ValueError(error_msg)
+
+    # Validate the optional `auth` field.
+    auth = server_config.get("auth")
+    if auth is not None:
+        if auth != "oauth":
+            msg = (
+                f"Server '{server_name}' has unsupported auth value "
+                f"{auth!r}. Only 'oauth' is supported."
+            )
+            raise ValueError(msg)
+        if server_type == "stdio":
+            msg = (
+                f"Server '{server_name}' uses stdio transport; "
+                "'auth: oauth' is only valid for http/sse transports."
+            )
+            raise ValueError(msg)
+        # Can't drive both OAuth and a static Authorization header.
+        header_names = {k.lower() for k in (server_config.get("headers") or {})}
+        if "authorization" in header_names:
+            msg = (
+                f"Server '{server_name}' cannot combine 'auth: oauth' "
+                "with an 'Authorization' header."
+            )
+            raise ValueError(msg)
 
 
 def load_mcp_config(config_path: str) -> dict[str, Any]:
@@ -347,27 +403,179 @@ def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
     except OSError as e:
         logger.warning("Skipping unreadable MCP config %s: %s", config_path, e)
         return None
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
+    except (json.JSONDecodeError, ValueError, TypeError, RuntimeError) as e:
         logger.warning("Skipping invalid MCP config %s: %s", config_path, e)
         return None
 
 
-class MCPSessionManager:
-    """Manages persistent MCP sessions for stateful stdio servers.
+# Exception-type names that indicate the MCP session's transport is dead and
+# should be torn down + reopened. We match by class name to avoid importing
+# anyio at module top level and to keep the check loop-agnostic.
+_TRANSIENT_EXC_NAMES = frozenset(
+    {
+        "ClosedResourceError",
+        "BrokenResourceError",
+        "EndOfStream",
+        "WouldBlock",
+    }
+)
 
-    This manager creates and maintains persistent sessions for stdio MCP
-    servers, preventing server restarts on every tool call. Sessions are kept
-    alive until explicitly cleaned up.
+
+def _is_transient_session_error(exc: BaseException) -> bool:
+    """Return True when *exc* signals the MCP session is no longer usable.
+
+    Triggers invalidate-and-retry. Narrow on purpose — we don't want to retry
+    logical tool errors (`ToolException`), only transport/connection failures
+    and auth-layer errors where a fresh session will pick up refreshed tokens.
+    """
+    name = type(exc).__name__
+    if name in _TRANSIENT_EXC_NAMES:
+        return True
+    # OSError covers BrokenPipeError, ConnectionResetError, ConnectionError, etc.
+    # ToolException is NOT an OSError subclass, so tool-logic errors still fall
+    # through the retry gate.
+    return isinstance(exc, (OSError, asyncio.IncompleteReadError))
+
+
+class MCPSessionManager:
+    """Process-wide cache for persistent MCP client sessions.
+
+    Sessions are created lazily on first use in whatever asyncio event loop
+    calls `get_or_create_session`. This is critical for the CLI's server-
+    subprocess path: module import does metadata discovery in a throwaway
+    `asyncio.run()` loop, then the LangGraph server's uvicorn loop calls tools
+    — and a session created in the throwaway loop would have dead anyio memory
+    streams by the time the uvicorn loop uses it.
+
+    Each cached server gets its own `AsyncExitStack` so a single bad session
+    can be invalidated (and its subprocess reaped) without disturbing peers.
+
+    This class is the singleton returned by
+    :func:`get_default_session_manager`. Directly instantiating
+    :class:`MCPSessionManager` produces an isolated instance, which is useful
+    in tests but does not participate in the process-wide session cache.
     """
 
     def __init__(self) -> None:
-        """Initialize the session manager."""
-        self.client: MultiServerMCPClient | None = None
-        self.exit_stack = AsyncExitStack()
+        """Initialize an empty session cache."""
+        self._lock = asyncio.Lock()
+        self._stacks: dict[str, AsyncExitStack] = {}
+        self._sessions: dict[str, ClientSession] = {}
+
+    async def get_or_create_session(
+        self,
+        server_name: str,
+        connection: Connection,
+    ) -> ClientSession:
+        """Return a live `ClientSession` for *server_name*, opening one if needed.
+
+        Uses double-checked locking so concurrent first-callers do not spawn
+        duplicate subprocesses. Session + subprocess lifecycle is tied to a
+        per-server `AsyncExitStack` so individual entries can be invalidated
+        without closing unrelated sessions.
+
+        Any error from `create_session` / `initialize` (including
+        `CancelledError`) propagates after the partial stack is rolled back,
+        so the cache is left in a clean state on failure.
+
+        Args:
+            server_name: Identifier used as the cache key.
+            connection: Adapter connection config (stdio / http / sse).
+
+        Returns:
+            An initialized `ClientSession` bound to the current event loop.
+        """
+        existing = self._sessions.get(server_name)
+        if existing is not None:
+            return existing
+
+        async with self._lock:
+            existing = self._sessions.get(server_name)
+            if existing is not None:
+                return existing
+
+            from langchain_mcp_adapters.sessions import create_session
+
+            stack = AsyncExitStack()
+            await stack.__aenter__()  # noqa: PLC2801 — manual enter: we hold stack lifetime across method boundaries
+            try:
+                session = await stack.enter_async_context(create_session(connection))
+                await session.initialize()
+            except BaseException:
+                # Roll back so a subsequent call can retry cleanly.
+                try:
+                    await stack.aclose()
+                except Exception:
+                    logger.debug(
+                        "Error closing partially-opened MCP session for %s",
+                        server_name,
+                        exc_info=True,
+                    )
+                raise
+
+            self._stacks[server_name] = stack
+            self._sessions[server_name] = session
+            return session
+
+    async def invalidate(self, server_name: str) -> None:
+        """Close and forget a single server's cached session.
+
+        Safe to call when no entry exists (no-op). After invalidation the next
+        `get_or_create_session` call will open a fresh session, which re-reads
+        OAuth tokens from storage and re-establishes the transport.
+        """
+        async with self._lock:
+            self._sessions.pop(server_name, None)
+            stack = self._stacks.pop(server_name, None)
+        if stack is not None:
+            try:
+                await stack.aclose()
+            except Exception:
+                logger.debug(
+                    "Error closing MCP session for %s during invalidate",
+                    server_name,
+                    exc_info=True,
+                )
+
+    async def aclose_all(self) -> None:
+        """Close every cached session. Idempotent — safe to call repeatedly."""
+        async with self._lock:
+            names = list(self._stacks.keys())
+            stacks = [self._stacks.pop(name) for name in names]
+            for name in names:
+                self._sessions.pop(name, None)
+        for stack in stacks:
+            try:
+                await stack.aclose()
+            except Exception:
+                logger.debug("Error closing MCP session on shutdown", exc_info=True)
 
     async def cleanup(self) -> None:
-        """Clean up all managed sessions and close connections."""
-        await self.exit_stack.aclose()
+        """Back-compat alias for `aclose_all`."""
+        await self.aclose_all()
+
+
+_DEFAULT_MANAGER: MCPSessionManager | None = None
+
+
+def get_default_session_manager() -> MCPSessionManager:
+    """Return the process-wide `MCPSessionManager` singleton.
+
+    The singleton is created lazily on first access. Proxy tools built by
+    `_load_tools_from_config` resolve the manager at call time (not
+    construction time) via this accessor so tests can swap the manager via
+    `reset_default_session_manager_for_testing`.
+    """
+    global _DEFAULT_MANAGER  # noqa: PLW0603 — module-level singleton cache
+    if _DEFAULT_MANAGER is None:
+        _DEFAULT_MANAGER = MCPSessionManager()
+    return _DEFAULT_MANAGER
+
+
+def reset_default_session_manager_for_testing() -> None:
+    """Drop the cached singleton. Call from test fixtures only."""
+    global _DEFAULT_MANAGER  # noqa: PLW0603 — test-only reset
+    _DEFAULT_MANAGER = None
 
 
 def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
@@ -425,34 +633,189 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         raise RuntimeError(msg) from exc
 
 
+async def _discover_tools(session: ClientSession) -> list[Any]:
+    """Enumerate MCP tools from *session*, paginating until exhausted.
+
+    Mirrors `langchain_mcp_adapters.tools._list_all_tools` but avoids importing
+    that private helper so this module does not silently break on an adapter
+    refactor. Caps pagination at 1000 pages to match the adapter's guard
+    against a misbehaving server returning infinite cursors.
+
+    Returns:
+        The full flat list of `mcp.types.Tool` objects returned across all
+        pages.
+
+    Raises:
+        RuntimeError: If pagination does not terminate within 1000 pages,
+            indicating a misbehaving server that keeps returning cursors.
+    """
+    cursor: str | None = None
+    tools: list[Any] = []
+    for _ in range(1000):
+        page = await session.list_tools(cursor=cursor)
+        if page.tools:
+            tools.extend(page.tools)
+        if not page.nextCursor:
+            return tools
+        cursor = page.nextCursor
+    msg = "Reached max of 1000 iterations while listing MCP tools."
+    raise RuntimeError(msg)
+
+
+def _build_cached_mcp_tool(
+    *,
+    mcp_tool: Any,  # noqa: ANN401 — mcp.types.Tool; avoid importing at module top
+    server_name: str,
+    connection: Connection,
+    tool_name_prefix: bool,
+) -> BaseTool:
+    """Build a StructuredTool that routes through the cached session manager.
+
+    The returned tool looks up the `MCPSessionManager` singleton at call time
+    (not closure time) so tests can swap the manager. On transient session
+    errors (transport dead, OAuth token expired mid-stream) the tool
+    invalidates the cache entry and retries once; a second transient failure
+    surfaces as a `ToolException` rather than crashing the agent loop.
+
+    Args:
+        mcp_tool: MCP `Tool` object as returned by `session.list_tools()`.
+        server_name: Server identifier used as the session-cache key and, if
+            *tool_name_prefix* is true, as a prefix on the LangChain tool name.
+        connection: Adapter connection config passed to `create_session`.
+        tool_name_prefix: When true, prefix the LangChain tool name with
+            ``<server_name>_`` to avoid name collisions across servers.
+
+    Returns:
+        A `StructuredTool` wrapping the remote MCP tool.
+    """
+    from langchain_core.tools import StructuredTool, ToolException
+    from langchain_mcp_adapters.tools import (
+        _convert_call_tool_result,  # noqa: PLC2701 — adapter's private helper is the only path to materialize a CallToolResult as a LangChain ToolMessage
+    )
+
+    original_tool_name = mcp_tool.name
+    lc_tool_name = (
+        f"{server_name}_{original_tool_name}"
+        if tool_name_prefix and server_name
+        else original_tool_name
+    )
+
+    meta = getattr(mcp_tool, "meta", None)
+    base_meta = (
+        mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
+    )
+    wrapped_meta = {"_meta": meta} if meta is not None else {}
+    metadata = {**base_meta, **wrapped_meta} or None
+
+    async def coroutine(
+        runtime: Any = None,  # noqa: ANN401, ARG001 — LangGraph may pass runtime; unused here
+        **arguments: Any,
+    ) -> Any:  # noqa: ANN401 — StructuredTool response_format="content_and_artifact" returns a tuple
+        async def _call_once() -> Any:  # noqa: ANN401 — MCP CallToolResult; dynamic to avoid top-level import
+            manager = get_default_session_manager()
+            session = await manager.get_or_create_session(server_name, connection)
+            return await session.call_tool(original_tool_name, arguments)
+
+        from deepagents_cli.mcp_auth import find_reauth_required
+
+        try:
+            result = await _call_once()
+        except ToolException:
+            # Logical error from the MCP server — not transient. Let it bubble.
+            raise
+        except BaseException as exc:
+            # If the SDK's OAuth refresh path tripped our non-interactive
+            # re-auth signal, surface it as a ToolException so the LLM sees
+            # the "run deepagents mcp login" hint instead of the agent
+            # crashing or (worse) blocking on input().
+            reauth = find_reauth_required(exc)
+            if reauth is not None:
+                await get_default_session_manager().invalidate(server_name)
+                raise ToolException(str(reauth)) from exc
+            if not _is_transient_session_error(exc):
+                raise
+            logger.info(
+                "MCP session for %r appears dead (%s: %s); "
+                "invalidating and retrying once",
+                server_name,
+                type(exc).__name__,
+                exc,
+            )
+            await get_default_session_manager().invalidate(server_name)
+            try:
+                result = await _call_once()
+            except ToolException:
+                raise
+            except BaseException as retry_exc:
+                # Second failure: clear the cache again so the next turn can
+                # try once more from scratch, but surface this call as a
+                # ToolException rather than crashing the agent loop.
+                await get_default_session_manager().invalidate(server_name)
+                retry_reauth = find_reauth_required(retry_exc)
+                if retry_reauth is not None:
+                    raise ToolException(str(retry_reauth)) from retry_exc
+                msg = (
+                    f"MCP tool {lc_tool_name!r} failed after one retry on "
+                    f"server {server_name!r}: {type(retry_exc).__name__}: "
+                    f"{retry_exc}"
+                )
+                raise ToolException(msg) from retry_exc
+
+        return _convert_call_tool_result(result)
+
+    return StructuredTool(
+        name=lc_tool_name,
+        description=mcp_tool.description or "",
+        args_schema=mcp_tool.inputSchema,
+        coroutine=coroutine,
+        response_format="content_and_artifact",
+        metadata=metadata,
+    )
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
 ) -> tuple[list[BaseTool], MCPSessionManager, list[MCPServerInfo]]:
     """Build MCP connections from a validated config and load tools.
 
-    This is the shared implementation used by both `get_mcp_tools` (explicit
-    path) and `resolve_and_load_mcp_tools` (auto-discovery).
+    Discovery opens a throwaway session per server (torn down before this
+    function returns) purely to capture tool metadata — names, descriptions,
+    input schemas. The returned tools are proxies that lazily bind real
+    sessions through the `MCPSessionManager` singleton on first invocation,
+    inside whatever event loop the agent runs on. This avoids the cross-loop
+    `ClosedResourceError` that would occur if we cached sessions created in
+    a temporary loop (e.g., `asyncio.run` at module import).
+
+    Shared implementation used by both `get_mcp_tools` (explicit path) and
+    `resolve_and_load_mcp_tools` (auto-discovery).
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
 
     Returns:
-        Tuple of `(tools_list, session_manager, server_infos)`.
-
-    Raises:
-        RuntimeError: If MCP server fails to spawn or connect.
+        Tuple of `(tools_list, session_manager, server_infos)` — the manager
+        is the process-wide singleton; callers need not manage its lifetime.
+        Servers that fail pre-flight, lack OAuth tokens, or can't complete
+        a discovery session are skipped (tools omitted) and reported in
+        `server_infos` with `status != "ok"`.
     """
-    from langchain_mcp_adapters.client import MultiServerMCPClient
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StdioConnection,
         StreamableHttpConnection,
+        create_session,
     )
-    from langchain_mcp_adapters.tools import load_mcp_tools
+
+    # Per-server status tracking. A failure at any stage (pre-flight,
+    # OAuth-token lookup, session init) marks the server with a non-"ok"
+    # status and skips it instead of aborting the whole startup — so a
+    # single dark server never blocks the agent. The TUI's MCP viewer and
+    # the welcome surface read `status` / `error` from the returned
+    # `MCPServerInfo`s to signal which servers need attention.
+    skipped: dict[str, tuple[str, str]] = {}  # server_name -> (status, error)
 
     # Pre-flight health checks (best-effort early detection; the session setup
     # below has its own error handling for TOCTOU races).
-    errors: list[str] = []
     for server_name, server_config in config["mcpServers"].items():
         server_type = _resolve_server_type(server_config)
         try:
@@ -461,17 +824,19 @@ async def _load_tools_from_config(
             elif server_type == "stdio":
                 _check_stdio_server(server_name, server_config)
         except RuntimeError as exc:
-            errors.append(str(exc))
-    if errors:
-        msg = "Pre-flight health check(s) failed:\n" + "\n".join(
-            f"  - {e}" for e in errors
-        )
-        raise RuntimeError(msg)
+            logger.warning(
+                "MCP server '%s' skipped: pre-flight failed: %s",
+                server_name,
+                exc,
+            )
+            skipped[server_name] = ("error", str(exc))
 
     # Create connections dict for MultiServerMCPClient
     # Convert Claude Desktop format to langchain-mcp-adapters format
     connections: dict[str, Connection] = {}
     for server_name, server_config in config["mcpServers"].items():
+        if server_name in skipped:
+            continue
         server_type = _resolve_server_type(server_config)
 
         if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -487,7 +852,33 @@ async def _load_tools_from_config(
                     url=server_config["url"],
                 )
             if "headers" in server_config:
-                conn["headers"] = server_config["headers"]
+                from deepagents_cli.mcp_auth import resolve_headers
+
+                conn["headers"] = resolve_headers(
+                    server_config["headers"], server_name=server_name
+                )
+            if server_config.get("auth") == "oauth":
+                from deepagents_cli.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
+
+                storage = FileTokenStorage(server_name)
+                if await storage.get_tokens() is None:
+                    auth_msg = f"Run: deepagents mcp login {server_name}"
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated. %s",
+                        server_name,
+                        auth_msg,
+                    )
+                    skipped[server_name] = ("unauthenticated", auth_msg)
+                    continue
+                conn["auth"] = build_oauth_provider(
+                    server_name=server_name,
+                    server_url=server_config["url"],
+                    storage=storage,
+                    interactive=False,
+                )
             connections[server_name] = conn
         else:
             # stdio server connection (default)
@@ -498,56 +889,73 @@ async def _load_tools_from_config(
                 transport="stdio",
             )
 
-    # Create session manager to track persistent sessions
-    manager = MCPSessionManager()
+    # Discovery: open one throwaway session per server just to enumerate
+    # tools, then close it. No session state survives this loop — the proxy
+    # tools built below bind fresh, cached sessions lazily in the event loop
+    # that actually invokes them (see _build_cached_mcp_tool).
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
 
-    try:
-        client = MultiServerMCPClient(connections=connections)
-        manager.client = client
-    except Exception as e:
-        await manager.cleanup()
-        error_msg = f"Failed to initialize MCP client: {e}"
-        raise RuntimeError(error_msg) from e
-
-    try:
-        all_tools: list[BaseTool] = []
-        server_infos: list[MCPServerInfo] = []
-        for server_name, server_config in config["mcpServers"].items():
-            session = await manager.exit_stack.enter_async_context(
-                client.session(server_name)
-            )
-            tools = await load_mcp_tools(
-                session, server_name=server_name, tool_name_prefix=True
-            )
-            all_tools.extend(tools)
+    for server_name, server_config in config["mcpServers"].items():
+        transport = _resolve_server_type(server_config)
+        if server_name in skipped:
+            status, error = skipped[server_name]
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
-                    transport=_resolve_server_type(server_config),
-                    tools=[
-                        MCPToolInfo(name=t.name, description=t.description or "")
-                        for t in tools
-                    ],
+                    transport=transport,
+                    status=status,
+                    error=error,
                 )
             )
-        # Sort tools deterministically by name so the tools block in API
-        # requests is stable across turns. MCP's list_tools() does not guarantee
-        # order, and any change in the tools array busts the prompt cache at the
-        # tools block.
-        all_tools.sort(key=lambda t: t.name)
-    except Exception as e:
-        await manager.cleanup()
-        error_msg = (
-            f"Failed to load tools from MCP server '{server_name}': {e}\n"
-            "For stdio servers: Check that the command and args are correct,"
-            " and that the MCP server is installed"
-            " (e.g., run 'npx -y <package>' manually to test).\n"
-            "For sse/http servers: Check that the URL is correct"
-            " and the server is running."
-        )
-        raise RuntimeError(error_msg) from e
+            continue
+        try:
+            async with create_session(connections[server_name]) as session:
+                await session.initialize()
+                mcp_tools = await _discover_tools(session)
+        except Exception as e:  # noqa: BLE001 — per-server skip
+            logger.warning(
+                "MCP server '%s' skipped: tool discovery failed: %s",
+                server_name,
+                e,
+            )
+            server_infos.append(
+                MCPServerInfo(
+                    name=server_name,
+                    transport=transport,
+                    status="error",
+                    error=str(e),
+                )
+            )
+            continue
 
-    return all_tools, manager, server_infos
+        server_tools: list[BaseTool] = [
+            _build_cached_mcp_tool(
+                mcp_tool=mcp_tool,
+                server_name=server_name,
+                connection=connections[server_name],
+                tool_name_prefix=True,
+            )
+            for mcp_tool in mcp_tools
+        ]
+        all_tools.extend(server_tools)
+        server_infos.append(
+            MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                tools=[
+                    MCPToolInfo(name=t.name, description=t.description or "")
+                    for t in server_tools
+                ],
+            )
+        )
+
+    # Sort tools deterministically by name so the tools block in API requests
+    # is stable across turns. MCP's list_tools() does not guarantee order, and
+    # any change in the tools array busts the prompt cache at the tools block.
+    all_tools.sort(key=lambda t: t.name)
+
+    return all_tools, get_default_session_manager(), server_infos
 
 
 async def get_mcp_tools(
@@ -611,8 +1019,9 @@ async def resolve_and_load_mcp_tools(
             When no tools are loaded, returns `([], None, [])`.
 
     Raises:
-        RuntimeError: If an MCP server config is invalid or fails to
-            spawn/connect.
+        RuntimeError: If the MCP config itself is malformed. Per-server
+            spawn/connect failures are reported via `server_infos` rather
+            than raising.
     """
     if no_mcp:
         return [], None, []

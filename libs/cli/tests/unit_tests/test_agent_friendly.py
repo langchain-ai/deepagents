@@ -561,6 +561,19 @@ class TestHelpScreenDriftExtended:
             show_help()
         assert "update" in buf.getvalue()
 
+    def test_show_help_includes_mcp_subcommand(self) -> None:
+        """show_help should mention the mcp subcommand.
+
+        The `mcp` parser is registered in `main.parse_args`; this guards
+        against the top-level help screen drifting out of sync with the
+        parser surface.
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=200)
+        with patch("deepagents_cli.ui.console", test_console):
+            show_help()
+        assert "deepagents mcp" in buf.getvalue()
+
     def test_show_help_includes_stdin(self) -> None:
         """show_help should mention --stdin."""
         buf = io.StringIO()

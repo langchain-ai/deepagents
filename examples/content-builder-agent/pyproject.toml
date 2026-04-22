@@ -5,6 +5,8 @@ description = "A content writer agent configured entirely through files on disk"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.3.5",
+    "duckduckgo-search>=8.0.0",
+    "exa-py>=2.0.0",
     "google-genai>=1.0.0",
     "pillow>=12.2.0",
     "pyyaml>=6.0.0",
@@ -13,7 +15,14 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "langchain-openai>=0.1.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

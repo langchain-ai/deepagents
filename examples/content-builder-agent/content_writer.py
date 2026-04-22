@@ -40,34 +40,233 @@ EXAMPLE_DIR = Path(__file__).parent
 console = Console()
 
 
-# Web search tool for the researcher subagent
-@tool
-def web_search(
-    query: str,
-    max_results: int = 5,
-    topic: Literal["general", "news"] = "general",
-) -> dict:
-    """Search the web for current information.
+async def _expand_query(query: str) -> list[str]:
+    """Expand a single query into 3 diverse sub-queries using gpt-4o-mini.
 
     Args:
-        query: The search query (be specific and detailed)
-        max_results: Number of results to return (default: 5)
-        topic: "general" for most queries, "news" for current events
+        query: The original search query to expand.
 
     Returns:
-        Search results with titles, URLs, and content excerpts.
+        A list of 3 sub-queries, or `[query]` on any failure.
+    """
+    import json
+
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+        system = (
+            "You are a search query expander. Given a topic, return a JSON array of exactly 3 "
+            "search queries that are diverse and complementary to the original. Each query "
+            "should target a different angle (e.g., definition/overview, recent developments, "
+            "practical examples). Output only a raw JSON array of strings — no markdown, no commentary."
+        )
+        response = await llm.ainvoke([("system", system), ("human", query)])
+        return json.loads(response.content)
+    except Exception:
+        return [query]
+
+
+async def _search_tavily(query: str, max_results: int, topic: str) -> list[dict]:
+    """Search via Tavily and normalise results.
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return.
+        topic: Either "general" or "news".
+
+    Returns:
+        List of result dicts with keys url, title, content, source.
     """
     try:
         from tavily import TavilyClient
 
         api_key = os.environ.get("TAVILY_API_KEY")
         if not api_key:
-            return {"error": "TAVILY_API_KEY not set"}
-
+            return []
         client = TavilyClient(api_key=api_key)
-        return client.search(query, max_results=max_results, topic=topic)
-    except Exception as e:
-        return {"error": f"Search failed: {e}"}
+        raw = await asyncio.to_thread(
+            client.search, query, max_results=max_results, topic=topic
+        )
+        return [
+            {
+                "url": r["url"],
+                "title": r.get("title", ""),
+                "content": r.get("content", ""),
+                "source": "tavily",
+            }
+            for r in raw.get("results", [])
+        ]
+    except Exception:
+        return []
+
+
+async def _search_exa(query: str, max_results: int) -> list[dict]:
+    """Search via Exa and normalise results.
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return.
+
+    Returns:
+        List of result dicts with keys url, title, content, source.
+    """
+    try:
+        from exa_py import AsyncExa
+
+        api_key = os.environ.get("EXA_API_KEY")
+        if not api_key:
+            return []
+        exa = AsyncExa(api_key=api_key)
+        response = await exa.search(
+            query,
+            num_results=max_results,
+            type="auto",
+            contents={"highlights": True},
+        )
+        results = []
+        for r in response.results:
+            highlights = " ".join(r.highlights or []) if hasattr(r, "highlights") and r.highlights else ""
+            results.append(
+                {
+                    "url": r.url,
+                    "title": r.title or "",
+                    "content": highlights or getattr(r, "text", ""),
+                    "source": "exa",
+                }
+            )
+        return results
+    except Exception:
+        return []
+
+
+async def _search_ddg(query: str, max_results: int) -> list[dict]:
+    """Search via DuckDuckGo and normalise results.
+
+    Args:
+        query: Search query string.
+        max_results: Maximum number of results to return.
+
+    Returns:
+        List of result dicts with keys url, title, content, source.
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        raw = await asyncio.to_thread(DDGS().text, query, max_results=max_results)
+        return [
+            {
+                "url": r["href"],
+                "title": r.get("title", ""),
+                "content": r.get("body", ""),
+                "source": "duckduckgo",
+            }
+            for r in (raw or [])
+        ]
+    except Exception:
+        return []
+
+
+def _auto_select_providers() -> list[str]:
+    """Select up to 2 available search providers based on env vars.
+
+    Returns:
+        List of up to 2 provider names in priority order: tavily, exa, duckduckgo.
+    """
+    available = []
+    if os.environ.get("TAVILY_API_KEY"):
+        available.append("tavily")
+    if os.environ.get("EXA_API_KEY"):
+        available.append("exa")
+    available.append("duckduckgo")
+    return available[:2]
+
+
+@tool
+async def web_search_multi(
+    queries: list[str],
+    providers: list[str] | None = None,
+    max_results: int = 5,
+    topic: Literal["general", "news"] = "general",
+) -> dict:
+    """Search multiple providers concurrently and return merged, deduplicated results.
+
+    Args:
+        queries: One or more search query strings to run.
+        providers: Provider names to use. Auto-selected if not specified.
+        max_results: Results per (query, provider) pair.
+        topic: "general" for most queries, "news" for current events.
+
+    Returns:
+        Dict with keys: results (list), query_count (int), provider_count (int).
+    """
+    if providers is None:
+        providers = _auto_select_providers()
+
+    dispatch = {
+        "tavily": _search_tavily,
+        "exa": _search_exa,
+        "duckduckgo": _search_ddg,
+    }
+
+    async def _run(query: str, provider: str) -> list[dict]:
+        try:
+            fn = dispatch[provider]
+            if provider == "tavily":
+                return await fn(query, max_results, topic)
+            return await fn(query, max_results)
+        except Exception:
+            return []
+
+    tasks = [_run(q, p) for q in queries for p in providers if p in dispatch]
+    batches = await asyncio.gather(*tasks)
+
+    seen_urls: set[str] = set()
+    merged: list[dict] = []
+    for batch in batches:
+        for result in batch:
+            url = result.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                merged.append(result)
+
+    return {
+        "results": merged,
+        "query_count": len(queries),
+        "provider_count": len(providers),
+    }
+
+
+@tool
+async def web_search_auto(
+    query: str,
+    max_results: int = 5,
+    topic: Literal["general", "news"] = "general",
+) -> dict:
+    """Search the web with automatic query expansion and multi-provider fan-out.
+
+    Args:
+        query: The original search query.
+        max_results: Results per (query, provider) pair.
+        topic: "general" for most queries, "news" for current events.
+
+    Returns:
+        Merged, deduplicated results with keys: results, query_count, provider_count,
+        original_query, expanded_queries.
+    """
+    sub_queries = await _expand_query(query)
+    all_queries = [query] + sub_queries
+
+    result = await web_search_multi.ainvoke(
+        {
+            "queries": all_queries,
+            "max_results": max_results,
+            "topic": topic,
+        }
+    )
+    result["original_query"] = query
+    result["expanded_queries"] = sub_queries
+    return result
 
 
 @tool
@@ -141,7 +340,7 @@ def load_subagents(config_path: Path) -> list:
     """
     # Map tool names to actual tool objects
     available_tools = {
-        "web_search": web_search,
+        "web_search": web_search_auto,
     }
 
     with open(config_path) as f:
@@ -215,7 +414,7 @@ class AgentDisplay:
                     elif name == "write_file":
                         path = args.get("file_path", "file")
                         console.print(f"  [bold yellow]>> Writing:[/] {path}")
-                    elif name == "web_search":
+                    elif name in ("web_search_auto", "web_search_multi"):
                         query = args.get("query", "")
                         console.print(f"  [bold blue]>> Searching:[/] {query[:50]}...")
                         self.update_status(f"Searching: {query[:30]}...")

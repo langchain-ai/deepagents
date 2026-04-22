@@ -1,5 +1,6 @@
-"""Tests for deepagents._models helpers."""
+"""Tests for deepagents._models helpers and internal profile registries."""
 
+import logging
 import os
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
@@ -18,25 +19,31 @@ from deepagents.profiles import (
     _HARNESS_PROFILES,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
+    _PROVIDER_PROFILES,
     OPENROUTER_MIN_VERSION,
+    _GeneralPurposeSubagentProfile,
     _get_harness_profile,
+    _get_provider_profile,
     _HarnessProfile,
     _merge_profiles,
+    _merge_provider_profiles,
     _openrouter_attribution_kwargs,
+    _ProviderProfile,
     _register_harness_profile,
+    _register_provider_profile,
     check_openrouter_version,
 )
 
 
 def _make_model(dump: dict) -> MagicMock:
-    """Create a mock BaseChatModel with a given model_dump return."""
+    """Create a mock BaseChatModel with a given `model_dump` return value."""
     model = MagicMock(spec=BaseChatModel)
     model.model_dump.return_value = dump
     return model
 
 
 class TestResolveModel:
-    """Tests for resolve_model."""
+    """Tests for `resolve_model`."""
 
     def test_passthrough_when_already_model(self) -> None:
         model = MagicMock(spec=BaseChatModel)
@@ -102,7 +109,7 @@ class TestResolveModel:
 
         mock.assert_called_once_with("openrouter:anthropic/claude-sonnet-4-6")
 
-    def test_non_openai_string(self) -> None:
+    def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
             result = resolve_model("anthropic:claude-sonnet-4-6")
@@ -112,7 +119,7 @@ class TestResolveModel:
 
 
 class TestGetModelIdentifier:
-    """Tests for get_model_identifier."""
+    """Tests for `get_model_identifier`."""
 
     def test_returns_model_name(self) -> None:
         model = _make_model({"model_name": "gpt-5", "model": "something-else"})
@@ -136,7 +143,7 @@ class TestGetModelIdentifier:
 
 
 class TestGetModelProvider:
-    """Tests for get_model_provider."""
+    """Tests for `get_model_provider`."""
 
     def test_returns_provider_from_ls_params(self) -> None:
         model = _make_model({})
@@ -160,7 +167,7 @@ class TestGetModelProvider:
 
 
 class TestModelMatchesSpec:
-    """Tests for model_matches_spec."""
+    """Tests for `model_matches_spec`."""
 
     def test_exact_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})
@@ -184,25 +191,25 @@ class TestModelMatchesSpec:
 
 
 class TestCheckOpenRouterVersion:
-    """Tests for check_openrouter_version."""
+    """Tests for `check_openrouter_version`."""
 
     def test_passes_when_not_installed(self) -> None:
         with patch(
             "deepagents.profiles._openrouter.pkg_version",
             side_effect=PackageNotFoundError("langchain-openrouter"),
         ):
-            check_openrouter_version()  # should not raise
+            check_openrouter_version()
 
     def test_passes_when_version_sufficient(self) -> None:
         with patch(
             "deepagents.profiles._openrouter.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
-            check_openrouter_version()  # should not raise
+            check_openrouter_version()
 
     def test_passes_when_version_above_minimum(self) -> None:
         with patch("deepagents.profiles._openrouter.pkg_version", return_value="99.0.0"):
-            check_openrouter_version()  # should not raise
+            check_openrouter_version()
 
     def test_raises_when_version_too_old(self) -> None:
         with (
@@ -213,7 +220,7 @@ class TestCheckOpenRouterVersion:
 
     def test_skips_check_for_invalid_version(self) -> None:
         with patch("deepagents.profiles._openrouter.pkg_version", return_value="not-a-version"):
-            check_openrouter_version()  # should not raise
+            check_openrouter_version()
 
     def test_resolve_model_calls_check(self) -> None:
         with (
@@ -237,11 +244,10 @@ class TestCheckOpenRouterVersion:
 
 
 class TestOpenRouterAttributionKwargs:
-    """Tests for _openrouter_attribution_kwargs."""
+    """Tests for `_openrouter_attribution_kwargs`."""
 
     def test_defaults_when_no_env(self) -> None:
         with patch.dict("os.environ", {}, clear=False):
-            # Ensure the env vars are not set
             os.environ.pop("OPENROUTER_APP_URL", None)
             os.environ.pop("OPENROUTER_APP_TITLE", None)
             result = _openrouter_attribution_kwargs()
@@ -277,7 +283,7 @@ class TestOpenRouterAttributionKwargs:
 
 
 class TestStringValue:
-    """Tests for _string_value."""
+    """Tests for `_string_value`."""
 
     def test_present(self) -> None:
         assert _string_value({"key": "val"}, "key") == "val"
@@ -292,19 +298,136 @@ class TestStringValue:
         assert _string_value({"key": 42}, "key") is None
 
 
-class TestHarnessProfile:
-    """Tests for the _HarnessProfile dataclass."""
+class TestProviderProfile:
+    """Tests for `_ProviderProfile`."""
 
     def test_defaults_are_empty(self) -> None:
-        profile = _HarnessProfile()
+        profile = _ProviderProfile()
         assert profile.init_kwargs == {}
         assert profile.pre_init is None
         assert profile.init_kwargs_factory is None
+
+    def test_frozen(self) -> None:
+        profile = _ProviderProfile()
+        with pytest.raises(AttributeError):
+            profile.pre_init = lambda _spec: None  # type: ignore[misc]
+
+
+class TestProviderProfileRegistry:
+    """Tests for provider-profile lookup and registration."""
+
+    def test_register_and_retrieve_by_provider(self) -> None:
+        profile = _ProviderProfile(init_kwargs={"temperature": 0})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            _register_provider_profile("test_provider", profile)
+            assert _get_provider_profile("test_provider:some-model") is profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_exact_model_match_merges_with_provider(self) -> None:
+        base_profile = _ProviderProfile(init_kwargs={"a": 1})
+        model_profile = _ProviderProfile(init_kwargs={"b": 2})
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            _register_provider_profile("test_prov", base_profile)
+            _register_provider_profile("test_prov:special-model", model_profile)
+            merged = _get_provider_profile("test_prov:special-model")
+            assert merged.init_kwargs == {"a": 1, "b": 2}
+            assert _get_provider_profile("test_prov:other-model") is base_profile
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_returns_empty_default_for_unknown(self) -> None:
+        assert _get_provider_profile("nonexistent:model") == _ProviderProfile()
+
+    def test_bare_model_name_without_colon(self) -> None:
+        assert _get_provider_profile("claude-sonnet-4-6") == _ProviderProfile()
+
+    def test_empty_spec_returns_empty_default(self) -> None:
+        """Empty spec has no colon and no exact match; the default profile wins."""
+        assert _get_provider_profile("") == _ProviderProfile()
+
+    def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Re-registering an existing key should warn rather than silently overwrite."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            _register_provider_profile("dup_prov", _ProviderProfile(init_kwargs={"v": 1}))
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles._provider_profiles"):
+                _register_provider_profile("dup_prov", _ProviderProfile(init_kwargs={"v": 2}))
+            assert any("Overwriting existing provider profile" in record.message for record in caplog.records)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestMergeProviderProfiles:
+    """Tests for `_merge_provider_profiles`."""
+
+    def test_init_kwargs_merged(self) -> None:
+        base = _ProviderProfile(init_kwargs={"a": 1, "shared": "base"})
+        override = _ProviderProfile(init_kwargs={"b": 2, "shared": "override"})
+        merged = _merge_provider_profiles(base, override)
+        assert merged.init_kwargs == {"a": 1, "b": 2, "shared": "override"}
+
+    def test_pre_init_chained(self) -> None:
+        calls: list[str] = []
+        base = _ProviderProfile(pre_init=lambda s: calls.append(f"base:{s}"))
+        override = _ProviderProfile(pre_init=lambda s: calls.append(f"override:{s}"))
+        merged = _merge_provider_profiles(base, override)
+        assert merged.pre_init is not None
+        merged.pre_init("spec")
+        assert calls == ["base:spec", "override:spec"]
+
+    def test_pre_init_base_only(self) -> None:
+        called = False
+
+        def base_fn(_spec: str) -> None:
+            nonlocal called
+            called = True
+
+        merged = _merge_provider_profiles(_ProviderProfile(pre_init=base_fn), _ProviderProfile())
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_pre_init_override_only(self) -> None:
+        called = False
+
+        def override_fn(_spec: str) -> None:
+            nonlocal called
+            called = True
+
+        merged = _merge_provider_profiles(_ProviderProfile(), _ProviderProfile(pre_init=override_fn))
+        assert merged.pre_init is not None
+        merged.pre_init("x")
+        assert called
+
+    def test_init_kwargs_factory_chained(self) -> None:
+        base = _ProviderProfile(init_kwargs_factory=lambda: {"a": 1, "shared": "base"})
+        override = _ProviderProfile(init_kwargs_factory=lambda: {"b": 2, "shared": "override"})
+        merged = _merge_provider_profiles(base, override)
+        assert merged.init_kwargs_factory is not None
+        assert merged.init_kwargs_factory() == {
+            "a": 1,
+            "b": 2,
+            "shared": "override",
+        }
+
+
+class TestHarnessProfile:
+    """Tests for `_HarnessProfile`."""
+
+    def test_defaults_are_empty(self) -> None:
+        profile = _HarnessProfile()
         assert profile.base_system_prompt is None
         assert profile.system_prompt_suffix is None
         assert profile.tool_description_overrides == {}
         assert profile.excluded_tools == frozenset()
         assert profile.extra_middleware == ()
+        assert profile.general_purpose_subagent is None
 
     def test_frozen(self) -> None:
         profile = _HarnessProfile()
@@ -313,10 +436,10 @@ class TestHarnessProfile:
 
 
 class TestHarnessProfileRegistry:
-    """Tests for _register_harness_profile / _get_harness_profile."""
+    """Tests for harness-profile lookup and registration."""
 
     def test_register_and_retrieve_by_provider(self) -> None:
-        profile = _HarnessProfile(init_kwargs={"temperature": 0})
+        profile = _HarnessProfile(system_prompt_suffix="provider suffix")
         original = dict(_HARNESS_PROFILES)
         try:
             _register_harness_profile("test_provider", profile)
@@ -326,86 +449,41 @@ class TestHarnessProfileRegistry:
             _HARNESS_PROFILES.update(original)
 
     def test_exact_model_match_merges_with_provider(self) -> None:
-        base_profile = _HarnessProfile(init_kwargs={"a": 1})
-        model_profile = _HarnessProfile(init_kwargs={"b": 2})
+        base_profile = _HarnessProfile(system_prompt_suffix="provider suffix")
+        model_profile = _HarnessProfile(base_system_prompt="model base")
         original = dict(_HARNESS_PROFILES)
         try:
             _register_harness_profile("test_prov", base_profile)
             _register_harness_profile("test_prov:special-model", model_profile)
             merged = _get_harness_profile("test_prov:special-model")
-            # Both provider and model kwargs are present
-            assert merged.init_kwargs == {"a": 1, "b": 2}
-            # Provider-only lookup still returns the base profile directly
+            assert merged.base_system_prompt == "model base"
+            assert merged.system_prompt_suffix == "provider suffix"
             assert _get_harness_profile("test_prov:other-model") is base_profile
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
     def test_returns_empty_default_for_unknown(self) -> None:
-        profile = _get_harness_profile("nonexistent:model")
-        assert profile == _HarnessProfile()
+        assert _get_harness_profile("nonexistent:model") == _HarnessProfile()
 
     def test_bare_model_name_without_colon(self) -> None:
-        profile = _get_harness_profile("claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+        assert _get_harness_profile("claude-sonnet-4-6") == _HarnessProfile()
+
+    def test_duplicate_registration_warns(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Re-registering an existing key should warn rather than silently overwrite."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile("dup_harness", _HarnessProfile(system_prompt_suffix="first"))
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles._harness_profiles"):
+                _register_harness_profile("dup_harness", _HarnessProfile(system_prompt_suffix="second"))
+            assert any("Overwriting existing harness profile" in record.message for record in caplog.records)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
 
-class TestMergeProfiles:
-    """Tests for _merge_profiles layering behavior."""
-
-    def test_init_kwargs_merged(self) -> None:
-        base = _HarnessProfile(init_kwargs={"a": 1, "shared": "base"})
-        override = _HarnessProfile(init_kwargs={"b": 2, "shared": "override"})
-        merged = _merge_profiles(base, override)
-        assert merged.init_kwargs == {"a": 1, "b": 2, "shared": "override"}
-
-    def test_pre_init_chained(self) -> None:
-        calls: list[str] = []
-        base = _HarnessProfile(pre_init=lambda s: calls.append(f"base:{s}"))
-        override = _HarnessProfile(pre_init=lambda s: calls.append(f"override:{s}"))
-        merged = _merge_profiles(base, override)
-        assert merged.pre_init is not None
-        merged.pre_init("spec")
-        assert calls == ["base:spec", "override:spec"]
-
-    def test_pre_init_base_only(self) -> None:
-        called = False
-
-        def base_fn(_s: str) -> None:
-            nonlocal called
-            called = True
-
-        base = _HarnessProfile(pre_init=base_fn)
-        override = _HarnessProfile()
-        merged = _merge_profiles(base, override)
-        assert merged.pre_init is not None
-        merged.pre_init("x")
-        assert called
-
-    def test_pre_init_override_only(self) -> None:
-        called = False
-
-        def over_fn(_s: str) -> None:
-            nonlocal called
-            called = True
-
-        base = _HarnessProfile()
-        override = _HarnessProfile(pre_init=over_fn)
-        merged = _merge_profiles(base, override)
-        assert merged.pre_init is not None
-        merged.pre_init("x")
-        assert called
-
-    def test_init_kwargs_factory_chained(self) -> None:
-        base = _HarnessProfile(init_kwargs_factory=lambda: {"a": 1, "shared": "base"})
-        override = _HarnessProfile(init_kwargs_factory=lambda: {"b": 2, "shared": "override"})
-        merged = _merge_profiles(base, override)
-        assert merged.init_kwargs_factory is not None
-        assert merged.init_kwargs_factory() == {
-            "a": 1,
-            "b": 2,
-            "shared": "override",
-        }
+class TestMergeHarnessProfiles:
+    """Tests for `_merge_profiles`."""
 
     def test_base_system_prompt_override_wins(self) -> None:
         base = _HarnessProfile(base_system_prompt="base prompt")
@@ -415,13 +493,11 @@ class TestMergeProfiles:
 
     def test_base_system_prompt_inherits_from_base(self) -> None:
         base = _HarnessProfile(base_system_prompt="base prompt")
-        override = _HarnessProfile()
-        merged = _merge_profiles(base, override)
+        merged = _merge_profiles(base, _HarnessProfile())
         assert merged.base_system_prompt == "base prompt"
 
     def test_base_system_prompt_neither_set_produces_none(self) -> None:
-        merged = _merge_profiles(_HarnessProfile(), _HarnessProfile())
-        assert merged.base_system_prompt is None
+        assert _merge_profiles(_HarnessProfile(), _HarnessProfile()).base_system_prompt is None
 
     def test_system_prompt_suffix_override_wins(self) -> None:
         base = _HarnessProfile(system_prompt_suffix="base suffix")
@@ -431,12 +507,14 @@ class TestMergeProfiles:
 
     def test_system_prompt_suffix_inherits_from_base(self) -> None:
         base = _HarnessProfile(system_prompt_suffix="base suffix")
-        override = _HarnessProfile()
-        merged = _merge_profiles(base, override)
+        merged = _merge_profiles(base, _HarnessProfile())
         assert merged.system_prompt_suffix == "base suffix"
 
     def test_base_system_prompt_and_suffix_both_merge(self) -> None:
-        base = _HarnessProfile(base_system_prompt="base prompt", system_prompt_suffix="base suffix")
+        base = _HarnessProfile(
+            base_system_prompt="base prompt",
+            system_prompt_suffix="base suffix",
+        )
         override = _HarnessProfile(base_system_prompt="override prompt")
         merged = _merge_profiles(base, override)
         assert merged.base_system_prompt == "override prompt"
@@ -457,31 +535,13 @@ class TestMergeProfiles:
         merged = _merge_profiles(base, override)
         assert merged.excluded_tools == frozenset({"execute", "write_file", "task"})
 
-    def test_excluded_tools_base_only(self) -> None:
-        base = _HarnessProfile(excluded_tools=frozenset({"execute"}))
-        override = _HarnessProfile()
-        merged = _merge_profiles(base, override)
-        assert merged.excluded_tools == frozenset({"execute"})
-
-    def test_excluded_tools_override_only(self) -> None:
-        base = _HarnessProfile()
-        override = _HarnessProfile(excluded_tools=frozenset({"task"}))
-        merged = _merge_profiles(base, override)
-        assert merged.excluded_tools == frozenset({"task"})
-
-    def test_excluded_tools_both_empty(self) -> None:
-        merged = _merge_profiles(_HarnessProfile(), _HarnessProfile())
-        assert merged.excluded_tools == frozenset()
-
     def test_extra_middleware_concatenated(self) -> None:
         mw_a, mw_b = MagicMock(), MagicMock()
         base = _HarnessProfile(extra_middleware=[mw_a])
         override = _HarnessProfile(extra_middleware=[mw_b])
         merged = _merge_profiles(base, override)
-        # Merged middleware is a factory since both sides had entries
         assert callable(merged.extra_middleware)
-        result = merged.extra_middleware()
-        assert list(result) == [mw_a, mw_b]
+        assert list(merged.extra_middleware()) == [mw_a, mw_b]
 
     def test_extra_middleware_callable_and_sequence(self) -> None:
         mw_a, mw_b = MagicMock(), MagicMock()
@@ -489,60 +549,71 @@ class TestMergeProfiles:
         override = _HarnessProfile(extra_middleware=[mw_b])
         merged = _merge_profiles(base, override)
         assert callable(merged.extra_middleware)
-        result = merged.extra_middleware()
-        assert list(result) == [mw_a, mw_b]
+        assert list(merged.extra_middleware()) == [mw_a, mw_b]
 
     def test_extra_middleware_inherits_from_base(self) -> None:
         mw = MagicMock()
         base = _HarnessProfile(extra_middleware=[mw])
-        override = _HarnessProfile()
-        merged = _merge_profiles(base, override)
+        merged = _merge_profiles(base, _HarnessProfile())
         assert list(merged.extra_middleware) == [mw]
+
+    def test_general_purpose_subagent_merge_combines_fields(self) -> None:
+        base = _HarnessProfile(
+            general_purpose_subagent=_GeneralPurposeSubagentProfile(
+                description="base description",
+            )
+        )
+        override = _HarnessProfile(
+            general_purpose_subagent=_GeneralPurposeSubagentProfile(
+                system_prompt="override prompt",
+            )
+        )
+        merged = _merge_profiles(base, override)
+        assert merged.general_purpose_subagent == _GeneralPurposeSubagentProfile(
+            description="base description",
+            system_prompt="override prompt",
+        )
+
+    def test_general_purpose_subagent_enabled_override_wins(self) -> None:
+        base = _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=True))
+        override = _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=False))
+        merged = _merge_profiles(base, override)
+        assert merged.general_purpose_subagent == _GeneralPurposeSubagentProfile(enabled=False)
 
 
 class TestProfileMergingEndToEnd:
-    """End-to-end tests: exact-model profiles inherit provider defaults."""
+    """End-to-end tests for the split registries."""
 
-    def test_openai_exact_model_inherits_responses_api(self) -> None:
-        original = dict(_HARNESS_PROFILES)
+    def test_openai_exact_model_inherits_provider_defaults(self) -> None:
+        original = dict(_PROVIDER_PROFILES)
         try:
-            _register_harness_profile(
+            _register_provider_profile(
                 "openai:o3-pro",
-                _HarnessProfile(system_prompt_suffix="think harder"),
+                _ProviderProfile(init_kwargs={"reasoning_effort": "high"}),
             )
-            profile = _get_harness_profile("openai:o3-pro")
-            assert profile.init_kwargs == {"use_responses_api": True}
-            assert profile.system_prompt_suffix == "think harder"
+            profile = _get_provider_profile("openai:o3-pro")
+            assert profile.init_kwargs == {
+                "use_responses_api": True,
+                "reasoning_effort": "high",
+            }
         finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
 
-    def test_anthropic_exact_model_inherits_provider_profile(self) -> None:
-        """Per-model Anthropic profile merges with the provider-level profile."""
+    def test_exact_harness_override_inherits_provider_harness_defaults(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
             _register_harness_profile(
-                "anthropic:claude-sonnet-4-6-20250514",
-                _HarnessProfile(system_prompt_suffix="be concise"),
+                "testprov",
+                _HarnessProfile(system_prompt_suffix="provider suffix"),
             )
-            profile = _get_harness_profile("anthropic:claude-sonnet-4-6-20250514")
-            assert profile.system_prompt_suffix == "be concise"
-            # AnthropicPromptCachingMiddleware is applied unconditionally in
-            # graph.py, not via the profile, so extra_middleware should be empty.
-            assert profile.extra_middleware == ()
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
-
-    def test_exact_model_override_wins_for_init_kwargs(self) -> None:
-        original = dict(_HARNESS_PROFILES)
-        try:
             _register_harness_profile(
-                "openai:o3-pro",
-                _HarnessProfile(init_kwargs={"use_responses_api": False}),
+                "testprov:special",
+                _HarnessProfile(base_system_prompt="model base"),
             )
-            profile = _get_harness_profile("openai:o3-pro")
-            assert profile.init_kwargs == {"use_responses_api": False}
+            profile = _get_harness_profile("testprov:special")
+            assert profile.base_system_prompt == "model base"
+            assert profile.system_prompt_suffix == "provider suffix"
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -550,7 +621,7 @@ class TestProfileMergingEndToEnd:
     def test_no_base_profile_returns_exact_unchanged(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            model_profile = _HarnessProfile(init_kwargs={"x": 1})
+            model_profile = _HarnessProfile(system_prompt_suffix="exact only")
             _register_harness_profile("noprov:special", model_profile)
             assert _get_harness_profile("noprov:special") is model_profile
         finally:
@@ -559,27 +630,25 @@ class TestProfileMergingEndToEnd:
 
 
 class TestBuiltInProfiles:
-    """Tests for the built-in provider profile registrations."""
+    """Tests for built-in provider and harness registrations."""
 
-    def test_openai_profile_sets_responses_api(self) -> None:
-        profile = _get_harness_profile("openai:gpt-5")
+    def test_openai_provider_profile_sets_responses_api(self) -> None:
+        profile = _get_provider_profile("openai:gpt-5")
         assert profile.init_kwargs == {"use_responses_api": True}
 
-    def test_openrouter_profile_has_pre_init_and_factory(self) -> None:
-        profile = _get_harness_profile("openrouter:anthropic/claude-sonnet-4-6")
+    def test_openrouter_provider_profile_has_pre_init_and_factory(self) -> None:
+        profile = _get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
-    def test_anthropic_returns_default_profile(self) -> None:
-        """Anthropic has no registered profile; caching is unconditional in graph.py."""
-        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+    def test_openai_has_no_built_in_harness_profile(self) -> None:
+        assert _get_harness_profile("openai:gpt-5") == _HarnessProfile()
 
 
-class TestResolveModelWithProfiles:
-    """Tests for resolve_model using the profile registry."""
+class TestResolveModelWithProviderProfiles:
+    """Tests for `resolve_model` using provider profiles."""
 
-    def test_openai_uses_profile_init_kwargs(self) -> None:
+    def test_openai_uses_provider_profile_init_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
             resolve_model("openai:gpt-5")
@@ -605,16 +674,43 @@ class TestResolveModelWithProfiles:
 
         mock.assert_called_once_with("some_provider:some-model")
 
-    def test_custom_profile_kwargs_forwarded(self) -> None:
-        profile = _HarnessProfile(init_kwargs={"custom_key": "custom_val"})
-        original = dict(_HARNESS_PROFILES)
+    def test_custom_provider_profile_kwargs_forwarded(self) -> None:
+        profile = _ProviderProfile(init_kwargs={"custom_key": "custom_val"})
+        original = dict(_PROVIDER_PROFILES)
         try:
-            _register_harness_profile("customprov", profile)
+            _register_provider_profile("customprov", profile)
             with patch("deepagents._models.init_chat_model") as mock:
                 mock.return_value = MagicMock(spec=BaseChatModel)
                 resolve_model("customprov:my-model")
 
             mock.assert_called_once_with("customprov:my-model", custom_key="custom_val")
         finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_factory_overrides_static_init_kwargs_on_collision(self) -> None:
+        """Factory output wins over static `init_kwargs` on key collision.
+
+        When a single profile sets both fields, overlapping keys resolve to
+        the factory's value.
+        """
+        profile = _ProviderProfile(
+            init_kwargs={"shared": "static", "static_only": "s"},
+            init_kwargs_factory=lambda: {"shared": "factory", "factory_only": "f"},
+        )
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            _register_provider_profile("mixedprov", profile)
+            with patch("deepagents._models.init_chat_model") as mock:
+                mock.return_value = MagicMock(spec=BaseChatModel)
+                resolve_model("mixedprov:my-model")
+
+            mock.assert_called_once_with(
+                "mixedprov:my-model",
+                shared="factory",
+                static_only="s",
+                factory_only="f",
+            )
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)

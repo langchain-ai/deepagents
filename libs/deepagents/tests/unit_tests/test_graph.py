@@ -20,7 +20,13 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.profiles import _HARNESS_PROFILES, _get_harness_profile, _HarnessProfile, _register_harness_profile
+from deepagents.profiles import (
+    _HARNESS_PROFILES,
+    _GeneralPurposeSubagentProfile,
+    _get_harness_profile,
+    _HarnessProfile,
+    _register_harness_profile,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -91,7 +97,7 @@ class TestProfileForModel:
     def test_uses_spec_when_provided(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_spec": True})
+            profile = _HarnessProfile(system_prompt_suffix="from spec")
             _register_harness_profile("testprov", profile)
             result = _harness_profile_for_model(_make_model({}), "testprov:some-model")
             assert result is profile
@@ -102,7 +108,7 @@ class TestProfileForModel:
     def test_falls_back_to_identifier_when_spec_is_none(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_id": True})
+            profile = _HarnessProfile(system_prompt_suffix="from identifier")
             _register_harness_profile("myprov", profile)
             model = _make_model({"model_name": "myprov:my-model"})
             result = _harness_profile_for_model(model, None)
@@ -115,7 +121,7 @@ class TestProfileForModel:
         """Pre-built models with bare identifiers (no colon) resolve via provider."""
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_provider": True})
+            profile = _HarnessProfile(system_prompt_suffix="from provider")
             _register_harness_profile("fakeprov", profile)
             model = _make_model({"model": "some-model-name"})
             # Simulate _get_ls_params returning the provider
@@ -258,6 +264,84 @@ class TestToolDescriptionOverrideWiring:
                 }
             assert mock_subagents.call_args is not None
             assert mock_subagents.call_args.kwargs["task_description"] == "custom task"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestGeneralPurposeSubagentProfileWiring:
+    """Tests for harness-level general-purpose subagent controls."""
+
+    def test_create_deep_agent_applies_general_purpose_subagent_edits(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "testprov",
+                _HarnessProfile(
+                    general_purpose_subagent=_GeneralPurposeSubagentProfile(
+                        description="Custom general-purpose description",
+                        system_prompt="Custom general-purpose prompt.",
+                    )
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            # Patch only what we need to inspect (`SubAgentMiddleware` call
+            # args) plus the boundary (`resolve_model`) and `create_agent`,
+            # which would otherwise reject the mocked middleware. All other
+            # middleware constructors run for real.
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="testprov:some-model")
+
+            subagents = mock_subagents.call_args.kwargs["subagents"]
+            general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+            assert general_purpose["description"] == "Custom general-purpose description"
+            assert general_purpose["system_prompt"] == "Custom general-purpose prompt."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_disabling_default_general_purpose_removes_task_tool(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "testprov",
+                _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(model="testprov:some-model")
+            assert "task" not in agent.nodes["tools"].bound._tools_by_name
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_explicit_sync_subagent_still_keeps_task_tool_when_default_disabled(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            _register_harness_profile(
+                "testprov",
+                _HarnessProfile(general_purpose_subagent=_GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(
+                    model="testprov:some-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker subagent.",
+                            "system_prompt": "Do work.",
+                        }
+                    ],
+                )
+            assert "task" in agent.nodes["tools"].bound._tools_by_name
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -483,7 +567,7 @@ class TestToolExclusionWiring:
         try:
             _register_harness_profile(
                 "noxprov",
-                _HarnessProfile(init_kwargs={"x": 1}),
+                _HarnessProfile(system_prompt_suffix="present"),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()

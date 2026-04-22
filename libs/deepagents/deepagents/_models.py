@@ -7,7 +7,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from deepagents.profiles import _get_harness_profile
+from deepagents.profiles import _get_provider_profile
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -31,7 +31,7 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     if isinstance(model, BaseChatModel):
         return model
 
-    profile = _get_harness_profile(model)
+    profile = _get_provider_profile(model)
 
     # Execute any pre-initialization logic
     if profile.pre_init is not None:

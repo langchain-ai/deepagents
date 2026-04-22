@@ -11,13 +11,16 @@ enforcement, app-attribution kwargs).
 
 from __future__ import annotations
 
+import logging
 import os
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from deepagents.profiles._harness_profiles import _HarnessProfile, _register_harness_profile
+from deepagents.profiles._provider_profiles import _ProviderProfile, _register_provider_profile
+
+logger = logging.getLogger(__name__)
 
 OPENROUTER_MIN_VERSION = "0.2.0"  # app attribution support added
 """Minimum required version of `langchain-openrouter`.
@@ -71,7 +74,13 @@ def check_openrouter_version() -> None:
     try:
         is_old = Version(installed) < Version(OPENROUTER_MIN_VERSION)
     except InvalidVersion:
-        # Non-PEP-440 version (dev build, fork, etc.) — skip the check
+        # Non-PEP-440 version (dev build, fork, etc.) — skip the check but
+        # leave a breadcrumb so an unexpected downstream failure is traceable.
+        logger.warning(
+            "Skipping langchain-openrouter version check: installed version %r is not PEP 440. Minimum required is %s.",
+            installed,
+            OPENROUTER_MIN_VERSION,
+        )
         return
     if is_old:
         msg = (
@@ -82,9 +91,9 @@ def check_openrouter_version() -> None:
         raise ImportError(msg)
 
 
-_register_harness_profile(
+_register_provider_profile(
     "openrouter",
-    _HarnessProfile(
+    _ProviderProfile(
         pre_init=lambda _spec: check_openrouter_version(),
         init_kwargs_factory=_openrouter_attribution_kwargs,
     ),

@@ -109,8 +109,10 @@ def test_probe_has_video_stream_false_for_audio_only(audio_only_file: Path) -> N
 
 def test_extract_frames_short_video(sample_video: Path) -> None:
     params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
-    frames = extract_frames(sample_video, params)
+    frames, duration = extract_frames(sample_video, params)
 
+    # The returned duration should match the source video duration.
+    assert duration == pytest.approx(5.0, abs=0.2)
     # baseline_interval = 1.0 → at least ~5 frames, plus possible scene frames.
     assert 3 <= len(frames) <= params.max_frames
     # Timestamps are monotonically non-decreasing and within the source duration.
@@ -126,7 +128,7 @@ def test_extract_frames_short_video(sample_video: Path) -> None:
 
 def test_extract_frames_respects_max_frames(sample_video: Path) -> None:
     params = ExtractionParams(max_frames=2, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
-    frames = extract_frames(sample_video, params)
+    frames, _duration = extract_frames(sample_video, params)
     assert len(frames) <= 2
 
 
@@ -137,7 +139,7 @@ def test_extract_frames_respects_max_width(sample_video: Path) -> None:
     from PIL import Image  # noqa: PLC0415  # type: ignore[import-unresolved]
 
     params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=128, jpeg_quality=5)
-    frames = extract_frames(sample_video, params)
+    frames, _duration = extract_frames(sample_video, params)
     for f in frames:
         with Image.open(BytesIO(f.jpeg_bytes)) as im:
             assert im.width <= 128

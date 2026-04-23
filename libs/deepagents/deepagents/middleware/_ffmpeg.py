@@ -167,7 +167,7 @@ def _build_filter_string(baseline_interval: float, params: ExtractionParams, met
 def extract_frames(
     video_path: Path,
     params: ExtractionParams,
-) -> list[ExtractedFrame]:
+) -> tuple[list[ExtractedFrame], float]:
     """Extract a capped, scene-aware sequence of JPEG frames from a video.
 
     Args:
@@ -175,8 +175,10 @@ def extract_frames(
         params: Extraction parameters.
 
     Returns:
-        A list of `ExtractedFrame` ordered by source timestamp, with at most
-        `params.max_frames` entries.
+        A tuple `(frames, duration_s)`. `frames` is a list of
+        `ExtractedFrame` ordered by source timestamp, with at most
+        `params.max_frames` entries. `duration_s` is the source video
+        duration in seconds as reported by ffprobe.
 
     Raises:
         FFmpegMissingError: If `ffmpeg` / `ffprobe` are not on PATH.
@@ -246,4 +248,4 @@ def extract_frames(
             frames.append(ExtractedFrame(jpeg_bytes=path.read_bytes(), timestamp_s=ts))
 
         # Belt-and-suspenders hard-trim: scene detection can overshoot.
-        return frames[: params.max_frames]
+        return frames[: params.max_frames], duration_s

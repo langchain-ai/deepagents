@@ -156,7 +156,7 @@ class TestWrapModelCallHappyPath:
             ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.0),
             ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0b", timestamp_s=1.0),
         ]
-        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
         monkeypatch.setattr(_ffmpeg, "check_ffmpeg_available", lambda: True)
 
         mw = VideoFrameExtractionMiddleware()
@@ -202,7 +202,7 @@ class TestWrapModelCallHappyPath:
 
     def test_ordering_preserved_with_interleaved_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
-        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
 
         mw = VideoFrameExtractionMiddleware()
         model = _model_with_provider("anthropic", "claude-sonnet-4-6")
@@ -286,7 +286,7 @@ class TestErrorPaths:
 class TestOverride:
     def test_override_false_forces_extraction_on_gemini(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
-        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
 
         mw = VideoFrameExtractionMiddleware(video_capable_override=False)
         model = _model_with_provider("google_genai", "gemini-2.0-flash")
@@ -307,9 +307,9 @@ class TestCache:
     def test_repeat_video_hits_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         call_count = {"n": 0}
 
-        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
+        def fake(*_a: object, **_kw: object) -> tuple[list[ExtractedFrame], float]:
             call_count["n"] += 1
-            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
 
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
@@ -327,9 +327,9 @@ class TestCache:
     def test_different_params_skip_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
         call_count = {"n": 0}
 
-        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
+        def fake(*_a: object, **_kw: object) -> tuple[list[ExtractedFrame], float]:
             call_count["n"] += 1
-            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
 
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
@@ -350,9 +350,9 @@ class TestCache:
     def test_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
         call_count = {"n": 0}
 
-        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
+        def fake(*_a: object, **_kw: object) -> tuple[list[ExtractedFrame], float]:
             call_count["n"] += 1
-            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
 
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
@@ -374,9 +374,9 @@ class TestCache:
     def test_cache_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         call_count = {"n": 0}
 
-        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
+        def fake(*_a: object, **_kw: object) -> tuple[list[ExtractedFrame], float]:
             call_count["n"] += 1
-            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
 
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
@@ -407,7 +407,7 @@ class TestAwrapModelCall:
 
     async def test_async_transforms_on_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
-        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
 
         mw = VideoFrameExtractionMiddleware()
         model = _model_with_provider("anthropic", "claude-sonnet-4-6")
@@ -430,3 +430,67 @@ def test_exported_from_package() -> None:
     from deepagents.middleware import VideoFrameExtractionMiddleware as Exported  # noqa: PLC0415
 
     assert Exported is VideoFrameExtractionMiddleware
+
+
+class TestRealDurationInPreamble:
+    """Regression guard for Issue 2: preamble must report real video duration,
+    not a duration derived from frame timestamps.
+    """
+
+    def test_preamble_uses_real_duration_not_frame_gap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clustered frames (tiny timestamp window) must not corrupt the preamble duration."""
+        # All three frames are within 0.1s of each other, but the video is 60s long.
+        fake_frames = [
+            ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.00),
+            ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0b", timestamp_s=0.05),
+            ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0c", timestamp_s=0.10),
+        ]
+        real_duration = 60.0
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, real_duration))
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        messages = [HumanMessage(content=[_video_block(filename="long.mp4")])]
+        request = _make_request(model, messages)
+
+        captured: dict[str, Any] = {}
+
+        def handler(req: Any) -> str:  # noqa: ANN401
+            captured["messages"] = req.messages
+            return "OK"
+
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
+        content = captured["messages"][0].content
+        preamble_text = content[0]["text"]
+
+        # Must report the real 60s duration, not ~0.1s derived from frame timestamps.
+        assert "duration 60.0s" in preamble_text, (
+            f"Expected 'duration 60.0s' in preamble, got: {preamble_text!r}"
+        )
+
+    def test_preamble_reports_duration_from_mock(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Happy-path: the preamble duration equals the duration returned by extraction."""
+        fake_frames = [
+            ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.0),
+            ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0b", timestamp_s=1.0),
+        ]
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        messages = [HumanMessage(content=[_video_block(filename="clip.mp4")])]
+        request = _make_request(model, messages)
+
+        captured: dict[str, Any] = {}
+
+        def handler(req: Any) -> str:  # noqa: ANN401
+            captured["messages"] = req.messages
+            return "OK"
+
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
+        content = captured["messages"][0].content
+        preamble_text = content[0]["text"]
+
+        assert "duration 5.0s" in preamble_text, (
+            f"Expected 'duration 5.0s' in preamble, got: {preamble_text!r}"
+        )

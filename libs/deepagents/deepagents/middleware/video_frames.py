@@ -119,10 +119,13 @@ def _ext_for_mime(mime: str | None) -> str:
     return "mp4"
 
 
-def _run_extraction(video_bytes: bytes, mime: str | None, params: ExtractionParams) -> list[ExtractedFrame]:
+def _run_extraction(video_bytes: bytes, mime: str | None, params: ExtractionParams) -> tuple[list[ExtractedFrame], float]:
     """Write the bytes to a temp file and invoke `_ffmpeg.extract_frames`.
 
     Seam for monkeypatching in middleware tests.
+
+    Returns:
+        A tuple `(frames, duration_s)` as returned by `_ffmpeg.extract_frames`.
     """
     ext = _ext_for_mime(mime)
     with NamedTemporaryFile(suffix=f".{ext}", delete=True) as tmp:
@@ -236,7 +239,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         self.video_capable_override = video_capable_override
         self.cache_size = cache_size
 
-        self._cache: OrderedDict[tuple[str, tuple[int, float, int, int]], list[ExtractedFrame]] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, tuple[int, float, int, int]], tuple[list[ExtractedFrame], float]] = OrderedDict()
 
     @property
     def _params(self) -> ExtractionParams:
@@ -301,13 +304,8 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         filename = _filename_for_video_block(block)
         try:
             video_bytes = _decode_video_bytes(block)
-            frames = self._extract_with_cache(video_bytes, block.get("mime_type"))
-            if len(frames) >= _MIN_FRAMES_FOR_DURATION:
-                duration_s = frames[-1].timestamp_s - frames[0].timestamp_s
-                baseline_interval = duration_s / (len(frames) - 1) if len(frames) > 1 else 1.0
-            else:
-                duration_s = frames[0].timestamp_s if frames else 0.0
-                baseline_interval = 1.0
+            frames, duration_s = self._extract_with_cache(video_bytes, block.get("mime_type"))
+            baseline_interval = max(1.0, duration_s / self._params.max_frames)
             return _frames_to_blocks(frames, filename, duration_s, baseline_interval)
         except FFmpegMissingError as exc:
             logger.warning("ffmpeg missing; replacing video %r: %s", filename, exc)
@@ -326,7 +324,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             logger.warning("unexpected extraction error for %r: %s", filename, exc)
             return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]
 
-    def _extract_with_cache(self, video_bytes: bytes, mime: str | None) -> list[ExtractedFrame]:
+    def _extract_with_cache(self, video_bytes: bytes, mime: str | None) -> tuple[list[ExtractedFrame], float]:
         if self.cache_size == 0:
             return _run_extraction(video_bytes, mime, self._params)
 
@@ -337,8 +335,8 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             self._cache.move_to_end(key)
             return cached
 
-        frames = _run_extraction(video_bytes, mime, self._params)
-        self._cache[key] = frames
+        result = _run_extraction(video_bytes, mime, self._params)
+        self._cache[key] = result
         while len(self._cache) > self.cache_size:
             self._cache.popitem(last=False)  # Evict LRU.
-        return frames
+        return result

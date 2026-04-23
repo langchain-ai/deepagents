@@ -159,8 +159,9 @@ class TestExtractFrames:
         src.write_bytes(b"fake-bytes")
         params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
 
-        frames = _ffmpeg_module.extract_frames(src, params)
+        frames, duration = _ffmpeg_module.extract_frames(src, params)
 
+        assert duration == pytest.approx(5.0)
         assert len(frames) == 2
         assert frames[0].timestamp_s == pytest.approx(0.0)
         assert frames[1].timestamp_s == pytest.approx(1.0)
@@ -198,7 +199,8 @@ class TestExtractFrames:
         src.write_bytes(b"bytes")
         params = ExtractionParams(max_frames=3, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
 
-        frames = _ffmpeg_module.extract_frames(src, params)
+        frames, duration = _ffmpeg_module.extract_frames(src, params)
+        assert duration == pytest.approx(10.0)
         assert len(frames) == 3
         assert [f.timestamp_s for f in frames] == pytest.approx([0.0, 1.0, 2.0])
 

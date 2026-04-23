@@ -235,7 +235,11 @@ def bundle(
 
     # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
-        _render_langgraph_json(env_present=env_present, auth_present=auth_present),
+        _render_langgraph_json(
+            env_present=env_present,
+            auth_present=auth_present,
+            frontend_present=frontend_enabled,
+        ),
         encoding="utf-8",
     )
 
@@ -409,8 +413,13 @@ def _render_auth_py(provider: str) -> str:
     return auth_block + AUTH_ON_HANDLER
 
 
-def _render_langgraph_json(*, env_present: bool, auth_present: bool = False) -> str:
-    """Render `langgraph.json` — adds `"env"` and `"auth"` when applicable."""
+def _render_langgraph_json(
+    *,
+    env_present: bool,
+    auth_present: bool = False,
+    frontend_present: bool = False,
+) -> str:
+    """Render `langgraph.json` — adds `"env"`, `"auth"`, `"http"` when applicable."""
     data: dict = {
         "dependencies": ["."],
         "graphs": {"agent": "./deploy_graph.py:make_graph"},
@@ -420,6 +429,8 @@ def _render_langgraph_json(*, env_present: bool, auth_present: bool = False) -> 
         data["env"] = ".env"
     if auth_present:
         data["auth"] = {"path": "./auth.py:auth"}
+    if frontend_present:
+        data["http"] = {"app": "./app.py:app"}
     return json.dumps(data, indent=2) + "\n"
 
 

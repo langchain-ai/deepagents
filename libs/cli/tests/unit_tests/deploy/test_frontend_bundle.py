@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -173,3 +174,26 @@ def test_bundle_raises_when_frontend_enabled_but_auth_missing(
     )
     with pytest.raises(ValueError, match=r"requires \[auth\]"):
         bundle(cfg, project, build_dir)
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_langgraph_json_has_http_app_when_frontend_enabled(
+    project: Path,
+    build_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "k")
+    bundle(_supabase_config(), project, build_dir)
+    data = json.loads((build_dir / "langgraph.json").read_text(encoding="utf-8"))
+    assert data["http"] == {"app": "./app.py:app"}
+
+
+def test_langgraph_json_no_http_app_when_frontend_disabled(
+    project: Path,
+    build_dir: Path,
+) -> None:
+    cfg = DeployConfig(agent=AgentConfig(name="my-agent"))
+    bundle(cfg, project, build_dir)
+    data = json.loads((build_dir / "langgraph.json").read_text(encoding="utf-8"))
+    assert "http" not in data

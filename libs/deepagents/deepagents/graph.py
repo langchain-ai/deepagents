@@ -169,16 +169,17 @@ informative scaffolding error instead of a silent no-op.
 def _validate_excluded_middleware_config(profile: HarnessProfile) -> None:
     """Validate stack-independent guards on `profile.excluded_middleware`.
 
-    Rejects required-scaffolding entries and private-API (`_`-prefixed)
-    strings. Both are invariants of the profile itself, so they are checked
-    once up front rather than on every stack pass. Violations across both
-    categories are collected into a single `ValueError`.
+    Rejects required-scaffolding entries (class or the equivalent `.name`
+    string). Grammar-level checks (empty strings, multi-colon, underscore
+    prefix on plain names) already fire at `HarnessProfile` construction;
+    this function focuses on the assembly-time invariant that scaffolding
+    middleware must remain present for the agent to function.
 
     Args:
         profile: Profile whose `excluded_middleware` is validated.
 
     Raises:
-        ValueError: If any entry is required scaffolding or a private-API string.
+        ValueError: If any entry is required scaffolding.
     """
     excluded = profile.excluded_middleware
     if not excluded:
@@ -192,35 +193,43 @@ def _validate_excluded_middleware_config(profile: HarnessProfile) -> None:
         else:
             excluded_names.add(entry)
 
-    violations: list[str] = []
-
     forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
     forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_NAMES
     if forbidden_classes or forbidden_names:
         labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
-        violations.append(
+        msg = (
+            "HarnessProfile.excluded_middleware is invalid:\n  - "
             f"required scaffolding cannot be excluded: {', '.join(labels)} "
             f"(back filesystem tools, subagent dispatch, and permission "
             f"enforcement — use excluded_tools for per-tool visibility or "
             f"adjust profile settings instead of stripping scaffolding)"
         )
-
-    # Narrow private-name violations to names not already reported as required
-    # scaffolding, so `"_PermissionMiddleware"` surfaces exactly once (under
-    # the more informative scaffolding category).
-    private_names = {name for name in excluded_names if name.startswith("_")} - _REQUIRED_MIDDLEWARE_NAMES
-    if private_names:
-        labels = ", ".join(sorted(repr(name) for name in private_names))
-        violations.append(
-            f"string entries cannot start with '_': {labels} "
-            f"(underscore-prefixed names refer to private middleware classes "
-            f"not part of the public exclusion surface — import the class "
-            f"and pass it directly if you really need to exclude one)"
-        )
-
-    if violations:
-        msg = "HarnessProfile.excluded_middleware is invalid:\n  - " + "\n  - ".join(violations)
         raise ValueError(msg)
+
+
+def _raise_on_name_collisions(
+    name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]],
+) -> None:
+    """Raise `ValueError` if any string exclusion matched multiple distinct classes.
+
+    A string entry that drops instances of more than one concrete class is
+    almost always a surprise — e.g. a user middleware whose `.name`
+    accidentally collides with a built-in alias. Force the caller to use a
+    class-form exclusion (or a `module:Class` import ref in
+    `HarnessProfileConfig`) to disambiguate.
+    """
+    collisions = {name: classes for name, classes in name_matched_types.items() if len(classes) > 1}
+    if not collisions:
+        return
+    labels = sorted(f"{name!r} matched {sorted(cls.__name__ for cls in classes)}" for name, classes in collisions.items())
+    msg = (
+        "HarnessProfile.excluded_middleware name entry matched multiple "
+        "distinct middleware classes within a single stack: "
+        f"{'; '.join(labels)}. Use a class-form exclusion "
+        "(or a `module:Class` import ref in `HarnessProfileConfig`) to "
+        "disambiguate."
+    )
+    raise ValueError(msg)
 
 
 def _apply_excluded_middleware(
@@ -272,6 +281,7 @@ def _apply_excluded_middleware(
             excluded_names.add(entry)
 
     filtered: list[AgentMiddleware[Any, Any, Any]] = []
+    name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]] = {}
     for mw in stack:
         mw_type = type(mw)
         mw_name = mw.name
@@ -280,10 +290,13 @@ def _apply_excluded_middleware(
                 matched_classes.add(mw_type)
             continue
         if mw_name in excluded_names:
+            name_matched_types.setdefault(mw_name, set()).add(mw_type)
             if matched_names is not None:
                 matched_names.add(mw_name)
             continue
         filtered.append(mw)
+
+    _raise_on_name_collisions(name_matched_types)
 
     removed_count = len(stack) - len(filtered)
     if removed_count:
@@ -400,13 +413,16 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         profile = _get_harness_profile(provider)
         if profile is not None:
             return profile
-    # Only surface at info when the user has registered profiles but none
-    # matched. With an empty registry, no profile was ever going to apply, so
-    # the miss is unsurprising and stays at debug.
-    level = logging.INFO if _has_any_harness_profile() else logging.DEBUG
+    # Surface at warning when the user has registered profiles but none
+    # matched — a common "my profile isn't applying" failure mode where the
+    # pre-built model's identifier/provider couldn't be derived. With an
+    # empty registry, no profile was ever going to apply, so the miss is
+    # unsurprising and stays at debug.
+    level = logging.WARNING if _has_any_harness_profile() else logging.DEBUG
     logger.log(
         level,
-        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults.",
+        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults. "
+        "If you registered a profile for this model, ensure the key matches the model's resolved provider and identifier.",
         type(model).__name__,
         identifier,
         provider,

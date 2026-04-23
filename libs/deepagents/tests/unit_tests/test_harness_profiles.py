@@ -102,10 +102,9 @@ class TestHarnessProfileConfigSerde:
         with pytest.raises(TypeError, match="AgentMiddleware"):
             config.to_harness_profile()
 
-    def test_to_harness_profile_rejects_malformed_import_ref(self) -> None:
-        config = HarnessProfileConfig(excluded_middleware=frozenset({"deepagents:"}))
+    def test_rejects_malformed_import_ref_at_construction(self) -> None:
         with pytest.raises(ValueError, match="module:Class"):
-            config.to_harness_profile()
+            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents:"}))
 
     def test_to_dict_omits_unset_fields(self) -> None:
         """Fields at their default are dropped so the output stays minimal."""
@@ -145,10 +144,18 @@ class TestHarnessProfileConfigSerde:
         )
         assert config_list == config_set
 
-    def test_to_dict_validates_tool_description_value_types(self) -> None:
-        """Non-string tool descriptions raise at serialize time."""
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"ls": 42},
+            {1: "desc"},
+        ],
+        ids=["non_string_value", "non_string_key"],
+    )
+    def test_to_dict_validates_tool_description_types(self, overrides: object) -> None:
+        """Both non-string keys and values in `tool_description_overrides` raise at serialize time."""
         config = HarnessProfileConfig(
-            tool_description_overrides={"ls": 42}  # ty: ignore[invalid-argument-type]
+            tool_description_overrides=overrides  # ty: ignore[invalid-argument-type]  # test fixture types
         )
         with pytest.raises(TypeError, match="tool_description_overrides"):
             config.to_dict()
@@ -225,6 +232,125 @@ class TestHarnessProfileConfigSerde:
         profile = HarnessProfile(excluded_middleware=frozenset({LocalMiddleware}))
         with pytest.raises(ValueError, match="module-level"):
             HarnessProfileConfig.from_harness_profile(profile)
+
+
+class TestExcludedMiddlewareGrammar:
+    """Grammar-level validation runs at `HarnessProfile[Config]` construction."""
+
+    @pytest.mark.parametrize("entry", ["", " ", "\t"])
+    def test_rejects_empty_or_whitespace_entries(self, entry: str) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            HarnessProfileConfig(excluded_middleware=frozenset({entry}))
+        with pytest.raises(ValueError, match="non-empty"):
+            HarnessProfile(excluded_middleware=frozenset({entry}))
+
+    def test_rejects_multi_colon_entries(self) -> None:
+        with pytest.raises(ValueError, match="exactly one ':'"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"a:b:c"}))
+
+    def test_rejects_empty_module_half(self) -> None:
+        with pytest.raises(ValueError, match="module:Class"):
+            HarnessProfileConfig(excluded_middleware=frozenset({":Foo"}))
+
+    def test_rejects_empty_class_half(self) -> None:
+        with pytest.raises(ValueError, match="module:Class"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents:"}))
+
+    def test_accepts_plain_public_name(self) -> None:
+        config = HarnessProfileConfig(excluded_middleware=frozenset({"PublicStubMiddleware"}))
+        assert "PublicStubMiddleware" in config.excluded_middleware
+
+    def test_accepts_well_formed_import_ref(self) -> None:
+        config = HarnessProfileConfig(excluded_middleware=frozenset({"my_pkg.mw:Foo"}))
+        assert "my_pkg.mw:Foo" in config.excluded_middleware
+
+    def test_accepts_import_ref_with_underscore_qualname(self) -> None:
+        """`_`-prefix rejection applies only to plain names, not import-ref qualnames."""
+        entry = "deepagents.middleware.summarization:_DeepAgentsSummarizationMiddleware"
+        config = HarnessProfileConfig(excluded_middleware=frozenset({entry}))
+        assert entry in config.excluded_middleware
+        assert config.to_harness_profile().excluded_middleware == frozenset({_DeepAgentsSummarizationMiddleware})
+
+
+class TestImportRefResolutionErrors:
+    """Import-ref failure modes surface clear `ValueError`s at conversion time."""
+
+    def test_missing_module_raises_with_type_name(self) -> None:
+        config = HarnessProfileConfig(
+            excluded_middleware=frozenset({"deepagents_nonexistent_xyz:Middleware"}),
+        )
+        with pytest.raises(ValueError, match="Could not import") as excinfo:
+            config.to_harness_profile()
+        # Error includes underlying exception type name for actionable diagnostics.
+        assert "ModuleNotFoundError" in str(excinfo.value) or "ImportError" in str(excinfo.value)
+
+    def test_missing_symbol_raises_with_attribute_name(self) -> None:
+        config = HarnessProfileConfig(
+            excluded_middleware=frozenset({"deepagents.middleware.async_subagents:NonexistentMiddleware"}),
+        )
+        with pytest.raises(ValueError, match="missing attribute 'NonexistentMiddleware'"):
+            config.to_harness_profile()
+
+    def test_target_is_not_middleware_class_raises_type_error(self) -> None:
+        config = HarnessProfileConfig(
+            excluded_middleware=frozenset({"deepagents.profiles.harness_profiles:HarnessProfileConfig"}),
+        )
+        with pytest.raises(TypeError, match="AgentMiddleware"):
+            config.to_harness_profile()
+
+
+class TestFromHarnessProfileRuntimeOnlyRejection:
+    """`from_harness_profile` rejects both sequence and factory forms of `extra_middleware`."""
+
+    def test_rejects_extra_middleware_factory(self) -> None:
+        """Factory-form `extra_middleware` is runtime-only — serialization must fail loudly."""
+
+        def factory() -> list[AsyncSubAgentMiddleware]:
+            return []
+
+        profile = HarnessProfile(extra_middleware=factory)
+        with pytest.raises(ValueError, match="extra_middleware"):
+            HarnessProfileConfig.from_harness_profile(profile)
+
+
+class TestRuntimeRoundTrip:
+    """Full `HarnessProfile → Config → HarnessProfile` round-trip.
+
+    Covers the asymmetry between `from_harness_profile` (emits strings) and
+    `to_harness_profile` (resolves strings back to classes), including the
+    `serialized_name` alias path.
+    """
+
+    def test_round_trip_preserves_mixed_class_and_string_entries(self) -> None:
+        profile = HarnessProfile(
+            system_prompt_suffix="Respond briefly.",
+            excluded_tools=frozenset({"execute"}),
+            excluded_middleware=frozenset({AsyncSubAgentMiddleware, "PublicStubMiddleware"}),
+        )
+        round_tripped = HarnessProfileConfig.from_harness_profile(profile).to_harness_profile()
+        assert round_tripped == profile
+
+    def test_round_trip_public_alias_stays_a_string(self) -> None:
+        """`_DeepAgentsSummarizationMiddleware` serializes to its `"SummarizationMiddleware"` alias.
+
+        The string does not re-resolve to a class on the way back — alias
+        round-trips are intentionally stable as strings since the alias
+        points at a private impl.
+        """
+        profile = HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}))
+        config = HarnessProfileConfig.from_harness_profile(profile)
+        assert config.excluded_middleware == frozenset({"SummarizationMiddleware"})
+        round_tripped = config.to_harness_profile()
+        assert round_tripped.excluded_middleware == frozenset({"SummarizationMiddleware"})
+
+
+class TestSerializedNameDrift:
+    """Drift guard for the `serialized_name` ClassVar convention."""
+
+    def test_summarization_serialized_name_matches_runtime_name(self) -> None:
+        """`serialized_name` must equal `.name` so string-form exclusion matches the alias."""
+        instance = _DeepAgentsSummarizationMiddleware.__new__(_DeepAgentsSummarizationMiddleware)
+        assert _DeepAgentsSummarizationMiddleware.serialized_name == instance.name
 
 
 class TestHarnessProfileConfigYamlRoundTrip:

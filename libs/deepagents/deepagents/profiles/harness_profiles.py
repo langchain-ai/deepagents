@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from importlib import import_module
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
@@ -34,22 +34,6 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware
 
 logger = logging.getLogger(__name__)
-
-_HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(
-    {
-        "base_system_prompt",
-        "system_prompt_suffix",
-        "tool_description_overrides",
-        "excluded_tools",
-        "excluded_middleware",
-        "general_purpose_subagent",
-    }
-)
-"""Top-level keys accepted by `HarnessProfileConfig.from_dict`.
-
-Mirrors the fields emitted by `HarnessProfileConfig.to_dict`. Runtime-only
-fields such as `extra_middleware` are deliberately absent.
-"""
 
 
 @dataclass(frozen=True)
@@ -128,8 +112,7 @@ class GeneralPurposeSubagentProfile:
             TypeError: If `data` contains unknown keys, or if any value has
                 the wrong type.
         """
-        allowed = {"enabled", "description", "system_prompt"}
-        unknown = set(data.keys()) - allowed
+        unknown = set(data.keys()) - _GENERAL_PURPOSE_SUBAGENT_KEYS
         if unknown:
             msg = f"Unknown keys in GeneralPurposeSubagentProfile dict: {sorted(unknown)}"
             raise TypeError(msg)
@@ -208,6 +191,11 @@ class HarnessProfileConfig:
     `my_pkg.middleware:MyMiddleware` are resolved to exact middleware classes
     when converted to a runtime `HarnessProfile`.
 
+    Entries are grammar-checked at construction: empty/whitespace strings,
+    multi-colon forms, empty halves in an import ref, and underscore-prefixed
+    plain names all raise `ValueError` immediately. Use the `module:Class`
+    import-ref form to exclude a private middleware class.
+
     This is the canonical on-disk representation used by `to_dict` /
     `from_dict`.
     """
@@ -216,13 +204,15 @@ class HarnessProfileConfig:
     """Edits for the auto-added `general-purpose` subagent."""
 
     def __post_init__(self) -> None:
-        """Freeze mutable mappings so config objects stay immutable after construction."""
+        """Freeze mutable mappings and validate grammar of string entries."""
         if not isinstance(self.tool_description_overrides, MappingProxyType):
             object.__setattr__(
                 self,
                 "tool_description_overrides",
                 MappingProxyType(dict(self.tool_description_overrides)),
             )
+        for entry in self.excluded_middleware:
+            _validate_config_middleware_string(entry, "excluded_middleware")
 
     def to_dict(self) -> dict[str, Any]:
         """Dump this config to plain dict/list/scalar values.
@@ -262,6 +252,14 @@ class HarnessProfileConfig:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> HarnessProfileConfig:
         """Construct a config object from a plain dict.
+
+        !!! warning "Trust boundary"
+
+            `module:Class` entries in `excluded_middleware` are resolved by
+            importing the target module when `to_harness_profile()` runs.
+            Loading a config file therefore imports Python code referenced by
+            that file — **do not load `HarnessProfileConfig` dicts from
+            untrusted sources**.
 
         Args:
             data: A mapping with any subset of the serializable
@@ -480,15 +478,25 @@ class HarnessProfile:
     usage, `HarnessProfileConfig` stores the same exclusions using string names
     only.
 
-    !!! warning "Restrictions (all raise `ValueError` at assembly time)"
+    !!! tip "Stable string aliases for private impl classes"
 
+        Middleware whose concrete class name differs from the public alias
+        users would type (e.g. `_DeepAgentsSummarizationMiddleware` vs.
+        `"SummarizationMiddleware"`) can expose a `serialized_name: ClassVar[str]`
+        for stable config-file round-trips. `.name` on the instance returns
+        the alias so string-form exclusion matches, and
+        `HarnessProfileConfig.from_harness_profile` serializes the class back
+        to that alias rather than to a private `module:Class` path.
+
+    !!! warning "Restrictions"
+
+        - String grammar is checked at construction: empty, multi-colon,
+            and underscore-prefixed plain names raise `ValueError`
+            immediately. Use the `module:Class` import-ref form to exclude a
+            private middleware class.
         - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`,
             `_PermissionMiddleware`) cannot be excluded as class or as their
-            `.name` string. Use this field to drop optional layers
-            (summarization, prompt caching) or middleware you introduced
-            yourself.
-        - Private (`_`-prefixed) string entries are rejected — import the
-            class directly if you need to exclude a private middleware.
+            `.name` string (raises `ValueError` at assembly time).
         - Entries that match no middleware in the assembled stack are
             rejected as likely typos or stale profiles.
     """
@@ -558,6 +566,24 @@ class HarnessProfile:
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
+        for entry in self.excluded_middleware:
+            if isinstance(entry, str):
+                _validate_config_middleware_string(entry, "excluded_middleware")
+
+
+_HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))
+"""Top-level keys accepted by `HarnessProfileConfig.from_dict`.
+
+Derived from `HarnessProfileConfig`'s dataclass fields so the set stays in
+sync automatically. Runtime-only fields such as `extra_middleware` are
+absent because they don't exist on `HarnessProfileConfig`.
+"""
+
+_GENERAL_PURPOSE_SUBAGENT_KEYS: frozenset[str] = frozenset(f.name for f in fields(GeneralPurposeSubagentProfile))
+"""Keys accepted by `GeneralPurposeSubagentProfile.from_dict`.
+
+Derived from the dataclass fields for drift-free parity with the class.
+"""
 
 
 def _coerce_str_or_none(value: object, field_name: str) -> str | None:
@@ -610,14 +636,66 @@ def _coerce_general_purpose_subagent(value: object) -> GeneralPurposeSubagentPro
     raise TypeError(msg)
 
 
+def _validate_config_middleware_string(entry: object, field_name: str) -> None:
+    """Validate grammar of a string `excluded_middleware` entry.
+
+    Runs at `HarnessProfile` / `HarnessProfileConfig` construction so malformed
+    entries fail immediately rather than at assembly time. Checks:
+
+    - Entry is a non-empty string.
+    - Plain-name entries (no `:`) do not start with `_`. Private middleware
+        classes live outside the public exclusion surface; use a
+        `module:Class` import ref if exclusion is genuinely required.
+    - Import-ref entries (`module:Class`) have exactly one `:` with non-empty
+        halves. Multi-colon and empty-half forms are never valid.
+
+    Scaffolding-class/name rejection and matched-something coverage are
+    deliberately NOT checked here — those need the fully assembled middleware
+    stack.
+
+    Args:
+        entry: Candidate entry. Must be a string to pass.
+        field_name: Field being validated, used for error messages.
+
+    Raises:
+        TypeError: If `entry` is not a string.
+        ValueError: If `entry` violates any of the grammar rules above.
+    """
+    if not isinstance(entry, str):
+        msg = f"`{field_name}` entries must be strings, got {type(entry).__name__} ({entry!r})"
+        raise TypeError(msg)
+    if not entry or entry.isspace():
+        msg = f"`{field_name}` entries must be non-empty, non-whitespace strings"
+        raise ValueError(msg)
+    colon_count = entry.count(":")
+    if colon_count == 0:
+        if entry.startswith("_"):
+            msg = (
+                f"`{field_name}` plain-name entry {entry!r} cannot start with '_' "
+                f"(underscore-prefixed names refer to private middleware classes "
+                f"not part of the public exclusion surface — use a `module:Class` "
+                f"import ref to exclude a private middleware)."
+            )
+            raise ValueError(msg)
+        return
+    if colon_count > 1:
+        msg = f"`{field_name}` import refs must have the form `module:Class` with exactly one ':', got {entry!r}"
+        raise ValueError(msg)
+    module_name, _, qualname = entry.partition(":")
+    if not module_name or not qualname:
+        msg = f"`{field_name}` import refs must use the `module:Class` format with non-empty module and class halves, got {entry!r}"
+        raise ValueError(msg)
+
+
 def _split_middleware_import_ref(value: str) -> tuple[str, str] | None:
-    """Return `module, qualname` for `module:Class` refs, else `None`."""
+    """Return `module, qualname` for `module:Class` refs, else `None`.
+
+    Grammar is already validated by `_validate_config_middleware_string` at
+    construction, so this helper is side-effect-free parsing.
+    """
     module_name, sep, qualname = value.partition(":")
     if not sep:
         return None
-    if not module_name or not qualname:
-        msg = f"`excluded_middleware` import refs must use the `module:Class` format, got {value!r}"
-        raise ValueError(msg)
     return module_name, qualname
 
 
@@ -644,8 +722,8 @@ def _resolve_config_excluded_middleware_entry(
     module_name, qualname = ref
     try:
         module = import_module(module_name)
-    except Exception as exc:
-        msg = f"Could not import middleware ref {entry!r}: {exc}"
+    except ImportError as exc:
+        msg = f"Could not import middleware ref {entry!r}: {type(exc).__name__}: {exc}"
         raise ValueError(msg) from exc
 
     obj = _resolve_qualname(module, qualname, ref=entry)
@@ -750,6 +828,10 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
     profile = _coerce_runtime_harness_profile(profile)
     existing = _HARNESS_PROFILES.get(key)
     if existing is not None:
+        logger.info(
+            "Merging HarnessProfile under %r on top of existing registration; set and middleware fields union, scalar fields prefer the new value.",
+            key,
+        )
         profile = _merge_profiles(existing, profile)
     _HARNESS_PROFILES[key] = profile
 

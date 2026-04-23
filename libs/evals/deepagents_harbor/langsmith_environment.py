@@ -247,7 +247,7 @@ class LangSmithEnvironment(BaseEnvironment):
         self._snapshot_name = snapshot_name
 
         sandbox = await client.create_sandbox(
-            snapshot_name=snapshot_name,  # ty: ignore[unknown-argument]
+            snapshot_name=snapshot_name,
             vcpus=vcpus,
             mem_bytes=mem_bytes,
             fs_capacity_bytes=fs_capacity_bytes,
@@ -311,7 +311,7 @@ class LangSmithEnvironment(BaseEnvironment):
                 ready, or if ``create_snapshot`` fails.
         """
         snapshots = await client.list_snapshots(
-            name_contains=snapshot_name,  # ty: ignore[unknown-argument]
+            name_contains=snapshot_name,
         )
         for snap in snapshots:
             if snap.name != snapshot_name:

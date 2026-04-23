@@ -6,7 +6,6 @@ middleware.
 """
 
 import logging
-import re
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
@@ -150,83 +149,23 @@ proceeding with a silently degraded agent.
 """
 
 
-_CAMEL_BOUNDARY_LOWER_UPPER = re.compile(r"([a-z0-9])([A-Z])")
-_CAMEL_BOUNDARY_UPPER_TRAIL = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(
+    {
+        "FilesystemMiddleware",
+        "SubAgentMiddleware",
+        "_PermissionMiddleware",
+        "PermissionMiddleware",
+    }
+)
+"""String identifiers that must not appear in `excluded_middleware`.
 
-
-def _canonical_middleware_name(name: str) -> str:
-    """Canonicalize a middleware class name for string-form exclusion matching.
-
-    The canonical form strips cosmetic differences between how a user might
-    reference a middleware and how its class happens to be named internally.
-    Concretely:
-
-    - Convert `CamelCase` and runs of uppercase letters into `snake_case`
-        (e.g. `HTTPResponseMiddleware` -> `http_response_middleware`, not
-        `h_t_t_p_response_middleware`).
-    - Lower-case.
-    - Strip leading underscores (private impls like `_PermissionMiddleware`).
-    - Strip a trailing `_middleware` / `middleware` suffix.
-    - Strip a leading `deep_agents_` / `deepagents_` prefix used for
-        internal impl classes that ship under a public alias.
-
-    Examples:
-        - `SummarizationMiddleware` -> `summarization`
-        - `_DeepAgentsSummarizationMiddleware` -> `summarization`
-        - `TodoListMiddleware` -> `todo_list`
-        - `AnthropicPromptCachingMiddleware` -> `anthropic_prompt_caching`
-
-    Args:
-        name: A middleware class name (`type(mw).__name__`) or a user-provided
-            string to normalize.
-
-    Returns:
-        The canonical form of `name`, suitable for equality comparison.
-    """
-    s = _CAMEL_BOUNDARY_UPPER_TRAIL.sub(r"\1_\2", name)
-    s = _CAMEL_BOUNDARY_LOWER_UPPER.sub(r"\1_\2", s)
-    s = s.lower().lstrip("_")
-    if s.endswith("_middleware"):
-        s = s[: -len("_middleware")]
-    elif s.endswith("middleware"):
-        s = s[: -len("middleware")]
-    for prefix in ("deep_agents_", "deepagents_"):
-        if s.startswith(prefix):
-            s = s[len(prefix) :]
-            break
-    return s
-
-
-_REQUIRED_MIDDLEWARE_CANONICAL_NAMES: frozenset[str] = frozenset(_canonical_middleware_name(cls.__name__) for cls in _REQUIRED_MIDDLEWARE_CLASSES)
-"""Canonical string names of `_REQUIRED_MIDDLEWARE_CLASSES`.
-
-Computed once at module load so string-form `excluded_middleware` entries
-that would strip required scaffolding (e.g. `"filesystem"`, `"sub_agent"`,
-`"permission"`) can be rejected symmetrically with class-form entries.
+Each `_REQUIRED_MIDDLEWARE_CLASSES` entry contributes whatever `.name` the
+class actually reports. `_PermissionMiddleware` is intentionally private —
+its `.name` returns the underscore-prefixed class name — but we also reject
+`"PermissionMiddleware"` (no underscore) so a caller who guesses at the
+de-underscored form hits the required-scaffolding error instead of a silent
+no-op.
 """
-
-
-def _split_excluded_entries(
-    excluded: frozenset[type[AgentMiddleware[Any, Any, Any]] | str],
-) -> tuple[frozenset[type[AgentMiddleware[Any, Any, Any]]], frozenset[str]]:
-    """Partition `excluded_middleware` entries by kind.
-
-    Args:
-        excluded: Raw `HarnessProfile.excluded_middleware` value.
-
-    Returns:
-        A `(classes, canonical_names)` tuple where `classes` holds every
-            entry that is a `type`, and `canonical_names` holds the canonical
-            form of every string entry.
-    """
-    classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-    names: set[str] = set()
-    for entry in excluded:
-        if isinstance(entry, type):
-            classes.add(entry)
-        else:
-            names.add(_canonical_middleware_name(entry))
-    return frozenset(classes), frozenset(names)
 
 
 def _apply_excluded_middleware(
@@ -238,8 +177,11 @@ def _apply_excluded_middleware(
     Class-form entries match on exact type (not `isinstance`), mirroring the
     slot-identity semantics used by `_merge_middleware` so a subclass
     introduced by the caller is preserved when the profile excludes the base
-    class. String-form entries match on the canonical form of the concrete
-    class name (see `_canonical_middleware_name`).
+    class. String-form entries match on `AgentMiddleware.name` exactly — which
+    defaults to the class's `__name__` but is overridable. Classes whose
+    public identity differs from their impl class name (e.g. the summarization
+    middleware shipped as `SummarizationMiddleware` with impl class
+    `_DeepAgentsSummarizationMiddleware`) set `.name` to the public alias.
 
     Args:
         stack: Fully assembled middleware list for a single agent/subagent.
@@ -251,17 +193,32 @@ def _apply_excluded_middleware(
 
     Raises:
         ValueError: If `profile.excluded_middleware` contains a class in
-            `_REQUIRED_MIDDLEWARE_CLASSES` or a string that canonicalizes to
-            one of their names. Those classes back core features (filesystem
-            tools, `task` tool handler, permission enforcement) and silently
-            dropping them would leave the agent in a broken or insecure state.
+            `_REQUIRED_MIDDLEWARE_CLASSES`, a string equal to one of their
+            `.name` values, or any string starting with `_`. Required
+            scaffolding backs core features (filesystem tools, `task` tool
+            handler, permission enforcement) and silently dropping it would
+            leave the agent broken or insecure; underscore-prefixed strings
+            reference private middleware classes that are not part of the
+            public exclusion surface.
     """
     excluded = profile.excluded_middleware
     if not excluded:
         return list(stack)
-    excluded_classes, excluded_names = _split_excluded_entries(excluded)
+
+    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    excluded_names: set[str] = set()
+    for entry in excluded:
+        if isinstance(entry, type):
+            excluded_classes.add(entry)
+        else:
+            excluded_names.add(entry)
+
+    # Required-scaffolding guard runs before the underscore-prefix guard so
+    # attempts to disable permissions via `"_PermissionMiddleware"` report the
+    # informative "cannot strip scaffolding" error rather than the generic
+    # private-API message.
     forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
-    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_CANONICAL_NAMES
+    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_NAMES
     if forbidden_classes or forbidden_names:
         labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
         msg = (
@@ -274,7 +231,20 @@ def _apply_excluded_middleware(
             f"scaffolding."
         )
         raise ValueError(msg)
-    filtered = [mw for mw in stack if type(mw) not in excluded_classes and _canonical_middleware_name(type(mw).__name__) not in excluded_names]
+
+    private_names = {name for name in excluded_names if name.startswith("_")}
+    if private_names:
+        labels = ", ".join(sorted(repr(name) for name in private_names))
+        msg = (
+            f"HarnessProfile.excluded_middleware string entries cannot start "
+            f"with '_': {labels}. Underscore-prefixed names refer to private "
+            f"middleware classes that are not part of the public exclusion "
+            f"surface. Import the class and pass it directly if you really "
+            f"need to exclude a private middleware."
+        )
+        raise ValueError(msg)
+
+    filtered = [mw for mw in stack if type(mw) not in excluded_classes and mw.name not in excluded_names]
     removed_count = len(stack) - len(filtered)
     if removed_count:
         logger.debug(

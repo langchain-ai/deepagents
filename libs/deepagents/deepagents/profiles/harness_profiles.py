@@ -236,20 +236,16 @@ class HarnessProfile:
 
     Entries may be either a middleware *class* (matched by exact type, not
     subclass — consistent with how `extra_middleware` merges slot-by-slot on
-    concrete type) or a *string name* (matched against a canonical form of the
-    middleware's class name). A filter runs over the fully assembled stack
-    before the agent is compiled, so the excluded entries are removed
-    regardless of which layer added them (including instances supplied via
+    concrete type) or a *string name* (matched against `AgentMiddleware.name`
+    exactly). A filter runs over the fully assembled stack before the agent
+    is compiled, so the excluded entries are removed regardless of which
+    layer added them (including instances supplied via
     `create_deep_agent(middleware=[...])`).
 
-    The canonical form of a string is produced by lower-casing the name,
-    converting `CamelCase` to `snake_case`, stripping a leading underscore,
-    removing the `_middleware` suffix, and stripping a `deep_agents_` /
-    `deepagents_` impl prefix. For example, both `"SummarizationMiddleware"`
-    and `"summarization"` resolve to `summarization`, which matches
-    `_DeepAgentsSummarizationMiddleware` at filter time. Other common
-    canonical names: `"todo_list"`, `"anthropic_prompt_caching"`,
-    `"human_in_the_loop"`, `"async_sub_agent"`.
+    `AgentMiddleware.name` is a property that defaults to the class's
+    `__name__` but can be overridden. For stock middleware the two are
+    identical, so `excluded_middleware={"TodoListMiddleware"}` and
+    `excluded_middleware={TodoListMiddleware}` behave the same.
 
     String-form entries are useful when profiles are loaded from a config
     file (YAML/JSON), when the caller does not want to import the concrete
@@ -273,16 +269,24 @@ class HarnessProfile:
 
         A small set of scaffolding classes that deep agents rely on —
         `FilesystemMiddleware`, `SubAgentMiddleware`, and `_PermissionMiddleware`
-        — cannot be excluded. Listing one of them here (as class *or* string)
-        raises `ValueError` when `create_deep_agent` resolves the profile.
-        Use this field to drop optional layers (summarization, prompt caching)
-        or middleware you introduced yourself.
+        — cannot be excluded. Listing one of them here (as class *or* as the
+        corresponding `.name` string) raises `ValueError` when
+        `create_deep_agent` resolves the profile. Use this field to drop
+        optional layers (summarization, prompt caching) or middleware you
+        introduced yourself.
 
     !!! warning
 
-        String-form entries that do not match any middleware in the assembled
-        stack silently no-op. Typos fail open. Prefer class-form when the class
-        is already imported in the caller's code.
+        String-form entries that start with `_` are rejected at assembly time
+        — underscore prefix marks private middleware classes that are not
+        part of the public exclusion surface. Import the class and pass it
+        directly if you really need to exclude a private middleware.
+
+    !!! warning
+
+        String-form entries that do not match any middleware's `.name` in the
+        assembled stack silently no-op. Typos fail open. Prefer class-form
+        when the class is already imported in the caller's code.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()

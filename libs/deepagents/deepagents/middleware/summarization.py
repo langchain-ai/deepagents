@@ -212,6 +212,19 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     state_schema = SummarizationState
 
+    @property
+    def name(self) -> str:
+        """Report the public alias so string-form exclusion uses the stable name.
+
+        The concrete class is private (`_DeepAgentsSummarizationMiddleware`), but
+        it is exposed under the `SummarizationMiddleware` alias. Without this
+        override, the default `AgentMiddleware.name` property would return the
+        underscore-prefixed impl name, forcing callers to write
+        `excluded_middleware={"_DeepAgentsSummarizationMiddleware"}` — which is
+        a private-API reference rejected by the `_`-prefix guard on that field.
+        """
+        return "SummarizationMiddleware"
+
     def __init__(
         self,
         model: str | BaseChatModel,

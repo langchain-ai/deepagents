@@ -299,8 +299,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             - Profile `extra_middleware` (provider-specific, if any)
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
-            - `VideoFrameExtractionMiddleware` (unconditional by default; no-op
-                for video-capable models such as Gemini)
+            - `VideoFrameExtractionMiddleware` (unconditional by default on main agent;
+                always installed on subagents; no-op for video-capable models such as Gemini)
             - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
                 non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
@@ -471,6 +471,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Strip excluded tools after all tool-injecting middleware has run
     if _profile.excluded_tools:
         gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+    # Video frame extraction is unconditional on subagents (no-op for video-capable models).
+    gp_middleware.append(VideoFrameExtractionMiddleware())
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
@@ -529,6 +531,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
+            # Video frame extraction is unconditional on subagents (no-op for video-capable models).
+            subagent_middleware.append(VideoFrameExtractionMiddleware())
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:

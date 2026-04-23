@@ -20,14 +20,15 @@ registers one.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents.profiles._keys import validate_profile_key
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
 
@@ -75,6 +76,59 @@ class GeneralPurposeSubagentProfile:
 
     `None` means keep the default system prompt.
     """
+
+    def to_dict(self) -> dict[str, Any]:
+        """Dump this sub-profile to a plain dict.
+
+        Only fields with non-`None` values are emitted so the serialized form
+        round-trips cleanly without forcing `None` defaults into the config.
+
+        Returns:
+            A plain dict with at most `enabled`, `description`, and
+                `system_prompt` keys.
+        """
+        out: dict[str, Any] = {}
+        if self.enabled is not None:
+            out["enabled"] = self.enabled
+        if self.description is not None:
+            out["description"] = self.description
+        if self.system_prompt is not None:
+            out["system_prompt"] = self.system_prompt
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> GeneralPurposeSubagentProfile:
+        """Construct a sub-profile from a plain dict.
+
+        Args:
+            data: Mapping with any subset of `enabled`, `description`, and
+                `system_prompt` keys.
+
+        Returns:
+            A new `GeneralPurposeSubagentProfile`.
+
+        Raises:
+            TypeError: If `data` contains unknown keys, or if any value has
+                the wrong type.
+        """
+        allowed = {"enabled", "description", "system_prompt"}
+        unknown = set(data.keys()) - allowed
+        if unknown:
+            msg = f"Unknown keys in GeneralPurposeSubagentProfile dict: {sorted(unknown)}"
+            raise TypeError(msg)
+        enabled = data.get("enabled")
+        description = data.get("description")
+        system_prompt = data.get("system_prompt")
+        if enabled is not None and not isinstance(enabled, bool):
+            msg = f"`enabled` must be bool or None, got {type(enabled).__name__}"
+            raise TypeError(msg)
+        if description is not None and not isinstance(description, str):
+            msg = f"`description` must be str or None, got {type(description).__name__}"
+            raise TypeError(msg)
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            msg = f"`system_prompt` must be str or None, got {type(system_prompt).__name__}"
+            raise TypeError(msg)
+        return cls(enabled=enabled, description=description, system_prompt=system_prompt)
 
 
 @dataclass(frozen=True)
@@ -295,6 +349,205 @@ class HarnessProfile:
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Dump this profile to a plain dict covering the serializable subset.
+
+        !!! beta
+
+            `deepagents.profiles` exposes beta APIs that may receive minor
+            changes in future releases.
+
+        The returned dict is composed of primitives, lists, and nested dicts
+        only, so it can be serialized with any `json.dumps` / `yaml.safe_dump`
+        compatible encoder. Fields at their default (empty or `None`) are
+        omitted so the output stays minimal and round-trips cleanly through
+        `from_dict`.
+
+        Call sites:
+
+        ```python
+        import yaml
+
+        data = profile.to_dict()
+        with open("profile.yaml", "w") as f:
+            yaml.safe_dump(data, f)
+        ```
+
+        Not supported:
+
+        - Class-form `excluded_middleware` entries. A class reference is not
+            representable in a config file. Use the string-form alternative
+            (e.g. `"summarization"` in place of `SummarizationMiddleware`).
+        - Non-empty `extra_middleware`. Middleware instances and factories
+            hold runtime state that has no declarative form. Construct the
+            profile in code if you need `extra_middleware`.
+
+        Returns:
+            A plain dict containing only the fields set on this profile.
+
+        Raises:
+            ValueError: If the profile holds non-serializable state (class
+                entries in `excluded_middleware` or a non-empty
+                `extra_middleware`).
+        """
+        out: dict[str, Any] = {}
+        if self.base_system_prompt is not None:
+            out["base_system_prompt"] = self.base_system_prompt
+        if self.system_prompt_suffix is not None:
+            out["system_prompt_suffix"] = self.system_prompt_suffix
+        if self.tool_description_overrides:
+            out["tool_description_overrides"] = dict(self.tool_description_overrides)
+        if self.excluded_tools:
+            out["excluded_tools"] = sorted(self.excluded_tools)
+        if self.excluded_middleware:
+            class_entries = [entry for entry in self.excluded_middleware if isinstance(entry, type)]
+            if class_entries:
+                names = ", ".join(sorted(cls.__name__ for cls in class_entries))
+                msg = (
+                    f"HarnessProfile.to_dict() cannot serialize class-form "
+                    f"entries in `excluded_middleware` ({names}). Use the "
+                    f"string-form alternative (e.g. the canonical snake_case "
+                    f"name like 'summarization') so the profile can be "
+                    f"represented in a config file."
+                )
+                raise ValueError(msg)
+            out["excluded_middleware"] = sorted(cast("frozenset[str]", self.excluded_middleware))
+        extra = self.extra_middleware
+        if callable(extra) or (isinstance(extra, tuple) and extra):
+            msg = (
+                "HarnessProfile.to_dict() cannot serialize `extra_middleware`. "
+                "Middleware instances and factories hold runtime state that "
+                "has no declarative form; construct the profile in code if "
+                "you need to supply extra middleware."
+            )
+            raise ValueError(msg)
+        if self.general_purpose_subagent is not None:
+            gp_dict = self.general_purpose_subagent.to_dict()
+            if gp_dict:
+                out["general_purpose_subagent"] = gp_dict
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HarnessProfile:
+        """Construct a `HarnessProfile` from a plain dict.
+
+        !!! beta
+
+            `deepagents.profiles` exposes beta APIs that may receive minor
+            changes in future releases.
+
+        Intended for the declarative subset produced by `to_dict` — strings,
+        string lists/sets, tool-description mappings, and the nested
+        general-purpose-subagent dict. Mirrors `to_dict` exactly so a
+        `from_dict(to_dict(p))` round-trip yields a profile equivalent to the
+        original over the serializable subset.
+
+        Call sites:
+
+        ```python
+        import yaml
+        from deepagents import HarnessProfile
+
+        with open("profile.yaml") as f:
+            profile = HarnessProfile.from_dict(yaml.safe_load(f))
+        ```
+
+        Args:
+            data: A mapping with any subset of the serializable
+                `HarnessProfile` fields. Unknown keys raise `TypeError`.
+
+        Returns:
+            A new `HarnessProfile` populated from `data`.
+
+        Raises:
+            TypeError: If `data` contains unknown keys or fields of the wrong
+                shape (e.g. a non-string `excluded_middleware` entry).
+        """
+        unknown = set(data.keys()) - _HARNESS_PROFILE_SERIALIZABLE_KEYS
+        if unknown:
+            msg = f"Unknown keys in HarnessProfile dict: {sorted(unknown)}. `extra_middleware` is not serializable and must be set in code."
+            raise TypeError(msg)
+        return cls(
+            base_system_prompt=_coerce_str_or_none(data.get("base_system_prompt"), "base_system_prompt"),
+            system_prompt_suffix=_coerce_str_or_none(data.get("system_prompt_suffix"), "system_prompt_suffix"),
+            tool_description_overrides=_coerce_str_mapping(data.get("tool_description_overrides"), "tool_description_overrides"),
+            excluded_tools=_coerce_frozen_strset(data.get("excluded_tools"), "excluded_tools"),
+            excluded_middleware=cast(
+                "frozenset[type[AgentMiddleware] | str]",
+                _coerce_frozen_strset(data.get("excluded_middleware"), "excluded_middleware"),
+            ),
+            general_purpose_subagent=_coerce_general_purpose_subagent(data.get("general_purpose_subagent")),
+        )
+
+
+_HARNESS_PROFILE_SERIALIZABLE_KEYS: frozenset[str] = frozenset(
+    {
+        "base_system_prompt",
+        "system_prompt_suffix",
+        "tool_description_overrides",
+        "excluded_tools",
+        "excluded_middleware",
+        "general_purpose_subagent",
+    }
+)
+"""Top-level keys accepted by `HarnessProfile.from_dict`.
+
+Mirrors the fields emitted by `HarnessProfile.to_dict` — the subset of the
+dataclass that is expressible as plain JSON/YAML. `extra_middleware` is
+deliberately absent: middleware instances carry runtime state that has no
+declarative form.
+"""
+
+
+def _coerce_str_or_none(value: object, field_name: str) -> str | None:
+    """Validate that `value` is a string or `None` for dict-loaded string fields."""
+    if value is None or isinstance(value, str):
+        return value
+    msg = f"`{field_name}` must be str or None, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _coerce_str_mapping(value: object, field_name: str) -> dict[str, str]:
+    """Validate that `value` is a `str -> str` mapping (or `None`) and return a plain dict."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        msg = f"`{field_name}` must be a mapping, got {type(value).__name__}"
+        raise TypeError(msg)
+    out: dict[str, str] = {}
+    for key, val in value.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            msg = f"`{field_name}` keys and values must be strings"
+            raise TypeError(msg)
+        out[key] = val
+    return out
+
+
+def _coerce_frozen_strset(value: object, field_name: str) -> frozenset[str]:
+    """Validate that `value` is an iterable of strings (or `None`)."""
+    if value is None:
+        return frozenset()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        msg = f"`{field_name}` must be a list/set of strings, got {type(value).__name__}"
+        raise TypeError(msg)
+    entries: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            msg = f"`{field_name}` entries must be strings, got {type(entry).__name__} ({entry!r})"
+            raise TypeError(msg)
+        entries.append(entry)
+    return frozenset(entries)
+
+
+def _coerce_general_purpose_subagent(value: object) -> GeneralPurposeSubagentProfile | None:
+    """Validate and construct a `GeneralPurposeSubagentProfile` from a dict value."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return GeneralPurposeSubagentProfile.from_dict(cast("Mapping[str, Any]", value))
+    msg = f"`general_purpose_subagent` must be a mapping, got {type(value).__name__}"
+    raise TypeError(msg)
 
 
 _HARNESS_PROFILES: dict[str, HarnessProfile] = {}

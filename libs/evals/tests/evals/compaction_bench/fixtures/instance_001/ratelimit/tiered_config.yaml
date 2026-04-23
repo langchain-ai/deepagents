@@ -1,0 +1,10 @@
+# Placeholder tier configuration.
+#
+# Feature C in the compaction-bench instance will replace / extend
+# this file with a full three-tier configuration plus per-partner
+# overrides.
+
+tiers:
+  standard: 10
+
+overrides: {}

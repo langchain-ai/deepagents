@@ -119,8 +119,13 @@ division-by-zero = "error"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Vendored BFCL benchmark files — skip both lint and format
-exclude = ["tests/evals/data/bfcl_apis"]
+# Vendored BFCL benchmark files — skip both lint and format.
+# Compaction-bench fixtures simulate a third-party backend repo the agent
+# operates on; they are test data, not first-party code.
+exclude = [
+    "tests/evals/data/bfcl_apis",
+    "tests/evals/compaction_bench/fixtures",
+]
 force-exclude = true
 
 [tool.ruff.format]

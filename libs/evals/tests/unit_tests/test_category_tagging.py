@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +26,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
     "conversation": ["test_followup_quality", "test_tau2_airline"],
-    "summarization": ["test_summarization"],
+    "summarization": ["test_summarization", "test_compaction_bench"],
     "unit_test": [
         "test_system_prompt",
         "test_hitl",
@@ -77,6 +78,16 @@ def _is_eval_category_call(node: object) -> str | None:
     return _is_marker_call(node, "eval_category")
 
 
+def _is_fixture_path(path: Path) -> bool:
+    """Return True if ``path`` lives under a ``fixtures/`` segment.
+
+    Eval benchmarks may ship simulated mini-repos under ``fixtures/``
+    that include their own ``test_*.py`` files - those are inputs to the
+    evaluated agent, not tests that pytest should execute.
+    """
+    return "fixtures" in path.parts
+
+
 def test_expected_modules_match_filesystem():
     """Discover eval_category markers on disk and assert they match `EXPECTED_CATEGORY_MODULES`.
 
@@ -86,7 +97,6 @@ def test_expected_modules_match_filesystem():
     test_file_operations) are detected correctly.
     """
     import ast
-    from pathlib import Path
 
     evals_dir = Path(__file__).resolve().parent.parent / "evals"
     discovered: dict[str, set[str]] = {}
@@ -95,6 +105,8 @@ def test_expected_modules_match_filesystem():
         discovered.setdefault(cat, set()).add(stem)
 
     for path in sorted(evals_dir.rglob("test_*.py")):
+        if _is_fixture_path(path):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.iter_child_nodes(tree):
             # Module-level pytestmark = [pytest.mark.eval_category("...")]
@@ -166,12 +178,13 @@ def test_all_eval_modules_have_eval_tier():
     cause them to be excluded when running `--eval-tier baseline`.
     """
     import ast
-    from pathlib import Path
 
     evals_dir = Path(__file__).resolve().parent.parent / "evals"
     missing: list[str] = []
 
     for path in sorted(evals_dir.rglob("test_*.py")):
+        if _is_fixture_path(path):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         if not _has_eval_tier_marker(tree):
             missing.append(str(path.relative_to(evals_dir)))

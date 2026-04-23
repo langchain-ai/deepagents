@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**108 evals** across **7 categories**
+**109 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -112,8 +112,9 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
 
-## Summarization (`summarization`) (5 evals)
+## Summarization (`summarization`) (6 evals)
 
+- [`test_compaction_bench`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/compaction_bench/test_compaction_bench.py#L183) — `tests/evals/compaction_bench/test_compaction_bench.py:183`
 - [`test_summarize_continues_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L116) — `tests/evals/test_summarization.py:116`
 - [`test_summarization_offloads_to_filesystem`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L156) — `tests/evals/test_summarization.py:156`
 - [`test_compact_tool_new_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L246) — `tests/evals/test_summarization.py:246`

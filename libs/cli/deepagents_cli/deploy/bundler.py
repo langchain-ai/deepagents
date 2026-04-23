@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,7 @@ from deepagents_cli.deploy.config import (
     load_subagents,
 )
 from deepagents_cli.deploy.templates import (
+    APP_PY_TEMPLATE,
     AUTH_BLOCKS,
     AUTH_ON_HANDLER,
     DEPLOY_GRAPH_TEMPLATE,
@@ -68,6 +71,83 @@ _MODEL_PROVIDER_DEPS: dict[str, str] = {
     "xai": "langchain-xai",
 }
 """Dependencies inferred from a provider: prefix on the model string."""
+
+_FRONTEND_DIST_SRC = Path(__file__).parent / "frontend_dist"
+"""Location of the shipped pre-built frontend, inside this Python package."""
+
+_FRONTEND_PLACEHOLDER_RE = re.compile(
+    r"window\.__DEEPAGENTS_CONFIG__\s*=\s*\{[^<]*?\};",
+    re.DOTALL,
+)
+"""Matches the placeholder script we injected into index.html at build time."""
+
+
+def _build_runtime_config_json(config: DeployConfig) -> str:
+    """Build the JSON value injected into `window.__DEEPAGENTS_CONFIG__`."""
+    if config.auth is None or config.frontend is None:
+        msg = "runtime config requires [auth] and [frontend] to be configured"
+        raise ValueError(msg)
+
+    provider = config.auth.provider
+    app_name = config.frontend.app_name or config.agent.name
+    payload: dict[str, Any] = {
+        "auth": provider,
+        "appName": app_name,
+        "assistantId": "agent",
+    }
+    if provider == "supabase":
+        payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
+        payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
+    elif provider == "clerk":
+        payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
+    else:
+        msg = f"Unknown auth provider for frontend: {provider}"
+        raise ValueError(msg)
+
+    # Escape `<` so a hostile or accidental `</script>` inside a string value
+    # can't break out of the inline <script> tag.
+    return json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
+
+
+def _copy_frontend_dist(config: DeployConfig, build_dir: Path) -> None:
+    """Copy the pre-built bundle into build_dir and rewrite the config placeholder."""
+    if config.auth is None:
+        msg = "frontend requires [auth] to be set"
+        raise ValueError(msg)
+
+    if not _FRONTEND_DIST_SRC.is_dir():
+        msg = (
+            f"Shipped frontend bundle not found at {_FRONTEND_DIST_SRC}. "
+            "Did you run `make build-frontends`?"
+        )
+        raise RuntimeError(msg)
+
+    dest = build_dir / "frontend_dist"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(_FRONTEND_DIST_SRC, dest)
+
+    index_html = dest / "index.html"
+    if not index_html.is_file():
+        msg = f"expected index.html inside {_FRONTEND_DIST_SRC}"
+        raise RuntimeError(msg)
+
+    html = index_html.read_text(encoding="utf-8")
+    payload = _build_runtime_config_json(config)
+    replacement = f"window.__DEEPAGENTS_CONFIG__ = {payload};"
+    new_html, count = _FRONTEND_PLACEHOLDER_RE.subn(
+        lambda _m: replacement,
+        html,
+        count=1,
+    )
+    if count == 0:
+        msg = (
+            "Could not find window.__DEEPAGENTS_CONFIG__ placeholder in the "
+            "shipped index.html. The frontend bundle is out of sync with the "
+            "bundler — rebuild with `make build-frontends`."
+        )
+        raise RuntimeError(msg)
+    index_html.write_text(new_html, encoding="utf-8")
 
 
 def bundle(
@@ -135,6 +215,23 @@ def bundle(
             encoding="utf-8",
         )
         logger.info("Generated auth.py (%s)", config.auth.provider)
+
+    # 6b. Copy frontend bundle when enabled.
+    frontend_enabled = config.frontend is not None and config.frontend.enabled
+    if frontend_enabled:
+        if config.auth is None:
+            msg = (
+                "bundle() requires [auth] when [frontend].enabled is true. "
+                "Call DeployConfig.validate(project_root) before bundle() to "
+                "surface this as a user-facing error."
+            )
+            raise ValueError(msg)
+        _copy_frontend_dist(config, build_dir)
+        (build_dir / "app.py").write_text(APP_PY_TEMPLATE, encoding="utf-8")
+        logger.info(
+            "Copied frontend bundle and wrote app.py (%s)",
+            config.auth.provider,
+        )
 
     # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(

@@ -211,7 +211,7 @@ class DeployConfig:
         if self.frontend is not None and self.frontend.enabled:
             if self.auth is None:
                 errors.append(
-                    '[frontend].enabled requires [auth] to be configured. '
+                    "[frontend].enabled requires [auth] to be configured. "
                     'Add an [auth] section with provider = "supabase" or '
                     '"clerk".'
                 )
@@ -627,6 +627,12 @@ model = "anthropic:claude-sonnet-4-6"
 # [auth] is optional. Add to enable user authentication.
 # [auth]
 # provider = "supabase"   # supabase | clerk
+
+# [frontend] is optional. Add to ship a bundled chat UI on the same
+# deployment as the agent. Requires [auth].
+# [frontend]
+# enabled = true
+# app_name = "My Agent"
 """
 
 
@@ -657,6 +663,10 @@ LANGSMITH_API_KEY=
 # SUPABASE_URL=
 # SUPABASE_PUBLISHABLE_DEFAULT_KEY=
 # CLERK_SECRET_KEY=
+
+# Frontend (optional, uncomment for [frontend] + matching [auth])
+# Clerk only — browser-facing publishable key. Supabase reuses the keys above.
+# CLERK_PUBLISHABLE_KEY=
 """
 
 

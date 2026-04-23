@@ -42,7 +42,11 @@ from langgraph.stream.run_stream import BaseRunStream
 from langgraph.stream.transformers import SubgraphRunStream, SubgraphTransformer
 
 if TYPE_CHECKING:
-    from langchain_protocol.protocol import CheckpointRef, LifecycleData
+    from langchain_protocol.protocol import (
+        CheckpointRef,
+        LifecycleCause,
+        LifecycleData,
+    )
     from langgraph.stream._mux import StreamMux
     from langgraph.stream._types import ProtocolEvent
     from langgraph.stream.transformers import SubgraphStatus
@@ -67,11 +71,11 @@ class SubagentRunStream(BaseRunStream):
     `__exit__`) degrade to no-ops.
 
     Exposes `name` (the declared subagent name) as the typed state
-    this layer adds. `path`, `status`, `error`, `checkpoint`,
-    `trigger_call_id` delegate to the wrapped subgraph handle so
-    subgraph-side state transitions — including terminal close
-    driven by `SubgraphTransformer.finalize` / `fail` — are
-    automatically visible here.
+    this layer adds. `path`, `status`, `error`, `checkpoint`, `cause`
+    delegate to the wrapped subgraph handle so subgraph-side state
+    transitions — including terminal close driven by
+    `SubgraphTransformer.finalize` / `fail` — are automatically
+    visible here.
     """
 
     def __init__(self, subgraph: SubgraphRunStream, *, name: str) -> None:
@@ -117,8 +121,8 @@ class SubagentRunStream(BaseRunStream):
         return self._subgraph.path
 
     @property
-    def trigger_call_id(self) -> str | None:
-        return self._subgraph.trigger_call_id
+    def cause(self) -> LifecycleCause | None:
+        return self._subgraph.cause
 
     @property
     def status(self) -> SubgraphStatus:
@@ -151,7 +155,7 @@ class SubagentTransformer(StreamTransformer):
 
     _native: ClassVar[bool] = True
     scope_exact: ClassVar[bool] = False
-    required_stream_modes: ClassVar[tuple[str, ...]] = ("lifecycle",)
+    required_stream_modes: ClassVar[tuple[str, ...]] = ("lifecycle", "tools")
 
     def __init__(
         self,
@@ -164,6 +168,16 @@ class SubagentTransformer(StreamTransformer):
         self._log: EventLog[SubagentRunStream] = EventLog()
         self._by_ns: dict[tuple[str, ...], SubagentRunStream] = {}
         self._subgraph_transformer: SubgraphTransformer | None = None
+        # Pending `task` tool calls awaiting a matching `lifecycle.started`.
+        # Keyed by `tool_call_id`; value carries the originating input so
+        # downstream consumers (e.g. the SDK wrapper) can correlate richer
+        # metadata than `cause` alone conveys.
+        #
+        # Dict insertion order provides oldest-first pairing under
+        # parallel fan-out of the same `subagent_type`, which matches
+        # pregel's scheduling order for the corresponding subgraph
+        # spawns.
+        self._pending_tool_calls: dict[str, dict[str, str]] = {}
 
     def init(self) -> dict[str, Any]:
         return {"subagents": self._log}
@@ -187,7 +201,17 @@ class SubagentTransformer(StreamTransformer):
         self._subgraph_transformer = sub_t
 
     def process(self, event: ProtocolEvent) -> bool:
-        if event["method"] != "lifecycle":
+        method = event["method"]
+
+        # Observe `task` tool calls at this scope. Record the
+        # `tool_call_id` so a matching `lifecycle.started` below can
+        # carry a `cause: { type: "toolCall", toolCallId }` augmenting
+        # the lifecycle event before it reaches the wire.
+        if method == "tools":
+            self._track_task_tool_call(event)
+            return True
+
+        if method != "lifecycle":
             return True
 
         ns = tuple(event["params"]["namespace"])
@@ -202,6 +226,25 @@ class SubagentTransformer(StreamTransformer):
             return True
 
         graph_name = data.get("graph_name")
+        if not isinstance(graph_name, str):
+            return True
+
+        # Augment the lifecycle event with `cause` derived from the
+        # correlated `task` tool call, if any. This mutates the event
+        # dict in place; `StreamMux` passes the same reference through
+        # downstream transformers and onto the wire. Match on the
+        # `subagent_type` from the tool input (dict insertion order
+        # pairs oldest pending tool-call first, matching pregel
+        # scheduling order).
+        for tcid, info in self._pending_tool_calls.items():
+            if info["subagent_type"] == graph_name:
+                cast("dict[str, Any]", event["params"]["data"])["cause"] = {
+                    "type": "toolCall",
+                    "tool_call_id": tcid,
+                }
+                del self._pending_tool_calls[tcid]
+                break
+
         if graph_name not in self._names or ns in self._by_ns:
             return True
 
@@ -215,7 +258,37 @@ class SubagentTransformer(StreamTransformer):
         if subgraph_handle is None:
             return True
 
-        handle = SubagentRunStream(subgraph_handle, name=cast("str", graph_name))
+        handle = SubagentRunStream(subgraph_handle, name=graph_name)
         self._by_ns[ns] = handle
         self._log.push(handle)
         return True
+
+    def _track_task_tool_call(self, event: ProtocolEvent) -> None:
+        """Record / discard pending `task` tool calls observed on `tools`.
+
+        Only `tool_name == "task"` events are tracked — other tool
+        calls don't spawn subagents and would pollute the pending map.
+        """
+        ns = tuple(event["params"]["namespace"])
+        # `tool-started` / `tool-finished` / `tool-error` fire at the
+        # parent namespace, which is exactly `self.scope` for the
+        # subagents we care about (direct children).
+        if ns != self.scope:
+            return
+        data = cast("dict[str, Any]", event["params"]["data"])
+        phase = data.get("event")
+        if phase == "tool-started":
+            if data.get("tool_name") != "task":
+                return
+            tcid = data.get("tool_call_id")
+            raw_input = data.get("input")
+            if not isinstance(tcid, str) or not isinstance(raw_input, dict):
+                return
+            self._pending_tool_calls[tcid] = {
+                "subagent_type": str(raw_input.get("subagent_type") or ""),
+                "description": str(raw_input.get("description") or ""),
+            }
+        elif phase in ("tool-finished", "tool-error"):
+            tcid = data.get("tool_call_id")
+            if isinstance(tcid, str):
+                self._pending_tool_calls.pop(tcid, None)

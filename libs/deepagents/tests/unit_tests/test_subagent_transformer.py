@@ -34,14 +34,14 @@ def _lifecycle(
     *,
     namespace: list[str] | None = None,
     graph_name: str | None = None,
-    trigger_call_id: str | None = None,
+    cause: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> ProtocolEvent:
     data: dict[str, Any] = {"event": event}
     if graph_name is not None:
         data["graph_name"] = graph_name
-    if trigger_call_id is not None:
-        data["trigger_call_id"] = trigger_call_id
+    if cause is not None:
+        data["cause"] = cause
     if error is not None:
         data["error"] = error
     return {
@@ -49,6 +49,32 @@ def _lifecycle(
         "method": "lifecycle",
         "params": {
             "namespace": namespace or [],
+            "timestamp": TS,
+            "data": data,
+        },
+    }
+
+
+def _tools(
+    event: str,
+    *,
+    namespace: list[str],
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+    input: dict[str, Any] | None = None,
+) -> ProtocolEvent:
+    data: dict[str, Any] = {"event": event}
+    if tool_name is not None:
+        data["tool_name"] = tool_name
+    if tool_call_id is not None:
+        data["tool_call_id"] = tool_call_id
+    if input is not None:
+        data["input"] = input
+    return {
+        "type": "event",
+        "method": "tools",
+        "params": {
+            "namespace": namespace,
             "timestamp": TS,
             "data": data,
         },
@@ -134,7 +160,7 @@ class TestSubagentTransformerUnit:
                 "started",
                 namespace=["tools:abc"],
                 graph_name="plain_tool_subgraph",
-                trigger_call_id="abc",
+                cause={"type": "toolCall", "tool_call_id": "abc"},
             )
         )
 
@@ -149,7 +175,7 @@ class TestSubagentTransformerUnit:
                 "started",
                 namespace=["tools:abc"],
                 graph_name="researcher",
-                trigger_call_id="abc",
+                cause={"type": "toolCall", "tool_call_id": "abc"},
             )
         )
 
@@ -157,7 +183,7 @@ class TestSubagentTransformerUnit:
         assert isinstance(handle, SubagentRunStream)
         assert handle.path == ("tools:abc",)
         assert handle.name == "researcher"
-        assert handle.trigger_call_id == "abc"
+        assert handle.cause == {"type": "toolCall", "tool_call_id": "abc"}
         assert handle.status == "started"
 
     def test_status_transitions(self) -> None:
@@ -272,3 +298,172 @@ class TestSubagentTransformerUnit:
         mux.fail(RuntimeError("kaboom"))
         assert handle.status == "failed"
         assert handle.error == "kaboom"
+
+
+class TestSubagentTransformerCauseAugmentation:
+    """`tool-started` → `lifecycle.started` correlation mutates `cause` in place."""
+
+    NAMES = frozenset({"researcher", "coder"})
+
+    def _mux(self) -> tuple[StreamMux, SubagentTransformer]:
+        mux = StreamMux(factories=_factories(self.NAMES), is_async=False)
+        transformer = mux.transformer_by_key("subagents")
+        assert isinstance(transformer, SubagentTransformer)
+        _subscribe(transformer._log)
+        return mux, transformer
+
+    def test_single_task_populates_cause(self) -> None:
+        """A matching `task` tool call on the parent → `lifecycle.started.cause`."""
+        mux, transformer = self._mux()
+        started = _lifecycle(
+            "started",
+            namespace=["tools:tc1"],
+            graph_name="researcher",
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc1",
+                input={"subagent_type": "researcher", "description": "do a thing"},
+            )
+        )
+        mux.push(started)
+
+        assert started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "tc1",
+        }
+        handle = list(transformer._log._items)[0]
+        assert handle.cause == {"type": "toolCall", "tool_call_id": "tc1"}
+
+    def test_parallel_distinct_types_each_match(self) -> None:
+        """Two tool calls of different subagent types → each paired correctly."""
+        mux, transformer = self._mux()
+        researcher_started = _lifecycle(
+            "started", namespace=["tools:r"], graph_name="researcher"
+        )
+        coder_started = _lifecycle(
+            "started", namespace=["tools:c"], graph_name="coder"
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_r",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_c",
+                input={"subagent_type": "coder"},
+            )
+        )
+        mux.push(researcher_started)
+        mux.push(coder_started)
+
+        assert researcher_started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "tc_r",
+        }
+        assert coder_started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "tc_c",
+        }
+
+    def test_parallel_same_type_oldest_first(self) -> None:
+        """Two tool calls of the same subagent type → oldest-first pairing."""
+        mux, transformer = self._mux()
+        first_started = _lifecycle(
+            "started", namespace=["tools:a"], graph_name="researcher"
+        )
+        second_started = _lifecycle(
+            "started", namespace=["tools:b"], graph_name="researcher"
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_1",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_2",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(first_started)
+        mux.push(second_started)
+
+        assert first_started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "tc_1",
+        }
+        assert second_started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "tc_2",
+        }
+
+    def test_tool_error_cleans_pending(self) -> None:
+        """A `tool-error` before `lifecycle.started` removes the pending entry."""
+        mux, transformer = self._mux()
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_err",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _tools(
+                "tool-error",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_err",
+            )
+        )
+        assert transformer._pending_tool_calls == {}
+
+        started = _lifecycle(
+            "started", namespace=["tools:x"], graph_name="researcher"
+        )
+        mux.push(started)
+        # No pending → no cause augmentation.
+        assert "cause" not in started["params"]["data"]
+
+    def test_non_task_tool_ignored(self) -> None:
+        """A non-`task` tool call is not tracked."""
+        mux, transformer = self._mux()
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="other_tool",
+                tool_call_id="tc_other",
+                input={"some": "payload"},
+            )
+        )
+        assert transformer._pending_tool_calls == {}
+
+    def test_subagent_without_task_no_cause(self) -> None:
+        """A subagent `lifecycle.started` with no matching tool call → no cause emitted."""
+        mux, transformer = self._mux()
+        started = _lifecycle(
+            "started", namespace=["tools:x"], graph_name="researcher"
+        )
+        mux.push(started)
+        assert "cause" not in started["params"]["data"]

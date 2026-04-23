@@ -14,9 +14,13 @@ Matching is `prefix`-style against the lowercased model identifier. Provider is
 checked loosely (any provider reporting a Gemini model qualifies).
 """
 
+VIDEO_CAPABLE_PROVIDERS: frozenset[str] = frozenset({"google_genai", "google_vertexai"})
+"""Provider strings (lowercased) that qualify as video-capable as a fallback
+when `model_name` is empty or unknown."""
+
 
 def is_video_capable(
-    provider: str | None,  # noqa: ARG001 — reserved for future provider-specific overrides
+    provider: str | None,
     model_name: str | None,
     *,
     override: bool | None = None,
@@ -35,10 +39,17 @@ def is_video_capable(
     Returns:
         `True` if the provider+model is known to accept native video content
         blocks, otherwise `False`.
+
+    When `model_name` is non-empty, the decision is made solely on the model
+    name (model overrides provider). When `model_name` is empty or `None`,
+    `provider` is consulted as a fallback against `VIDEO_CAPABLE_PROVIDERS`.
     """
     if override is not None:
         return override
-    if not model_name:
-        return False
-    lowered = model_name.lower()
-    return any(lowered.startswith(prefix) for prefix in VIDEO_CAPABLE_PATTERNS)
+    if model_name:
+        lowered = model_name.lower()
+        return any(lowered.startswith(prefix) for prefix in VIDEO_CAPABLE_PATTERNS)
+    # model_name is missing/empty — fall back to provider.
+    if provider and provider.lower() in VIDEO_CAPABLE_PROVIDERS:
+        return True
+    return False

@@ -43,6 +43,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.video_frames import VideoFrameExtractionMiddleware
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    video_frame_extraction: VideoFrameExtractionMiddleware | bool = True,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a deep agent.
 
@@ -297,6 +299,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             - Profile `extra_middleware` (provider-specific, if any)
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
+            - `VideoFrameExtractionMiddleware` (unconditional by default; no-op
+                for video-capable models such as Gemini)
             - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
                 non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
@@ -405,6 +409,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        video_frame_extraction: Controls the video-to-frames preprocessing
+            middleware.
+
+            Defaults to `True`, which installs a `VideoFrameExtractionMiddleware`
+            with default parameters. Pass a pre-configured instance to override
+            the defaults, or `False` to skip installation entirely.
+
+            The middleware is a no-op for video-capable providers (Gemini), so
+            leaving it enabled is cheap when the bound model doesn't need it.
 
     Returns:
         A configured deep agent.
@@ -587,6 +600,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(_resolve_extra_middleware(_profile))
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+    if video_frame_extraction is not False:
+        video_mw = (
+            video_frame_extraction
+            if isinstance(video_frame_extraction, VideoFrameExtractionMiddleware)
+            else VideoFrameExtractionMiddleware()
+        )
+        deepagent_middleware.append(video_mw)
     # Unconditional prompt caching (see general-purpose subagent comment).
     deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:

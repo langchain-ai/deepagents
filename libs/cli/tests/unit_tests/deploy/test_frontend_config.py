@@ -54,3 +54,77 @@ def test_frontend_section_rejects_unknown_keys():
 def test_frontend_omitted_defaults_to_none():
     cfg = _parse_config({"agent": {"name": "my-agent"}})
     assert cfg.frontend is None
+
+
+def _write_project(tmp_path: Path) -> Path:
+    (tmp_path / "AGENTS.md").write_text("prompt", encoding="utf-8")
+    return tmp_path
+
+
+def test_frontend_enabled_without_auth_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        frontend=FrontendConfig(enabled=True),
+    )
+    errors = cfg.validate(tmp_path)
+    assert any("[frontend].enabled requires [auth]" in e for e in errors)
+
+
+def test_frontend_disabled_no_auth_is_fine(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        frontend=FrontendConfig(enabled=False),
+    )
+    errors = cfg.validate(tmp_path)
+    assert not any("[frontend]" in e for e in errors)
+
+
+def test_frontend_clerk_requires_publishable_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("CLERK_SECRET_KEY", "k")
+    monkeypatch.delenv("CLERK_PUBLISHABLE_KEY", raising=False)
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        auth=AuthConfig(provider="clerk"),
+        frontend=FrontendConfig(enabled=True),
+    )
+    errors = cfg.validate(tmp_path)
+    assert any("CLERK_PUBLISHABLE_KEY" in e for e in errors)
+
+
+def test_frontend_supabase_needs_no_extra_env_vars(tmp_path, monkeypatch):
+    """Supabase needs no extra env vars beyond [auth].
+
+    Supabase reuses SUPABASE_URL + SUPABASE_PUBLISHABLE_DEFAULT_KEY
+    already required by [auth]. No extra VITE_* duplication.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "k")
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        auth=AuthConfig(provider="supabase"),
+        frontend=FrontendConfig(enabled=True),
+    )
+    errors = cfg.validate(tmp_path)
+    assert not any("[frontend]" in e for e in errors)
+
+
+def test_frontend_clerk_all_env_vars_present_no_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("CLERK_SECRET_KEY", "k")
+    monkeypatch.setenv("CLERK_PUBLISHABLE_KEY", "pk_test_x")
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        auth=AuthConfig(provider="clerk"),
+        frontend=FrontendConfig(enabled=True),
+    )
+    errors = cfg.validate(tmp_path)
+    assert not any("[frontend]" in e for e in errors)

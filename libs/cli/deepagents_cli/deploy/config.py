@@ -208,6 +208,16 @@ class DeployConfig:
         if self.auth is not None:
             errors.extend(_validate_auth_credentials(self.auth.provider))
 
+        if self.frontend is not None and self.frontend.enabled:
+            if self.auth is None:
+                errors.append(
+                    '[frontend].enabled requires [auth] to be configured. '
+                    'Add an [auth] section with provider = "supabase" or '
+                    '"clerk".'
+                )
+            else:
+                errors.extend(_validate_frontend_credentials(self.auth.provider))
+
         return errors
 
 
@@ -511,6 +521,16 @@ _AUTH_PROVIDER_ENV: dict[str, list[str]] = {
     "clerk": ["CLERK_SECRET_KEY"],
 }
 
+_FRONTEND_EXTRA_ENV: dict[str, list[str]] = {
+    # Supabase reuses `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_DEFAULT_KEY`
+    # from [auth] — no extra browser-facing env vars needed.
+    "supabase": [],
+    # Clerk's browser-facing publishable key is distinct from
+    # `CLERK_SECRET_KEY` (which [auth] uses for JWKS validation).
+    "clerk": ["CLERK_PUBLISHABLE_KEY"],
+}
+"""Additional env vars the frontend bundle needs beyond what `[auth]` requires."""
+
 
 def _validate_model_credentials(model: str) -> list[str]:
     """Check that the API key env var is set for the model provider."""
@@ -557,6 +577,23 @@ def _validate_auth_credentials(provider: str) -> list[str]:
         (
             f"Auth provider '{provider}' requires {' and '.join(missing)}. "
             f"Add them to your .env file or environment."
+        ),
+    ]
+
+
+def _validate_frontend_credentials(provider: str) -> list[str]:
+    """Check that all extra env vars are set for the frontend bundle."""
+    required = _FRONTEND_EXTRA_ENV.get(provider)
+    if required is None:
+        return []
+    missing = [v for v in required if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Frontend for '{provider}' requires {' and '.join(missing)}. "
+            f"Add it to your .env file so the bundler can write it "
+            f"into index.html at deploy time."
         ),
     ]
 

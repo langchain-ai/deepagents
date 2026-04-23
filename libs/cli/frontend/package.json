@@ -1,0 +1,33 @@
+{
+  "name": "@deepagents/frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@assistant-ui/react": "^0.12.25",
+    "@assistant-ui/react-langgraph": "^0.13.10",
+    "@assistant-ui/react-streamdown": "^0.1.10",
+    "@clerk/clerk-react": "^5.0.0",
+    "@langchain/langgraph-sdk": "^1.7.2",
+    "@supabase/supabase-js": "^2.99.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "streamdown": "^2.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.4.0",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

@@ -303,39 +303,122 @@ def _inject_tool_args_for_ptc(
     return enriched
 
 
+class _QuickjsWorker:
+    """Dedicated OS thread with its own asyncio event loop.
+
+    ``quickjs_rs.Runtime`` and ``quickjs_rs.Context`` are ``!Send`` — they
+    panic if used from a thread other than the one that created them.
+    This worker owns that thread; all Runtime/Context operations are
+    dispatched here via ``run_sync`` (blocks caller) or ``run_async``
+    (returns an awaitable tied to the caller's loop).
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self) -> None:
+        if self._loop is not None:
+            return
+        with self._start_lock:
+            if self._loop is not None:
+                return
+
+            def _runner() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+                self._ready.set()
+                try:
+                    loop.run_forever()
+                finally:
+                    try:
+                        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+                        for t in pending:
+                            t.cancel()
+                        if pending:
+                            loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                    except Exception:  # noqa: BLE001 — shutdown is best-effort
+                        pass
+                    loop.close()
+
+            self._thread = threading.Thread(
+                target=_runner, name="quickjs-worker", daemon=True
+            )
+            self._thread.start()
+            self._ready.wait()
+
+    def run_sync(self, coro: Any) -> Any:
+        """Submit ``coro`` to the worker loop and block until it completes."""
+        self._ensure_started()
+        assert self._loop is not None
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    def run_async(self, coro: Any) -> asyncio.Future[Any]:
+        """Submit ``coro`` to the worker loop; return a future on the caller's loop."""
+        self._ensure_started()
+        assert self._loop is not None
+        return asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
+
+    def close(self) -> None:
+        if self._loop is None or self._thread is None:
+            return
+        # Force a gc pass on the worker thread so any unreachable
+        # QjsHandle / Context objects get finalized here, where the
+        # owning thread still exists. Without this, a later gc on any
+        # other thread (e.g. pytest's gc_collect_harder at session end)
+        # would hit the !Send drop check and raise.
+        async def _gc() -> None:
+            import gc  # noqa: PLC0415 — deliberate: runs inside the worker loop
+
+            gc.collect()
+
+        try:
+            asyncio.run_coroutine_threadsafe(_gc(), self._loop).result(timeout=1.0)
+        except Exception:  # noqa: BLE001 — best-effort, don't block shutdown
+            pass
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=5.0)
+        self._loop = None
+        self._thread = None
+
+
 class _ThreadREPL:
-    """One QuickJS context + console buffer + lock, per LangGraph thread."""
+    """One QuickJS context + console buffer, per LangGraph thread.
+
+    All ``ctx.*`` operations are marshalled onto the worker's dedicated
+    thread because ``quickjs_rs`` objects are ``!Send``. The public
+    methods are safe to call from any thread/loop.
+    """
 
     def __init__(
         self,
+        worker: _QuickjsWorker,
         runtime: Runtime,
         *,
         timeout: float,
         capture_console: bool,
     ) -> None:
+        self._worker = worker
+        self._runtime = runtime
         # The Context-level ``timeout`` is used as the cumulative budget
         # for sync evals. Async evals pass ``timeout=`` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
         # and what we describe in the system prompt.
-        self._ctx: Context = runtime.new_context(timeout=timeout)
         self._per_call_timeout = timeout
+        self._capture_console = capture_console
         self._console = _ConsoleBuffer()
-        # Two locks because async and sync entry points both exist:
-        #   - ``_async_lock`` serializes queued concurrent async calls on
-        #     the same context. QuickJS raises ``ConcurrentEvalError``
-        #     rather than queueing; we prefer to queue, so hold a lock
-        #     around ``ctx.eval_async`` to guarantee only one is in
-        #     flight at a time.
-        #   - ``_sync_lock`` exists for the same reason on the sync path,
-        #     which will usually be used from a worker thread.
-        # A call from the sync path *can* race a call from the async
-        # path. Contexts aren't reentrant; we rely on the natural
-        # ordering of "the agent's tool handler picks one path or the
-        # other per call" and don't try to coordinate across both
-        # locks. If that assumption breaks, add a single threading.Lock
-        # that both paths acquire.
+        self._ctx: Context | None = None
+        # Single asyncio.Lock serialises ctx access on the worker loop —
+        # both sync and async entry points funnel through the worker, so
+        # we no longer need a separate threading.Lock. QuickJS raises
+        # ``ConcurrentEvalError`` on overlapping evals; this lock queues
+        # them instead.
         self._async_lock = asyncio.Lock()
-        self._sync_lock = threading.Lock()
         # PTC state. ``_registered_tools`` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
@@ -355,7 +438,14 @@ class _ThreadREPL:
         # graph state, store, context, etc. Set via ``set_outer_runtime``
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
-        if capture_console:
+        # Context creation + console install must happen on the worker
+        # thread. Block caller here so the REPL is ready to use when
+        # __init__ returns.
+        worker.run_sync(self._ainit())
+
+    async def _ainit(self) -> None:
+        self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
+        if self._capture_console:
             self._install_console()
 
     def _install_console(self) -> None:
@@ -398,6 +488,9 @@ class _ThreadREPL:
         set changes. Hot path cost when nothing changes: one frozenset
         equality check.
         """
+        self._worker.run_sync(self._ainstall_tools(tools))
+
+    async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
         ctx = self._ctx
         name_to_tool: dict[str, BaseTool] = {to_camel_case(t.name): t for t in tools}
         target_names = frozenset(name_to_tool)
@@ -475,38 +568,27 @@ class _ThreadREPL:
         self._ctx.register(f"__tools_{camel}", _bridge, is_async=True)
 
     def eval_sync(self, code: str) -> EvalOutcome:
-        with self._sync_lock:
-            return self._eval_sync_locked(code)
+        # Both sync and async entry points funnel through ctx.eval_async on
+        # the worker loop. Sync ctx.eval can't dispatch async host functions
+        # (PTC bridges are is_async=True), so routing sync callers through
+        # the async path is required for PTC to work under sync invocation.
+        return self._worker.run_sync(self._aeval_async(code))
 
     async def eval_async(self, code: str) -> EvalOutcome:
+        return await self._worker.run_async(self._aeval_async(code))
+
+    async def ainstall_module_scope(self, scope: ModuleScope) -> None:
+        """Install a ``ModuleScope`` on the context from the caller's loop."""
+        await self._worker.run_async(self._ainstall_module_scope(scope))
+
+    async def _ainstall_module_scope(self, scope: ModuleScope) -> None:
+        self._ctx.install(scope)
+
+    async def _aeval_async(self, code: str) -> EvalOutcome:
         # Hold the lock around the whole eval_async call so concurrent
         # tool calls queue rather than racing into ConcurrentEvalError.
         async with self._async_lock:
             return await self._eval_async_locked(code)
-
-    def _eval_sync_locked(self, code: str) -> EvalOutcome:
-        outcome = EvalOutcome()
-        try:
-            value = self._ctx.eval(code)
-            outcome.result = _stringify(value)
-        except MarshalError:
-            outcome.result_kind = "handle"
-            outcome.result = self._describe_via_handle_sync(code)
-        except QJSTimeoutError as e:
-            outcome.error_type = "Timeout"
-            outcome.error_message = str(e)
-        except JSError as e:
-            self._record_js_error(outcome, e)
-        except ConcurrentEvalError as e:
-            # Shouldn't happen given the locks, but map it defensively so
-            # it's a clean tool error rather than a propagated exception.
-            outcome.error_type = "ConcurrentEval"
-            outcome.error_message = str(e)
-        except MemoryLimitError as e:
-            outcome.error_type = "OutOfMemory"
-            outcome.error_message = str(e)
-        outcome.stdout = self._console.drain()
-        return outcome
 
     async def _eval_async_locked(self, code: str) -> EvalOutcome:
         """v0.2 async path. Uses ``ctx.eval_async`` directly.
@@ -565,16 +647,6 @@ class _ThreadREPL:
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 
-    def _describe_via_handle_sync(self, code: str) -> str:
-        try:
-            handle = self._ctx.eval_handle(code)
-        except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
-            return _HANDLE_PLACEHOLDER
-        try:
-            return _format_handle(handle)
-        finally:
-            handle.dispose()
-
     async def _describe_via_handle_async(self, code: str) -> str:
         try:
             handle = await self._ctx.eval_handle_async(
@@ -588,7 +660,12 @@ class _ThreadREPL:
             handle.dispose()
 
     def close(self) -> None:
-        self._ctx.close()
+        self._worker.run_sync(self._aclose())
+
+    async def _aclose(self) -> None:
+        if self._ctx is not None:
+            self._ctx.close()
+            self._ctx = None
 
 
 @dataclass
@@ -616,6 +693,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
+    _worker: _QuickjsWorker = field(default_factory=_QuickjsWorker)
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
     _init_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -633,17 +711,19 @@ class _Registry:
         # Double-checked lock on the runtime; then a bare check on the per-
         # thread entry because contexts are cheap and we'd rather create a
         # throwaway on a race than serialize every eval through a global
-        # lock.
+        # lock. Runtime + Context are !Send so creation is dispatched onto
+        # the worker thread.
         if self._runtime is None:
             with self._init_lock:
                 if self._runtime is None:
-                    self._runtime = Runtime(memory_limit=self.memory_limit)
+                    self._runtime = self._worker.run_sync(self._acreate_runtime())
         repl = self._repls.get(thread_id)
         if repl is None:
             with self._init_lock:
                 repl = self._repls.get(thread_id)
                 if repl is None:
                     repl = _ThreadREPL(
+                        self._worker,
                         self._runtime,
                         timeout=self.timeout,
                         capture_console=self.capture_console,
@@ -651,12 +731,15 @@ class _Registry:
                     self._repls[thread_id] = repl
         return repl
 
+    async def _acreate_runtime(self) -> Runtime:
+        return Runtime(memory_limit=self.memory_limit)
+
     async def aensure_skills_installed(
         self,
         referenced: frozenset[str],
         metadata: dict[str, SkillMetadata],
         backend: BackendProtocol,
-        ctx: Context,
+        repl: _ThreadREPL,
     ) -> list[SkillLoadError]:
         """Install any referenced skills not yet on this Runtime.
 
@@ -698,7 +781,9 @@ class _Registry:
                 # previously-installed scope for a different specifier
                 # is untouched. Re-install of the same specifier after
                 # first import is a silent no-op (spec §5).
-                ctx.install(ModuleScope({loaded.specifier: loaded.scope}))
+                await repl.ainstall_module_scope(
+                    ModuleScope({loaded.specifier: loaded.scope})
+                )
                 self._skill_installs[name] = _SkillInstall(loaded=loaded)
         return errors
 
@@ -709,8 +794,13 @@ class _Registry:
         self._repls.clear()
         self._skill_installs.clear()
         if self._runtime is not None:
-            self._runtime.close()
+            self._worker.run_sync(self._aclose_runtime())
             self._runtime = None
+        self._worker.close()
+
+    async def _aclose_runtime(self) -> None:
+        if self._runtime is not None:
+            self._runtime.close()
 
 
 def format_outcome(

@@ -248,11 +248,27 @@ SUPABASE_PUBLISHABLE_DEFAULT_KEY = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"
 _http_client = httpx.AsyncClient()
 
 
+def _is_public_path(path: str) -> bool:
+    """Paths the browser fetches before the user has any auth token.
+
+    The frontend HTML, its assets, and the health check must be reachable
+    without a Bearer token — otherwise the sign-in UI can never load and
+    the user can't produce a token in the first place.
+    """
+    if path in ("/app", "/healthz", "/favicon.ico"):
+        return True
+    return path.startswith("/app/") or path.startswith("/.well-known/")
+
+
 @auth.authenticate
 async def get_current_user(
     authorization: str | None,
+    path: str,
 ) -> Auth.types.MinimalUserDict:
     """Validate Supabase token and return user identity."""
+    if _is_public_path(path):
+        return {"identity": "anonymous"}
+
     if not authorization or not authorization.startswith("Bearer "):
         raise Auth.exceptions.HTTPException(
             status_code=401, detail="Missing or invalid authorization header"
@@ -307,11 +323,27 @@ _jwks_client = PyJWKClient(
 )
 
 
+def _is_public_path(path: str) -> bool:
+    """Paths the browser fetches before the user has any auth token.
+
+    The frontend HTML, its assets, and the health check must be reachable
+    without a Bearer token — otherwise the sign-in UI can never load and
+    the user can't produce a token in the first place.
+    """
+    if path in ("/app", "/healthz", "/favicon.ico"):
+        return True
+    return path.startswith("/app/") or path.startswith("/.well-known/")
+
+
 @auth.authenticate
 async def get_current_user(
     authorization: str | None,
+    path: str,
 ) -> Auth.types.MinimalUserDict:
     """Validate Clerk session JWT and return user identity."""
+    if _is_public_path(path):
+        return {"identity": "anonymous"}
+
     if not authorization or not authorization.startswith("Bearer "):
         raise Auth.exceptions.HTTPException(
             status_code=401, detail="Missing or invalid authorization header"

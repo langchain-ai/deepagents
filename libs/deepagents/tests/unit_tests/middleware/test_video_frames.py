@@ -433,8 +433,10 @@ def test_exported_from_package() -> None:
 
 
 class TestRealDurationInPreamble:
-    """Regression guard for Issue 2: preamble must report real video duration,
-    not a duration derived from frame timestamps.
+    """Regression guard for Issue 2: preamble must report real video duration.
+
+    The duration must not be derived from frame timestamps, which can be
+    clustered when scene detection fires.
     """
 
     def test_preamble_uses_real_duration_not_frame_gap(self, monkeypatch: pytest.MonkeyPatch) -> None:

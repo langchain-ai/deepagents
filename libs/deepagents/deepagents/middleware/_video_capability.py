@@ -50,6 +50,4 @@ def is_video_capable(
         lowered = model_name.lower()
         return any(lowered.startswith(prefix) for prefix in VIDEO_CAPABLE_PATTERNS)
     # model_name is missing/empty — fall back to provider.
-    if provider and provider.lower() in VIDEO_CAPABLE_PROVIDERS:
-        return True
-    return False
+    return bool(provider and provider.lower() in VIDEO_CAPABLE_PROVIDERS)

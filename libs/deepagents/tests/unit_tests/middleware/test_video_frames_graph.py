@@ -92,11 +92,7 @@ class TestSubagentVideoMiddleware:
             (m for m in main_middleware if isinstance(m, SubAgentMiddleware)), None
         )
         assert sub_mw_obj is not None, "SubAgentMiddleware not found in main middleware"
-        stacks = []
-        for spec in sub_mw_obj._subagents:
-            if "middleware" in spec:
-                stacks.append(list(spec["middleware"]))
-        return stacks
+        return [list(spec["middleware"]) for spec in sub_mw_obj._subagents if "middleware" in spec]
 
     def test_gp_subagent_has_video_middleware(self) -> None:
         """General-purpose subagent must include VideoFrameExtractionMiddleware."""

@@ -312,3 +312,97 @@ class TestOverride:
         mw.wrap_model_call(request, handler)
         content = captured["messages"][0].content
         assert any(b.get("type") == "image" for b in content)
+
+
+class TestCache:
+    def test_repeat_video_hits_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        call_count = {"n": 0}
+        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+            call_count["n"] += 1
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        video = _video_block(data=b"same-bytes-every-time", filename="repeat.mp4")
+
+        for _ in range(3):
+            messages = [HumanMessage(content=[video])]
+            request = _make_request(model, messages)
+            mw.wrap_model_call(request, lambda _r: "OK")
+
+        assert call_count["n"] == 1
+
+    def test_different_params_skip_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        call_count = {"n": 0}
+        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+            call_count["n"] += 1
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        video = _video_block(data=b"bytes", filename="a.mp4")
+
+        mw1 = VideoFrameExtractionMiddleware(scene_threshold=0.3)
+        mw2 = VideoFrameExtractionMiddleware(scene_threshold=0.5)
+
+        request = _make_request(model, [HumanMessage(content=[video])])
+        mw1.wrap_model_call(request, lambda _r: "OK")
+        request = _make_request(model, [HumanMessage(content=[video])])
+        mw2.wrap_model_call(request, lambda _r: "OK")
+
+        # Two different middlewares with different params → two extractions.
+        assert call_count["n"] == 2
+
+    def test_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        call_count = {"n": 0}
+        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+            call_count["n"] += 1
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+
+        mw = VideoFrameExtractionMiddleware(cache_size=2)
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+
+        def run(data: bytes) -> None:
+            mw.wrap_model_call(
+                _make_request(model, [HumanMessage(content=[_video_block(data=data)])]),
+                lambda _r: "OK",
+            )
+
+        run(b"a")
+        run(b"b")
+        run(b"c")   # Evicts 'a'.
+        run(b"a")   # Re-extract (evicted).
+        assert call_count["n"] == 4
+
+    def test_cache_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        call_count = {"n": 0}
+        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+            call_count["n"] += 1
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+
+        mw = VideoFrameExtractionMiddleware(cache_size=0)
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        video = _video_block(data=b"same", filename="a.mp4")
+
+        for _ in range(3):
+            mw.wrap_model_call(
+                _make_request(model, [HumanMessage(content=[video])]),
+                lambda _r: "OK",
+            )
+        assert call_count["n"] == 3

@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import hashlib
 import logging
 from collections import OrderedDict
 from pathlib import Path
@@ -110,6 +111,16 @@ def _run_extraction(
         tmp.write(video_bytes)
         tmp.flush()
         return _ffmpeg.extract_frames(Path(tmp.name), params)
+
+
+def _cache_key(
+    video_bytes: bytes, params: ExtractionParams
+) -> tuple[str, tuple[int, float, int, int]]:
+    digest = hashlib.sha256(video_bytes).hexdigest()
+    params_tuple = (
+        params.max_frames, params.scene_threshold, params.max_width, params.jpeg_quality,
+    )
+    return digest, params_tuple
 
 
 def _build_preamble(
@@ -250,7 +261,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         filename = _filename_for_video_block(block)
         try:
             video_bytes = _decode_video_bytes(block)
-            frames = _run_extraction(video_bytes, block.get("mime_type"), self._params)
+            frames = self._extract_with_cache(video_bytes, block.get("mime_type"))
             if len(frames) >= 2:
                 duration_s = frames[-1].timestamp_s - frames[0].timestamp_s
                 baseline_interval = (
@@ -276,3 +287,22 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             # Any other ExtractionError subclass we forgot to enumerate.
             logger.warning("unexpected extraction error for %r: %s", filename, exc)
             return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]
+
+    def _extract_with_cache(
+        self, video_bytes: bytes, mime: str | None
+    ) -> list[ExtractedFrame]:
+        if self.cache_size == 0:
+            return _run_extraction(video_bytes, mime, self._params)
+
+        key = _cache_key(video_bytes, self._params)
+        cached = self._cache.get(key)
+        if cached is not None:
+            # LRU: move to MRU end.
+            self._cache.move_to_end(key)
+            return cached
+
+        frames = _run_extraction(video_bytes, mime, self._params)
+        self._cache[key] = frames
+        while len(self._cache) > self.cache_size:
+            self._cache.popitem(last=False)  # Evict LRU.
+        return frames

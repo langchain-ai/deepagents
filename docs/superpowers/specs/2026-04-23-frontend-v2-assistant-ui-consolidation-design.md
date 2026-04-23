@@ -16,7 +16,7 @@ v2 replaces both with a single codebase built on assistant-ui, with auth provide
 
 ## 2. Goals
 
-- **One frontend source tree** (`frontends/ui/`) replacing both v1 forks.
+- **One frontend source tree** at `libs/cli/frontend/` replacing both v1 forks. It lives inside the CLI package as a sibling to `deepagents_cli/` and `tests/` — consistent with the repo's existing "non-importable siblings of the Python package" pattern, and out of the importable package path so `node_modules/` doesn't leak into the wheel.
 - **One pre-built bundle** shipped as package data. Auth provider (Supabase or Clerk) selected at runtime by reading `window.__DEEPAGENTS_CONFIG__.auth`.
 - **Assistant-ui native** — `@assistant-ui/react`, `@assistant-ui/react-langgraph`, `@assistant-ui/react-streamdown`, `streamdown`. No hand-rolled SSE or scroll logic.
 - **Pluggable auth** via a thin `AuthAdapter` interface. Adding a new provider is one new adapter file, not a fork.
@@ -81,34 +81,34 @@ CLERK_PUBLISHABLE_KEY
 
 ```
 deepagents monorepo
-├── libs/cli/deepagents_cli/
-│   └── deploy/
-│       ├── frontend_dist/          ← single pre-built bundle (no supabase/ vs clerk/ split)
-│       │   ├── index.html
-│       │   └── assets/...
-│       ├── bundler.py              ← copies the single dist into build_dir
-│       ├── config.py               ← unchanged from late-v1 (FrontendConfig + validation)
-│       ├── templates.py            ← unchanged from late-v1 (APP_PY, AUTH_BLOCKS w/ path exemption)
-│       └── ...
-│
-└── frontends/
-    └── ui/                         ← single source tree
-        ├── package.json            ← both auth SDKs as deps; lazy-loaded at runtime
-        ├── vite.config.ts          ← base: "/app/"
-        ├── index.html              ← placeholder script (same mechanism as v1)
+└── libs/cli/
+    ├── deepagents_cli/
+    │   └── deploy/
+    │       ├── frontend_dist/          ← single pre-built bundle, shipped as package data
+    │       │   ├── index.html
+    │       │   └── assets/...
+    │       ├── bundler.py              ← copies the single dist into build_dir
+    │       ├── config.py               ← FrontendConfig + validation
+    │       ├── templates.py            ← APP_PY_TEMPLATE (Starlette), AUTH_BLOCKS w/ path exemption
+    │       └── ...
+    ├── tests/                          ← existing Python test tree (unchanged)
+    └── frontend/                       ← NEW: single source tree
+        ├── package.json                ← both auth SDKs as deps; lazy-loaded at runtime
+        ├── vite.config.ts              ← base: "/app/"
+        ├── index.html                  ← placeholder script (same mechanism as v1)
         └── src/
             ├── main.tsx
-            ├── App.tsx             ← generic layout
-            ├── RuntimeProvider.tsx ← useLangGraphRuntime wiring
-            ├── runtimeConfig.ts    ← reads window.__DEEPAGENTS_CONFIG__
+            ├── App.tsx                 ← generic layout
+            ├── RuntimeProvider.tsx     ← useLangGraphRuntime wiring
+            ├── runtimeConfig.ts        ← reads window.__DEEPAGENTS_CONFIG__
             ├── auth/
-            │   ├── types.ts        ← AuthAdapter interface
-            │   ├── loader.tsx      ← dynamic-import router: loadAuth(provider)
-            │   ├── supabase.tsx    ← SupabaseAdapter default export
-            │   └── clerk.tsx       ← ClerkAdapter default export (+ 45s refresh loop)
+            │   ├── types.ts            ← AuthAdapter interface
+            │   ├── loader.tsx          ← dynamic-import router: loadAuth(provider)
+            │   ├── supabase.tsx        ← SupabaseAdapter default export
+            │   └── clerk.tsx           ← ClerkAdapter default export (+ 45s refresh loop)
             ├── components/
             │   ├── Thread.tsx
-            │   ├── tools.tsx       ← tool-renderer dict
+            │   ├── tools.tsx           ← tool-renderer dict
             │   ├── SubagentActivity.tsx
             │   ├── TodosPanel.tsx
             │   ├── FilePanels.tsx
@@ -118,10 +118,12 @@ deepagents monorepo
                 └── format.ts
 ```
 
+The build pipeline: `make build-frontends` runs `npm ci && npm run build` inside `libs/cli/frontend/`, then copies the `dist/` output into `libs/cli/deepagents_cli/deploy/frontend_dist/` (the package-data location that hatchling includes in the wheel).
+
 ### 4.4 Auth adapter interface
 
 ```typescript
-// frontends/ui/src/auth/types.ts
+// libs/cli/frontend/src/auth/types.ts
 export type SessionState =
   | { status: "loading" }
   | { status: "signed-out" }
@@ -196,10 +198,10 @@ Other tool calls fall through to assistant-ui's default renderer.
 
 ### 4.9 Deep-agent-specific panels (port from v1)
 
-- **`TodosPanel`** — collapsible bottom panel, reads `useGraphValues().todos`.
-- **`FilePanels`** — collapsible bottom panel, reads `useGraphValues().files`.
-- **`SubagentActivity`** — inline pipeline view between messages. Kept because multi-agent orchestration is the point of deep agents; a user who doesn't use subagents simply sees it stay empty.
-- **`ThreadPicker`** — dropdown in the header. Uses `@langchain/langgraph-sdk` `Client.threads.search()`.
+- `**TodosPanel**` — collapsible bottom panel, reads `useGraphValues().todos`.
+- `**FilePanels**` — collapsible bottom panel, reads `useGraphValues().files`.
+- `**SubagentActivity**` — inline pipeline view between messages. Kept because multi-agent orchestration is the point of deep agents; a user who doesn't use subagents simply sees it stay empty.
+- `**ThreadPicker**` — dropdown in the header. Uses `@langchain/langgraph-sdk` `Client.threads.search()`.
 - **No `SettingsModal`** — drop. `assistantId` is fixed to the graph key in `langgraph.json`; per-user overrides aren't a v2 concern.
 
 ### 4.10 Bundler simplifications vs v1
@@ -220,13 +222,15 @@ Unchanged — still re-uses the bundler codepath. `langgraph dev` mounts the sam
 
 ### 4.13 Error handling
 
-| Scenario | Behavior |
-|---|---|
-| `[frontend].enabled = true`, no `[auth]` | Deploy errors before bundling (unchanged). |
-| Required backend or frontend env var missing | Deploy errors with the specific missing var names (unchanged). |
-| Auth adapter fails to load (network error on lazy import) | Full-page error: "Could not load authentication. Refresh to retry." |
-| `window.__DEEPAGENTS_CONFIG__.auth` is an unknown value | Dev-mode console error + blank page. Prevented at bundle time by existing validation. |
-| JWT validation fails on backend | 401 from LangGraph; frontend catches, `useSession()` flips to `signed-out`. |
+
+| Scenario                                                  | Behavior                                                                              |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `[frontend].enabled = true`, no `[auth]`                  | Deploy errors before bundling (unchanged).                                            |
+| Required backend or frontend env var missing              | Deploy errors with the specific missing var names (unchanged).                        |
+| Auth adapter fails to load (network error on lazy import) | Full-page error: "Could not load authentication. Refresh to retry."                   |
+| `window.__DEEPAGENTS_CONFIG__.auth` is an unknown value   | Dev-mode console error + blank page. Prevented at bundle time by existing validation. |
+| JWT validation fails on backend                           | 401 from LangGraph; frontend catches, `useSession()` flips to `signed-out`.           |
+
 
 ### 4.14 Testing
 
@@ -245,7 +249,7 @@ Backend-side artifacts that v1 landed AND v2 keeps are re-implemented on this br
 
 **New files:**
 
-- `frontends/ui/` — entire source tree (~20 files).
+- `libs/cli/frontend/` — entire source tree (~20 files).
 - `libs/cli/deepagents_cli/deploy/frontend_dist/` — single pre-built bundle (committed to git; rebuilt via `make build-frontends` on release).
 - `docs/superpowers/specs/2026-04-23-frontend-v2-assistant-ui-consolidation-design.md` — this doc.
 - `docs/superpowers/plans/2026-04-23-frontend-v2-<filename>.md` — forthcoming implementation plan.
@@ -257,11 +261,11 @@ Backend-side artifacts that v1 landed AND v2 keeps are re-implemented on this br
 - `deepagents_cli/deploy/config.py` — `FrontendConfig`, validation, starter templates.
 - `deepagents_cli/deploy/bundler.py` — frontend copy, placeholder rewrite, `app.py` emit, `http.app` in `langgraph.json`.
 - `deepagents_cli/deploy/templates.py` — `APP_PY_TEMPLATE` (Starlette), auth blocks with `_is_public_path` exemption.
-- `pyproject.toml` — wheel `include` glob for `frontend_dist/**`.
+- `pyproject.toml` — wheel `include` glob for `frontend_dist/`**.
 
 **Modified files (repo root):**
 
-- `.gitignore` — `frontends/*/node_modules/`, `frontends/*/dist/`, unignore `frontends/**/src/lib/`.
+- `.gitignore` — `libs/cli/frontend/node_modules/`, `libs/cli/frontend/dist/`, unignore `libs/cli/frontend/src/lib/` (fights the Python-packaging `lib/` rule).
 
 ## 7. Open implementation questions
 
@@ -279,3 +283,4 @@ v2 is done when:
 - `deepagents deploy --dry-run` against both Supabase and Clerk fixtures produces identical `frontend_dist/` contents in the build dir; only `index.html`'s `window.__DEEPAGENTS_CONFIG__` differs.
 - Manual smoke: Clerk and Supabase deployments each render the full chat UI, stream responses, populate the todos/files/subagent panels, and survive an idle period longer than the Clerk token TTL without failing.
 - `libs/cli/pyproject.toml` has one `include` entry for frontend_dist; no `supabase/` or `clerk/` subpaths anywhere in Python code.
+

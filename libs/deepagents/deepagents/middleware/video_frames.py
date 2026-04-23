@@ -242,7 +242,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Any],
     ) -> ModelResponse | AIMessage:
-        'Async variant of wrap_model_call; reuses the sync _transform_messages helper.'
+        """Async variant of `wrap_model_call`; reuses the sync `_transform_messages` helper."""
         provider = get_model_provider(request.model)
         model_name = get_model_identifier(request.model) or ""
         if is_video_capable(provider, model_name, override=self.video_capable_override):

@@ -9,21 +9,21 @@ import pytest
 
 from whatsapp_adapter import (
     WhatsAppAdapter,
-    extract_markdown_images,
+    extract_markdown_media,
     install_bridge_deps,
 )
 
 
-class TestExtractMarkdownImages:
-    def test_no_image_refs_returns_unchanged(self) -> None:
+class TestExtractMarkdownMedia:
+    def test_no_media_refs_returns_unchanged(self) -> None:
         text = "Hello world"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert cleaned == "Hello world"
         assert refs == []
 
     def test_single_image_extracted(self) -> None:
         text = "Here: ![chart](/tmp/c.png)"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == [("chart", "/tmp/c.png")]
         assert "![chart]" not in cleaned
         assert "/tmp/c.png" not in cleaned
@@ -31,34 +31,41 @@ class TestExtractMarkdownImages:
 
     def test_multiple_images_preserve_order(self) -> None:
         text = "a ![one](/a.png) b ![two](/b.png) c"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == [("one", "/a.png"), ("two", "/b.png")]
         assert "a " in cleaned and " b " in cleaned and " c" in cleaned
 
     def test_empty_alt_preserved(self) -> None:
         text = "before ![](/tmp/x.png) after"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == [("", "/tmp/x.png")]
 
     def test_image_in_fenced_block_ignored(self) -> None:
         text = "outside ![x](/outside.png)\n```\n![inside](/inside.png)\n```"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == [("x", "/outside.png")]
         assert "![inside](/inside.png)" in cleaned
 
     def test_image_in_inline_code_ignored(self) -> None:
         text = "Use `![alt](/tmp/x.png)` syntax"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == []
         assert "`![alt](/tmp/x.png)`" in cleaned
 
     def test_excessive_blank_lines_collapsed(self) -> None:
         text = "Here:\n\n![c](/c.png)\n\nDone"
-        cleaned, refs = extract_markdown_images(text)
+        cleaned, refs = extract_markdown_media(text)
         assert refs == [("c", "/c.png")]
         assert "\n\n\n" not in cleaned
         assert "Here:" in cleaned
         assert "Done" in cleaned
+
+    def test_video_path_extracted_same_syntax(self) -> None:
+        text = "clip: ![demo](/tmp/clip.mp4)"
+        cleaned, refs = extract_markdown_media(text)
+        assert refs == [("demo", "/tmp/clip.mp4")]
+        assert "![demo]" not in cleaned
+        assert "/tmp/clip.mp4" not in cleaned
 
 
 from whatsapp_adapter import MessageEvent, MessageType, _build_inbound_content

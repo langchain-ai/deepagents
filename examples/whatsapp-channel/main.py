@@ -24,7 +24,7 @@ from whatsapp_adapter import (
     MessageEvent,
     WhatsAppAdapter,
     _build_inbound_content,
-    extract_markdown_images,
+    extract_markdown_media,
 )
 
 load_dotenv()
@@ -33,13 +33,17 @@ load_dotenv()
 # Status-message helpers
 # ---------------------------------------------------------------------------
 
-_IMAGE_ATTACH_INSTRUCTIONS = (
-    "To attach an image in your reply, include "
-    "`![short description](/absolute/path/to/file.png)` in your final message. "
+_MEDIA_ATTACH_INSTRUCTIONS = (
+    "To attach an image or video in your reply, include "
+    "`![short description](/absolute/path/to/file)` in your final message. "
     "The path must be a local file you have already saved (for example, "
     "downloaded via http_request or generated via the shell). "
-    "Supported formats: PNG, JPEG, GIF, WebP. Size limit: 16 MB."
+    "Supported formats: images (PNG, JPEG, GIF, WebP) and videos "
+    "(MP4, MOV, WebM, 3GP). MP4 with H.264/AAC is most reliable for video. "
+    "Size limit: 16 MB per file."
 )
+
+_VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".3gp", ".m4v"})
 
 # Minimum seconds between successive message edits to avoid rate-limits.
 _EDIT_THROTTLE_SECS = 2.0
@@ -243,7 +247,7 @@ async def main() -> None:
         ],
         skills=skill_sources or None,
         memory=memory_sources,
-        system_prompt=_IMAGE_ATTACH_INSTRUCTIONS,
+        system_prompt=_MEDIA_ATTACH_INSTRUCTIONS,
     )
 
     # --- Per-chat conversation history (in-memory) ---
@@ -425,13 +429,15 @@ async def main() -> None:
 
                 # ---- Deliver the response ----
                 if response_text:
-                    # Extract any markdown image refs; validate each path
-                    cleaned_text, image_refs = extract_markdown_images(
+                    # Extract any markdown media refs; validate each path
+                    cleaned_text, media_refs = extract_markdown_media(
                         response_text,
                     )
-                    valid_images: list[tuple[str, str]] = []
+                    # Each entry: (alt, path, media_type) where media_type is
+                    # "image" or "video" — classified by file extension.
+                    valid_media: list[tuple[str, str, str]] = []
                     missing_alts: list[str] = []
-                    for alt, path in image_refs:
+                    for alt, path in media_refs:
                         try:
                             p = Path(path)
                             ok = (
@@ -441,9 +447,14 @@ async def main() -> None:
                         except OSError:
                             ok = False
                         if ok:
-                            valid_images.append((alt, str(p)))
+                            mtype = (
+                                "video"
+                                if p.suffix.lower() in _VIDEO_EXTENSIONS
+                                else "image"
+                            )
+                            valid_media.append((alt, str(p), mtype))
                         else:
-                            missing_alts.append(alt or "image")
+                            missing_alts.append(alt or "attachment")
 
                     text_to_send = cleaned_text
                     if missing_alts:
@@ -457,22 +468,22 @@ async def main() -> None:
                                 f"_(couldn't attach: {name})_"
                             )
 
-                    if valid_images:
-                        # Combine: first image carries the response text as
-                        # its caption (single chat bubble). Extra images
-                        # follow up with their alt as caption. Status msg
-                        # is finalized to a brief "Done" since we can't
-                        # edit a text bubble into a media attachment.
+                    if valid_media:
+                        # Combine: first attachment carries the response text
+                        # as its caption (single chat bubble). Extra files
+                        # follow up with their alt as caption. Status msg is
+                        # finalized to a brief "Done" since we can't edit a
+                        # text bubble into a media attachment.
                         if status_msg_id:
                             await adapter.edit_message(
                                 chat_id, status_msg_id,
                                 _build_status_text(actions, done=True),
                             )
 
-                        first_alt, first_path = valid_images[0]
+                        first_alt, first_path, first_type = valid_media[0]
                         first_caption = text_to_send or first_alt or None
                         first_result = await adapter.send_media(
-                            chat_id, first_path, "image",
+                            chat_id, first_path, first_type,
                             caption=first_caption,
                         )
                         if not first_result.success:
@@ -481,15 +492,15 @@ async def main() -> None:
                                 first_path, first_result.error,
                             )
 
-                        for alt, img_path in valid_images[1:]:
+                        for alt, m_path, m_type in valid_media[1:]:
                             media_result = await adapter.send_media(
-                                chat_id, img_path, "image",
+                                chat_id, m_path, m_type,
                                 caption=alt or None,
                             )
                             if not media_result.success:
                                 logger.warning(
                                     "send_media failed for %s: %s",
-                                    img_path, media_result.error,
+                                    m_path, media_result.error,
                                 )
                     elif actions:
                         # Tools were used: update status to "Done", then send

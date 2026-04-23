@@ -104,14 +104,16 @@ def _sniff_image_mime(path: str) -> str:
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 
 
-def extract_markdown_images(text: str) -> tuple[str, list[tuple[str, str]]]:
+def extract_markdown_media(text: str) -> tuple[str, list[tuple[str, str]]]:
     """Strip ``![alt](path)`` references from *text* and return them in order.
 
-    Matches inside fenced ``` ``` blocks or inline `` ` `` backtick runs are
-    ignored (same mask-and-restore trick as :func:`format_message`). The
-    cleaned text has the image markdown removed, and runs of 3+ consecutive
-    newlines (a common artifact when an image lived on its own line) are
-    collapsed back to one blank line.
+    The agent uses standard markdown image syntax for both images and videos;
+    classification by file extension happens at the call site. Matches inside
+    fenced ``` ``` blocks or inline `` ` `` backtick runs are ignored (same
+    mask-and-restore trick as :func:`format_message`). The cleaned text has
+    the markdown removed, and runs of 3+ consecutive newlines (a common
+    artifact when a media ref lived on its own line) are collapsed back to
+    one blank line.
     """
     if not text:
         return text, []

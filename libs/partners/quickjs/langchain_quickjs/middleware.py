@@ -298,7 +298,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             referenced,
             metadata,
             self._skills_backend,
-            repl._ctx,
+            repl,
         )
         if not errors:
             return None

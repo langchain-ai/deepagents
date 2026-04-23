@@ -17,7 +17,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
     to_camel_case,
 )
-from langchain_quickjs._repl import _ThreadREPL
+from langchain_quickjs._repl import _QuickjsWorker, _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,17 +67,33 @@ def _echo_tool(name: str = "echo") -> BaseTool:
 
 
 @pytest.fixture
-def runtime() -> Runtime:
-    rt = Runtime()
+def worker() -> _QuickjsWorker:
+    w = _QuickjsWorker()
     try:
-        yield rt
+        yield w
     finally:
-        rt.close()
+        w.close()
 
 
 @pytest.fixture
-def repl(runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(runtime, timeout=5.0, capture_console=True)
+def runtime(worker: _QuickjsWorker) -> Runtime:
+    async def _make() -> Runtime:
+        return Runtime()
+
+    rt = worker.run_sync(_make())
+    try:
+        yield rt
+    finally:
+
+        async def _close() -> None:
+            rt.close()
+
+        worker.run_sync(_close())
+
+
+@pytest.fixture
+def repl(worker: _QuickjsWorker, runtime: Runtime) -> _ThreadREPL:
+    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
 
 
 # ---------------------------------------------------------------------------

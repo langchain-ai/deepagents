@@ -65,7 +65,7 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
 
     repl = registry.get("t1")
     errors = await registry.aensure_skills_installed(
-        frozenset({"slugify"}), {"slugify": meta}, backend, repl._ctx
+        frozenset({"slugify"}), {"slugify": meta}, backend, repl
     )
     assert errors == []
 
@@ -96,7 +96,7 @@ async def test_dynamic_import_of_ts_skill_strips_types(
 
     repl = registry.get("t1")
     errors = await registry.aensure_skills_installed(
-        frozenset({"ts-skill"}), {"ts-skill": meta}, backend, repl._ctx
+        frozenset({"ts-skill"}), {"ts-skill": meta}, backend, repl
     )
     assert errors == []
 
@@ -128,7 +128,7 @@ async def test_multi_file_skill_relative_import(
 
     repl = registry.get("t1")
     errors = await registry.aensure_skills_installed(
-        frozenset({"multi"}), {"multi": meta}, backend, repl._ctx
+        frozenset({"multi"}), {"multi": meta}, backend, repl
     )
     assert errors == []
 
@@ -157,14 +157,14 @@ async def test_install_cache_avoids_second_fetch(
 
     repl = registry.get("t1")
     await registry.aensure_skills_installed(
-        frozenset({"cached"}), {"cached": meta}, backend, repl._ctx
+        frozenset({"cached"}), {"cached": meta}, backend, repl
     )
     assert "cached" in registry._skill_installs
     first_loaded = registry._skill_installs["cached"].loaded
 
     # Second pass — no backend I/O, no new install.
     await registry.aensure_skills_installed(
-        frozenset({"cached"}), {"cached": meta}, backend, repl._ctx
+        frozenset({"cached"}), {"cached": meta}, backend, repl
     )
     assert registry._skill_installs["cached"].loaded is first_loaded
 
@@ -187,7 +187,7 @@ async def test_installed_skill_visible_from_second_thread(
 
     repl_a = registry.get("thread-a")
     await registry.aensure_skills_installed(
-        frozenset({"shared"}), {"shared": meta}, backend, repl_a._ctx
+        frozenset({"shared"}), {"shared": meta}, backend, repl_a
     )
 
     # Thread B — no new install call — can still import.
@@ -208,7 +208,7 @@ async def test_unavailable_skill_returns_error(
     repl = registry.get("t1")
 
     errors = await registry.aensure_skills_installed(
-        frozenset({"nope"}), {}, backend, repl._ctx
+        frozenset({"nope"}), {}, backend, repl
     )
     assert len(errors) == 1
     assert "nope" in str(errors[0])
@@ -232,7 +232,7 @@ async def test_broken_skill_failure_is_cached(
 
     repl = registry.get("t1")
     errors1 = await registry.aensure_skills_installed(
-        frozenset({"broken"}), {"broken": meta}, backend, repl._ctx
+        frozenset({"broken"}), {"broken": meta}, backend, repl
     )
     assert len(errors1) == 1
     assert isinstance(errors1[0], SkillScopeInvalid)
@@ -241,7 +241,7 @@ async def test_broken_skill_failure_is_cached(
     # backend load. We can't directly assert "no I/O happened", but we
     # can confirm the cache entry is populated.
     errors2 = await registry.aensure_skills_installed(
-        frozenset({"broken"}), {"broken": meta}, backend, repl._ctx
+        frozenset({"broken"}), {"broken": meta}, backend, repl
     )
     assert len(errors2) == 1
     cached = registry._skill_installs["broken"]
@@ -256,7 +256,7 @@ async def test_unknown_specifier_rejects_at_import(
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     # Empty: no skills installed.
     await registry.aensure_skills_installed(
-        frozenset(), {}, backend, registry.get("t1")._ctx
+        frozenset(), {}, backend, registry.get("t1")
     )
     repl = registry.get("t1")
     outcome = await repl.eval_async('await import("@/skills/nonexistent")')

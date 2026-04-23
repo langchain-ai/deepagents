@@ -182,23 +182,60 @@ def build_agent(
     rather than absolute host paths. That keeps grader trajectory
     analysis meaningful across different temp-dir locations.
 
+    Implementation detail: ``create_deep_agent`` always installs a
+    default ``SummarizationMiddleware`` in its base stack, and
+    ``langchain.create_agent`` rejects two middleware instances sharing
+    a name. We *replace* the default factory with one that returns the
+    technique's configured middleware for the duration of the build,
+    rather than layering our middleware on top. The patch is scoped to
+    a try/finally so a failure in ``create_deep_agent`` cannot leave
+    the module-level factory mutated.
+
     Args:
         model: The chat model the agent should use.
-        technique: Supplies the middleware stack for this run.
+        technique: Supplies the summarization middleware for this run.
         root_dir: Directory the ``FilesystemBackend`` is rooted at.
 
     Returns:
         The compiled state graph, ready to invoke.
     """
+    # Imports are local (not module-level) so ``deepagents.graph``'s
+    # heavy import chain is only paid when an agent is actually being
+    # built, and so the patch target is resolved at call time.
+    from deepagents import graph as deepagents_graph
+
     backend = FilesystemBackend(root_dir=root_dir, virtual_mode=True)
-    middleware = technique.build_middleware(consumer_model=model, backend=backend)
     checkpointer = MemorySaver()
-    return create_deep_agent(
-        model=model,
-        middleware=middleware,
-        backend=backend,
-        checkpointer=checkpointer,
+
+    def _technique_factory(
+        inner_model: BaseChatModel,
+        inner_backend: object,
+    ) -> object:
+        """Drop-in replacement for ``create_summarization_middleware``.
+
+        Returns the technique's configured middleware regardless of the
+        arguments deepagents would otherwise pass. We honor the model
+        argument (in case deepagents routes a subagent model through
+        here in a future change) by forwarding it to the technique.
+        """
+        _ = inner_backend  # Backend is supplied via closure; argument unused.
+        return technique.build_summarization_middleware(
+            consumer_model=inner_model,
+            backend=backend,
+        )
+
+    original_factory = deepagents_graph.create_summarization_middleware
+    deepagents_graph.create_summarization_middleware = (
+        _technique_factory  # ty: ignore[invalid-assignment]
     )
+    try:
+        return create_deep_agent(
+            model=model,
+            backend=backend,
+            checkpointer=checkpointer,
+        )
+    finally:
+        deepagents_graph.create_summarization_middleware = original_factory
 
 
 # ---------------------------------------------------------------------------

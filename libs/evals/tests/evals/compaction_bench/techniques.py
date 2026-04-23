@@ -53,10 +53,14 @@ if TYPE_CHECKING:
 
 
 class SummarizationTechnique(Protocol):
-    """Adapter for constructing a compaction middleware under test.
+    """Adapter for constructing the *summarization* middleware under test.
 
     Implementations are typically stateless dataclasses. The runner
-    calls ``build_middleware`` once per (instance, seed) run.
+    calls ``build_summarization_middleware`` once per (instance, seed)
+    run and slots the returned instance into the position ordinarily
+    occupied by deepagents' default ``SummarizationMiddleware`` - we
+    replace rather than layer because ``create_agent`` rejects two
+    middleware instances sharing a name.
 
     Attributes:
         name: Stable identifier used as the scorecard key (e.g.
@@ -65,13 +69,13 @@ class SummarizationTechnique(Protocol):
 
     name: str
 
-    def build_middleware(
+    def build_summarization_middleware(
         self,
         *,
         consumer_model: BaseChatModel,
         backend: BACKEND_TYPES,
-    ) -> list[AgentMiddleware]:
-        """Construct the middleware list that wraps the agent.
+    ) -> AgentMiddleware:
+        """Construct the single summarization middleware to evaluate.
 
         The runner passes the ``consumer_model`` (i.e. the model the
         agent is itself using) so techniques that prefer to summarize
@@ -85,7 +89,9 @@ class SummarizationTechnique(Protocol):
                 summarization middleware should offload history to.
 
         Returns:
-            Middleware list, in the order they should wrap the agent.
+            A single middleware instance. The runner installs it in
+            place of the default summarization middleware baked into
+            ``create_deep_agent``.
         """
         ...
 
@@ -169,13 +175,13 @@ class DeepAgentsTechnique:
     trigger_tokens: int = AGGRESSIVE_TRIGGER_TOKENS
     keep_messages: int = AGGRESSIVE_KEEP_MESSAGES
 
-    def build_middleware(
+    def build_summarization_middleware(
         self,
         *,
         consumer_model: BaseChatModel,
         backend: BACKEND_TYPES,
-    ) -> list[AgentMiddleware]:
-        """Construct the deepagents summarization middleware stack.
+    ) -> AgentMiddleware:
+        """Construct the deepagents summarization middleware.
 
         Uses ``consumer_model`` as the summarizer; this matches current
         production behavior where a single model drives both agent
@@ -186,7 +192,7 @@ class DeepAgentsTechnique:
             backend: Backend for history offload.
 
         Returns:
-            Single-element middleware list.
+            The configured ``SummarizationMiddleware`` instance.
         """
         # Imports are local so the module is importable in unit tests
         # that don't install the full deepagents middleware surface.
@@ -194,14 +200,13 @@ class DeepAgentsTechnique:
             SummarizationMiddleware,
         )
 
-        middleware = SummarizationMiddleware(
+        return SummarizationMiddleware(
             model=consumer_model,
             backend=backend,
             trigger=("tokens", self.trigger_tokens),
             keep=("messages", self.keep_messages),
             # Leave summary_prompt at its middleware-level default.
         )
-        return [middleware]
 
 
 @dataclass(frozen=True)
@@ -229,20 +234,20 @@ class OpenAICompactTechnique:
     trigger_tokens: int = AGGRESSIVE_TRIGGER_TOKENS
     keep_messages: int = AGGRESSIVE_KEEP_MESSAGES
 
-    def build_middleware(
+    def build_summarization_middleware(
         self,
         *,
         consumer_model: BaseChatModel,
         backend: BACKEND_TYPES,
-    ) -> list[AgentMiddleware]:
-        """Construct the OpenAI-compact middleware stack.
+    ) -> AgentMiddleware:
+        """Construct the OpenAI-compact summarization middleware.
 
         Args:
             consumer_model: Agent's model; **not** used for summarization.
             backend: Backend for history offload.
 
         Returns:
-            Single-element middleware list.
+            The configured ``SummarizationMiddleware`` instance.
         """
         from deepagents.middleware.summarization import (
             SummarizationMiddleware,
@@ -255,14 +260,13 @@ class OpenAICompactTechnique:
 
         summarizer = init_chat_model(self.summarizer_model)
 
-        middleware = SummarizationMiddleware(
+        return SummarizationMiddleware(
             model=summarizer,
             backend=backend,
             trigger=("tokens", self.trigger_tokens),
             keep=("messages", self.keep_messages),
             summary_prompt=OPENAI_COMPACT_PROMPT,
         )
-        return [middleware]
 
 
 # ---------------------------------------------------------------------------

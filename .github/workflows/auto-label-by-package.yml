@@ -42,6 +42,7 @@ jobs:
               "repl": "repl",
               "daytona": "daytona",
               "modal": "modal",
+              "novita": "novita",
               "quickjs": "quickjs",
               "runloop": "runloop",
               "langsmith-sandbox": "langsmith-sandbox",

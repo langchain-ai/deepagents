@@ -29,8 +29,8 @@
 # Allowed Scope(s) (required):
 #   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-acp, deepagents-cli, deps,
 #   deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
-#   langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox, modal,
-#   quickjs, repl, runloop, sdk
+#   langchain-novita, langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox,
+#   modal, novita, quickjs, repl, runloop, sdk
 #
 # Multiple scopes can be used by separating them with a comma.
 #
@@ -104,11 +104,13 @@ jobs:
             infra
             langchain-daytona
             langchain-modal
+            langchain-novita
             langchain-quickjs
             langchain-repl
             langchain-runloop
             langsmith-sandbox
             modal
+            novita
             quickjs
             repl
             runloop

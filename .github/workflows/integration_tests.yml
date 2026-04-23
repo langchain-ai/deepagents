@@ -21,6 +21,7 @@ on:
           - libs/cli
           - libs/partners/daytona
           - libs/partners/modal
+          - libs/partners/novita
           - libs/partners/runloop
       working-directory-override:
         type: string
@@ -41,6 +42,7 @@ env:
     "libs/cli",
     "libs/partners/daytona",
     "libs/partners/modal",
+    "libs/partners/novita",
     "libs/partners/runloop"]
 
 jobs:

@@ -29,6 +29,7 @@ jobs:
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
+      novita-release: ${{ steps.check-releases.outputs.novita-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       repl-release: ${{ steps.check-releases.outputs.repl-release }}
@@ -46,7 +47,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
+      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-novita, langchain-runloop, langchain-quickjs, langchain-repl
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
@@ -151,6 +152,13 @@ jobs:
             echo "Modal release detected: $COMMIT_MSG"
           else
             echo "modal-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/novita/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-novita\):"; then
+            echo "novita-release=true" >> "$GITHUB_OUTPUT"
+            echo "Novita release detected: $COMMIT_MSG"
+          else
+            echo "novita-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
@@ -292,6 +300,20 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       package: langchain-modal
+      version: ${{ needs.release-please.outputs.release-version }}
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+
+  # Trigger release workflow when Novita release PR is merged
+  release-langchain-novita:
+    needs: release-please
+    if: needs.release-please.outputs.novita-release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      package: langchain-novita
       version: ${{ needs.release-please.outputs.release-version }}
     secrets: inherit
     permissions:

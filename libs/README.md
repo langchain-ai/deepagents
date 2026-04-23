@@ -23,5 +23,6 @@ The `partners/` directory contains sandbox provider integrations:
 * [AgentCore](https://pypi.org/project/langchain-agentcore-codeinterpreter/)
 * [Daytona](https://pypi.org/project/langchain-daytona/)
 * [Modal](https://pypi.org/project/langchain-modal/)
+* [Novita](https://pypi.org/project/langchain-novita/)
 * [QuickJS](https://pypi.org/project/langchain-quickjs/)
 * [Runloop](https://pypi.org/project/langchain-runloop/)

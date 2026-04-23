@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
-SandboxProvider = Literal["none", "daytona", "langsmith", "modal", "runloop"]
+SandboxProvider = Literal["none", "daytona", "langsmith", "modal", "novita", "runloop"]
 """Valid sandbox provider identifiers."""
 
 SandboxScope = Literal["thread", "assistant"]
@@ -471,6 +471,7 @@ _SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
         "LANGSMITH_SANDBOX_API_KEY",
     ],
     "daytona": ["DAYTONA_API_KEY"],
+    "novita": ["NOVITA_API_KEY"],
     "runloop": ["RUNLOOP_API_KEY"],
     # Modal falls back to default auth if env vars are not set.
 }
@@ -553,7 +554,7 @@ model = "anthropic:claude-sonnet-4-6"
 
 # [sandbox] is optional. Omit if not needed for skills or code execution.
 # [sandbox]
-# provider = "langsmith"   # langsmith | daytona | modal | runloop
+# provider = "langsmith"   # langsmith | daytona | modal | novita | runloop
 # scope = "thread"         # thread | assistant
 
 # [auth] is optional. Add to enable user authentication.

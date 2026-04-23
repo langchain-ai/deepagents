@@ -33,6 +33,7 @@ on:
           - deepagents-evals
           - langchain-daytona
           - langchain-modal
+          - langchain-novita
           - langchain-quickjs
           - langchain-repl
           - langchain-runloop
@@ -108,6 +109,9 @@ jobs:
             langchain-modal)
               echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT
               ;;
+            langchain-novita)
+              echo "working-dir=libs/partners/novita" >> $GITHUB_OUTPUT
+              ;;
             langchain-quickjs)
               echo "working-dir=libs/partners/quickjs" >> $GITHUB_OUTPUT
               ;;
@@ -119,7 +123,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-repl, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-novita, langchain-quickjs, langchain-repl, langchain-runloop"
               exit 1
               ;;
           esac

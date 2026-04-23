@@ -75,6 +75,7 @@ _PROVIDER_TO_WORKING_DIR = {
     "daytona": "/home/daytona",
     "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
     "modal": "/workspace",
+    "novita": "/home/user",
     "runloop": "/home/user",
 }
 """Map of sandbox provider names to their default working directories."""
@@ -686,6 +687,98 @@ class _RunloopProvider(SandboxProvider):
         self._client.devboxes.shutdown(id=sandbox_id)
 
 
+class _NovitaProvider(SandboxProvider):
+    """Novita sandbox provider — lifecycle management for Novita sandboxes."""
+
+    def __init__(self) -> None:
+        _import_provider_module(
+            "novita_sandbox",
+            provider="novita",
+            package="langchain-novita",
+        )
+
+        from deepagents_cli.model_config import resolve_env_var
+
+        api_key = resolve_env_var("NOVITA_API_KEY")
+        if not api_key:
+            msg = (
+                "No Novita API key found. Set NOVITA_API_KEY "
+                "or DEEPAGENTS_CLI_NOVITA_API_KEY."
+            )
+            raise ValueError(msg)
+        import os
+
+        os.environ["NOVITA_API_KEY"] = api_key
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Get or create a Novita sandbox.
+
+        Args:
+            sandbox_id: Not supported yet — must be None.
+            timeout: Seconds to wait for startup.
+            **kwargs: Unused.
+
+        Returns:
+            `NovitaSandbox` instance.
+
+        Raises:
+            NotImplementedError: If `sandbox_id` is provided.
+            RuntimeError: If the sandbox fails to start.
+        """
+        novita_backend = _import_provider_module(
+            "langchain_novita",
+            provider="novita",
+            package="langchain-novita",
+        )
+        novita_sdk = _import_provider_module(
+            "novita_sandbox.code_interpreter",
+            provider="novita",
+            package="langchain-novita",
+        )
+
+        if sandbox_id:
+            msg = (
+                "Connecting to existing Novita sandbox by ID not yet supported. "
+                "Create a new sandbox by omitting sandbox_id parameter."
+            )
+            raise NotImplementedError(msg)
+
+        sandbox = novita_sdk.Sandbox.create()
+        last_exc: Exception | None = None
+        for _ in range(timeout // 2):
+            try:
+                result = sandbox.commands.run("echo ready", timeout=5)
+                if result.exit_code == 0:
+                    break
+            except Exception as exc:  # noqa: BLE001  # Transient failures expected during readiness polling
+                last_exc = exc
+            time.sleep(2)
+        else:
+            with contextlib.suppress(Exception):  # Best-effort cleanup
+                sandbox.kill()
+            detail = f" Last error: {last_exc}" if last_exc else ""
+            msg = f"Novita sandbox failed to start within {timeout} seconds.{detail}"
+            raise RuntimeError(msg)
+
+        return novita_backend.NovitaSandbox(sandbox=sandbox)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Kill a Novita sandbox by id."""
+        novita_sdk = _import_provider_module(
+            "novita_sandbox.code_interpreter",
+            provider="novita",
+            package="langchain-novita",
+        )
+        sandbox = novita_sdk.Sandbox.connect(sandbox_id)
+        sandbox.kill()
+
+
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -834,6 +927,8 @@ def _get_provider(provider_name: str) -> SandboxProvider:
         return _LangSmithProvider()
     if provider_name == "modal":
         return _ModalProvider()
+    if provider_name == "novita":
+        return _NovitaProvider()
     if provider_name == "runloop":
         return _RunloopProvider()
     msg = (
@@ -867,6 +962,7 @@ def verify_sandbox_deps(provider: str) -> None:
         "agentcore": ("langchain_agentcore_codeinterpreter", "agentcore"),
         "daytona": ("langchain_daytona", "daytona"),
         "modal": ("langchain_modal", "modal"),
+        "novita": ("langchain_novita", "novita"),
         "runloop": ("langchain_runloop", "runloop"),
     }
 

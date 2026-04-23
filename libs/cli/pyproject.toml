@@ -109,9 +109,10 @@ all-providers = [
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
 daytona = ["langchain-daytona>=0.0.4"]
 modal = ["langchain-modal>=0.0.2"]
+novita = ["langchain-novita>=0.0.1"]
 runloop = ["langchain-runloop>=0.0.3"]
 all-sandboxes = [
-    "deepagents-cli[agentcore,daytona,modal,runloop]",
+    "deepagents-cli[agentcore,daytona,modal,novita,runloop]",
 ]
 
 
@@ -160,6 +161,7 @@ packages = ["deepagents_cli"]
 deepagents = { path = "../deepagents", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
+langchain-novita = { path = "../partners/novita", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
 
 [tool.ty.environment]
@@ -168,6 +170,7 @@ extra-paths = [
     "../deepagents",
     "../partners/daytona",
     "../partners/modal",
+    "../partners/novita",
     "../partners/runloop",
 ]
 

@@ -39,6 +39,7 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
+      novita: ${{ steps.filter.outputs.novita }}
       repl: ${{ steps.filter.outputs.repl }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
@@ -90,6 +91,12 @@ jobs:
               - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            novita:
+              - 'libs/partners/novita/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -157,6 +164,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/modal"
+      python-version: "3.11"
+
+  lint-novita:
+    name: "🧹 Lint novita"
+    needs: changes
+    if: needs.changes.outputs.novita == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/novita"
       python-version: "3.11"
 
   lint-runloop:
@@ -235,6 +251,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-novita:
+    name: "🧪 Test novita"
+    needs: changes
+    if: needs.changes.outputs.novita == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/novita"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 

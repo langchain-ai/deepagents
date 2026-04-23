@@ -178,6 +178,27 @@ def _get_or_create_sandbox(cache_key):
 '''
 """Sandbox creation block for the Runloop provider."""
 
+SANDBOX_BLOCK_NOVITA = '''\
+from langchain_novita import NovitaSandbox
+
+_SANDBOXES: dict = {}
+
+
+def _get_or_create_sandbox(cache_key):
+    """Get or create a Novita sandbox cached by `cache_key`."""
+    if cache_key in _SANDBOXES:
+        return _SANDBOXES[cache_key]
+
+    from novita_sandbox.code_interpreter import Sandbox
+
+    sandbox = Sandbox.create()
+    backend = NovitaSandbox(sandbox=sandbox)
+    _SANDBOXES[cache_key] = backend
+    logger.info("Created Novita sandbox %s for cache_key %s", sandbox.sandbox_id, cache_key)
+    return backend
+'''
+"""Sandbox creation block for the Novita provider."""
+
 SANDBOX_BLOCK_NONE = '''\
 from deepagents.backends.state import StateBackend
 
@@ -197,6 +218,7 @@ SANDBOX_BLOCKS = {
     "langsmith": (SANDBOX_BLOCK_LANGSMITH, None),
     "daytona": (SANDBOX_BLOCK_DAYTONA, "langchain-daytona"),
     "modal": (SANDBOX_BLOCK_MODAL, "langchain-modal"),
+    "novita": (SANDBOX_BLOCK_NOVITA, "langchain-novita"),
     "runloop": (SANDBOX_BLOCK_RUNLOOP, "langchain-runloop"),
     "none": (SANDBOX_BLOCK_NONE, None),
 }

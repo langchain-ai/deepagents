@@ -20,6 +20,7 @@ from deepagents_cli.integrations.sandbox_factory import (
     [
         ("daytona", "langchain-daytona"),
         ("modal", "langchain-modal"),
+        ("novita", "langchain-novita"),
         ("runloop", "langchain-runloop"),
     ],
 )
@@ -243,6 +244,7 @@ def test_agentcore_delete_untracked_session() -> None:
         ("daytona", "/home/daytona"),
         ("langsmith", "/tmp"),
         ("modal", "/workspace"),
+        ("novita", "/home/user"),
         ("runloop", "/home/user"),
     ],
 )
@@ -260,6 +262,7 @@ class TestVerifySandboxDeps:
             ("agentcore", "langchain_agentcore_codeinterpreter"),
             ("daytona", "langchain_daytona"),
             ("modal", "langchain_modal"),
+            ("novita", "langchain_novita"),
             ("runloop", "langchain_runloop"),
         ],
     )
@@ -285,7 +288,7 @@ class TestVerifySandboxDeps:
 
     @pytest.mark.parametrize(
         "provider",
-        ["agentcore", "daytona", "modal", "runloop"],
+        ["agentcore", "daytona", "modal", "novita", "runloop"],
     )
     def test_passes_when_backend_installed(self, provider: str) -> None:
         """Should not raise when the backend module is found."""

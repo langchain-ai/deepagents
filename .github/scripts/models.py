@@ -129,6 +129,10 @@ REGISTRY: tuple[Model, ...] = (
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
     Model(
+        "baseten:moonshotai/Kimi-K2.6",
+        frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
+    ),
+    Model(
         "baseten:nvidia/Nemotron-120B-A12B",
         frozenset(
             {
@@ -461,6 +465,24 @@ REGISTRY: tuple[Model, ...] = (
     # -- OpenRouter --
     Model(
         "openrouter:minimax/minimax-m2.7",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.5",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.6",
         frozenset(
             {
                 "eval:openrouter",

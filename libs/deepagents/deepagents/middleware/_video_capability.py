@@ -10,7 +10,7 @@ from __future__ import annotations
 VIDEO_CAPABLE_PATTERNS: tuple[str, ...] = ("gemini-",)
 """Lowercase model-name prefixes that signal native video support.
 
-Matching is ``prefix``-style against the lowercased model identifier. Provider is
+Matching is `prefix`-style against the lowercased model identifier. Provider is
 checked loosely (any provider reporting a Gemini model qualifies).
 """
 
@@ -24,17 +24,17 @@ def is_video_capable(
     """Return True when the provider+model combination accepts native video blocks.
 
     Args:
-        provider: The provider string (e.g., ``"google_genai"``) reported by
-            ``langchain`` for the bound model, or ``None`` if unknown.
-        model_name: The model identifier (e.g., ``"gemini-2.0-flash"``), or
-            ``None`` if unknown.
-        override: If ``True``, always return ``True`` regardless of the registry.
-            If ``False``, always return ``False``. If ``None`` (default), consult
+        provider: The provider string (e.g., `"google_genai"`) reported by
+            `langchain` for the bound model, or `None` if unknown.
+        model_name: The model identifier (e.g., `"gemini-2.0-flash"`), or
+            `None` if unknown.
+        override: If `True`, always return `True` regardless of the registry.
+            If `False`, always return `False`. If `None` (default), consult
             the registry.
 
     Returns:
-        ``True`` if the provider+model is known to accept native video content
-        blocks, otherwise ``False``.
+        `True` if the provider+model is known to accept native video content
+        blocks, otherwise `False`.
     """
     if override is not None:
         return override

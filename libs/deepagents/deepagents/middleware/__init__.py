@@ -58,6 +58,7 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.video_frames import VideoFrameExtractionMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -71,5 +72,6 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "VideoFrameExtractionMiddleware",
     "create_summarization_tool_middleware",
 ]

@@ -442,3 +442,9 @@ class TestAwrapModelCall:
         assert result == "OK"
         content = captured["messages"][0].content
         assert any(b.get("type") == "image" for b in content)
+
+
+def test_exported_from_package() -> None:
+    from deepagents.middleware import VideoFrameExtractionMiddleware as Exported
+
+    assert Exported is VideoFrameExtractionMiddleware

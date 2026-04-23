@@ -222,8 +222,15 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         underscore-prefixed impl name, forcing callers to write
         `excluded_middleware={"_DeepAgentsSummarizationMiddleware"}` — which is
         a private-API reference rejected by the `_`-prefix guard on that field.
+
+        Subclasses fall back to the default `AgentMiddleware.name` behavior
+        (returning their own `__class__.__name__`) so a user-authored extension
+        does not inherit the summarization alias and get silently dropped when
+        a profile excludes `"SummarizationMiddleware"`.
         """
-        return "SummarizationMiddleware"
+        if type(self) is _DeepAgentsSummarizationMiddleware:
+            return "SummarizationMiddleware"
+        return type(self).__name__
 
     def __init__(
         self,

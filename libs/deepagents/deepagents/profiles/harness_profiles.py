@@ -243,7 +243,7 @@ class HarnessProfile:
     `create_deep_agent(middleware=[...])`).
 
     `AgentMiddleware.name` is a property that defaults to the class's
-    `__name__` but can be overridden. For stock middleware the two are
+    `__name__` but can be overridden. For most stock middleware the two are
     identical, so `excluded_middleware={"TodoListMiddleware"}` and
     `excluded_middleware={TodoListMiddleware}` behave the same.
 
@@ -284,9 +284,12 @@ class HarnessProfile:
 
     !!! warning
 
-        String-form entries that do not match any middleware's `.name` in the
-        assembled stack silently no-op. Typos fail open. Prefer class-form
-        when the class is already imported in the caller's code.
+        Entries that do not match any middleware in the assembled stack raise
+        `ValueError` at assembly time. This applies to both class-form and
+        string-form entries — an exclusion that matches nothing almost always
+        indicates a typo or a stale profile, and silently no-opping would hide
+        the bug until runtime behavior diverged from the operator's mental
+        model.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
@@ -382,7 +385,9 @@ class HarnessProfile:
 
         - Class-form `excluded_middleware` entries. A class reference is not
             representable in a config file. Use the string-form alternative
-            (e.g. `"summarization"` in place of `SummarizationMiddleware`).
+            — the middleware's `.name` attribute (e.g.
+            `"SummarizationMiddleware"` in place of the `SummarizationMiddleware`
+            class).
         - Non-empty `extra_middleware`. Middleware instances and factories
             hold runtime state that has no declarative form. Construct the
             profile in code if you need `extra_middleware`.
@@ -394,6 +399,9 @@ class HarnessProfile:
             ValueError: If the profile holds non-serializable state (class
                 entries in `excluded_middleware` or a non-empty
                 `extra_middleware`).
+            TypeError: If `tool_description_overrides` contains a non-string
+                key or value — possible when callers bypass the dataclass's
+                `Mapping[str, str]` type hint at runtime.
         """
         out: dict[str, Any] = {}
         if self.base_system_prompt is not None:
@@ -401,7 +409,14 @@ class HarnessProfile:
         if self.system_prompt_suffix is not None:
             out["system_prompt_suffix"] = self.system_prompt_suffix
         if self.tool_description_overrides:
-            out["tool_description_overrides"] = dict(self.tool_description_overrides)
+            # Validate symmetrically with `from_dict` so non-string values
+            # (possible via runtime escape of `Mapping[str, str]` typing) fail
+            # at serialize time, not several steps later in `yaml.safe_dump`
+            # or a downstream `from_dict` call.
+            out["tool_description_overrides"] = _coerce_str_mapping(
+                dict(self.tool_description_overrides),
+                "tool_description_overrides",
+            )
         if self.excluded_tools:
             out["excluded_tools"] = sorted(self.excluded_tools)
         if self.excluded_middleware:
@@ -411,9 +426,9 @@ class HarnessProfile:
                 msg = (
                     f"HarnessProfile.to_dict() cannot serialize class-form "
                     f"entries in `excluded_middleware` ({names}). Use the "
-                    f"string-form alternative (e.g. the canonical snake_case "
-                    f"name like 'summarization') so the profile can be "
-                    f"represented in a config file."
+                    f"string-form alternative matching the middleware's `.name` "
+                    f"attribute (e.g. 'SummarizationMiddleware') so the profile "
+                    f"can be represented in a config file."
                 )
                 raise ValueError(msg)
             out["excluded_middleware"] = sorted(cast("frozenset[str]", self.excluded_middleware))
@@ -427,9 +442,12 @@ class HarnessProfile:
             )
             raise ValueError(msg)
         if self.general_purpose_subagent is not None:
-            gp_dict = self.general_purpose_subagent.to_dict()
-            if gp_dict:
-                out["general_purpose_subagent"] = gp_dict
+            # Emit the key even when the sub-profile has no fields set so
+            # `from_dict(to_dict(p))` preserves the "explicit empty sub-profile"
+            # vs. "no sub-profile" distinction. Dropping an empty sub-profile
+            # at serialize time would silently coerce `GeneralPurposeSubagentProfile()`
+            # to `None` on round-trip.
+            out["general_purpose_subagent"] = self.general_purpose_subagent.to_dict()
         return out
 
     @classmethod

@@ -168,9 +168,75 @@ no-op.
 """
 
 
+def _validate_excluded_middleware_config(profile: HarnessProfile) -> None:
+    """Validate guards that don't depend on the assembled stack.
+
+    Checks that `profile.excluded_middleware` does not name required
+    scaffolding or reference private-API (underscore-prefixed) strings. Both
+    categories are invariants of the profile configuration itself, independent
+    of which stack the profile is later applied to, so they are validated once
+    up front rather than re-checked on every stack pass.
+
+    Violations across both categories are collected and surfaced in a single
+    `ValueError`, so callers see every problem in one pass rather than fixing
+    one at a time across successive runs.
+
+    Args:
+        profile: Profile whose `excluded_middleware` is validated.
+
+    Raises:
+        ValueError: If any entry is required scaffolding or a private-API
+            (underscore-prefixed) string.
+    """
+    excluded = profile.excluded_middleware
+    if not excluded:
+        return
+
+    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    excluded_names: set[str] = set()
+    for entry in excluded:
+        if isinstance(entry, type):
+            excluded_classes.add(entry)
+        else:
+            excluded_names.add(entry)
+
+    violations: list[str] = []
+
+    forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
+    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_NAMES
+    if forbidden_classes or forbidden_names:
+        labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
+        violations.append(
+            f"required scaffolding cannot be excluded: {', '.join(labels)} "
+            f"(back filesystem tools, subagent dispatch, and permission "
+            f"enforcement — use excluded_tools for per-tool visibility or "
+            f"adjust profile settings instead of stripping scaffolding)"
+        )
+
+    # Narrow private-name violations to names not already reported as required
+    # scaffolding, so `"_PermissionMiddleware"` surfaces exactly once (under
+    # the more informative scaffolding category).
+    private_names = {name for name in excluded_names if name.startswith("_")} - _REQUIRED_MIDDLEWARE_NAMES
+    if private_names:
+        labels = ", ".join(sorted(repr(name) for name in private_names))
+        violations.append(
+            f"string entries cannot start with '_': {labels} "
+            f"(underscore-prefixed names refer to private middleware classes "
+            f"not part of the public exclusion surface — import the class "
+            f"and pass it directly if you really need to exclude one)"
+        )
+
+    if violations:
+        msg = "HarnessProfile.excluded_middleware is invalid:\n  - " + "\n  - ".join(violations)
+        raise ValueError(msg)
+
+
 def _apply_excluded_middleware(
     stack: list[AgentMiddleware[Any, Any, Any]],
     profile: HarnessProfile,
+    *,
+    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] | None = None,
+    matched_names: set[str] | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Drop middleware in the stack matched by `profile.excluded_middleware`.
 
@@ -183,23 +249,36 @@ def _apply_excluded_middleware(
     middleware shipped as `SummarizationMiddleware` with impl class
     `_DeepAgentsSummarizationMiddleware`) set `.name` to the public alias.
 
+    Every entry in `profile.excluded_middleware` must match at least one
+    middleware across the stacks that the profile applies to. An entry that
+    matches nothing anywhere almost always indicates a typo or a stale
+    profile, and silently no-opping would hide the bug until runtime behavior
+    diverged from the operator's mental model. Per-stack unmatched checking
+    would be too strict — a profile applied to both the main agent and the
+    general-purpose subagent can legitimately target middleware that only one
+    of them carries — so callers accumulate matches across every call for the
+    same profile into shared `matched_classes` / `matched_names` sets and
+    then call `_verify_excluded_middleware_coverage` once all stacks have been
+    filtered.
+
+    Callers that do not supply the mutable match-tracking sets get filter-only
+    behavior with no coverage validation — useful when only a single stack is
+    filtered against the profile and aggregated validation isn't meaningful.
+
     Args:
         stack: Fully assembled middleware list for a single agent/subagent.
         profile: Profile whose `excluded_middleware` drives the filter.
+        matched_classes: Optional mutable set populated with every excluded
+            class that matched something in `stack`. Shared across multiple
+            calls for the same profile so coverage can be verified once after
+            all stacks have been filtered.
+        matched_names: Optional mutable set populated with every excluded name
+            that matched something in `stack`. Same lifetime semantics as
+            `matched_classes`.
 
     Returns:
         A new list with excluded entries removed. Always a fresh list, even
             when no exclusions apply, so callers can mutate the result freely.
-
-    Raises:
-        ValueError: If `profile.excluded_middleware` contains a class in
-            `_REQUIRED_MIDDLEWARE_CLASSES`, a string equal to one of their
-            `.name` values, or any string starting with `_`. Required
-            scaffolding backs core features (filesystem tools, `task` tool
-            handler, permission enforcement) and silently dropping it would
-            leave the agent broken or insecure; underscore-prefixed strings
-            reference private middleware classes that are not part of the
-            public exclusion surface.
     """
     excluded = profile.excluded_middleware
     if not excluded:
@@ -213,38 +292,20 @@ def _apply_excluded_middleware(
         else:
             excluded_names.add(entry)
 
-    # Required-scaffolding guard runs before the underscore-prefix guard so
-    # attempts to disable permissions via `"_PermissionMiddleware"` report the
-    # informative "cannot strip scaffolding" error rather than the generic
-    # private-API message.
-    forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
-    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_NAMES
-    if forbidden_classes or forbidden_names:
-        labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
-        msg = (
-            f"HarnessProfile.excluded_middleware cannot contain required "
-            f"scaffolding middleware: {', '.join(labels)}. These classes back "
-            f"core features (filesystem tools, subagent dispatch, and "
-            f"permission enforcement) and cannot be removed. Use "
-            f"excluded_tools for per-tool visibility control, or register a "
-            f"profile that adjusts behavior instead of stripping the "
-            f"scaffolding."
-        )
-        raise ValueError(msg)
+    filtered: list[AgentMiddleware[Any, Any, Any]] = []
+    for mw in stack:
+        mw_type = type(mw)
+        mw_name = mw.name
+        if mw_type in excluded_classes:
+            if matched_classes is not None:
+                matched_classes.add(mw_type)
+            continue
+        if mw_name in excluded_names:
+            if matched_names is not None:
+                matched_names.add(mw_name)
+            continue
+        filtered.append(mw)
 
-    private_names = {name for name in excluded_names if name.startswith("_")}
-    if private_names:
-        labels = ", ".join(sorted(repr(name) for name in private_names))
-        msg = (
-            f"HarnessProfile.excluded_middleware string entries cannot start "
-            f"with '_': {labels}. Underscore-prefixed names refer to private "
-            f"middleware classes that are not part of the public exclusion "
-            f"surface. Import the class and pass it directly if you really "
-            f"need to exclude a private middleware."
-        )
-        raise ValueError(msg)
-
-    filtered = [mw for mw in stack if type(mw) not in excluded_classes and mw.name not in excluded_names]
     removed_count = len(stack) - len(filtered)
     if removed_count:
         logger.debug(
@@ -254,6 +315,61 @@ def _apply_excluded_middleware(
             sorted(excluded_names),
         )
     return filtered
+
+
+def _verify_excluded_middleware_coverage(
+    profile: HarnessProfile,
+    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]],
+    matched_names: set[str],
+) -> None:
+    """Raise `ValueError` if any `profile.excluded_middleware` entry matched nothing.
+
+    Called after every `_apply_excluded_middleware` call for a given profile
+    has populated the shared `matched_*` sets. An entry that matched no stack
+    anywhere is almost certainly a bug — a typo or a stale profile that no
+    longer corresponds to any real middleware.
+
+    Args:
+        profile: Profile whose `excluded_middleware` is being audited.
+        matched_classes: Accumulated class matches from every filter call.
+        matched_names: Accumulated name matches from every filter call.
+
+    Raises:
+        ValueError: If any entry in `profile.excluded_middleware` is missing
+            from the corresponding `matched_*` set. Required-scaffolding
+            entries are skipped — they are rejected earlier by
+            `_validate_excluded_middleware_config` and their absence from the
+            stack is not a coverage failure.
+    """
+    excluded = profile.excluded_middleware
+    if not excluded:
+        return
+
+    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    excluded_names: set[str] = set()
+    for entry in excluded:
+        if isinstance(entry, type):
+            excluded_classes.add(entry)
+        else:
+            excluded_names.add(entry)
+
+    unmatched_classes = excluded_classes - matched_classes - _REQUIRED_MIDDLEWARE_CLASSES
+    unmatched_names = excluded_names - matched_names - _REQUIRED_MIDDLEWARE_NAMES
+    # Private-prefix names are rejected by the config guard; skip them here
+    # so the coverage error stays focused on legitimate "didn't match" cases.
+    unmatched_names = {name for name in unmatched_names if not name.startswith("_")}
+    if not unmatched_classes and not unmatched_names:
+        return
+
+    labels = sorted({cls.__name__ for cls in unmatched_classes} | {f"{name!r} (string)" for name in unmatched_names})
+    msg = (
+        f"HarnessProfile.excluded_middleware entries matched no middleware "
+        f"across any assembled stack: {', '.join(labels)}. Typo or stale "
+        f"profile — every exclusion must correspond to a middleware actually "
+        f"present at runtime. (Tip: use class-form exclusion when the class "
+        f"is available to catch typos at import time.)"
+    )
+    raise ValueError(msg)
 
 
 def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
@@ -467,14 +583,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             After assembly, any entries listed in the profile's
             `excluded_middleware` are filtered from the final stack. Class
-            entries match on exact type, and string entries match on the
-            canonical form of the concrete class name (e.g.
-            `"summarization"` drops `_DeepAgentsSummarizationMiddleware`), so
-            a profile can drop middleware added by any earlier layer,
-            including instances supplied via this `middleware` argument. A
-            small set of scaffolding classes (`FilesystemMiddleware`,
-            `SubAgentMiddleware`, `_PermissionMiddleware`) cannot be excluded
-            as class or string — doing so raises `ValueError`.
+            entries match on exact type, and string entries match
+            `AgentMiddleware.name` exactly (e.g. `"SummarizationMiddleware"`
+            drops the summarization middleware via its public alias), so a
+            profile can drop middleware added by any earlier layer, including
+            instances supplied via this `middleware` argument. Entries that
+            don't match any middleware in the assembled stack raise
+            `ValueError`. A small set of scaffolding classes
+            (`FilesystemMiddleware`, `SubAgentMiddleware`,
+            `_PermissionMiddleware`) cannot be excluded as class or string —
+            doing so also raises `ValueError`.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -602,6 +720,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     model = get_default_model() if model is None else resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)
+    # Validate profile-level invariants (required scaffolding, private names)
+    # once up front — these are stack-independent, so re-checking on every
+    # filter pass would be wasteful and would report errors multiple times.
+    _validate_excluded_middleware_config(_profile)
+    # Accumulate which entries matched across the main agent + general-purpose
+    # subagent stacks (both use `_profile`). A profile-level entry only has to
+    # match somewhere, not in every stack, so coverage is verified once after
+    # all filters have run.
+    _main_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    _main_matched_names: set[str] = set()
 
     # Copy of `tools` with any harness-specific description rewrites.
     # (Tool exclusion is handled by _ToolExclusionMiddleware which filters
@@ -663,7 +791,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
-            subagent_middleware = _apply_excluded_middleware(subagent_middleware, _subagent_profile)
+            _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+            _subagent_matched_names: set[str] = set()
+            _validate_excluded_middleware_config(_subagent_profile)
+            subagent_middleware = _apply_excluded_middleware(
+                subagent_middleware,
+                _subagent_profile,
+                matched_classes=_subagent_matched_classes,
+                matched_names=_subagent_matched_names,
+            )
+            _verify_excluded_middleware_coverage(_subagent_profile, _subagent_matched_classes, _subagent_matched_names)
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
@@ -717,7 +854,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if permissions:
             gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
-        gp_middleware = _apply_excluded_middleware(gp_middleware, _profile)
+        gp_middleware = _apply_excluded_middleware(
+            gp_middleware,
+            _profile,
+            matched_classes=_main_matched_classes,
+            matched_names=_main_matched_names,
+        )
 
         general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
             **GENERAL_PURPOSE_SUBAGENT,
@@ -792,7 +934,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if permissions:
         deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
-    deepagent_middleware = _apply_excluded_middleware(deepagent_middleware, _profile)
+    deepagent_middleware = _apply_excluded_middleware(
+        deepagent_middleware,
+        _profile,
+        matched_classes=_main_matched_classes,
+        matched_names=_main_matched_names,
+    )
+    # Verify every main-profile exclusion matched at least one middleware in
+    # either the main agent stack or the GP subagent stack. An entry that
+    # matched nothing across both is almost certainly a typo or a stale
+    # profile.
+    _verify_excluded_middleware_coverage(_profile, _main_matched_classes, _main_matched_names)
 
     # Assemble base prompt: use _profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.

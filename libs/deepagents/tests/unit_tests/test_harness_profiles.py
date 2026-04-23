@@ -6,6 +6,7 @@ import pytest
 
 from deepagents import GeneralPurposeSubagentProfile, HarnessProfile
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from deepagents.profiles.harness_profiles import _merge_profiles
 
 
 class TestGeneralPurposeSubagentProfileSerde:
@@ -67,7 +68,7 @@ class TestHarnessProfileSerde:
             system_prompt_suffix="Respond briefly.",
             tool_description_overrides={"ls": "List files."},
             excluded_tools=frozenset({"execute", "grep"}),
-            excluded_middleware=frozenset({"summarization", "todo_list"}),
+            excluded_middleware=frozenset({"SummarizationMiddleware", "TodoListMiddleware"}),
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
         data = profile.to_dict()
@@ -76,7 +77,7 @@ class TestHarnessProfileSerde:
             "system_prompt_suffix": "Respond briefly.",
             "tool_description_overrides": {"ls": "List files."},
             "excluded_tools": ["execute", "grep"],
-            "excluded_middleware": ["summarization", "todo_list"],
+            "excluded_middleware": ["SummarizationMiddleware", "TodoListMiddleware"],
             "general_purpose_subagent": {"enabled": False},
         }
         assert HarnessProfile.from_dict(data) == profile
@@ -137,9 +138,82 @@ class TestHarnessProfileSerde:
 
     def test_from_dict_accepts_list_or_set_for_excluded_fields(self) -> None:
         """YAML/JSON produce lists; in-memory dicts may use sets. Both work."""
-        profile_list = HarnessProfile.from_dict({"excluded_tools": ["execute"], "excluded_middleware": ["summarization"]})
-        profile_set = HarnessProfile.from_dict({"excluded_tools": {"execute"}, "excluded_middleware": {"summarization"}})
+        profile_list = HarnessProfile.from_dict({"excluded_tools": ["execute"], "excluded_middleware": ["SummarizationMiddleware"]})
+        profile_set = HarnessProfile.from_dict({"excluded_tools": {"execute"}, "excluded_middleware": {"SummarizationMiddleware"}})
         assert profile_list == profile_set
+
+    def test_to_dict_validates_tool_description_value_types(self) -> None:
+        """`tool_description_overrides` with a non-string value raises at serialize time.
+
+        Python doesn't enforce `Mapping[str, str]` at runtime, so a bad value
+        can slip in past the dataclass field annotation. Surfacing the error
+        at `to_dict` (symmetric with `from_dict`'s validation) prevents a
+        confusing failure later in `yaml.safe_dump` or a downstream
+        `from_dict` call.
+        """
+        profile = HarnessProfile(tool_description_overrides={"ls": 42})  # ty: ignore[invalid-argument-type]
+        with pytest.raises(TypeError, match="tool_description_overrides"):
+            profile.to_dict()
+
+    def test_empty_general_purpose_subagent_preserves_identity(self) -> None:
+        """`GeneralPurposeSubagentProfile()` round-trips to an equal sub-profile, not `None`.
+
+        An explicit empty sub-profile and no sub-profile are semantically
+        different (the first forces the default GP subagent on, the second
+        leaves it implicit). `to_dict` must preserve this distinction so
+        downstream consumers see the same profile on reload.
+        """
+        profile = HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile())
+        data = profile.to_dict()
+        assert data == {"general_purpose_subagent": {}}
+        assert HarnessProfile.from_dict(data) == profile
+
+    def test_to_dict_output_ordering_is_deterministic(self) -> None:
+        """`excluded_tools` / `excluded_middleware` emit in sorted order regardless of construction order.
+
+        `frozenset` iteration is unordered, so `to_dict` must sort its string
+        lists for deterministic output. Diffable config files depend on this
+        — a profile written out twice should produce identical YAML.
+        """
+        profile_a = HarnessProfile(
+            excluded_tools=frozenset(["z_tool", "a_tool", "m_tool"]),
+            excluded_middleware=frozenset(["ZooMiddleware", "AlphaMiddleware", "MiddleMiddleware"]),
+        )
+        profile_b = HarnessProfile(
+            excluded_tools=frozenset(["m_tool", "z_tool", "a_tool"]),
+            excluded_middleware=frozenset(["MiddleMiddleware", "ZooMiddleware", "AlphaMiddleware"]),
+        )
+        assert profile_a.to_dict() == profile_b.to_dict()
+        assert profile_a.to_dict()["excluded_tools"] == ["a_tool", "m_tool", "z_tool"]
+        assert profile_a.to_dict()["excluded_middleware"] == ["AlphaMiddleware", "MiddleMiddleware", "ZooMiddleware"]
+
+    def test_mapping_proxy_type_tool_description_overrides_round_trip(self) -> None:
+        """`__post_init__` wraps `tool_description_overrides` in `MappingProxyType`.
+
+        The round-trip through `to_dict` must convert it back to a plain dict
+        (for portability) without losing keys or values, and `from_dict` must
+        rebuild a profile that compares equal.
+        """
+        profile = HarnessProfile(tool_description_overrides={"ls": "List files.", "grep": "Search files."})
+        data = profile.to_dict()
+        # to_dict must produce a plain dict, not a MappingProxyType, so
+        # downstream encoders (json, yaml) accept it.
+        assert isinstance(data["tool_description_overrides"], dict)
+        assert HarnessProfile.from_dict(data) == profile
+
+    def test_merged_profile_with_class_entry_fails_to_dict(self) -> None:
+        """Merging a class-form provider exclusion with a string-form model exclusion still raises.
+
+        Regression path: provider-level profile registers a class-form
+        exclusion, model-level profile registers a string-form exclusion,
+        caller does `_merge_profiles(base, override).to_dict()`. The merged
+        set has a class entry → `to_dict` must still raise at serialize time.
+        """
+        base = HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}))
+        override = HarnessProfile(excluded_middleware=frozenset({"OtherMiddleware"}))
+        merged = _merge_profiles(base, override)
+        with pytest.raises(ValueError, match="class-form entries"):
+            merged.to_dict()
 
 
 class TestHarnessProfileYamlRoundTrip:
@@ -152,7 +226,7 @@ class TestHarnessProfileYamlRoundTrip:
             system_prompt_suffix="Respond briefly.",
             tool_description_overrides={"ls": "List files."},
             excluded_tools=frozenset({"execute"}),
-            excluded_middleware=frozenset({"summarization"}),
+            excluded_middleware=frozenset({"SummarizationMiddleware"}),
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
         serialized = yaml.safe_dump(profile.to_dict())
@@ -169,7 +243,7 @@ class TestHarnessProfileYamlRoundTrip:
         yaml = pytest.importorskip("yaml")
         profile = HarnessProfile(
             excluded_tools=frozenset({"execute"}),
-            excluded_middleware=frozenset({"summarization"}),
+            excluded_middleware=frozenset({"SummarizationMiddleware"}),
         )
         output = yaml.safe_dump(profile.to_dict())
         assert "!!" not in output

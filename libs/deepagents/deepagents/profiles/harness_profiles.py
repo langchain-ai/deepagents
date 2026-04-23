@@ -20,14 +20,16 @@ registers one.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields
+from importlib import import_module
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents.profiles._keys import validate_profile_key
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
 
@@ -76,10 +78,62 @@ class GeneralPurposeSubagentProfile:
     `None` means keep the default system prompt.
     """
 
+    def to_dict(self) -> dict[str, Any]:
+        """Dump this sub-profile to a plain dict.
+
+        Only fields with non-`None` values are emitted so the serialized form
+        round-trips cleanly without forcing `None` defaults into the config.
+
+        Returns:
+            A plain dict with at most `enabled`, `description`, and
+                `system_prompt` keys.
+        """
+        out: dict[str, Any] = {}
+        if self.enabled is not None:
+            out["enabled"] = self.enabled
+        if self.description is not None:
+            out["description"] = self.description
+        if self.system_prompt is not None:
+            out["system_prompt"] = self.system_prompt
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> GeneralPurposeSubagentProfile:
+        """Construct a sub-profile from a plain dict.
+
+        Args:
+            data: Mapping with any subset of `enabled`, `description`, and
+                `system_prompt` keys.
+
+        Returns:
+            A new `GeneralPurposeSubagentProfile`.
+
+        Raises:
+            TypeError: If `data` contains unknown keys, or if any value has
+                the wrong type.
+        """
+        unknown = set(data.keys()) - _GENERAL_PURPOSE_SUBAGENT_KEYS
+        if unknown:
+            msg = f"Unknown keys in GeneralPurposeSubagentProfile dict: {sorted(unknown)}"
+            raise TypeError(msg)
+        enabled = data.get("enabled")
+        description = data.get("description")
+        system_prompt = data.get("system_prompt")
+        if enabled is not None and not isinstance(enabled, bool):
+            msg = f"`enabled` must be bool or None, got {type(enabled).__name__}"
+            raise TypeError(msg)
+        if description is not None and not isinstance(description, str):
+            msg = f"`description` must be str or None, got {type(description).__name__}"
+            raise TypeError(msg)
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            msg = f"`system_prompt` must be str or None, got {type(system_prompt).__name__}"
+            raise TypeError(msg)
+        return cls(enabled=enabled, description=description, system_prompt=system_prompt)
+
 
 @dataclass(frozen=True)
-class HarnessProfile:
-    """Declarative configuration for deep agent runtime behavior.
+class HarnessProfileConfig:
+    """Declarative harness-profile config for YAML/JSON-backed profiles.
 
     !!! beta
 
@@ -87,7 +141,230 @@ class HarnessProfile:
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    A `HarnessProfile` describes prompt-assembly, tool-visibility, middleware,
+    A `HarnessProfileConfig` contains the file-friendly subset of harness
+    settings: plain strings, bools, lists, and nested dicts that can be loaded
+    from YAML or JSON. For in-code/runtime-only adjustments such as
+    `extra_middleware` or class-form `excluded_middleware`, use
+    `HarnessProfile` instead.
+
+    Config objects may be passed directly to `register_harness_profile`; the
+    helper converts them to runtime `HarnessProfile` objects automatically.
+
+    Example:
+        Register a YAML/JSON-friendly harness profile:
+
+        ```python
+        from deepagents import HarnessProfileConfig, register_harness_profile
+
+        register_harness_profile(
+            "openai:gpt-5.4",
+            HarnessProfileConfig(
+                system_prompt_suffix="Think step by step.",
+                excluded_middleware={"SummarizationMiddleware"},
+            ),
+        )
+        ```
+    """
+
+    base_system_prompt: str | None = None
+    """When set, completely replaces `BASE_AGENT_PROMPT` as the base prompt.
+
+    `None` means use `BASE_AGENT_PROMPT` unchanged.
+
+    If both `base_system_prompt` and `system_prompt_suffix` are set, the
+    suffix is appended to this custom base.
+    """
+
+    system_prompt_suffix: str | None = None
+    """Text appended to the assembled base system prompt."""
+
+    tool_description_overrides: Mapping[str, str] = field(default_factory=dict)
+    """Per-tool description replacements keyed by tool name."""
+
+    excluded_tools: frozenset[str] = frozenset()
+    """Tool names to remove from the tool set for this profile."""
+
+    excluded_middleware: frozenset[str] = frozenset()
+    """Middleware names to strip from every stack this profile applies to.
+
+    Plain strings match `AgentMiddleware.name` exactly. Strings of the form
+    `my_pkg.middleware:MyMiddleware` are resolved to exact middleware classes
+    when converted to a runtime `HarnessProfile`.
+
+    Entries are grammar-checked at construction: empty/whitespace strings,
+    multi-colon forms, empty halves in an import ref, and underscore-prefixed
+    plain names all raise `ValueError` immediately. Use the `module:Class`
+    import-ref form to exclude a private middleware class.
+
+    This is the canonical on-disk representation used by `to_dict` /
+    `from_dict`.
+    """
+
+    general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
+    """Edits for the auto-added `general-purpose` subagent."""
+
+    def __post_init__(self) -> None:
+        """Freeze mutable mappings and validate grammar of string entries."""
+        if not isinstance(self.tool_description_overrides, MappingProxyType):
+            object.__setattr__(
+                self,
+                "tool_description_overrides",
+                MappingProxyType(dict(self.tool_description_overrides)),
+            )
+        for entry in self.excluded_middleware:
+            _validate_config_middleware_string(entry, "excluded_middleware")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Dump this config to plain dict/list/scalar values.
+
+        Suitable for `json.dumps` or `yaml.safe_dump`. Fields at their
+        default are omitted so the output stays minimal and round-trips
+        cleanly through `from_dict`.
+
+        Returns:
+            A plain dict containing only the fields set on this config.
+
+        Raises:
+            TypeError: If `tool_description_overrides` contains a non-string
+                key or value.
+        """
+        out: dict[str, Any] = {}
+        if self.base_system_prompt is not None:
+            out["base_system_prompt"] = self.base_system_prompt
+        if self.system_prompt_suffix is not None:
+            out["system_prompt_suffix"] = self.system_prompt_suffix
+        if self.tool_description_overrides:
+            out["tool_description_overrides"] = _coerce_str_mapping(
+                dict(self.tool_description_overrides),
+                "tool_description_overrides",
+            )
+        if self.excluded_tools:
+            out["excluded_tools"] = sorted(self.excluded_tools)
+        if self.excluded_middleware:
+            out["excluded_middleware"] = sorted(self.excluded_middleware)
+        if self.general_purpose_subagent is not None:
+            # Emit the key even when the sub-profile has no fields set so
+            # `from_dict(to_dict(c))` preserves the "explicit empty sub-profile"
+            # vs. "no sub-profile" distinction.
+            out["general_purpose_subagent"] = self.general_purpose_subagent.to_dict()
+        return out
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HarnessProfileConfig:
+        """Construct a config object from a plain dict.
+
+        !!! warning "Trust boundary"
+
+            `module:Class` entries in `excluded_middleware` are resolved by
+            importing the target module when `to_harness_profile()` runs.
+            Loading a config file therefore imports Python code referenced by
+            that file — **do not load `HarnessProfileConfig` dicts from
+            untrusted sources**.
+
+        Args:
+            data: A mapping with any subset of the serializable
+                `HarnessProfileConfig` fields. Unknown keys raise `TypeError`.
+
+        Returns:
+            A new `HarnessProfileConfig` populated from `data`.
+
+        Raises:
+            TypeError: If `data` contains unknown keys or fields of the wrong
+                shape.
+        """
+        unknown = set(data.keys()) - _HARNESS_PROFILE_CONFIG_KEYS
+        if unknown:
+            msg = f"Unknown keys in HarnessProfileConfig dict: {sorted(unknown)}"
+            raise TypeError(msg)
+        return cls(
+            base_system_prompt=_coerce_str_or_none(data.get("base_system_prompt"), "base_system_prompt"),
+            system_prompt_suffix=_coerce_str_or_none(data.get("system_prompt_suffix"), "system_prompt_suffix"),
+            tool_description_overrides=_coerce_str_mapping(data.get("tool_description_overrides"), "tool_description_overrides"),
+            excluded_tools=_coerce_frozen_strset(data.get("excluded_tools"), "excluded_tools"),
+            excluded_middleware=_coerce_frozen_strset(data.get("excluded_middleware"), "excluded_middleware"),
+            general_purpose_subagent=_coerce_general_purpose_subagent(data.get("general_purpose_subagent")),
+        )
+
+    def to_harness_profile(self) -> HarnessProfile:
+        """Convert this declarative config into a runtime `HarnessProfile`.
+
+        Import-ref entries in `excluded_middleware` such as
+        `my_pkg.middleware:MyMiddleware` are resolved to exact middleware
+        classes here; plain strings are kept as name-based exclusions.
+
+        Returns:
+            A runtime `HarnessProfile` with equivalent declarative settings.
+
+        Raises:
+            ValueError: If an import-ref exclusion cannot be imported or does
+                not point at a valid import target.
+            TypeError: If an import-ref exclusion resolves to something other
+                than an `AgentMiddleware` class.
+        """
+        return HarnessProfile(
+            base_system_prompt=self.base_system_prompt,
+            system_prompt_suffix=self.system_prompt_suffix,
+            tool_description_overrides=self.tool_description_overrides,
+            excluded_tools=self.excluded_tools,
+            excluded_middleware=frozenset(_resolve_config_excluded_middleware_entry(entry) for entry in self.excluded_middleware),
+            general_purpose_subagent=self.general_purpose_subagent,
+        )
+
+    @classmethod
+    def from_harness_profile(cls, profile: HarnessProfile) -> HarnessProfileConfig:
+        """Export a runtime `HarnessProfile` back to declarative config.
+
+        String-form `excluded_middleware` entries are preserved as-is.
+        Class-form entries serialize as either a preferred public alias string
+        or as `module:Class` import refs.
+
+        Args:
+            profile: Runtime profile to export.
+
+        Returns:
+            A declarative `HarnessProfileConfig`.
+
+        Raises:
+            ValueError: If `profile` contains runtime-only state such as
+                non-empty `extra_middleware`, or if a class-form
+                `excluded_middleware` entry cannot be expressed as an import
+                ref.
+            TypeError: If `tool_description_overrides` contains a non-string
+                key or value.
+        """
+        extra = profile.extra_middleware
+        if callable(extra) or (isinstance(extra, tuple) and extra):
+            msg = (
+                "HarnessProfileConfig.from_harness_profile() cannot export "
+                "`extra_middleware`. Middleware instances and factories are "
+                "runtime-only; keep them in `HarnessProfile`."
+            )
+            raise ValueError(msg)
+
+        return cls(
+            base_system_prompt=profile.base_system_prompt,
+            system_prompt_suffix=profile.system_prompt_suffix,
+            tool_description_overrides=_coerce_str_mapping(
+                dict(profile.tool_description_overrides),
+                "tool_description_overrides",
+            ),
+            excluded_tools=profile.excluded_tools,
+            excluded_middleware=frozenset(_serialize_runtime_excluded_middleware_entry(entry) for entry in profile.excluded_middleware),
+            general_purpose_subagent=profile.general_purpose_subagent,
+        )
+
+
+@dataclass(frozen=True)
+class HarnessProfile:
+    """Runtime configuration for deep agent behavior.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
+
+    A `HarnessProfile` describes prompt-assembly, tool visibility, middleware,
     and default-subagent adjustments applied by `create_deep_agent` once a
     chat model has been constructed. Profiles are registered via
     `register_harness_profile` under a provider key (`"openai"`) or a full
@@ -97,6 +374,10 @@ class HarnessProfile:
     phase (e.g. `init_chat_model` kwargs, pre-init side effects). Concerns
     that shape *how the model is built* belong in `ProviderProfile`; concerns
     that shape *how the agent runs* belong here.
+
+    For YAML/JSON-backed profiles, use `HarnessProfileConfig`, which contains
+    only the declarative subset and can be passed directly to
+    `register_harness_profile`.
 
     The `extra_middleware` field expects
     `langchain.agents.middleware.types.AgentMiddleware` instances or a
@@ -177,34 +458,47 @@ class HarnessProfile:
     tools.
     """
 
-    excluded_middleware: frozenset[type[AgentMiddleware]] = frozenset()
-    """Middleware classes to strip from every middleware stack this profile applies to.
+    excluded_middleware: frozenset[type[AgentMiddleware] | str] = frozenset()
+    """Middleware to strip from every stack this profile applies to.
 
-    Matched by exact class, not subclass — consistent with how
-    `extra_middleware` merges slot-by-slot on concrete type. A filter runs
-    over the fully assembled stack before the agent is compiled, so the
-    excluded classes are removed regardless of which layer added them
-    (including instances supplied via `create_deep_agent(middleware=[...])`).
+    Entries may be a middleware *class* (matched by exact type, not subclass —
+    consistent with `extra_middleware` slot merging) or a *string* matching
+    `AgentMiddleware.name` exactly. `.name` defaults to the class's
+    `__name__` but is overridable, so `{"TodoListMiddleware"}` and
+    `{TodoListMiddleware}` behave identically for stock middleware. String
+    form is useful for YAML/JSON-loaded profiles and for middleware whose
+    class isn't part of the public import surface (e.g.
+    `"SummarizationMiddleware"` drops the private
+    `_DeepAgentsSummarizationMiddleware` via its public alias).
 
-    When profiles are merged, exclusions are additive: if a provider profile
-    excludes `SummarizationMiddleware` and an exact-model profile excludes
-    `AnthropicPromptCachingMiddleware`, the resolved profile strips both.
+    The filter runs over the fully assembled stack, so exclusions remove
+    middleware regardless of which layer added it — including instances
+    passed via `create_deep_agent(middleware=[...])`. Merged profiles union
+    their exclusion sets; mixed class/string sets are allowed. For config-file
+    usage, `HarnessProfileConfig` stores the same exclusions using string names
+    only.
 
-    !!! warning
+    !!! tip "Stable string aliases for private impl classes"
 
-        Exclusion applies to user-supplied middleware too. Passing a class here
-        and also adding an instance of that class via
-        `create_deep_agent(middleware=[...])` results in the instance being
-        filtered out — specify the class in one place only.
+        Middleware whose concrete class name differs from the public alias
+        users would type (e.g. `_DeepAgentsSummarizationMiddleware` vs.
+        `"SummarizationMiddleware"`) can expose a `serialized_name: ClassVar[str]`
+        for stable config-file round-trips. `.name` on the instance returns
+        the alias so string-form exclusion matches, and
+        `HarnessProfileConfig.from_harness_profile` serializes the class back
+        to that alias rather than to a private `module:Class` path.
 
-    !!! warning
+    !!! warning "Restrictions"
 
-        A small set of scaffolding classes that deep agents rely on —
-        `FilesystemMiddleware`, `SubAgentMiddleware`, and `_PermissionMiddleware`
-        — cannot be excluded. Listing one of them here raises `ValueError`
-        when `create_deep_agent` resolves the profile. Use this field to drop
-        optional layers (summarization, prompt caching) or middleware you
-        introduced yourself.
+        - String grammar is checked at construction: empty, multi-colon,
+            and underscore-prefixed plain names raise `ValueError`
+            immediately. Use the `module:Class` import-ref form to exclude a
+            private middleware class.
+        - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`,
+            `_PermissionMiddleware`) cannot be excluded as class or as their
+            `.name` string (raises `ValueError` at assembly time).
+        - Entries that match no middleware in the assembled stack are
+            rejected as likely typos or stale profiles.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
@@ -223,7 +517,8 @@ class HarnessProfile:
     silently or violate the caller's explicit configuration.
 
     May be a static sequence or a zero-arg factory that returns one. Use a
-    factory when middleware instances should not be shared across stacks.
+    factory when middleware instances should not be shared across stacks. This
+    field is runtime-only and intentionally absent from `HarnessProfileConfig`.
     """
 
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
@@ -271,6 +566,198 @@ class HarnessProfile:
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
+        for entry in self.excluded_middleware:
+            if isinstance(entry, str):
+                _validate_config_middleware_string(entry, "excluded_middleware")
+
+
+_HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))
+"""Top-level keys accepted by `HarnessProfileConfig.from_dict`.
+
+Derived from `HarnessProfileConfig`'s dataclass fields so the set stays in
+sync automatically. Runtime-only fields such as `extra_middleware` are
+absent because they don't exist on `HarnessProfileConfig`.
+"""
+
+_GENERAL_PURPOSE_SUBAGENT_KEYS: frozenset[str] = frozenset(f.name for f in fields(GeneralPurposeSubagentProfile))
+"""Keys accepted by `GeneralPurposeSubagentProfile.from_dict`.
+
+Derived from the dataclass fields for drift-free parity with the class.
+"""
+
+
+def _coerce_str_or_none(value: object, field_name: str) -> str | None:
+    """Validate that `value` is a string or `None` for dict-loaded string fields."""
+    if value is None or isinstance(value, str):
+        return value
+    msg = f"`{field_name}` must be str or None, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _coerce_str_mapping(value: object, field_name: str) -> dict[str, str]:
+    """Validate that `value` is a `str -> str` mapping (or `None`) and return a plain dict."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        msg = f"`{field_name}` must be a mapping, got {type(value).__name__}"
+        raise TypeError(msg)
+    out: dict[str, str] = {}
+    for key, val in value.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            msg = f"`{field_name}` keys and values must be strings"
+            raise TypeError(msg)
+        out[key] = val
+    return out
+
+
+def _coerce_frozen_strset(value: object, field_name: str) -> frozenset[str]:
+    """Validate that `value` is an iterable of strings (or `None`)."""
+    if value is None:
+        return frozenset()
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        msg = f"`{field_name}` must be a list/set of strings, got {type(value).__name__}"
+        raise TypeError(msg)
+    entries: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            msg = f"`{field_name}` entries must be strings, got {type(entry).__name__} ({entry!r})"
+            raise TypeError(msg)
+        entries.append(entry)
+    return frozenset(entries)
+
+
+def _coerce_general_purpose_subagent(value: object) -> GeneralPurposeSubagentProfile | None:
+    """Validate and construct a `GeneralPurposeSubagentProfile` from a dict value."""
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return GeneralPurposeSubagentProfile.from_dict(cast("Mapping[str, Any]", value))
+    msg = f"`general_purpose_subagent` must be a mapping, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
+def _validate_config_middleware_string(entry: object, field_name: str) -> None:
+    """Validate grammar of a string `excluded_middleware` entry.
+
+    Runs at `HarnessProfile` / `HarnessProfileConfig` construction so malformed
+    entries fail immediately rather than at assembly time. Checks:
+
+    - Entry is a non-empty string.
+    - Plain-name entries (no `:`) do not start with `_`. Private middleware
+        classes live outside the public exclusion surface; use a
+        `module:Class` import ref if exclusion is genuinely required.
+    - Import-ref entries (`module:Class`) have exactly one `:` with non-empty
+        halves. Multi-colon and empty-half forms are never valid.
+
+    Scaffolding-class/name rejection and matched-something coverage are
+    deliberately NOT checked here — those need the fully assembled middleware
+    stack.
+
+    Args:
+        entry: Candidate entry. Must be a string to pass.
+        field_name: Field being validated, used for error messages.
+
+    Raises:
+        TypeError: If `entry` is not a string.
+        ValueError: If `entry` violates any of the grammar rules above.
+    """
+    if not isinstance(entry, str):
+        msg = f"`{field_name}` entries must be strings, got {type(entry).__name__} ({entry!r})"
+        raise TypeError(msg)
+    if not entry or entry.isspace():
+        msg = f"`{field_name}` entries must be non-empty, non-whitespace strings"
+        raise ValueError(msg)
+    colon_count = entry.count(":")
+    if colon_count == 0:
+        if entry.startswith("_"):
+            msg = (
+                f"`{field_name}` plain-name entry {entry!r} cannot start with '_' "
+                f"(underscore-prefixed names refer to private middleware classes "
+                f"not part of the public exclusion surface — use a `module:Class` "
+                f"import ref to exclude a private middleware)."
+            )
+            raise ValueError(msg)
+        return
+    if colon_count > 1:
+        msg = f"`{field_name}` import refs must have the form `module:Class` with exactly one ':', got {entry!r}"
+        raise ValueError(msg)
+    module_name, _, qualname = entry.partition(":")
+    if not module_name or not qualname:
+        msg = f"`{field_name}` import refs must use the `module:Class` format with non-empty module and class halves, got {entry!r}"
+        raise ValueError(msg)
+
+
+def _split_middleware_import_ref(value: str) -> tuple[str, str] | None:
+    """Return `module, qualname` for `module:Class` refs, else `None`.
+
+    Grammar is already validated by `_validate_config_middleware_string` at
+    construction, so this helper is side-effect-free parsing.
+    """
+    module_name, sep, qualname = value.partition(":")
+    if not sep:
+        return None
+    return module_name, qualname
+
+
+def _resolve_qualname(root: object, qualname: str, *, ref: str) -> object:
+    """Resolve a dotted qualname relative to `root`."""
+    obj = root
+    for part in qualname.split("."):
+        try:
+            obj = getattr(obj, part)
+        except AttributeError as exc:
+            msg = f"Could not resolve middleware ref {ref!r}: missing attribute {part!r}"
+            raise ValueError(msg) from exc
+    return obj
+
+
+def _resolve_config_excluded_middleware_entry(
+    entry: str,
+) -> type[AgentMiddleware] | str:
+    """Resolve config-file `excluded_middleware` entries to runtime form."""
+    ref = _split_middleware_import_ref(entry)
+    if ref is None:
+        return entry
+
+    module_name, qualname = ref
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        msg = f"Could not import middleware ref {entry!r}: {type(exc).__name__}: {exc}"
+        raise ValueError(msg) from exc
+
+    obj = _resolve_qualname(module, qualname, ref=entry)
+
+    from langchain.agents.middleware.types import AgentMiddleware as RuntimeAgentMiddleware  # noqa: PLC0415
+
+    if not isinstance(obj, type) or not issubclass(obj, RuntimeAgentMiddleware):
+        msg = f"Middleware ref {entry!r} must resolve to an AgentMiddleware class, got {type(obj).__name__}"
+        raise TypeError(msg)
+    return cast("type[AgentMiddleware]", obj)
+
+
+def _serialize_runtime_excluded_middleware_entry(
+    entry: type[AgentMiddleware] | str,
+) -> str:
+    """Serialize a runtime `excluded_middleware` entry back to config form."""
+    if isinstance(entry, str):
+        return entry
+
+    alias = getattr(entry, "serialized_name", None)
+    if isinstance(alias, str) and alias:
+        return alias
+
+    module_name = entry.__module__
+    qualname = entry.__qualname__
+    if module_name == "__main__" or "<locals>" in qualname:
+        msg = (
+            "HarnessProfileConfig.from_harness_profile() cannot serialize "
+            f"`excluded_middleware` class {entry.__name__!r}. Only module-level "
+            "middleware classes can be written to config files; use a string "
+            "name instead."
+        )
+        raise ValueError(msg)
+    return f"{module_name}:{qualname}"
 
 
 _HARNESS_PROFILES: dict[str, HarnessProfile] = {}
@@ -282,14 +769,26 @@ then provider prefix, then no match (returns `None`).
 """
 
 
-def register_harness_profile(key: str, profile: HarnessProfile) -> None:
-    """Register a `HarnessProfile` for a provider or specific model.
+def _coerce_runtime_harness_profile(profile: HarnessProfile | HarnessProfileConfig) -> HarnessProfile:
+    """Convert declarative config objects to runtime `HarnessProfile` objects."""
+    if isinstance(profile, HarnessProfileConfig):
+        return profile.to_harness_profile()
+    return profile
+
+
+def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileConfig) -> None:
+    """Register a harness profile for a provider or specific model.
 
     !!! beta
 
         `deepagents.profiles` exposes beta APIs that may receive minor changes in
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
+
+    Accepts either a runtime `HarnessProfile` or a declarative
+    `HarnessProfileConfig`. Config objects are converted to runtime profiles
+    at registration time so YAML/JSON-backed callers do not need a separate
+    manual conversion step.
 
     Deep Agents ships no built-in harness profiles, so the first call under
     `key` acts as a fresh registration. Subsequent calls are **additive**: the
@@ -319,15 +818,20 @@ def register_harness_profile(key: str, profile: HarnessProfile) -> None:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
-        profile: The harness profile to register.
+        profile: The runtime harness profile or declarative config to register.
 
     Raises:
         ValueError: If `key` is empty, contains more than one `:`, or has an
             empty provider/model half.
     """
     validate_profile_key(key)
+    profile = _coerce_runtime_harness_profile(profile)
     existing = _HARNESS_PROFILES.get(key)
     if existing is not None:
+        logger.info(
+            "Merging HarnessProfile under %r on top of existing registration; set and middleware fields union, scalar fields prefer the new value.",
+            key,
+        )
         profile = _merge_profiles(existing, profile)
     _HARNESS_PROFILES[key] = profile
 

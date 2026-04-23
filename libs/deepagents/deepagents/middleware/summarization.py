@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -211,6 +211,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
+    serialized_name: ClassVar[str] = "SummarizationMiddleware"
+    """Preferred config-file reference for class-form exclusion export."""
+
+    @property
+    def name(self) -> str:
+        """Report the public `SummarizationMiddleware` alias for string-form exclusion.
+
+        The impl class is private (`_DeepAgentsSummarizationMiddleware`) but
+        ships under the public `SummarizationMiddleware` name, so
+        `excluded_middleware={"SummarizationMiddleware"}` targets this class.
+        Subclasses fall back to `type(self).__name__` so user-authored
+        extensions don't silently inherit the alias.
+        """
+        if type(self) is _DeepAgentsSummarizationMiddleware:
+            return "SummarizationMiddleware"
+        return type(self).__name__
 
     def __init__(
         self,

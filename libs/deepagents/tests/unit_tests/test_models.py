@@ -16,9 +16,11 @@ from deepagents._models import (
     model_matches_spec,
     resolve_model,
 )
+from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
+    HarnessProfileConfig,
     ProviderProfile,
     register_harness_profile,
     register_provider_profile,
@@ -673,6 +675,38 @@ class TestRegisterHarnessProfileAdditive:
             profile = HarnessProfile(system_prompt_suffix="only one")
             register_harness_profile("novel_harness", profile)
             assert _get_harness_profile("novel_harness") is profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_accepts_harness_profile_config(self) -> None:
+        """Declarative config objects are converted at registration time."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "config_harness",
+                HarnessProfileConfig(
+                    system_prompt_suffix="from config",
+                    excluded_middleware=frozenset({"SummarizationMiddleware"}),
+                ),
+            )
+            assert _get_harness_profile("config_harness") == HarnessProfile(
+                system_prompt_suffix="from config",
+                excluded_middleware=frozenset({"SummarizationMiddleware"}),
+            )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_config_import_refs_convert_to_exact_class_exclusions(self) -> None:
+        """Config-file import refs resolve to class-form runtime exclusions."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "import_ref_harness",
+                HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"})),
+            )
+            assert _get_harness_profile("import_ref_harness") == HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware}))
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

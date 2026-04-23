@@ -15,6 +15,8 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._version import __version__
 from deepagents.graph import (
+    _REQUIRED_MIDDLEWARE_CLASSES,
+    _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
     _apply_tool_description_overrides,
     _harness_profile_for_model,
@@ -27,6 +29,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -796,7 +799,12 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_preserves_subclass(self) -> None:
-        """Exclusion matches on exact type, so subclasses of an excluded class are kept."""
+        """Exclusion matches on exact type, so subclasses of an excluded class are kept.
+
+        Passes both the base class and a subclass instance so the exclusion
+        entry has something to match — required by the coverage guard.
+        """
+        base_instance = _StubMW()
         subclass_instance = _StubSubMW()
         original = dict(_HARNESS_PROFILES)
         try:
@@ -814,10 +822,11 @@ class TestMiddlewareExclusionWiring:
             ):
                 create_deep_agent(
                     model="excmwprov:some-model",
-                    middleware=[subclass_instance],
+                    middleware=[base_instance, subclass_instance],
                 )
 
             mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is base_instance for m in mw_stack), "exact base class should be filtered"
             assert any(m is subclass_instance for m in mw_stack), "subclass instance should be preserved"
         finally:
             _HARNESS_PROFILES.clear()
@@ -1052,6 +1061,346 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestScaffoldingViolationAggregation:
+    """Multiple scaffolding exclusions surface together in a single `ValueError`."""
+
+    def test_class_and_name_violations_report_together(self) -> None:
+        """Mixing class-form and name-form scaffolding entries reports both in one message."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "multiviol",
+                HarnessProfile(excluded_middleware=frozenset({FilesystemMiddleware, "SubAgentMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="scaffolding") as excinfo,
+            ):
+                create_deep_agent(model="multiviol:some-model")
+            message = str(excinfo.value)
+            assert "FilesystemMiddleware" in message
+            assert "SubAgentMiddleware" in message
+            assert "scaffolding" in message
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestRequiredMiddlewareNamesCoverage:
+    """Drift guard: `_REQUIRED_MIDDLEWARE_NAMES` must cover every required class's `.name`.
+
+    `_REQUIRED_MIDDLEWARE_NAMES` is a hand-maintained frozenset of the string
+    forms that should be rejected by the scaffolding guard. If a future
+    refactor renames a required class or overrides its `.name` without
+    updating the names constant, string-form exclusion would silently bypass
+    the guard. This test catches that drift.
+    """
+
+    def test_every_required_class_name_is_listed(self) -> None:
+        """Every `_REQUIRED_MIDDLEWARE_CLASSES` entry's `.name` must appear in `_REQUIRED_MIDDLEWARE_NAMES`.
+
+        `.name` is a property on `AgentMiddleware` that doesn't require
+        `__init__` to have run, so `__new__` gives us the reportable name
+        without invoking constructor arguments we don't have here.
+        """
+        for cls in _REQUIRED_MIDDLEWARE_CLASSES:
+            instance = cls.__new__(cls)
+            assert instance.name in _REQUIRED_MIDDLEWARE_NAMES, (
+                f"{cls.__name__}.name={instance.name!r} is not in _REQUIRED_MIDDLEWARE_NAMES "
+                f"({sorted(_REQUIRED_MIDDLEWARE_NAMES)!r}) — string-form exclusion would "
+                f"silently bypass the scaffolding guard. Add it to _REQUIRED_MIDDLEWARE_NAMES."
+            )
+
+
+class PublicStubMW(AgentMiddleware[Any, Any, Any]):
+    """Middleware with a public (non-underscore-prefixed) class name.
+
+    String-form `excluded_middleware` matches against `AgentMiddleware.name`,
+    which defaults to the class's `__name__`. The underscore-prefix guard
+    rejects private-looking names, so string-form exclusion tests need a stub
+    class whose name does not start with `_`.
+    """
+
+
+class OtherPublicStubMW(AgentMiddleware[Any, Any, Any]):
+    """Second public-named stub used to assert coexistence with `PublicStubMW`."""
+
+
+class TestStringFormExcludedMiddleware:
+    """End-to-end tests that string-form entries in `excluded_middleware` filter the stack.
+
+    String entries match `AgentMiddleware.name` exactly (no normalization), so
+    a caller can exclude middleware without importing its class — useful for
+    profiles loaded from config files or for excluding middleware injected
+    internally by `create_deep_agent`.
+    """
+
+    def test_string_entry_excludes_user_middleware_by_name(self) -> None:
+        """An exact `.name` match drops the corresponding user middleware."""
+        dropped = PublicStubMW()
+        kept = OtherPublicStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"PublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_matches_overridden_name_on_summarization(self) -> None:
+        """`"SummarizationMiddleware"` drops `_DeepAgentsSummarizationMiddleware` via the `.name` override."""
+        dropped = _DeepAgentsSummarizationMiddleware.__new__(_DeepAgentsSummarizationMiddleware)
+        kept = PublicStubMW()
+        assert dropped.name == "SummarizationMiddleware", "summarization impl must report its public alias via `.name`"
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"SummarizationMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is _DeepAgentsSummarizationMiddleware for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_mixed_class_and_string_entries_both_apply(self) -> None:
+        """A single `excluded_middleware` set may hold both classes and strings."""
+        dropped_by_class = PublicStubMW()
+        dropped_by_string = OtherPublicStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({PublicStubMW, "OtherPublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped_by_class, dropped_by_string],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped_by_class for m in mw_stack)
+            assert not any(m is dropped_by_string for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "forbidden",
+        [
+            "FilesystemMiddleware",
+            "SubAgentMiddleware",
+            "PermissionMiddleware",
+        ],
+    )
+    def test_string_entry_rejects_required_scaffolding(self, forbidden: str) -> None:
+        """Public-name strings of required scaffolding raise `ValueError` at assembly time.
+
+        The private `"_PermissionMiddleware"` spelling is rejected earlier at
+        `HarnessProfile` construction by the grammar guard (see
+        `test_string_entry_rejects_private_underscore_prefixed_names`), so
+        only public names reach the scaffolding check.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "denyprov",
+                HarnessProfile(excluded_middleware=frozenset({forbidden})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="scaffolding"),
+            ):
+                create_deep_agent(model="denyprov:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware", "_PermissionMiddleware"])
+    def test_string_entry_rejects_private_underscore_prefixed_names(self, entry: str) -> None:
+        """Underscore-prefixed string entries raise `ValueError` at construction.
+
+        The grammar guard on `HarnessProfile.__post_init__` rejects private
+        plain names up front. This catches typos eagerly and forces callers
+        who genuinely need to exclude a private middleware to use the
+        `module:Class` import-ref form instead.
+        """
+        with pytest.raises(ValueError, match="cannot start with '_'"):
+            HarnessProfile(excluded_middleware=frozenset({entry}))
+
+    def test_string_entry_unknown_name_raises_coverage_error(self) -> None:
+        """A string entry that matches nothing across any stack raises `ValueError`.
+
+        Typos and stale profiles fail loudly rather than silently no-opping —
+        a typo'd exclusion that silently has no effect is a common source of
+        "my profile isn't working" confusion.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"DoesNotExistMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="strexcprov:some-model", middleware=[PublicStubMW()])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_class_entry_unknown_class_raises_coverage_error(self) -> None:
+        """A class entry that matches nothing across any stack raises `ValueError`.
+
+        The coverage guard is symmetric across class and string forms — class
+        typos (or stale profiles referencing removed middleware) are caught
+        at assembly time alongside string typos.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({_OtherStubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="strexcprov:some-model", middleware=[_StubMW()])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_entry_matching_only_gp_subagent_stack_is_accepted(self) -> None:
+        """An entry matching only the GP subagent stack (not the main stack) is accepted.
+
+        Coverage is aggregated across all stacks the profile applies to, so a
+        profile-level exclusion only has to match somewhere — not in every
+        stack. `TodoListMiddleware` is added unconditionally to the GP
+        subagent stack; excluding it should work even though the main agent
+        also has one (both count as matches).
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"TodoListMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="strexcprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m).__name__ == "TodoListMiddleware" for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_matching_multiple_classes_raises(self) -> None:
+        """A string entry matching multiple distinct classes in one stack raises `ValueError`.
+
+        Protects against accidental collisions where a user-supplied
+        middleware's `.name` happens to match a built-in alias. Dropping
+        every instance under the shared name would silently widen the blast
+        radius beyond what the caller asked for.
+        """
+
+        class ShadowingStubMW(AgentMiddleware[Any, Any, Any]):
+            """Second class whose `.name` collides with `PublicStubMW` by override."""
+
+            name = "PublicStubMW"
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"PublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched multiple distinct"),
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[PublicStubMW(), ShadowingStubMW()],
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_unions_with_class_entry_on_merge(self) -> None:
+        """Re-registering with a string-form entry unions with an existing class-form set."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({PublicStubMW})),
+            )
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"OtherPublicStubMW"})),
+            )
+            merged = _get_harness_profile("strexcprov")
+            assert merged is not None
+            assert merged.excluded_middleware == frozenset({PublicStubMW, "OtherPublicStubMW"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
 class TestSubagentLevelProfileResolution:
     """Tests that sync subagents with their own `model` get their own harness profile applied."""
 
@@ -1111,7 +1460,7 @@ class TestSubagentLevelProfileResolution:
 
 
 class TestProfileMissLogLevel:
-    """Tests that pre-built-model profile-miss logs escalate to info when profiles are registered."""
+    """Tests that pre-built-model profile-miss logs escalate to warning when profiles are registered."""
 
     def test_no_registered_profiles_logs_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
         model = MagicMock(spec=BaseChatModel)
@@ -1124,7 +1473,7 @@ class TestProfileMissLogLevel:
         assert records, "Expected a profile-miss log record"
         assert all(r.levelno == logging.DEBUG for r in records)
 
-    def test_registered_profiles_but_no_match_logs_at_info(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_registered_profiles_but_no_match_logs_at_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
@@ -1136,7 +1485,7 @@ class TestProfileMissLogLevel:
             assert result == HarnessProfile()
             records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
             assert records, "Expected a profile-miss log record"
-            assert all(r.levelno == logging.INFO for r in records)
+            assert all(r.levelno == logging.WARNING for r in records)
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

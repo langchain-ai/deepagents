@@ -218,6 +218,12 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     validate_profile_key(key)
     existing = _PROVIDER_PROFILES.get(key)
     if existing is not None:
+        logger.info(
+            "Merging ProviderProfile under %r on top of existing registration; "
+            "init_kwargs and factory outputs merge with the new profile winning "
+            "on shared keys, and pre_init callables chain.",
+            key,
+        )
         profile = _merge_provider_profiles(existing, profile)
     _PROVIDER_PROFILES[key] = profile
 

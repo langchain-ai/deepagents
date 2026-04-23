@@ -22,6 +22,7 @@ semantics of `register_*_profile`.
 from __future__ import annotations
 
 import logging
+import warnings
 from importlib.metadata import entry_points
 
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
@@ -115,40 +116,27 @@ def _invoke_profile_plugins(group: str) -> None:
     """
     try:
         eps = entry_points(group=group)
-    except Exception:  # noqa: BLE001
-        logger.warning(
-            "Failed to enumerate %s entry points; no third-party plugins in this group will load.",
-            group,
-            exc_info=True,
-        )
+    except Exception as exc:  # noqa: BLE001
+        msg = f"Failed to enumerate {group} entry points; no third-party plugins in this group will load: {type(exc).__name__}: {exc}"
+        logger.warning(msg, exc_info=True)
+        warnings.warn(msg, stacklevel=2)
         return
     for ep in eps:
         try:
             register = ep.load()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Skipping %s plugin %r: failed to load entry point %r.",
-                group,
-                ep.name,
-                ep.value,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"Skipping {group} plugin {ep.name!r}: failed to load entry point {ep.value!r}: {type(exc).__name__}: {exc}"
+            logger.warning(msg, exc_info=True)
+            warnings.warn(msg, stacklevel=2)
             continue
         if not callable(register):
-            logger.warning(
-                "Skipping %s plugin %r: entry point %r did not resolve to a callable.",
-                group,
-                ep.name,
-                ep.value,
-            )
+            msg = f"Skipping {group} plugin {ep.name!r}: entry point {ep.value!r} did not resolve to a callable."
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=2)
             continue
         try:
             register()
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "Skipping %s plugin %r: registration callable %r raised.",
-                group,
-                ep.name,
-                ep.value,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001
+            msg = f"Skipping {group} plugin {ep.name!r}: registration callable {ep.value!r} raised: {type(exc).__name__}: {exc}"
+            logger.warning(msg, exc_info=True)
+            warnings.warn(msg, stacklevel=2)

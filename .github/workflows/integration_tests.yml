@@ -110,6 +110,14 @@ jobs:
         working-directory: ${{ matrix.working-directory }}
         run: uv sync --group test --extra all-sandboxes
 
+      - name: "🎬 Install FFmpeg (deepagents only)"
+        if: matrix.working-directory == 'libs/deepagents'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+
       - name: "🚀 Run Integration Tests"
         working-directory: ${{ matrix.working-directory }}
         env:

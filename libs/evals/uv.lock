@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -1161,7 +1161,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.4" },
-    { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
+    { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "novita", "runloop"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
@@ -1184,6 +1184,7 @@ requires-dist = [
     { name = "langchain-mcp-adapters", specifier = ">=0.2.0,<1.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
+    { name = "langchain-novita", marker = "extra == 'novita'", editable = "../partners/novita" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.0.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.1.12,<2.0.0" },
@@ -1213,7 +1214,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.0.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.10.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "all-sandboxes"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "vertexai", "xai", "all-providers", "agentcore", "daytona", "modal", "novita", "runloop", "all-sandboxes"]
 
 [package.metadata.requires-dev]
 test = [

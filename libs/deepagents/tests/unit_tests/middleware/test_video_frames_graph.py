@@ -70,6 +70,18 @@ class TestCreateDeepAgentVideoMiddleware:
         cache_idx = next(i for i, m in enumerate(middleware) if isinstance(m, AnthropicPromptCachingMiddleware))
         assert video_idx < cache_idx
 
+    def test_accepts_arbitrary_agent_middleware(self) -> None:
+        """Any AgentMiddleware subclass should be accepted, not only VideoFrameExtractionMiddleware."""
+        from langchain.agents.middleware.types import AgentMiddleware  # noqa: PLC0415
+
+        class Dummy(AgentMiddleware): ...
+
+        custom = Dummy()
+        middleware = _capture_middleware(video_frame_extraction=custom)
+        assert custom in middleware
+        # Default VideoFrameExtractionMiddleware should NOT also be installed.
+        assert not any(isinstance(m, VideoFrameExtractionMiddleware) for m in middleware)
+
 
 class TestSubagentVideoMiddleware:
     def _get_subagent_middleware_stacks(self, **kwargs: Any) -> list[list[Any]]:

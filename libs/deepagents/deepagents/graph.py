@@ -235,7 +235,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-    video_frame_extraction: VideoFrameExtractionMiddleware | bool = True,
+    video_frame_extraction: AgentMiddleware | bool = True,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a deep agent.
 
@@ -413,8 +413,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             middleware.
 
             Defaults to `True`, which installs a `VideoFrameExtractionMiddleware`
-            with default parameters. Pass a pre-configured instance to override
-            the defaults, or `False` to skip installation entirely.
+            with default parameters. Pass a pre-configured middleware instance
+            (any `AgentMiddleware` subclass) to override the defaults, or `False`
+            to skip installation entirely.
 
             The middleware is a no-op for video-capable providers (Gemini), so
             leaving it enabled is cheap when the bound model doesn't need it.
@@ -607,7 +608,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if video_frame_extraction is not False:
         video_mw = (
             video_frame_extraction
-            if isinstance(video_frame_extraction, VideoFrameExtractionMiddleware)
+            if isinstance(video_frame_extraction, AgentMiddleware)
             else VideoFrameExtractionMiddleware()
         )
         deepagent_middleware.append(video_mw)

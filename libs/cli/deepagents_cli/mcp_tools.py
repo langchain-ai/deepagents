@@ -9,13 +9,12 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import re
 import shutil
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,7 +28,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class MCPToolInfo:
     """Metadata for a single MCP tool."""
 
@@ -44,7 +43,7 @@ MCPServerStatus = Literal["ok", "unauthenticated", "error"]
 """Load states a configured MCP server can end up in."""
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class MCPServerInfo:
     """Metadata for a configured MCP server and its tools."""
 
@@ -52,10 +51,10 @@ class MCPServerInfo:
     """Server name from the MCP configuration."""
 
     transport: str
-    """Transport identifier — usually `stdio`, `sse`, `http`, or `config`
-    for synthetic entries surfacing a bad config file."""
+    """Transport identifier — `stdio`, `sse`, `http`, or the synthetic
+    `config` value used for entries surfacing a bad config file."""
 
-    tools: list[MCPToolInfo] = field(default_factory=list)
+    tools: tuple[MCPToolInfo, ...] = ()
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
@@ -105,9 +104,10 @@ _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 def _is_transient_session_error(exc: BaseException) -> bool:
     """Return `True` when `exc` signals the MCP session transport is dead.
 
-    Uses `isinstance` against anyio's transport exceptions so anyio
-    renames don't silently break retry classification. Falls back to
-    standard-library socket/pipe errors.
+    The anyio import is guarded so an anyio rename or removal surfaces as
+    an `ImportError` at module import rather than silent mis-classification
+    at runtime. Standard-library socket/pipe/EOF errors are covered as a
+    fallback regardless of anyio's presence.
     """
     try:
         import anyio
@@ -132,7 +132,7 @@ def _is_transient_session_error(exc: BaseException) -> bool:
     )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _MCPSessionEntry:
     """Cached MCP session and its close stack."""
 
@@ -209,6 +209,12 @@ class MCPSessionManager:
     def configure(self, connections: dict[str, Connection]) -> None:
         """Set or validate the connection configs used by this manager.
 
+        When no sessions exist yet, `connections` overwrites the stored
+        configs unconditionally. Once any session has been created, the
+        new `connections` must produce the same signature as the stored
+        ones — otherwise this raises to prevent rebinding live sessions
+        to different transports or auth providers.
+
         Args:
             connections: Connection configs keyed by server name.
 
@@ -275,8 +281,9 @@ class MCPSessionManager:
         """Close all cached sessions concurrently and reject future creation.
 
         Each server's `exit_stack.aclose()` runs with a 5 second timeout so
-        one slow stdio server cannot stall shutdown. Failures are logged
-        and ignored — teardown is best-effort.
+        one slow stdio server cannot stall shutdown. Per-server failures
+        are logged — teardown is best-effort — but `CancelledError` is
+        re-raised so the enclosing `asyncio.gather` still cancels peers.
         """
         if self._closed and not self._entries:
             return
@@ -291,6 +298,8 @@ class MCPSessionManager:
                 logger.warning(
                     "MCP session cleanup for %r timed out after 5s", server_name
                 )
+            except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+                raise
             except Exception:
                 logger.warning(
                     "MCP session cleanup for %r failed",
@@ -613,7 +622,7 @@ def extract_stdio_server_commands(
 
 
 def _filter_project_stdio_servers(config: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of *config* with stdio servers removed."""
+    """Return a copy of `config` with stdio servers removed."""
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
         return config
@@ -738,7 +747,7 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
 
 
 async def _discover_tools(session: ClientSession) -> list[Any]:
-    """Enumerate MCP tools from *session*, paginating until exhausted.
+    """Enumerate MCP tools from `session`, paginating until exhausted.
 
     Args:
         session: Initialized MCP client session.
@@ -814,9 +823,9 @@ def _build_cached_mcp_tool(
         session = await session_manager.get_session(server_name)
         try:
             result = await session.call_tool(original_tool_name, arguments)
-        except ToolException:
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, ToolException):
             raise
-        except BaseException as exc:
+        except Exception as exc:
             reauth = find_reauth_required(exc)
             if reauth is not None:
                 await session_manager.invalidate(
@@ -845,9 +854,14 @@ def _build_cached_mcp_tool(
             retry_session = await session_manager.get_session(server_name)
             try:
                 result = await retry_session.call_tool(original_tool_name, arguments)
-            except ToolException:
+            except (
+                asyncio.CancelledError,
+                KeyboardInterrupt,
+                SystemExit,
+                ToolException,
+            ):
                 raise
-            except BaseException as retry_exc:  # noqa: BLE001  # wraps into ToolException below
+            except Exception as retry_exc:  # noqa: BLE001 - wrapped into ToolException below so the agent sees it
                 try:
                     retry_reauth = find_reauth_required(retry_exc)
                     if retry_reauth is not None:
@@ -859,12 +873,19 @@ def _build_cached_mcp_tool(
                     )
                     raise ToolException(msg) from retry_exc
                 finally:
-                    # Invalidate the retry session last so a failing
-                    # aclose() can't mask the reauth/ToolException above.
-                    with contextlib.suppress(Exception):
+                    # Invalidate the retry session last; log cleanup failure
+                    # so resource leaks are observable.
+                    try:
                         await session_manager.invalidate(
                             server_name,
                             expected_session=retry_session,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to invalidate retry session for %r after "
+                            "tool failure",
+                            server_name,
+                            exc_info=True,
                         )
 
         return _convert_call_tool_result(result)
@@ -909,7 +930,7 @@ async def _load_tools_from_config(
     Raises:
         RuntimeError: If `session_manager` is reconfigured incompatibly with
             sessions already active on it.
-    """  # noqa: DOC502 - surfaced via `MCPSessionManager.configure`
+    """  # noqa: DOC501, DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`; `KeyboardInterrupt` / `SystemExit` / `CancelledError` are re-raised pass-throughs
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StdioConnection,
@@ -1030,18 +1051,31 @@ async def _load_tools_from_config(
             async with create_session(connections[server_name]) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
-        except Exception as exc:  # noqa: BLE001
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
             from deepagents_cli.mcp_auth import find_reauth_required
 
             reauth = find_reauth_required(exc)
-            status: MCPServerStatus = (
-                "unauthenticated" if reauth is not None else "error"
-            )
-            error = str(reauth) if reauth is not None else str(exc)
+            status: MCPServerStatus
+            if reauth is not None:
+                # Tokens existed (we checked above) but the OAuth provider
+                # fell back to interactive reauth — the refresh attempt
+                # failed. Flag unauthenticated so the user is prompted to
+                # re-login, and keep the original exception in the log so
+                # debugging a real provider outage is possible.
+                status = "unauthenticated"
+                error = (
+                    f"{reauth} "
+                    "(token refresh failed; the original error is in debug logs)"
+                )
+            else:
+                status = "error"
+                error = str(exc)
             logger.warning(
-                "MCP server '%s' skipped: tool discovery failed: %s",
+                "MCP server '%s' skipped: tool discovery failed",
                 server_name,
-                exc,
+                exc_info=True,
             )
             server_infos.append(
                 MCPServerInfo(
@@ -1080,10 +1114,10 @@ async def _load_tools_from_config(
             MCPServerInfo(
                 name=server_name,
                 transport=transport,
-                tools=[
+                tools=tuple(
                     MCPToolInfo(name=tool.name, description=tool.description or "")
                     for tool in server_tools
-                ],
+                ),
             )
         )
 
@@ -1146,8 +1180,18 @@ async def resolve_and_load_mcp_tools(
         Tuple of `(tools_list, session_manager, server_infos)`.
 
     Raises:
-        RuntimeError: If the merged MCP config is malformed.
-    """
+        FileNotFoundError: If `explicit_config_path` was provided and points
+            at a missing file.
+        json.JSONDecodeError: If `explicit_config_path` contains invalid
+            JSON.
+        TypeError: If `explicit_config_path` contents have wrong field
+            types.
+        ValueError: If `explicit_config_path` is missing required fields
+            or declares an unsupported transport.
+        RuntimeError: If the merged MCP config is malformed, or header
+            env-var interpolation in `explicit_config_path` references an
+            unset variable.
+    """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
     if no_mcp:
         return [], None, []
 

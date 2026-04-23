@@ -871,12 +871,12 @@ class TestModalScreenCtrlDHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )
@@ -1034,12 +1034,12 @@ class TestModalScreenCtrlCHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )

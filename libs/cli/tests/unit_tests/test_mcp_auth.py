@@ -58,7 +58,7 @@ class TestResolveHeaders:
         assert resolve_headers({"X-Plain": "hello"}) == {"X-Plain": "hello"}
 
 
-def _make_tokens(access_token: str = "at"):  # noqa: ANN202
+def _make_tokens(access_token: str = "at"):
     from mcp.shared.auth import OAuthToken
 
     return OAuthToken(
@@ -69,7 +69,7 @@ def _make_tokens(access_token: str = "at"):  # noqa: ANN202
     )
 
 
-def _make_client_info():  # noqa: ANN202
+def _make_client_info():
     from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
 
     return OAuthClientInformationFull(
@@ -297,8 +297,8 @@ class TestBuildOAuthProvider:
         assert _is_slack_mcp_url("https://deep.slack.com/mcp")
         assert not _is_slack_mcp_url("https://mcp.notion.com/mcp")
 
-    def test_slack_branch_builds_without_error(self) -> None:
-        """Slack branch produces a valid provider."""
+    def test_slack_branch_sets_public_client_metadata(self) -> None:
+        """Slack branch configures a public OAuth client (no token secret)."""
         from deepagents_cli.mcp_auth import build_oauth_provider
 
         provider = build_oauth_provider(
@@ -306,10 +306,13 @@ class TestBuildOAuthProvider:
             server_url="https://slack.com/mcp",
             storage=FileTokenStorage("slack"),
         )
-        assert provider is not None
+        metadata = provider.context.client_metadata
+        assert metadata.token_endpoint_auth_method == "none"
+        assert metadata.redirect_uris is not None
+        assert [str(uri) for uri in metadata.redirect_uris] == ["https://localhost/"]
 
-    def test_generic_branch_builds_without_error(self) -> None:
-        """Non-Slack URLs flow through the generic metadata path."""
+    def test_generic_branch_uses_localhost_callback(self) -> None:
+        """Non-Slack URLs use the generic `http://localhost/callback` redirect."""
         from deepagents_cli.mcp_auth import build_oauth_provider
 
         provider = build_oauth_provider(
@@ -317,7 +320,15 @@ class TestBuildOAuthProvider:
             server_url="https://mcp.notion.com/mcp",
             storage=FileTokenStorage("notion"),
         )
-        assert provider is not None
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        assert [str(uri) for uri in metadata.redirect_uris] == [
+            "http://localhost/callback"
+        ]
+        # Generic (non-Slack) providers default to client-secret auth, so the
+        # Slack-only `token_endpoint_auth_method="none"` override must not
+        # leak into this branch.
+        assert metadata.token_endpoint_auth_method != "none"
 
     async def test_non_interactive_reauth_handlers_raise(self) -> None:
         """In non-interactive mode, both OAuth handlers raise re-auth errors."""
@@ -682,3 +693,241 @@ class TestLogin:
                     "headers": {"Authorization": "Bearer ${MISSING_VAR}"},
                 },
             )
+
+    async def test_github_login_runs_device_flow_and_seeds_client(self) -> None:
+        """GitHub URLs short-circuit to device flow and persist client info."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_cli.mcp_auth import _GITHUB_MCP_CLIENT_ID, login
+
+        async def _fake_device_flow(
+            *,
+            device_code_url: str,
+            token_url: str,
+            client_id: str,
+            scope: str | None = None,
+        ) -> OAuthToken:
+            del device_code_url, token_url, client_id, scope
+            return OAuthToken(access_token="gh-tok", token_type="Bearer")
+
+        handshake_called = False
+
+        async def _handshake_should_not_run(connections: dict) -> None:
+            del connections
+            nonlocal handshake_called
+            handshake_called = True
+
+        with (
+            patch(
+                "deepagents_cli.mcp_auth._run_device_flow",
+                _fake_device_flow,
+            ),
+            patch(
+                "deepagents_cli.mcp_auth._drive_handshake",
+                _handshake_should_not_run,
+            ),
+        ):
+            await login(
+                server_name="github",
+                server_config={
+                    "type": "http",
+                    "url": "https://api.githubcopilot.com/mcp/",
+                    "auth": "oauth",
+                },
+            )
+
+        assert handshake_called is False, (
+            "GitHub login must use device flow, not the authorization-code handshake."
+        )
+        storage = FileTokenStorage(
+            "github",
+            server_url="https://api.githubcopilot.com/mcp/",
+        )
+        tokens = await storage.get_tokens()
+        client_info = await storage.get_client_info()
+        assert tokens is not None
+        assert tokens.access_token == "gh-tok"
+        assert client_info is not None
+        assert client_info.client_id == _GITHUB_MCP_CLIENT_ID
+
+    async def test_slack_login_routes_team_into_redirect_url(self) -> None:
+        """Slack login threads the entered team id into the interactive URL."""
+        from deepagents_cli.mcp_auth import login
+
+        captured_urls: list[str] = []
+
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            provider = connection["auth"]
+            redirect = provider.context.redirect_handler
+            await redirect("https://slack.com/oauth/v2/authorize?client_id=x")
+            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            from mcp.shared.auth import OAuthToken
+
+            await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
+
+        async def _fake_prompt_team() -> str | None:
+            return "T01234567"
+
+        with (
+            patch(
+                "deepagents_cli.mcp_auth._prompt_slack_team",
+                _fake_prompt_team,
+            ),
+            patch(
+                "deepagents_cli.mcp_auth._drive_handshake",
+                _fake_handshake,
+            ),
+            patch(
+                "builtins.print",
+                lambda *args, **_kwargs: captured_urls.extend(
+                    s for s in args if isinstance(s, str)
+                ),
+            ),
+        ):
+            await login(
+                server_name="slack",
+                server_config={
+                    "type": "http",
+                    "url": "https://slack.com/mcp",
+                    "auth": "oauth",
+                },
+            )
+
+        joined = "\n".join(captured_urls)
+        assert "team=T01234567" in joined
+
+    async def test_slack_preseed_is_idempotent(self) -> None:
+        """Preseeding Slack client info a second time reads rather than writes."""
+        from deepagents_cli.mcp_auth import (
+            _SLACK_MCP_CLIENT_ID,
+            _preseed_slack_client_info,
+        )
+
+        storage = FileTokenStorage(
+            "slack",
+            server_url="https://slack.com/mcp",
+        )
+        await _preseed_slack_client_info(storage)
+        first = await storage.get_client_info()
+        assert first is not None
+        first_mtime = storage.path.stat().st_mtime_ns
+
+        # Calling a second time must not rewrite the token file.
+        await _preseed_slack_client_info(storage)
+        second = await storage.get_client_info()
+        assert second is not None
+        assert second.client_id == _SLACK_MCP_CLIENT_ID
+        assert storage.path.stat().st_mtime_ns == first_mtime
+
+
+@pytest.mark.usefixtures("fake_home", "no_sleep")
+class TestDeviceFlowTimeout:
+    """Timeout-path coverage for `_run_device_flow`."""
+
+    async def test_device_flow_times_out_when_pending_forever(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The device-code deadline expires when polling never resolves."""
+        import httpx
+
+        from deepagents_cli.mcp_auth import _run_device_flow
+
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if "device" in str(request.url):
+                return httpx.Response(
+                    200,
+                    json={
+                        "device_code": "d",
+                        "user_code": "U-1",
+                        "verification_uri": "https://example/d",
+                        # expires_in=0 means the deadline fires on the
+                        # first loop iteration after sleep returns.
+                        "expires_in": 0,
+                        "interval": 0,
+                    },
+                )
+            return httpx.Response(200, json={"error": "authorization_pending"})
+
+        transport = httpx.MockTransport(_handler)
+        real_client = httpx.AsyncClient
+
+        def _patched(**kw: Any) -> httpx.AsyncClient:
+            kw.pop("transport", None)
+            return real_client(transport=transport, **kw)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _patched)
+
+        with pytest.raises(RuntimeError, match="Device flow timed out"):
+            await _run_device_flow(
+                device_code_url="https://example/device",
+                token_url="https://example/token",
+                client_id="cid",
+            )
+
+    async def test_device_code_response_missing_required_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider response missing `verification_uri` surfaces as RuntimeError."""
+        import httpx
+
+        from deepagents_cli.mcp_auth import _run_device_flow
+
+        def _handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"device_code": "d", "user_code": "U", "expires_in": 30},
+            )
+
+        transport = httpx.MockTransport(_handler)
+        real_client = httpx.AsyncClient
+
+        def _patched(**kw: Any) -> httpx.AsyncClient:
+            kw.pop("transport", None)
+            return real_client(transport=transport, **kw)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _patched)
+
+        with pytest.raises(RuntimeError, match="missing required fields"):
+            await _run_device_flow(
+                device_code_url="https://example/device",
+                token_url="https://example/token",
+                client_id="cid",
+            )
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestFileTokenStorageWriteFailures:
+    """Partial-write failure cleanup for `FileTokenStorage._write`."""
+
+    async def test_replace_failure_removes_tmp_and_leaves_primary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cleanup when `tmp.replace` fails mid-write.
+
+        The `.tmp` file must be unlinked and any existing primary token
+        file must remain untouched so a failed write never clobbers
+        existing credentials.
+        """
+        storage = FileTokenStorage("acme")
+        await storage.set_client_info(_make_client_info())
+        original_bytes = storage.path.read_bytes()
+
+        real_replace = Path.replace
+
+        def _failing_replace(self: Path, target: Path | str) -> None:
+            if self.suffix == ".tmp":
+                msg = "simulated"
+                raise OSError(msg)
+            real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", _failing_replace)
+
+        with pytest.raises(OSError, match="simulated"):
+            await storage.set_tokens(_make_tokens("new"))
+
+        tmp = storage.path.with_suffix(storage.path.suffix + ".tmp")
+        assert not tmp.exists(), ".tmp must be cleaned up after replace failure"
+        assert storage.path.read_bytes() == original_bytes, (
+            "primary token file must not be clobbered when write fails"
+        )

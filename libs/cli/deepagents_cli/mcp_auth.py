@@ -1,15 +1,27 @@
-"""OAuth + bearer-token auth helpers for MCP servers."""
+"""OAuth login flow and token storage for MCP servers.
+
+Note: `mcp.shared.auth.OAuthToken` is a pydantic model whose default
+`repr` includes the access and refresh token strings verbatim. Never
+log one via `%r`, `str()`, f-string interpolation, or
+`logger.exception`/`exc_info` on an exception that wraps one — the
+tokens will land in stdout, log files, and error-reporting
+pipelines. Pass only structural facts ("refreshed token for
+server X") rather than the token itself.
+"""
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from pathlib import Path
+from typing import Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider, TokenStorage
@@ -19,6 +31,66 @@ from mcp.shared.auth import (
     OAuthClientMetadata,
     OAuthToken,
 )
+from pydantic import BaseModel, ConfigDict, ValidationError
+
+
+class _DeviceCodeResponse(BaseModel):
+    """RFC 8628 §3.2 device-authorization response payload."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    device_code: str
+    """Opaque device code the client polls with at the token endpoint."""
+
+    user_code: str
+    """Short code the user enters in the browser to approve the device."""
+
+    verification_uri: str
+    """Provider URL the user visits to complete device authorization."""
+
+    expires_in: int
+    """Lifetime of the device code in seconds."""
+
+    interval: int = 5
+    """Recommended polling interval in seconds when the provider omits one."""
+
+
+class McpServerSpec(TypedDict, total=False):
+    """Parsed MCP server config entry.
+
+    All keys are optional at the type level because `mcpServers` entries
+    are validated shape-first by `_validate_server_config` rather than by
+    the type system. This TypedDict documents the accepted shape for
+    readers and static checkers — validate the fields at use sites before
+    relying on them.
+    """
+
+    auth: Literal["oauth"]
+    """Authentication mode for remote MCP servers that require OAuth login."""
+
+    type: Literal["stdio", "http", "sse"]
+    """Transport type when the config uses the `type` key."""
+
+    transport: Literal["stdio", "http", "sse"]
+    """Transport type when the config uses the `transport` key."""
+
+    url: str
+    """Remote endpoint URL for HTTP or SSE MCP servers."""
+
+    headers: dict[str, str]
+    """Optional request headers sent when connecting to the remote server."""
+
+    command: str
+    """Executable for stdio MCP servers."""
+
+    args: list[str]
+    """Command-line arguments passed to the stdio server executable."""
+
+    env: dict[str, str]
+    """Environment overrides for launching a stdio MCP server."""
+
+
+logger = logging.getLogger(__name__)
 
 _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _STORAGE_VERSION = 1
@@ -34,6 +106,23 @@ _GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
 
 
+class _OAuthFlavor(Enum):
+    """Provider-specific OAuth dispatch label.
+
+    Each flavor encodes a set of provider facts — whether login uses the
+    Authorization Code paste-back dance vs. the Device Authorization
+    Grant, the hardcoded client ID (if any), redirect URI requirements,
+    and whether extra auth-URL params are accepted. The login flow
+    branches on this enum instead of re-running URL predicates at every
+    site, and new flavors are added by extending this one enum plus
+    `_detect_flavor`.
+    """
+
+    SLACK = "slack"
+    GITHUB_DEVICE = "github_device"
+    GENERIC = "generic"
+
+
 def _is_slack_mcp_url(url: str) -> bool:
     """Return `True` when `url` points at a Slack-hosted MCP endpoint."""
     host = urlparse(url).hostname or ""
@@ -45,17 +134,40 @@ def _is_github_mcp_url(url: str) -> bool:
     return (urlparse(url).hostname or "") == "api.githubcopilot.com"
 
 
-def _prompt_slack_team() -> str | None:
+def _detect_flavor(server_url: str) -> _OAuthFlavor:
+    """Classify `server_url` into a provider-specific OAuth dispatch label.
+
+    Args:
+        server_url: Remote MCP endpoint URL.
+
+    Returns:
+        The matching `_OAuthFlavor` (`GENERIC` when no special-case fires).
+    """
+    if _is_slack_mcp_url(server_url):
+        return _OAuthFlavor.SLACK
+    if _is_github_mcp_url(server_url):
+        return _OAuthFlavor.GITHUB_DEVICE
+    return _OAuthFlavor.GENERIC
+
+
+async def _prompt_slack_team() -> str | None:
     """Interactively ask the user which Slack workspace to install into.
+
+    Runs the blocking `input()` in a worker thread so `login()` stays safe
+    to await from an already-running event loop (Textual worker, IPython).
 
     Returns:
         The entered Slack team ID, or `None` if the prompt was left blank.
     """
-    raw = input(
+    import asyncio
+
+    raw = await asyncio.to_thread(
+        input,
         "Slack team ID to install the app into "
-        "(e.g. T01234567 — leave blank to pick on Slack's page): "
-    ).strip()
-    return raw or None
+        "(e.g. T01234567 — leave blank to pick on Slack's page): ",
+    )
+    stripped = raw.strip()
+    return stripped or None
 
 
 def resolve_headers(
@@ -124,7 +236,12 @@ def _tokens_dir() -> Path:
 
 
 def _token_file_stem(server_name: str, server_url: str | None) -> str:
-    """Return a path-safe storage stem for this server identity."""
+    """Return a path-safe storage stem for this server identity.
+
+    Safety of the stem depends on `server_name` already having passed
+    `_SERVER_NAME_RE` in `_validate_server_config` — the URL is hashed
+    to a hex digest, so only the server name can carry path separators.
+    """
     if server_url is None:
         return server_name
     digest = hashlib.sha256(server_url.encode("utf-8")).hexdigest()[:16]
@@ -223,14 +340,24 @@ class FileTokenStorage(TokenStorage):
         path = self.path
         path.parent.mkdir(parents=True, exist_ok=True)
         if hasattr(os, "chmod"):
-            with contextlib.suppress(OSError):
+            try:
                 path.parent.chmod(stat.S_IRWXU)
+            except OSError as exc:
+                # A failing chmod on the parent dir leaves the tokens
+                # directory at the default umask. Warn so operators on
+                # shared hosts notice.
+                logger.warning(
+                    "Could not lock down MCP tokens dir %s (mode 0700): %s. "
+                    "Tokens may be readable by other local users.",
+                    path.parent,
+                    exc,
+                )
         tmp = path.with_suffix(path.suffix + ".tmp")
         payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
-        # Open with O_EXCL and mode 0600 so the file never exists at the
-        # default umask between creation and chmod. On platforms without
-        # O_EXCL (not Python's own POSIX targets), os.open still honors
-        # the mode bits.
+        # O_EXCL + mode 0600 means the token file is never visible at the
+        # default umask between open() and chmod(). On Windows, os.open()
+        # ignores the mode bits, so the explicit chmod below is the
+        # cross-platform guarantee.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
@@ -251,8 +378,15 @@ class FileTokenStorage(TokenStorage):
         if hasattr(os, "chmod"):
             # Already 0600 from os.open on POSIX; a second chmod covers
             # filesystems that ignore the create-mode argument.
-            with contextlib.suppress(OSError):
+            try:
                 path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            except OSError as exc:
+                logger.warning(
+                    "Could not set mode 0600 on MCP token file %s: %s. "
+                    "Stored refresh/access tokens may be world-readable.",
+                    path,
+                    exc,
+                )
 
 
 RedirectHandler = Callable[[str], Awaitable[None]]
@@ -310,8 +444,18 @@ def _make_paste_back_handlers(
             f"\n  {final_url}\n"
         )
 
-    async def callback() -> tuple[str, str | None]:  # noqa: RUF029
-        url = input("Callback URL: ").strip()  # noqa: ASYNC250
+    async def callback() -> tuple[str, str | None]:
+        import asyncio
+
+        try:
+            raw = await asyncio.to_thread(input, "Callback URL: ")
+        except EOFError as exc:
+            msg = (
+                "No callback URL received (stdin closed). "
+                "Re-run `deepagents mcp login <server>` and paste the URL."
+            )
+            raise RuntimeError(msg) from exc
+        url = raw.strip()
         params = parse_qs(urlparse(url).query)
         if "error" in params:
             err_code = params["error"][0]
@@ -365,7 +509,7 @@ def build_oauth_provider(
     else:
         redirect, callback = _make_reauth_required_handlers(server_name=server_name)
 
-    if _is_slack_mcp_url(server_url):
+    if _detect_flavor(server_url) is _OAuthFlavor.SLACK:
         metadata = OAuthClientMetadata(
             client_name="deepagents-cli",
             redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
@@ -450,23 +594,30 @@ async def _run_device_flow(
                 f"from {device_code_url}."
             )
             raise RuntimeError(msg) from exc
-        device = response.json()
+        try:
+            device = _DeviceCodeResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            msg = (
+                f"Device code response from {device_code_url} is missing "
+                f"required fields: {exc}"
+            )
+            raise RuntimeError(msg) from exc
 
         print(  # noqa: T201
-            f"\nVisit {device['verification_uri']} and enter code: "
-            f"{device['user_code']}\n(code expires in {device['expires_in']}s)\n"
+            f"\nVisit {device.verification_uri} and enter code: "
+            f"{device.user_code}\n(code expires in {device.expires_in}s)\n"
         )
 
-        interval = max(int(device.get("interval", 5)), 1)
+        interval = max(device.interval, 1)
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + int(device["expires_in"])
+        deadline = loop.time() + device.expires_in
         while loop.time() < deadline:
             await asyncio.sleep(interval)
             token_response = await client.post(
                 token_url,
                 data={
                     "client_id": client_id,
-                    "device_code": device["device_code"],
+                    "device_code": device.device_code,
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 },
                 headers={"Accept": "application/json"},
@@ -495,7 +646,14 @@ async def _run_device_flow(
                     f"from {token_url}."
                 )
                 raise RuntimeError(msg) from exc
-            return OAuthToken.model_validate(body)
+            try:
+                return OAuthToken.model_validate(body)
+            except ValidationError as exc:
+                msg = (
+                    f"Token response from {token_url} is not a valid "
+                    f"OAuth token payload: {exc}"
+                )
+                raise RuntimeError(msg) from exc
 
     msg = "Device flow timed out; re-run `deepagents mcp login <server>`."
     raise RuntimeError(msg)
@@ -563,7 +721,7 @@ async def _drive_handshake(connections: dict) -> None:
 async def login(
     *,
     server_name: str,
-    server_config: dict,
+    server_config: McpServerSpec,
 ) -> None:
     """Drive OAuth login for `server_name`, persisting tokens on success.
 
@@ -597,8 +755,9 @@ async def login(
         raise ValueError(msg)
 
     storage = FileTokenStorage(server_name, server_url=server_config["url"])
+    flavor = _detect_flavor(server_config["url"])
 
-    if _is_github_mcp_url(server_config["url"]):
+    if flavor is _OAuthFlavor.GITHUB_DEVICE:
         await _preseed_github_auth(storage)
         print(  # noqa: T201
             f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
@@ -606,9 +765,9 @@ async def login(
         return
 
     extra_auth_params: dict[str, str] = {}
-    if _is_slack_mcp_url(server_config["url"]):
+    if flavor is _OAuthFlavor.SLACK:
         await _preseed_slack_client_info(storage)
-        team_id = _prompt_slack_team()
+        team_id = await _prompt_slack_team()
         if team_id:
             extra_auth_params["team"] = team_id
 

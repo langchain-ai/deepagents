@@ -26,7 +26,16 @@ def setup_mcp_parsers(
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> None:
-    """Register the `deepagents mcp` command group."""
+    """Register the `deepagents mcp` command group.
+
+    Args:
+        subparsers: The `argparse` subparsers object from the top-level CLI
+            parser, onto which the `mcp` command group is attached.
+        make_help_action: Factory that wraps a `show_*` callable into an
+            `argparse.Action` so `-h/--help` renders the hand-maintained
+            help screens from `deepagents_cli.ui` instead of argparse's
+            auto-generated text.
+    """
     mcp_parser = subparsers.add_parser(
         "mcp",
         help="Manage MCP servers",
@@ -61,6 +70,15 @@ def setup_mcp_parsers(
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     """Handle `deepagents mcp login <server>`.
 
+    When `config_path` is omitted, auto-discovered MCP configs are merged in
+    the same precedence order as the runtime loader, with matching trust
+    gating: user-level configs are always included, but project-level configs
+    are only included when the trust store has a fingerprint match. An
+    untrusted project-level config (for example, a `.mcp.json` in a cloned
+    repo) is skipped so attacker-controlled `headers` entries cannot exfiltrate
+    local secrets during the OAuth handshake. When `config_path` is set, that
+    file alone is loaded and treated as explicitly trusted.
+
     Args:
         server: Target server name from `mcpServers`.
         config_path: Optional explicit MCP config path.
@@ -73,10 +91,8 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
 
     from deepagents_cli.mcp_auth import login
     from deepagents_cli.mcp_tools import (
-        _filter_project_stdio_servers,
         classify_discovered_configs,
         discover_mcp_configs,
-        extract_stdio_server_commands,
         load_mcp_config,
         load_mcp_config_lenient,
         merge_mcp_configs,
@@ -120,33 +136,21 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
 
             project_root = str((find_project_root() or Path.cwd()).resolve())
             fingerprint = compute_config_fingerprint(project_paths)
-            allow_project_stdio = is_project_mcp_trusted(project_root, fingerprint)
-            for path in project_paths:
-                config = load_mcp_config_lenient(path)
-                if config is None:
-                    continue
-                if allow_project_stdio:
-                    configs.append(config)
-                    used_paths.append(path)
-                    continue
-
-                stdio_servers = extract_stdio_server_commands(config)
-                filtered = _filter_project_stdio_servers(config)
-                if filtered.get("mcpServers"):
-                    configs.append(filtered)
-                    used_paths.append(path)
-                if stdio_servers:
-                    skipped = [
-                        f"{name}: {cmd} {' '.join(args)}"
-                        for name, cmd, args in stdio_servers
-                    ]
-                    print(  # noqa: T201
-                        "Skipping untrusted project stdio MCP servers "
-                        "(config changed or not yet approved): "
-                        f"{'; '.join(skipped)}. "
-                        "Approve them by running `deepagents` in this project.",
-                        file=sys.stderr,
-                    )
+            if is_project_mcp_trusted(project_root, fingerprint):
+                for path in project_paths:
+                    config = load_mcp_config_lenient(path)
+                    if config is not None:
+                        configs.append(config)
+                        used_paths.append(path)
+            else:
+                skipped = ", ".join(str(path) for path in project_paths)
+                print(  # noqa: T201
+                    "Skipping untrusted project MCP config "
+                    f"(not yet approved or config changed): {skipped}. "
+                    "Approve it by running `deepagents` in this project, or "
+                    "pass --config <path> to use it explicitly.",
+                    file=sys.stderr,
+                )
 
         if not configs:
             found_paths = ", ".join(str(path) for path in found)
@@ -168,9 +172,19 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         )
         return 1
 
+    import httpx
+    from pydantic import ValidationError
+
     try:
         await login(server_name=server, server_config=servers[server])
-    except (ValueError, RuntimeError) as exc:
+    except (
+        ValueError,
+        RuntimeError,
+        httpx.HTTPError,
+        ValidationError,
+        KeyError,
+        OSError,
+    ) as exc:
         print(f"Login failed: {exc}", file=sys.stderr)  # noqa: T201
         return 1
     return 0

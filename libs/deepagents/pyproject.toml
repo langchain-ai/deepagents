@@ -132,6 +132,7 @@ filterwarnings = [
 ]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
+    "integration: tests that exercise real system binaries (ffmpeg, ffprobe). Run via `make integration_tests`.",
 ]
 
 [tool.ty.environment]

@@ -388,6 +388,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_cli.deploy import setup_deploy_parsers
+    from deepagents_cli.mcp_commands import setup_mcp_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
 
@@ -513,6 +514,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     setup_deploy_parsers(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
+    setup_mcp_parsers(
         subparsers,
         make_help_action=_make_help_action,
     )
@@ -1767,6 +1772,23 @@ def cli_main() -> None:
             from deepagents_cli.deploy import execute_deploy_command
 
             execute_deploy_command(args)
+        elif args.command == "mcp":
+            from deepagents_cli.mcp_commands import run_mcp_login
+            from deepagents_cli.ui import show_mcp_help
+
+            if args.mcp_command == "login":
+                # Subcommand-scoped `--config` wins over the global
+                # `--mcp-config` if both are set.
+                config_path = args.config_path or getattr(args, "mcp_config", None)
+                sys.exit(
+                    asyncio.run(
+                        run_mcp_login(
+                            server=args.server,
+                            config_path=config_path,
+                        )
+                    )
+                )
+            show_mcp_help()
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,

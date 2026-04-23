@@ -71,6 +71,8 @@ class WelcomeBanner(Static):
         thread_id: str | None = None,
         mcp_tool_count: int = 0,
         *,
+        mcp_unauthenticated: int = 0,
+        mcp_errored: int = 0,
         connecting: bool = False,
         resuming: bool = False,
         local_server: bool = False,
@@ -81,6 +83,8 @@ class WelcomeBanner(Static):
         Args:
             thread_id: Optional thread ID to display in the banner.
             mcp_tool_count: Number of MCP tools loaded at startup.
+            mcp_unauthenticated: Number of MCP servers awaiting login.
+            mcp_errored: Number of MCP servers that failed to load.
             connecting: When `True`, show a "Connecting..." footer instead of
                 the normal ready prompt. Call `set_connected` to transition.
             resuming: When `True`, the connecting footer says "Resuming..."
@@ -95,6 +99,8 @@ class WelcomeBanner(Static):
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
+        self._mcp_unauthenticated = mcp_unauthenticated
+        self._mcp_errored = mcp_errored
         self._connecting = connecting
         self._resuming = resuming
         self._local_server = local_server
@@ -140,15 +146,25 @@ class WelcomeBanner(Static):
         self._cli_thread_id = thread_id
         self.update(self._build_banner(self._project_url))
 
-    def set_connected(self, mcp_tool_count: int = 0) -> None:
+    def set_connected(
+        self,
+        mcp_tool_count: int = 0,
+        *,
+        mcp_unauthenticated: int = 0,
+        mcp_errored: int = 0,
+    ) -> None:
         """Transition from "connecting" to "ready" state.
 
         Args:
             mcp_tool_count: Number of MCP tools loaded during connection.
+            mcp_unauthenticated: Number of MCP servers awaiting login.
+            mcp_errored: Number of MCP servers that failed to load.
         """
         self._connecting = False
         self._failed = False
         self._mcp_tool_count = mcp_tool_count
+        self._mcp_unauthenticated = mcp_unauthenticated
+        self._mcp_errored = mcp_errored
         self.update(self._build_banner(self._project_url))
 
     def set_connecting(self) -> None:
@@ -270,6 +286,32 @@ class WelcomeBanner(Static):
             parts.append((f"{get_glyphs().checkmark} ", success_color))
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
+
+        warn_color: str = "bold yellow" if ansi else colors.warning
+        if self._mcp_unauthenticated > 0:
+            server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
+            unauth_text = (
+                f"{self._mcp_unauthenticated} MCP {server_label} need login "
+                "— run `deepagents mcp login <server>`\n"
+            )
+            parts.extend(
+                [
+                    (f"{get_glyphs().warning} ", warn_color),
+                    (unauth_text, "dim"),
+                ]
+            )
+        if self._mcp_errored > 0:
+            server_label = "server" if self._mcp_errored == 1 else "servers"
+            errored_text = (
+                f"{self._mcp_errored} MCP {server_label} failed to load "
+                "— open /mcp for details\n"
+            )
+            parts.extend(
+                [
+                    (f"{get_glyphs().warning} ", warn_color),
+                    (errored_text, "dim"),
+                ]
+            )
 
         if self._failed:
             parts.append(build_failure_footer(self._failure_error))

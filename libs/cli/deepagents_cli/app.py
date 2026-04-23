@@ -755,6 +755,19 @@ class DeepAgentsApp(App):
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
+        self._mcp_unauthenticated = sum(
+            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        """MCP servers awaiting a `deepagents mcp login` run."""
+
+        self._mcp_errored = sum(
+            1 for s in (mcp_server_info or []) if s.status == "error"
+        )
+        """MCP servers that failed to load (config or network error)."""
+
+        self._active_mcp_viewer: Any = None
+        """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
         profile-aware behavior (model selection, offload budget display,
@@ -1050,6 +1063,8 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -1662,13 +1677,27 @@ class DeepAgentsApp(App):
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+        self._mcp_unauthenticated = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        self._mcp_errored = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
 
         # Update welcome banner to show ready state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(self._mcp_tool_count)
+            banner.set_connected(
+                self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
+            )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+
+        if self._active_mcp_viewer is not None:
+            with suppress(Exception):
+                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -5576,7 +5605,11 @@ class DeepAgentsApp(App):
                 self._connecting = False
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.set_connected(self._mcp_tool_count)
+                    banner.set_connected(
+                        self._mcp_tool_count,
+                        mcp_unauthenticated=self._mcp_unauthenticated,
+                        mcp_errored=self._mcp_errored,
+                    )
                 except NoMatches:
                     pass
                 self.notify(
@@ -6152,9 +6185,14 @@ class DeepAgentsApp(App):
         """Show read-only MCP server/tool viewer as a modal screen."""
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
 
-        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+        screen = MCPViewerScreen(
+            server_info=self._mcp_server_info or [],
+            connecting=self._connecting,
+        )
+        self._active_mcp_viewer = screen
 
         def handle_result(result: None) -> None:  # noqa: ARG001
+            self._active_mcp_viewer = None
             if self._chat_input:
                 self._chat_input.focus_input()
 

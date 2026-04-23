@@ -3,7 +3,7 @@
 import io
 import re
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.console import Console
@@ -369,6 +369,78 @@ class TestNoMcpArg:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main()
         assert exc_info.value.code == 2
+
+
+class TestMcpCommandDispatch:
+    """Tests for `cli_main()` dispatch of `deepagents mcp` subcommands."""
+
+    def test_mcp_login_uses_global_mcp_config_fallback(self) -> None:
+        """`deepagents mcp login` falls back to top-level `--mcp-config`."""
+        from deepagents_cli.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--mcp-config",
+                    "/global/config.json",
+                    "mcp",
+                    "login",
+                    "notion",
+                ],
+            ),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_cli.mcp_commands.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        mock_login.assert_awaited_once_with(
+            server="notion",
+            config_path="/global/config.json",
+        )
+
+    def test_mcp_login_prefers_subcommand_config_over_global(self) -> None:
+        """Subcommand `--config` overrides the top-level `--mcp-config`."""
+        from deepagents_cli.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--mcp-config",
+                    "/global/config.json",
+                    "mcp",
+                    "login",
+                    "notion",
+                    "--config",
+                    "/subcommand/config.json",
+                ],
+            ),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_cli.mcp_commands.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        mock_login.assert_awaited_once_with(
+            server="notion",
+            config_path="/subcommand/config.json",
+        )
 
 
 class TestAutoUpdateArg:

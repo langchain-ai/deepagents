@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.5"
+version = "0.0.6"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,13 +23,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "agent-client-protocol>=0.8.0,<0.9.0",
+    "agent-client-protocol>=0.8.0",
     "deepagents",
     "python-dotenv>=1.2.1",
 ]
 
 [dependency-groups]
 examples = [
+    "langchain-baseten>=0.2.0",
     "langchain-openai>=1.1.11",
 ]
 test = [

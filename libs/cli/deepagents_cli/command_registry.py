@@ -73,6 +73,12 @@ class SlashCommand:
 
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
+        name="/agents",
+        description="Browse and switch between available agents",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="switch profile persona",
+    ),
+    SlashCommand(
         name="/clear",
         description="Clear chat and start new thread",
         bypass_tier=BypassTier.QUEUED,

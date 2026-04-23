@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.38"
+version = "0.0.41"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -42,6 +42,9 @@ dependencies = [
     "langchain-openai>=1.1.12,<2.0.0",
 
     # UI/Terminal
+    # Workaround for Textualize/textual#6378 lives in `_textual_patches.py`.
+    # On bump, run `tests/unit_tests/test_textual_patches.py` and delete the
+    # patch if the upstream issue is fixed.
     "textual>=8.0.0,<9.0.0",
     "textual-autocomplete>=3.0.0,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",
@@ -50,7 +53,7 @@ dependencies = [
     "markdownify>=0.13.0,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.7.7",
+    "langsmith[sandbox]>=0.7.32",
 
     # Tools
     "tavily-python>=0.7.21,<1.0.0",

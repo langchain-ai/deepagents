@@ -71,6 +71,39 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestStartupCmdArg:
+    """Tests for `--startup-cmd` pre-prompt shell command argument."""
+
+    def test_flag_sets_startup_cmd(self) -> None:
+        """Verify `--startup-cmd` stores the requested command."""
+        with patch.object(sys, "argv", ["deepagents", "--startup-cmd", "git status"]):
+            args = parse_args()
+        assert args.startup_cmd == "git status"
+
+    def test_no_flag(self) -> None:
+        """Verify `startup_cmd` defaults to `None`."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.startup_cmd is None
+
+    def test_with_non_interactive(self) -> None:
+        """Verify `--startup-cmd` works alongside `-n`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--startup-cmd",
+                "echo hi",
+                "-n",
+                "do the thing",
+            ],
+        ):
+            args = parse_args()
+        assert args.startup_cmd == "echo hi"
+        assert args.non_interactive_message == "do the thing"
+
+
 class TestResumeArg:
     """Tests for -r/--resume thread resume argument."""
 
@@ -232,10 +265,16 @@ class TestShortFlags:
         assert args.model == "gpt-4o"
 
     def test_agent_default_value(self) -> None:
-        """Verify -a defaults to DEFAULT_AGENT_NAME when omitted."""
+        """Verify -a is `None` when omitted so downstream fallback can run.
+
+        The `[agents].recent` / default-agent fallback lives in
+        `_resolve_agent_arg`, not argparse — argparse must leave the slot
+        empty so the resolver can distinguish "user didn't pass -a" from
+        "user explicitly passed the default name".
+        """
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
-        assert args.agent == DEFAULT_AGENT_NAME
+        assert args.agent is None
 
     def test_short_version_flag(self) -> None:
         """Verify -v shows version and exits."""

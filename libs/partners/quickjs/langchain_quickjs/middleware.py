@@ -112,7 +112,10 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             - ``False`` (default) — disabled.
             - ``True`` — expose every agent tool except the REPL itself.
-            - ``list[str]`` — expose only the listed tools.
+            - ``list[str]`` — expose only the listed agent tools.
+            - ``list[BaseTool]`` — expose the given tools directly; they
+              do not need to be on the agent. Use this to make tools
+              reachable only inside the REPL.
             - ``{"include": [...]}`` — equivalent to ``list[str]``.
             - ``{"exclude": [...]}`` — expose all except the listed tools.
 

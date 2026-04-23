@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -14,10 +14,6 @@ from deepagents_cli.deploy.config import (
     DeployConfig,
     FrontendConfig,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 @pytest.fixture
 def shipped_frontend_dist(tmp_path, monkeypatch):
@@ -197,3 +193,44 @@ def test_langgraph_json_no_http_app_when_frontend_disabled(
     bundle(cfg, project, build_dir)
     data = json.loads((build_dir / "langgraph.json").read_text(encoding="utf-8"))
     assert "http" not in data
+
+
+def test_deploy_dry_run_supabase_end_to_end(tmp_path, monkeypatch, capsys):
+    """Run `_deploy(dry_run=True)` against a full project tree, using the real shipped bundle."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
+    (project / "deepagents.toml").write_text(
+        """
+[agent]
+name = "my-agent"
+model = "anthropic:claude-sonnet-4-6"
+
+[auth]
+provider = "supabase"
+
+[frontend]
+enabled = true
+app_name = "My App"
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "k")
+
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.chdir(project)
+    _deploy(config_path=str(project / "deepagents.toml"), dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "Inspect the build directory" in out
+    build_line = [line for line in out.splitlines() if "build directory" in line][-1]
+    build_path = Path(build_line.split("Inspect the build directory:")[-1].strip())
+    assert (build_path / "app.py").is_file()
+    assert (build_path / "frontend_dist" / "index.html").is_file()
+    html = (build_path / "frontend_dist" / "index.html").read_text(encoding="utf-8")
+    assert "__PLACEHOLDER__" not in html
+    assert '"auth":"supabase"' in html

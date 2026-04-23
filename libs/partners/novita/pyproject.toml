@@ -23,7 +23,6 @@ version = "0.0.1"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents>=0.5.0,<0.6.0",
-    "httpx[socks]>=0.28.1",
     "novita-sandbox",
 ]
 

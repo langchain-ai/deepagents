@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
@@ -22,6 +23,10 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.permissions import _PermissionMiddleware
+from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -29,7 +34,6 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import pytest
     from langchain.agents.middleware.types import ModelRequest
 
 
@@ -715,6 +719,334 @@ class TestExtraMiddlewareWiring:
 
             # Invoked at least twice: once for the general-purpose subagent, once for the main stack.
             assert len(calls) >= 2
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class _OtherStubMW(AgentMiddleware[Any, Any, Any]):
+    """Second stub class so exclusion tests can assert coexistence with `_StubMW`."""
+
+
+class _StubSubMW(_StubMW):
+    """Subclass of `_StubMW` used to verify exact-type (not isinstance) exclusion."""
+
+
+class TestMiddlewareExclusionWiring:
+    """End-to-end tests that `excluded_middleware` filters the assembled stack."""
+
+    def test_excluded_middleware_strips_user_middleware_from_main_stack(self) -> None:
+        """User-supplied middleware whose class is excluded is filtered out."""
+        dropped = _StubMW()
+        kept = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped for m in mw_stack), "excluded user middleware leaked into stack"
+            assert any(m is kept for m in mw_stack), "non-excluded user middleware was dropped"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_profile_extra_middleware(self) -> None:
+        """A profile can exclude a class it also provides via `extra_middleware`.
+
+        This covers the merge case where a provider-level profile adds a
+        middleware and a model-level profile removes it.
+        """
+        provided = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("excmwprov", HarnessProfile(extra_middleware=[provided]))
+            register_harness_profile(
+                "excmwprov:some-model",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="excmwprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is provided for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_preserves_subclass(self) -> None:
+        """Exclusion matches on exact type, so subclasses of an excluded class are kept."""
+        subclass_instance = _StubSubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[subclass_instance],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert any(m is subclass_instance for m in mw_stack), "subclass instance should be preserved"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_from_general_purpose_subagent_stack(self) -> None:
+        """The auto-added general-purpose subagent has its stack filtered too."""
+        provided = _StubMW()
+
+        def factory() -> list[AgentMiddleware]:
+            return [provided]
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(
+                    extra_middleware=factory,
+                    excluded_middleware=frozenset({_StubMW}),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="excmwprov:some-model")
+
+            gp_spec = next(s for s in mock_subagents.call_args.kwargs["subagents"] if s["name"] == "general-purpose")
+            gp_stack = gp_spec["middleware"]
+            assert not any(type(m) is _StubMW for m in gp_stack), "general-purpose stack not filtered"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_from_declarative_subagent_stack(self) -> None:
+        """Declarative `SubAgent` specs built by `create_deep_agent` are filtered too."""
+        provided = _StubMW()
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(
+                    extra_middleware=[provided],
+                    excluded_middleware=frozenset({_StubMW}),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="excmwprov:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "excmwprov:worker-model",
+                        }
+                    ],
+                )
+
+            worker_spec = next(s for s in mock_subagents.call_args.kwargs["subagents"] if s.get("name") == "worker")
+            worker_stack = worker_spec["middleware"]
+            assert not any(type(m) is _StubMW for m in worker_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_register_additive_unions_excluded_middleware(self) -> None:
+        """Re-registering under the same key unions `excluded_middleware` with the prior set."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_OtherStubMW})),
+            )
+            merged = _get_harness_profile("excmwprov")
+            assert merged is not None
+            assert merged.excluded_middleware == frozenset({_StubMW, _OtherStubMW})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_async_subagent_middleware(self) -> None:
+        """Async subagents add `AsyncSubAgentMiddleware` to the parent stack — it can be excluded."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    subagents=[
+                        {
+                            "name": "remote",
+                            "description": "Remote worker.",
+                            "graph_id": "my-graph",
+                        }
+                    ],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is AsyncSubAgentMiddleware for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_handles_multiple_classes_in_one_set(self) -> None:
+        """A single exclusion set with two classes removes instances of both."""
+        stub = _StubMW()
+        other = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW, _OtherStubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="excmwprov:some-model", middleware=[stub, other])
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is stub for m in mw_stack)
+            assert not any(m is other for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_preserves_order_of_kept_entries(self) -> None:
+        """Filtering an excluded class keeps surrounding middleware in original relative order."""
+        before = _OtherStubMW()
+        dropped = _StubMW()
+        after = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[before, dropped, after],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            before_idx = mw_stack.index(before)
+            after_idx = mw_stack.index(after)
+            assert before_idx < after_idx, "relative order of non-excluded middleware changed after filter"
+            assert not any(m is dropped for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_rejects_required_scaffolding(self) -> None:
+        """Excluding a required class raises `ValueError` at assembly time.
+
+        Splitting the assertion per class makes the failure message point at
+        the specific class that slipped past the deny-list, rather than a
+        single composite test that hides which class regressed.
+        """
+        forbidden_classes: tuple[type[AgentMiddleware[Any, Any, Any]], ...] = (
+            FilesystemMiddleware,
+            SubAgentMiddleware,
+            _PermissionMiddleware,
+        )
+        original = dict(_HARNESS_PROFILES)
+        try:
+            for forbidden_cls in forbidden_classes:
+                _HARNESS_PROFILES.clear()
+                _HARNESS_PROFILES.update(original)
+                # cast silences ty's narrow inference when HarnessProfile's
+                # field type is `frozenset[type[AgentMiddleware[Any, Any, Any]]]`
+                # and the loop variable is a specific scaffolding class — the
+                # runtime behavior is identical, but ty sees the exact class
+                # instead of the parameterized base.
+                register_harness_profile(
+                    "denyprov",
+                    HarnessProfile(
+                        excluded_middleware=cast(
+                            "frozenset[type[AgentMiddleware[Any, Any, Any]]]",
+                            frozenset({forbidden_cls}),
+                        )
+                    ),
+                )
+                fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+                with (
+                    patch("deepagents.graph.resolve_model", return_value=fake_model),
+                    pytest.raises(ValueError, match=forbidden_cls.__name__),
+                ):
+                    create_deep_agent(model="denyprov:some-model")
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

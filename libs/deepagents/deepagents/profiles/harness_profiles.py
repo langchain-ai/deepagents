@@ -177,6 +177,36 @@ class HarnessProfile:
     tools.
     """
 
+    excluded_middleware: frozenset[type[AgentMiddleware]] = frozenset()
+    """Middleware classes to strip from every middleware stack this profile applies to.
+
+    Matched by exact class, not subclass — consistent with how
+    `extra_middleware` merges slot-by-slot on concrete type. A filter runs
+    over the fully assembled stack before the agent is compiled, so the
+    excluded classes are removed regardless of which layer added them
+    (including instances supplied via `create_deep_agent(middleware=[...])`).
+
+    When profiles are merged, exclusions are additive: if a provider profile
+    excludes `SummarizationMiddleware` and an exact-model profile excludes
+    `AnthropicPromptCachingMiddleware`, the resolved profile strips both.
+
+    !!! warning
+
+        Exclusion applies to user-supplied middleware too. Passing a class here
+        and also adding an instance of that class via
+        `create_deep_agent(middleware=[...])` results in the instance being
+        filtered out — specify the class in one place only.
+
+    !!! warning
+
+        A small set of scaffolding classes that deep agents rely on —
+        `FilesystemMiddleware`, `SubAgentMiddleware`, and `_PermissionMiddleware`
+        — cannot be excluded. Listing one of them here raises `ValueError`
+        when `create_deep_agent` resolves the profile. Use this field to drop
+        optional layers (summarization, prompt caching) or middleware you
+        introduced yourself.
+    """
+
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
     """Middleware appended to every runtime middleware stack.
 
@@ -480,6 +510,10 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     Excluded-tool sets are unioned. For example, `{"execute"}` plus
     `{"grep"}` becomes `{"execute", "grep"}` in the merged profile.
 
+    Excluded-middleware sets are unioned the same way as excluded tools. For
+    example, `{SummarizationMiddleware}` plus `{AnthropicPromptCachingMiddleware}`
+    becomes both classes in the merged profile.
+
     Middleware sequences are merged by type (see `_merge_middleware`). For
     example, if both profiles provide a middleware of the same class, the
     override instance replaces the base instance in the same position, while
@@ -507,6 +541,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
             **override.tool_description_overrides,
         },
         excluded_tools=base.excluded_tools | override.excluded_tools,
+        excluded_middleware=base.excluded_middleware | override.excluded_middleware,
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
         general_purpose_subagent=_merge_general_purpose_subagent_profiles(
             base.general_purpose_subagent,

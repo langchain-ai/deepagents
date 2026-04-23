@@ -132,6 +132,74 @@ def _resolve_extra_middleware(
     return list(extra)
 
 
+_REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(
+    {
+        FilesystemMiddleware,
+        SubAgentMiddleware,
+        _PermissionMiddleware,
+    }
+)
+"""Middleware classes that `HarnessProfile.excluded_middleware` must not strip.
+
+Removing any of these silently breaks core features: `FilesystemMiddleware`
+backs every built-in file tool, `SubAgentMiddleware` backs the `task` tool
+handler, and `_PermissionMiddleware` enforces `permissions` rules (a security
+guarantee). `_apply_excluded_middleware` raises `ValueError` rather than
+proceeding with a silently degraded agent.
+"""
+
+
+def _apply_excluded_middleware(
+    stack: list[AgentMiddleware[Any, Any, Any]],
+    profile: HarnessProfile,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Drop middleware whose concrete class appears in `profile.excluded_middleware`.
+
+    Matches on exact type (not `isinstance`) so a subclass introduced by the
+    caller is preserved when the profile excludes the base class. This mirrors
+    the slot-identity semantics used by `_merge_middleware`.
+
+    Args:
+        stack: Fully assembled middleware list for a single agent/subagent.
+        profile: Profile whose `excluded_middleware` drives the filter.
+
+    Returns:
+        A new list with excluded classes removed. Always a fresh list, even
+            when no exclusions apply, so callers can mutate the result freely.
+
+    Raises:
+        ValueError: If `profile.excluded_middleware` contains a class in
+            `_REQUIRED_MIDDLEWARE_CLASSES`. Those classes back core features
+            (filesystem tools, `task` tool handler, permission enforcement)
+            and silently dropping them would leave the agent in a broken or
+            insecure state.
+    """
+    excluded = profile.excluded_middleware
+    if not excluded:
+        return list(stack)
+    forbidden = excluded & _REQUIRED_MIDDLEWARE_CLASSES
+    if forbidden:
+        names = ", ".join(sorted(cls.__name__ for cls in forbidden))
+        msg = (
+            f"HarnessProfile.excluded_middleware cannot contain required "
+            f"scaffolding middleware: {names}. These classes back core "
+            f"features (filesystem tools, subagent dispatch, and permission "
+            f"enforcement) and cannot be removed. Use excluded_tools for "
+            f"per-tool visibility control, or register a profile that adjusts "
+            f"behavior instead of stripping the scaffolding."
+        )
+        raise ValueError(msg)
+    filtered = [mw for mw in stack if type(mw) not in excluded]
+    removed_count = len(stack) - len(filtered)
+    if removed_count:
+        logger.debug(
+            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware=%s",
+            removed_count,
+            sorted(cls.__name__ for cls in excluded),
+        )
+    return filtered
+
+
 def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
     """Look up the `HarnessProfile` for an already-resolved model.
 
@@ -340,6 +408,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
+
+            After assembly, any classes listed in the profile's
+            `excluded_middleware` are filtered from the final stack (by exact
+            type), so a profile can drop middleware added by any earlier
+            layer, including instances supplied via this `middleware`
+            argument. A small set of scaffolding classes
+            (`FilesystemMiddleware`, `SubAgentMiddleware`,
+            `_PermissionMiddleware`) cannot be excluded — doing so raises
+            `ValueError`.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -528,6 +605,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
+            subagent_middleware = _apply_excluded_middleware(subagent_middleware, _subagent_profile)
+
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
             # Inherit parent tools unless the subagent declares its own.
@@ -579,6 +658,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Permissions must be last so they see all tools from prior middleware
         if permissions:
             gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
+        gp_middleware = _apply_excluded_middleware(gp_middleware, _profile)
 
         general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
             **GENERAL_PURPOSE_SUBAGENT,
@@ -652,6 +733,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # _PermissionMiddleware must be last so it sees all tools from prior middleware
     if permissions:
         deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
+    deepagent_middleware = _apply_excluded_middleware(deepagent_middleware, _profile)
 
     # Assemble base prompt: use _profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.

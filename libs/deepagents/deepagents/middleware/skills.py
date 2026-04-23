@@ -356,7 +356,7 @@ def _parse_skill_metadata(  # noqa: C901
 
     module_path = _validate_module_path(frontmatter_data.get("module"), skill_path)
 
-    return SkillMetadata(
+    result = SkillMetadata( 
         name=str(name),
         description=description_str,
         path=skill_path,
@@ -364,8 +364,10 @@ def _parse_skill_metadata(  # noqa: C901
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
-        module=module_path,
     )
+    if module_path is not None:
+        result["module"] = module_path
+    return result
 
 
 _MODULE_EXTENSIONS = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx")

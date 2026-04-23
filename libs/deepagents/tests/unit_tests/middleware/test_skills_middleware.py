@@ -178,7 +178,6 @@ Instructions here.
         "metadata": {"author": "Test Author", "version": "1.0.0"},
         "allowed_tools": ["read_file", "write_file"],
         "path": "/skills/test-skill/SKILL.md",
-        "module": None,
     }
 
 
@@ -202,7 +201,6 @@ description: Minimal skill
         "metadata": {},
         "allowed_tools": [],
         "path": "/skills/minimal-skill/SKILL.md",
-        "module": None,
     }
 
 
@@ -310,7 +308,7 @@ module: /etc/passwd
 """
     result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
     assert result is not None
-    assert result["module"] is None
+    assert "module" not in result
     assert result["name"] == "bad-module"
 
 
@@ -669,7 +667,6 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -759,7 +756,6 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -800,7 +796,6 @@ Content
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -836,7 +831,6 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1041,7 +1035,6 @@ def test_format_skills_list_single_skill() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1071,7 +1064,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         },
         {
             "name": "skill-b",
@@ -1081,7 +1073,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         },
         {
             "name": "skill-c",
@@ -1091,7 +1082,6 @@ def test_format_skills_list_multiple_skills_multiple_registries() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         },
     ]
 
@@ -1121,7 +1111,6 @@ def test_format_skills_list_with_license_and_compatibility() -> None:
             "compatibility": "Requires poppler",
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1142,7 +1131,6 @@ def test_format_skills_list_license_only() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1164,7 +1152,6 @@ def test_format_skills_list_compatibility_only() -> None:
             "compatibility": "Python 3.10+",
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1186,7 +1173,6 @@ def test_format_skills_list_no_optional_fields() -> None:
             "compatibility": None,
             "metadata": {},
             "allowed_tools": [],
-            "module": None,
         }
     ]
 
@@ -1280,7 +1266,6 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
         "license": None,
         "compatibility": None,
         "allowed_tools": [],
-        "module": None,
     }
 
 
@@ -1552,7 +1537,6 @@ def test_before_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
             "license": None,
             "compatibility": None,
             "allowed_tools": [],
-            "module": None,
         }
     ]
     state_with_metadata = {"skills_metadata": existing_metadata}
@@ -1680,7 +1664,6 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
             "description": "A test skill for default backend",
             "license": None,
             "metadata": {},
-            "module": None,
             "name": "test-skill",
             "path": "/skills/user/test-skill/SKILL.md",
         },

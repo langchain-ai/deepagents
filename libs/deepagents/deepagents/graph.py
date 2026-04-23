@@ -6,6 +6,7 @@ middleware.
 """
 
 import logging
+import re
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
@@ -149,53 +150,138 @@ proceeding with a silently degraded agent.
 """
 
 
+_CAMEL_BOUNDARY_LOWER_UPPER = re.compile(r"([a-z0-9])([A-Z])")
+_CAMEL_BOUNDARY_UPPER_TRAIL = re.compile(r"([A-Z]+)([A-Z][a-z])")
+
+
+def _canonical_middleware_name(name: str) -> str:
+    """Canonicalize a middleware class name for string-form exclusion matching.
+
+    The canonical form strips cosmetic differences between how a user might
+    reference a middleware and how its class happens to be named internally.
+    Concretely:
+
+    - Convert `CamelCase` and runs of uppercase letters into `snake_case`
+        (e.g. `HTTPResponseMiddleware` -> `http_response_middleware`, not
+        `h_t_t_p_response_middleware`).
+    - Lower-case.
+    - Strip leading underscores (private impls like `_PermissionMiddleware`).
+    - Strip a trailing `_middleware` / `middleware` suffix.
+    - Strip a leading `deep_agents_` / `deepagents_` prefix used for
+        internal impl classes that ship under a public alias.
+
+    Examples:
+        - `SummarizationMiddleware` -> `summarization`
+        - `_DeepAgentsSummarizationMiddleware` -> `summarization`
+        - `TodoListMiddleware` -> `todo_list`
+        - `AnthropicPromptCachingMiddleware` -> `anthropic_prompt_caching`
+
+    Args:
+        name: A middleware class name (`type(mw).__name__`) or a user-provided
+            string to normalize.
+
+    Returns:
+        The canonical form of `name`, suitable for equality comparison.
+    """
+    s = _CAMEL_BOUNDARY_UPPER_TRAIL.sub(r"\1_\2", name)
+    s = _CAMEL_BOUNDARY_LOWER_UPPER.sub(r"\1_\2", s)
+    s = s.lower().lstrip("_")
+    if s.endswith("_middleware"):
+        s = s[: -len("_middleware")]
+    elif s.endswith("middleware"):
+        s = s[: -len("middleware")]
+    for prefix in ("deep_agents_", "deepagents_"):
+        if s.startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    return s
+
+
+_REQUIRED_MIDDLEWARE_CANONICAL_NAMES: frozenset[str] = frozenset(_canonical_middleware_name(cls.__name__) for cls in _REQUIRED_MIDDLEWARE_CLASSES)
+"""Canonical string names of `_REQUIRED_MIDDLEWARE_CLASSES`.
+
+Computed once at module load so string-form `excluded_middleware` entries
+that would strip required scaffolding (e.g. `"filesystem"`, `"sub_agent"`,
+`"permission"`) can be rejected symmetrically with class-form entries.
+"""
+
+
+def _split_excluded_entries(
+    excluded: frozenset[type[AgentMiddleware[Any, Any, Any]] | str],
+) -> tuple[frozenset[type[AgentMiddleware[Any, Any, Any]]], frozenset[str]]:
+    """Partition `excluded_middleware` entries by kind.
+
+    Args:
+        excluded: Raw `HarnessProfile.excluded_middleware` value.
+
+    Returns:
+        A `(classes, canonical_names)` tuple where `classes` holds every
+            entry that is a `type`, and `canonical_names` holds the canonical
+            form of every string entry.
+    """
+    classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
+    names: set[str] = set()
+    for entry in excluded:
+        if isinstance(entry, type):
+            classes.add(entry)
+        else:
+            names.add(_canonical_middleware_name(entry))
+    return frozenset(classes), frozenset(names)
+
+
 def _apply_excluded_middleware(
     stack: list[AgentMiddleware[Any, Any, Any]],
     profile: HarnessProfile,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
-    """Drop middleware whose concrete class appears in `profile.excluded_middleware`.
+    """Drop middleware in the stack matched by `profile.excluded_middleware`.
 
-    Matches on exact type (not `isinstance`) so a subclass introduced by the
-    caller is preserved when the profile excludes the base class. This mirrors
-    the slot-identity semantics used by `_merge_middleware`.
+    Class-form entries match on exact type (not `isinstance`), mirroring the
+    slot-identity semantics used by `_merge_middleware` so a subclass
+    introduced by the caller is preserved when the profile excludes the base
+    class. String-form entries match on the canonical form of the concrete
+    class name (see `_canonical_middleware_name`).
 
     Args:
         stack: Fully assembled middleware list for a single agent/subagent.
         profile: Profile whose `excluded_middleware` drives the filter.
 
     Returns:
-        A new list with excluded classes removed. Always a fresh list, even
+        A new list with excluded entries removed. Always a fresh list, even
             when no exclusions apply, so callers can mutate the result freely.
 
     Raises:
         ValueError: If `profile.excluded_middleware` contains a class in
-            `_REQUIRED_MIDDLEWARE_CLASSES`. Those classes back core features
-            (filesystem tools, `task` tool handler, permission enforcement)
-            and silently dropping them would leave the agent in a broken or
-            insecure state.
+            `_REQUIRED_MIDDLEWARE_CLASSES` or a string that canonicalizes to
+            one of their names. Those classes back core features (filesystem
+            tools, `task` tool handler, permission enforcement) and silently
+            dropping them would leave the agent in a broken or insecure state.
     """
     excluded = profile.excluded_middleware
     if not excluded:
         return list(stack)
-    forbidden = excluded & _REQUIRED_MIDDLEWARE_CLASSES
-    if forbidden:
-        names = ", ".join(sorted(cls.__name__ for cls in forbidden))
+    excluded_classes, excluded_names = _split_excluded_entries(excluded)
+    forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
+    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_CANONICAL_NAMES
+    if forbidden_classes or forbidden_names:
+        labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
         msg = (
             f"HarnessProfile.excluded_middleware cannot contain required "
-            f"scaffolding middleware: {names}. These classes back core "
-            f"features (filesystem tools, subagent dispatch, and permission "
-            f"enforcement) and cannot be removed. Use excluded_tools for "
-            f"per-tool visibility control, or register a profile that adjusts "
-            f"behavior instead of stripping the scaffolding."
+            f"scaffolding middleware: {', '.join(labels)}. These classes back "
+            f"core features (filesystem tools, subagent dispatch, and "
+            f"permission enforcement) and cannot be removed. Use "
+            f"excluded_tools for per-tool visibility control, or register a "
+            f"profile that adjusts behavior instead of stripping the "
+            f"scaffolding."
         )
         raise ValueError(msg)
-    filtered = [mw for mw in stack if type(mw) not in excluded]
+    filtered = [mw for mw in stack if type(mw) not in excluded_classes and _canonical_middleware_name(type(mw).__name__) not in excluded_names]
     removed_count = len(stack) - len(filtered)
     if removed_count:
         logger.debug(
-            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware=%s",
+            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware (classes=%s, names=%s)",
             removed_count,
-            sorted(cls.__name__ for cls in excluded),
+            sorted(cls.__name__ for cls in excluded_classes),
+            sorted(excluded_names),
         )
     return filtered
 
@@ -409,14 +495,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
 
-            After assembly, any classes listed in the profile's
-            `excluded_middleware` are filtered from the final stack (by exact
-            type), so a profile can drop middleware added by any earlier
-            layer, including instances supplied via this `middleware`
-            argument. A small set of scaffolding classes
-            (`FilesystemMiddleware`, `SubAgentMiddleware`,
-            `_PermissionMiddleware`) cannot be excluded — doing so raises
-            `ValueError`.
+            After assembly, any entries listed in the profile's
+            `excluded_middleware` are filtered from the final stack. Class
+            entries match on exact type, and string entries match on the
+            canonical form of the concrete class name (e.g.
+            `"summarization"` drops `_DeepAgentsSummarizationMiddleware`), so
+            a profile can drop middleware added by any earlier layer,
+            including instances supplied via this `middleware` argument. A
+            small set of scaffolding classes (`FilesystemMiddleware`,
+            `SubAgentMiddleware`, `_PermissionMiddleware`) cannot be excluded
+            as class or string — doing so raises `ValueError`.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:

@@ -177,18 +177,36 @@ class HarnessProfile:
     tools.
     """
 
-    excluded_middleware: frozenset[type[AgentMiddleware]] = frozenset()
-    """Middleware classes to strip from every middleware stack this profile applies to.
+    excluded_middleware: frozenset[type[AgentMiddleware] | str] = frozenset()
+    """Middleware to strip from every middleware stack this profile applies to.
 
-    Matched by exact class, not subclass — consistent with how
-    `extra_middleware` merges slot-by-slot on concrete type. A filter runs
-    over the fully assembled stack before the agent is compiled, so the
-    excluded classes are removed regardless of which layer added them
-    (including instances supplied via `create_deep_agent(middleware=[...])`).
+    Entries may be either a middleware *class* (matched by exact type, not
+    subclass — consistent with how `extra_middleware` merges slot-by-slot on
+    concrete type) or a *string name* (matched against a canonical form of the
+    middleware's class name). A filter runs over the fully assembled stack
+    before the agent is compiled, so the excluded entries are removed
+    regardless of which layer added them (including instances supplied via
+    `create_deep_agent(middleware=[...])`).
+
+    The canonical form of a string is produced by lower-casing the name,
+    converting `CamelCase` to `snake_case`, stripping a leading underscore,
+    removing the `_middleware` suffix, and stripping a `deep_agents_` /
+    `deepagents_` impl prefix. For example, both `"SummarizationMiddleware"`
+    and `"summarization"` resolve to `summarization`, which matches
+    `_DeepAgentsSummarizationMiddleware` at filter time. Other common
+    canonical names: `"todo_list"`, `"anthropic_prompt_caching"`,
+    `"human_in_the_loop"`, `"async_sub_agent"`.
+
+    String-form entries are useful when profiles are loaded from a config
+    file (YAML/JSON), when the caller does not want to import the concrete
+    middleware class, or when the target middleware is injected internally
+    by `create_deep_agent` and the class is not part of the public import
+    surface.
 
     When profiles are merged, exclusions are additive: if a provider profile
     excludes `SummarizationMiddleware` and an exact-model profile excludes
     `AnthropicPromptCachingMiddleware`, the resolved profile strips both.
+    Mixed class/string sets union like any other `frozenset`.
 
     !!! warning
 
@@ -201,10 +219,16 @@ class HarnessProfile:
 
         A small set of scaffolding classes that deep agents rely on —
         `FilesystemMiddleware`, `SubAgentMiddleware`, and `_PermissionMiddleware`
-        — cannot be excluded. Listing one of them here raises `ValueError`
-        when `create_deep_agent` resolves the profile. Use this field to drop
-        optional layers (summarization, prompt caching) or middleware you
-        introduced yourself.
+        — cannot be excluded. Listing one of them here (as class *or* string)
+        raises `ValueError` when `create_deep_agent` resolves the profile.
+        Use this field to drop optional layers (summarization, prompt caching)
+        or middleware you introduced yourself.
+
+    !!! warning
+
+        String-form entries that do not match any middleware in the assembled
+        stack silently no-op. Typos fail open. Prefer class-form when the class
+        is already imported in the caller's code.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()

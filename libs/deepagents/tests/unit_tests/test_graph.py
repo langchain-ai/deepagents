@@ -17,6 +17,7 @@ from deepagents._version import __version__
 from deepagents.graph import (
     BASE_AGENT_PROMPT,
     _apply_tool_description_overrides,
+    _canonical_middleware_name,
     _harness_profile_for_model,
     _resolve_extra_middleware,
     _tool_name,
@@ -27,6 +28,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
+from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -1047,6 +1049,234 @@ class TestMiddlewareExclusionWiring:
                     pytest.raises(ValueError, match=forbidden_cls.__name__),
                 ):
                     create_deep_agent(model="denyprov:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestCanonicalMiddlewareName:
+    """Tests for the canonical-name normalization used by string-form exclusion."""
+
+    @pytest.mark.parametrize(
+        ("input_name", "expected"),
+        [
+            ("SummarizationMiddleware", "summarization"),
+            ("_DeepAgentsSummarizationMiddleware", "summarization"),
+            ("TodoListMiddleware", "todo_list"),
+            ("AnthropicPromptCachingMiddleware", "anthropic_prompt_caching"),
+            ("HumanInTheLoopMiddleware", "human_in_the_loop"),
+            ("AsyncSubAgentMiddleware", "async_sub_agent"),
+            ("FilesystemMiddleware", "filesystem"),
+            ("_PermissionMiddleware", "permission"),
+            ("SubAgentMiddleware", "sub_agent"),
+            ("summarization", "summarization"),
+            ("Summarization", "summarization"),
+            ("summarization_middleware", "summarization"),
+            ("SUMMARIZATION", "summarization"),
+            ("deepagents_summarization", "summarization"),
+        ],
+    )
+    def test_canonical_form(self, input_name: str, expected: str) -> None:
+        assert _canonical_middleware_name(input_name) == expected
+
+
+class TestStringFormExcludedMiddleware:
+    """End-to-end tests that string-form entries in `excluded_middleware` filter the stack.
+
+    The filter canonicalizes both the entry string and the middleware's class
+    name (see `_canonical_middleware_name`), so a caller can exclude
+    middleware without importing its class — useful for profiles loaded from
+    config files or for excluding middleware injected internally by
+    `create_deep_agent`.
+    """
+
+    def test_string_entry_excludes_user_middleware_by_class_name(self) -> None:
+        """A bare class name in string form drops the matching user middleware."""
+        dropped = _StubMW()
+        kept = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"_StubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_canonical_form_matches_private_impl_class(self) -> None:
+        """`"summarization"` drops `_DeepAgentsSummarizationMiddleware` regardless of the public alias."""
+        dropped = _DeepAgentsSummarizationMiddleware.__new__(_DeepAgentsSummarizationMiddleware)
+        kept = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"summarization"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is _DeepAgentsSummarizationMiddleware for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_matches_class_name_variants(self) -> None:
+        """`"SummarizationMiddleware"` / `"Summarization"` / `"summarization"` all resolve the same."""
+        variants = ["SummarizationMiddleware", "Summarization", "summarization", "summarization_middleware"]
+        for variant in variants:
+            dropped = _DeepAgentsSummarizationMiddleware.__new__(_DeepAgentsSummarizationMiddleware)
+            original = dict(_HARNESS_PROFILES)
+            try:
+                register_harness_profile(
+                    "strexcprov",
+                    HarnessProfile(excluded_middleware=frozenset({variant})),
+                )
+                fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+                fake_agent = MagicMock()
+                fake_agent.with_config.return_value = "compiled-agent"
+
+                with (
+                    patch("deepagents.graph.resolve_model", return_value=fake_model),
+                    patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+                ):
+                    create_deep_agent(
+                        model="strexcprov:some-model",
+                        middleware=[dropped],
+                    )
+
+                mw_stack = mock_create.call_args.kwargs["middleware"]
+                assert not any(type(m) is _DeepAgentsSummarizationMiddleware for m in mw_stack), f"variant {variant!r} did not match"
+            finally:
+                _HARNESS_PROFILES.clear()
+                _HARNESS_PROFILES.update(original)
+
+    def test_mixed_class_and_string_entries_both_apply(self) -> None:
+        """A single `excluded_middleware` set may hold both classes and strings."""
+        dropped_by_class = _StubMW()
+        dropped_by_string = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(
+                    excluded_middleware=frozenset({_StubMW, "_OtherStubMW"}),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped_by_class, dropped_by_string],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped_by_class for m in mw_stack)
+            assert not any(m is dropped_by_string for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_rejects_required_scaffolding(self) -> None:
+        """String aliases of required scaffolding raise `ValueError` at assembly time."""
+        forbidden_strings = ("filesystem", "FilesystemMiddleware", "sub_agent", "SubAgentMiddleware", "permission", "_PermissionMiddleware")
+        original = dict(_HARNESS_PROFILES)
+        try:
+            for forbidden in forbidden_strings:
+                _HARNESS_PROFILES.clear()
+                _HARNESS_PROFILES.update(original)
+                register_harness_profile(
+                    "denyprov",
+                    HarnessProfile(excluded_middleware=frozenset({forbidden})),
+                )
+                fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+                with (
+                    patch("deepagents.graph.resolve_model", return_value=fake_model),
+                    pytest.raises(ValueError, match="required"),
+                ):
+                    create_deep_agent(model="denyprov:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_unknown_name_is_silent_noop(self) -> None:
+        """A string entry that matches nothing in the stack does not error."""
+        kept = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"does_not_exist_middleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_unions_with_class_entry_on_merge(self) -> None:
+        """Re-registering with a string-form entry unions with an existing class-form set."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"_OtherStubMW"})),
+            )
+            merged = _get_harness_profile("strexcprov")
+            assert merged is not None
+            assert merged.excluded_middleware == frozenset({_StubMW, "_OtherStubMW"})
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

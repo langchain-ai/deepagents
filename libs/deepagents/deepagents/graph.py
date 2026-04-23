@@ -159,34 +159,26 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(
 )
 """String identifiers that must not appear in `excluded_middleware`.
 
-Each `_REQUIRED_MIDDLEWARE_CLASSES` entry contributes whatever `.name` the
-class actually reports. `_PermissionMiddleware` is intentionally private —
-its `.name` returns the underscore-prefixed class name — but we also reject
-`"PermissionMiddleware"` (no underscore) so a caller who guesses at the
-de-underscored form hits the required-scaffolding error instead of a silent
-no-op.
+Mirrors `_REQUIRED_MIDDLEWARE_CLASSES` via each class's reported `.name`.
+`_PermissionMiddleware` is intentionally private, so both `"PermissionMiddleware"`
+and `"_PermissionMiddleware"` are rejected — either spelling hits the
+informative scaffolding error instead of a silent no-op.
 """
 
 
 def _validate_excluded_middleware_config(profile: HarnessProfile) -> None:
-    """Validate guards that don't depend on the assembled stack.
+    """Validate stack-independent guards on `profile.excluded_middleware`.
 
-    Checks that `profile.excluded_middleware` does not name required
-    scaffolding or reference private-API (underscore-prefixed) strings. Both
-    categories are invariants of the profile configuration itself, independent
-    of which stack the profile is later applied to, so they are validated once
-    up front rather than re-checked on every stack pass.
-
-    Violations across both categories are collected and surfaced in a single
-    `ValueError`, so callers see every problem in one pass rather than fixing
-    one at a time across successive runs.
+    Rejects required-scaffolding entries and private-API (`_`-prefixed)
+    strings. Both are invariants of the profile itself, so they are checked
+    once up front rather than on every stack pass. Violations across both
+    categories are collected into a single `ValueError`.
 
     Args:
         profile: Profile whose `excluded_middleware` is validated.
 
     Raises:
-        ValueError: If any entry is required scaffolding or a private-API
-            (underscore-prefixed) string.
+        ValueError: If any entry is required scaffolding or a private-API string.
     """
     excluded = profile.excluded_middleware
     if not excluded:
@@ -240,41 +232,28 @@ def _apply_excluded_middleware(
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Drop middleware in the stack matched by `profile.excluded_middleware`.
 
-    Class-form entries match on exact type (not `isinstance`), mirroring the
-    slot-identity semantics used by `_merge_middleware` so a subclass
-    introduced by the caller is preserved when the profile excludes the base
-    class. String-form entries match on `AgentMiddleware.name` exactly — which
-    defaults to the class's `__name__` but is overridable. Classes whose
-    public identity differs from their impl class name (e.g. the summarization
-    middleware shipped as `SummarizationMiddleware` with impl class
-    `_DeepAgentsSummarizationMiddleware`) set `.name` to the public alias.
+    Class entries match on exact type (not `isinstance`), mirroring the
+    slot-identity semantics of `_merge_middleware` so a subclass introduced
+    by the caller is preserved when the profile excludes the base class.
+    String entries match `AgentMiddleware.name` exactly — defaults to the
+    class's `__name__` but is overridable when the public alias differs from
+    the impl class (e.g. `SummarizationMiddleware` for
+    `_DeepAgentsSummarizationMiddleware`).
 
-    Every entry in `profile.excluded_middleware` must match at least one
-    middleware across the stacks that the profile applies to. An entry that
-    matches nothing anywhere almost always indicates a typo or a stale
-    profile, and silently no-opping would hide the bug until runtime behavior
-    diverged from the operator's mental model. Per-stack unmatched checking
-    would be too strict — a profile applied to both the main agent and the
-    general-purpose subagent can legitimately target middleware that only one
-    of them carries — so callers accumulate matches across every call for the
-    same profile into shared `matched_classes` / `matched_names` sets and
-    then call `_verify_excluded_middleware_coverage` once all stacks have been
-    filtered.
-
-    Callers that do not supply the mutable match-tracking sets get filter-only
-    behavior with no coverage validation — useful when only a single stack is
-    filtered against the profile and aggregated validation isn't meaningful.
+    When `matched_classes` / `matched_names` are supplied, matches are
+    recorded there so `_verify_excluded_middleware_coverage` can confirm
+    every entry matched *somewhere* across the stacks the profile applies to
+    (main agent + GP subagent). Per-stack checking would be too strict —
+    a profile legitimately targets middleware only one stack carries. Omit
+    the sets for single-stack filters where aggregation isn't meaningful.
 
     Args:
         stack: Fully assembled middleware list for a single agent/subagent.
         profile: Profile whose `excluded_middleware` drives the filter.
-        matched_classes: Optional mutable set populated with every excluded
-            class that matched something in `stack`. Shared across multiple
-            calls for the same profile so coverage can be verified once after
-            all stacks have been filtered.
-        matched_names: Optional mutable set populated with every excluded name
-            that matched something in `stack`. Same lifetime semantics as
-            `matched_classes`.
+        matched_classes: Optional mutable set recording class matches across
+            calls for the same profile.
+        matched_names: Optional mutable set recording name matches, same
+            lifetime semantics as `matched_classes`.
 
     Returns:
         A new list with excluded entries removed. Always a fresh list, even
@@ -324,22 +303,19 @@ def _verify_excluded_middleware_coverage(
 ) -> None:
     """Raise `ValueError` if any `profile.excluded_middleware` entry matched nothing.
 
-    Called after every `_apply_excluded_middleware` call for a given profile
-    has populated the shared `matched_*` sets. An entry that matched no stack
-    anywhere is almost certainly a bug — a typo or a stale profile that no
-    longer corresponds to any real middleware.
+    Run after every stack has been filtered so the accumulated `matched_*`
+    sets reflect matches anywhere. An entry that matched nothing is almost
+    always a typo or stale profile. Required-scaffolding and `_`-prefixed
+    entries are skipped — rejected earlier by
+    `_validate_excluded_middleware_config`.
 
     Args:
         profile: Profile whose `excluded_middleware` is being audited.
-        matched_classes: Accumulated class matches from every filter call.
-        matched_names: Accumulated name matches from every filter call.
+        matched_classes: Accumulated class matches across filter calls.
+        matched_names: Accumulated name matches across filter calls.
 
     Raises:
-        ValueError: If any entry in `profile.excluded_middleware` is missing
-            from the corresponding `matched_*` set. Required-scaffolding
-            entries are skipped — they are rejected earlier by
-            `_validate_excluded_middleware_config` and their absence from the
-            stack is not a coverage failure.
+        ValueError: If any entry is missing from the corresponding `matched_*` set.
     """
     excluded = profile.excluded_middleware
     if not excluded:
@@ -581,18 +557,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
             - `_PermissionMiddleware` (if permission rules are present, always last)
 
-            After assembly, any entries listed in the profile's
+            After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
-            entries match on exact type, and string entries match
+            entries match exact type; string entries match
             `AgentMiddleware.name` exactly (e.g. `"SummarizationMiddleware"`
-            drops the summarization middleware via its public alias), so a
-            profile can drop middleware added by any earlier layer, including
-            instances supplied via this `middleware` argument. Entries that
-            don't match any middleware in the assembled stack raise
-            `ValueError`. A small set of scaffolding classes
+            drops the summarization middleware via its public alias).
+            Entries that match nothing in the assembled stack raise
+            `ValueError`, as does excluding scaffolding classes
             (`FilesystemMiddleware`, `SubAgentMiddleware`,
-            `_PermissionMiddleware`) cannot be excluded as class or string —
-            doing so also raises `ValueError`.
+            `_PermissionMiddleware`).
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:

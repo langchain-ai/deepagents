@@ -232,64 +232,34 @@ class HarnessProfile:
     """
 
     excluded_middleware: frozenset[type[AgentMiddleware] | str] = frozenset()
-    """Middleware to strip from every middleware stack this profile applies to.
+    """Middleware to strip from every stack this profile applies to.
 
-    Entries may be either a middleware *class* (matched by exact type, not
-    subclass — consistent with how `extra_middleware` merges slot-by-slot on
-    concrete type) or a *string name* (matched against `AgentMiddleware.name`
-    exactly). A filter runs over the fully assembled stack before the agent
-    is compiled, so the excluded entries are removed regardless of which
-    layer added them (including instances supplied via
-    `create_deep_agent(middleware=[...])`).
+    Entries may be a middleware *class* (matched by exact type, not subclass —
+    consistent with `extra_middleware` slot merging) or a *string* matching
+    `AgentMiddleware.name` exactly. `.name` defaults to the class's
+    `__name__` but is overridable, so `{"TodoListMiddleware"}` and
+    `{TodoListMiddleware}` behave identically for stock middleware. String
+    form is useful for YAML/JSON-loaded profiles and for middleware whose
+    class isn't part of the public import surface (e.g.
+    `"SummarizationMiddleware"` drops the private
+    `_DeepAgentsSummarizationMiddleware` via its public alias).
 
-    `AgentMiddleware.name` is a property that defaults to the class's
-    `__name__` but can be overridden. For most stock middleware the two are
-    identical, so `excluded_middleware={"TodoListMiddleware"}` and
-    `excluded_middleware={TodoListMiddleware}` behave the same.
+    The filter runs over the fully assembled stack, so exclusions remove
+    middleware regardless of which layer added it — including instances
+    passed via `create_deep_agent(middleware=[...])`. Merged profiles union
+    their exclusion sets; mixed class/string sets are allowed.
 
-    String-form entries are useful when profiles are loaded from a config
-    file (YAML/JSON), when the caller does not want to import the concrete
-    middleware class, or when the target middleware is injected internally
-    by `create_deep_agent` and the class is not part of the public import
-    surface.
+    !!! warning "Restrictions (all raise `ValueError` at assembly time)"
 
-    When profiles are merged, exclusions are additive: if a provider profile
-    excludes `SummarizationMiddleware` and an exact-model profile excludes
-    `AnthropicPromptCachingMiddleware`, the resolved profile strips both.
-    Mixed class/string sets union like any other `frozenset`.
-
-    !!! warning
-
-        Exclusion applies to user-supplied middleware too. Passing a class here
-        and also adding an instance of that class via
-        `create_deep_agent(middleware=[...])` results in the instance being
-        filtered out — specify the class in one place only.
-
-    !!! warning
-
-        A small set of scaffolding classes that deep agents rely on —
-        `FilesystemMiddleware`, `SubAgentMiddleware`, and `_PermissionMiddleware`
-        — cannot be excluded. Listing one of them here (as class *or* as the
-        corresponding `.name` string) raises `ValueError` when
-        `create_deep_agent` resolves the profile. Use this field to drop
-        optional layers (summarization, prompt caching) or middleware you
-        introduced yourself.
-
-    !!! warning
-
-        String-form entries that start with `_` are rejected at assembly time
-        — underscore prefix marks private middleware classes that are not
-        part of the public exclusion surface. Import the class and pass it
-        directly if you really need to exclude a private middleware.
-
-    !!! warning
-
-        Entries that do not match any middleware in the assembled stack raise
-        `ValueError` at assembly time. This applies to both class-form and
-        string-form entries — an exclusion that matches nothing almost always
-        indicates a typo or a stale profile, and silently no-opping would hide
-        the bug until runtime behavior diverged from the operator's mental
-        model.
+        - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`,
+            `_PermissionMiddleware`) cannot be excluded as class or as their
+            `.name` string. Use this field to drop optional layers
+            (summarization, prompt caching) or middleware you introduced
+            yourself.
+        - Private (`_`-prefixed) string entries are rejected — import the
+            class directly if you need to exclude a private middleware.
+        - Entries that match no middleware in the assembled stack are
+            rejected as likely typos or stale profiles.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
@@ -358,50 +328,31 @@ class HarnessProfile:
             object.__setattr__(self, "extra_middleware", tuple(extra))
 
     def to_dict(self) -> dict[str, Any]:
-        """Dump this profile to a plain dict covering the serializable subset.
+        """Dump this profile to a plain dict of primitives, lists, and nested dicts.
 
         !!! beta
 
             `deepagents.profiles` exposes beta APIs that may receive minor
             changes in future releases.
 
-        The returned dict is composed of primitives, lists, and nested dicts
-        only, so it can be serialized with any `json.dumps` / `yaml.safe_dump`
-        compatible encoder. Fields at their default (empty or `None`) are
-        omitted so the output stays minimal and round-trips cleanly through
-        `from_dict`.
+        Suitable for `json.dumps` or `yaml.safe_dump`. Fields at their
+        default are omitted so the output stays minimal and round-trips
+        cleanly through `from_dict`.
 
-        Call sites:
-
-        ```python
-        import yaml
-
-        data = profile.to_dict()
-        with open("profile.yaml", "w") as f:
-            yaml.safe_dump(data, f)
-        ```
-
-        Not supported:
-
-        - Class-form `excluded_middleware` entries. A class reference is not
-            representable in a config file. Use the string-form alternative
-            — the middleware's `.name` attribute (e.g.
-            `"SummarizationMiddleware"` in place of the `SummarizationMiddleware`
-            class).
-        - Non-empty `extra_middleware`. Middleware instances and factories
-            hold runtime state that has no declarative form. Construct the
-            profile in code if you need `extra_middleware`.
+        Class-form `excluded_middleware` entries and non-empty
+        `extra_middleware` are not serializable — use string-form aliases
+        (e.g. `"SummarizationMiddleware"`) for the former, and construct
+        profiles in code when you need `extra_middleware`.
 
         Returns:
             A plain dict containing only the fields set on this profile.
 
         Raises:
             ValueError: If the profile holds non-serializable state (class
-                entries in `excluded_middleware` or a non-empty
+                entries in `excluded_middleware` or non-empty
                 `extra_middleware`).
             TypeError: If `tool_description_overrides` contains a non-string
-                key or value — possible when callers bypass the dataclass's
-                `Mapping[str, str]` type hint at runtime.
+                key or value.
         """
         out: dict[str, Any] = {}
         if self.base_system_prompt is not None:
@@ -459,21 +410,8 @@ class HarnessProfile:
             `deepagents.profiles` exposes beta APIs that may receive minor
             changes in future releases.
 
-        Intended for the declarative subset produced by `to_dict` — strings,
-        string lists/sets, tool-description mappings, and the nested
-        general-purpose-subagent dict. Mirrors `to_dict` exactly so a
-        `from_dict(to_dict(p))` round-trip yields a profile equivalent to the
-        original over the serializable subset.
-
-        Call sites:
-
-        ```python
-        import yaml
-        from deepagents import HarnessProfile
-
-        with open("profile.yaml") as f:
-            profile = HarnessProfile.from_dict(yaml.safe_load(f))
-        ```
+        Inverse of `to_dict`: `from_dict(to_dict(p))` round-trips over the
+        serializable subset. Intended for profiles loaded from YAML/JSON.
 
         Args:
             data: A mapping with any subset of the serializable

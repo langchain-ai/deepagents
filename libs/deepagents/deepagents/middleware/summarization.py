@@ -214,19 +214,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     @property
     def name(self) -> str:
-        """Report the public alias so string-form exclusion uses the stable name.
+        """Report the public `SummarizationMiddleware` alias for string-form exclusion.
 
-        The concrete class is private (`_DeepAgentsSummarizationMiddleware`), but
-        it is exposed under the `SummarizationMiddleware` alias. Without this
-        override, the default `AgentMiddleware.name` property would return the
-        underscore-prefixed impl name, forcing callers to write
-        `excluded_middleware={"_DeepAgentsSummarizationMiddleware"}` — which is
-        a private-API reference rejected by the `_`-prefix guard on that field.
-
-        Subclasses fall back to the default `AgentMiddleware.name` behavior
-        (returning their own `__class__.__name__`) so a user-authored extension
-        does not inherit the summarization alias and get silently dropped when
-        a profile excludes `"SummarizationMiddleware"`.
+        The impl class is private (`_DeepAgentsSummarizationMiddleware`) but
+        ships under the public `SummarizationMiddleware` name, so
+        `excluded_middleware={"SummarizationMiddleware"}` targets this class.
+        Subclasses fall back to `type(self).__name__` so user-authored
+        extensions don't silently inherit the alias.
         """
         if type(self) is _DeepAgentsSummarizationMiddleware:
             return "SummarizationMiddleware"

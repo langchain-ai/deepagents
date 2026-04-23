@@ -4,26 +4,29 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langchain-quickjs"
-description = "QuickJS integration package for Deep Agents"
+description = "JavaScript REPL middleware for deepagents"
 license = { text = "MIT" }
 readme = "README.md"
 
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-version = "0.0.1"
+version = "0.1.0"
 requires-python = ">=3.11,<4.0"
+keywords = ["deepagents", "langchain", "langgraph", "repl", "javascript", "quickjs", "middleware"]
+
 dependencies = [
     "deepagents",
-    "quickjs>=1.19.4,<2",
+    "quickjs-rs",
+    "langchain>=1.2.15,<2.0.0",
+    "langchain-core>=1.2.27,<2.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -49,11 +52,22 @@ test = [
     "build",
 ]
 
+# TODO(packaging): before publishing to PyPI, remove the [tool.uv.sources] block
+# below and replace it with version pins. The local path assumption only holds
+# in the monorepo-style sibling layout used during development.
+#
+# Note: the upstream repo directory is still named ``quickjs-wasm`` even
+# though the package was renamed ``quickjs-rs`` in 0.3 (the path is the
+# repo on disk, the package name is what pip/uv installs).
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
+quickjs-rs = { path = "../../../../quickjs-wasm", editable = true }
 
 [tool.uv]
 constraint-dependencies = ["urllib3>=2.6.3"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
 
 [tool.ty.environment]
 python-version = "3.11"

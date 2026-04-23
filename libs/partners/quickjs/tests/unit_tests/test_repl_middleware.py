@@ -10,8 +10,8 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import SystemMessage
 from quickjs_rs import Runtime
 
-from deepagents_repl import REPLMiddleware
-from deepagents_repl._repl import _Registry, _ThreadREPL, format_outcome
+from langchain_quickjs import REPLMiddleware
+from langchain_quickjs._repl import _Registry, _ThreadREPL, format_outcome
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,6 +98,7 @@ def test_system_prompt_injected_once() -> None:
 
     req = MagicMock(spec=ModelRequest)
     req.system_message = SystemMessage(content="base")
+
     # override() returns a new ModelRequest with the given fields replaced;
     # emulate that with a MagicMock-returning-self pattern.
     def _override(**kwargs):
@@ -266,9 +267,7 @@ async def test_async_state_persists(repl: _ThreadREPL) -> None:
 
 async def test_async_top_level_await(repl: _ThreadREPL) -> None:
     """The feature this whole upgrade is about — awaiting a Promise works."""
-    outcome = await repl.eval_async(
-        "await new Promise(resolve => resolve(42))"
-    )
+    outcome = await repl.eval_async("await new Promise(resolve => resolve(42))")
     assert outcome.error_type is None
     assert outcome.result == "42"
 

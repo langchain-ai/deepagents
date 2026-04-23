@@ -11,13 +11,13 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime
 
-from deepagents_repl import REPLMiddleware
-from deepagents_repl._ptc import (
+from langchain_quickjs import REPLMiddleware
+from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
     to_camel_case,
 )
-from deepagents_repl._repl import _ThreadREPL
+from langchain_quickjs._repl import _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -105,9 +105,7 @@ def test_filter_list_include() -> None:
 
 def test_filter_dict_exclude_keeps_rest() -> None:
     a, b, c = _echo_tool("a"), _echo_tool("b"), _echo_tool("c")
-    out = filter_tools_for_ptc(
-        [a, b, c], {"exclude": ["b"]}, self_tool_name="eval"
-    )
+    out = filter_tools_for_ptc([a, b, c], {"exclude": ["b"]}, self_tool_name="eval")
     assert [t.name for t in out] == ["a", "c"]
 
 
@@ -177,9 +175,7 @@ def test_render_ptc_prompt_uses_signatures() -> None:
 async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
     calls: list[dict] = []
     repl.install_tools([_greet_tool(calls)])
-    outcome = await repl.eval_async(
-        'await tools.greet({name: "world", times: 2})'
-    )
+    outcome = await repl.eval_async('await tools.greet({name: "world", times: 2})')
     assert outcome.error_type is None, outcome.error_message
     # tool returned the string "hi world x2"
     assert outcome.result == "hi world x2"
@@ -218,8 +214,7 @@ async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     )
     repl.install_tools([tool])
     outcome = await repl.eval_async(
-        "try { await tools.boom({x: 1}); 'no-throw' } "
-        "catch (e) { e.message }"
+        "try { await tools.boom({x: 1}); 'no-throw' } catch (e) { e.message }"
     )
     # Host errors surface into JS as a catchable error. The exact class
     # name is implementation detail; we only care that the message is

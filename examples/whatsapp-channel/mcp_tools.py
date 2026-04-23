@@ -248,6 +248,15 @@ async def get_mcp_tools(
             tools = await load_mcp_tools(
                 session, server_name=server_name, tool_name_prefix=True
             )
+            # `load_mcp_tools` raises bare `ToolException` when the MCP server
+            # returns `isError: true` (e.g. the LLM passed invalid arguments).
+            # langgraph's default `ToolNode` handler only catches
+            # `ToolInvocationError`, so plain ToolException crashes the stream.
+            # Setting `handle_tool_error` on the BaseTool itself makes it
+            # convert the exception into an error ToolMessage before it leaves
+            # the tool, keeping the agent loop alive.
+            for t in tools:
+                t.handle_tool_error = True
             tools = _apply_tool_filter(tools, server_name, server_config)
             all_tools.extend(tools)
         all_tools.sort(key=lambda t: t.name)

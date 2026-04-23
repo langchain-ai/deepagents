@@ -16,29 +16,25 @@ from deepagents.middleware._error_blocks import (
 
 def test_ffmpeg_missing() -> None:
     assert build_error_text("video_1.mp4", ErrorReason.FFMPEG_MISSING) == (
-        "[Video 'video_1.mp4' could not be processed: ffmpeg is not installed "
-        "on this host. Please ask the user to describe it or retry.]"
+        "[Video 'video_1.mp4' could not be processed: ffmpeg is not installed on this host. Please ask the user to describe it or retry.]"
     )
 
 
 def test_no_video_stream() -> None:
     assert build_error_text("clip.mov", ErrorReason.NO_VIDEO_STREAM) == (
-        "[Video 'clip.mov' could not be processed: the file contains no video "
-        "stream. Please ask the user to describe it or retry.]"
+        "[Video 'clip.mov' could not be processed: the file contains no video stream. Please ask the user to describe it or retry.]"
     )
 
 
 def test_file_corrupt() -> None:
     assert build_error_text("bad.mp4", ErrorReason.FILE_CORRUPT) == (
-        "[Video 'bad.mp4' could not be processed: the file is corrupt or "
-        "unreadable. Please ask the user to describe it or retry.]"
+        "[Video 'bad.mp4' could not be processed: the file is corrupt or unreadable. Please ask the user to describe it or retry.]"
     )
 
 
 def test_extraction_failed() -> None:
     assert build_error_text("[video 1]", ErrorReason.EXTRACTION_FAILED) == (
-        "[Video '[video 1]' could not be processed: frame extraction failed. "
-        "Please ask the user to describe it or retry.]"
+        "[Video '[video 1]' could not be processed: frame extraction failed. Please ask the user to describe it or retry.]"
     )
 
 

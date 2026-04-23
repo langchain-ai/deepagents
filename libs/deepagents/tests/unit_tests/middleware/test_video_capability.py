@@ -37,8 +37,8 @@ from deepagents.middleware._video_capability import (
 def test_is_video_capable(
     provider: str | None,
     model_name: str | None,
-    override: bool | None,
-    expected: bool,
+    override: bool | None,  # noqa: FBT001
+    expected: bool,  # noqa: FBT001
 ) -> None:
     assert is_video_capable(provider, model_name, override=override) is expected
 

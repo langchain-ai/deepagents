@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
 from langchain_anthropic import ChatAnthropic
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.video_frames import VideoFrameExtractionMiddleware
@@ -26,7 +26,7 @@ def _capture_middleware(**kwargs: Any) -> list[Any]:
         return MagicMock()
 
     with patch("deepagents.graph.create_agent", side_effect=fake_create_agent):
-        create_deep_agent(model=ChatAnthropic(model="claude-sonnet-4-6"), **kwargs)
+        create_deep_agent(model=ChatAnthropic(model="claude-sonnet-4-6"), **kwargs)  # type: ignore[call-arg]
     return captured["middleware"]
 
 
@@ -51,15 +51,7 @@ class TestCreateDeepAgentVideoMiddleware:
 
     def test_order_before_anthropic_prompt_caching(self) -> None:
         """Video expansion must finalise message shape before prompt caching."""
-        from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
-
         middleware = _capture_middleware()
-        video_idx = next(
-            i for i, m in enumerate(middleware)
-            if isinstance(m, VideoFrameExtractionMiddleware)
-        )
-        cache_idx = next(
-            i for i, m in enumerate(middleware)
-            if isinstance(m, AnthropicPromptCachingMiddleware)
-        )
+        video_idx = next(i for i, m in enumerate(middleware) if isinstance(m, VideoFrameExtractionMiddleware))
+        cache_idx = next(i for i, m in enumerate(middleware) if isinstance(m, AnthropicPromptCachingMiddleware))
         assert video_idx < cache_idx

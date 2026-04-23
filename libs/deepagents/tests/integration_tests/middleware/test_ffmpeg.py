@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 
 import pytest
 
@@ -35,12 +35,19 @@ pytestmark = [
 def sample_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A 5-second 320x240 10fps colour bars video."""
     path = tmp_path_factory.mktemp("video") / "sample.mp4"
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi",
-            "-i", "testsrc=duration=5:size=320x240:rate=10",
-            "-pix_fmt", "yuv420p",
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=5:size=320x240:rate=10",
+            "-pix_fmt",
+            "yuv420p",
             str(path),
         ],
         check=True,
@@ -52,12 +59,19 @@ def sample_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def audio_only_file(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """An audio-only file with .mp4 extension to test NoVideoStreamError."""
     path = tmp_path_factory.mktemp("audio") / "audio.mp4"
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "lavfi",
-            "-i", "sine=frequency=440:duration=2",
-            "-c:a", "aac",
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:a",
+            "aac",
             str(path),
         ],
         check=True,
@@ -94,9 +108,7 @@ def test_probe_has_video_stream_false_for_audio_only(audio_only_file: Path) -> N
 
 
 def test_extract_frames_short_video(sample_video: Path) -> None:
-    params = ExtractionParams(
-        max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5
-    )
+    params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
     frames = extract_frames(sample_video, params)
 
     # baseline_interval = 1.0 → at least ~5 frames, plus possible scene frames.
@@ -113,9 +125,7 @@ def test_extract_frames_short_video(sample_video: Path) -> None:
 
 
 def test_extract_frames_respects_max_frames(sample_video: Path) -> None:
-    params = ExtractionParams(
-        max_frames=2, scene_threshold=0.3, max_width=1024, jpeg_quality=5
-    )
+    params = ExtractionParams(max_frames=2, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
     frames = extract_frames(sample_video, params)
     assert len(frames) <= 2
 
@@ -124,11 +134,9 @@ def test_extract_frames_respects_max_width(sample_video: Path) -> None:
     pytest.importorskip("PIL")
     from io import BytesIO  # noqa: PLC0415
 
-    from PIL import Image  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415  # type: ignore[import-unresolved]
 
-    params = ExtractionParams(
-        max_frames=95, scene_threshold=0.3, max_width=128, jpeg_quality=5
-    )
+    params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=128, jpeg_quality=5)
     frames = extract_frames(sample_video, params)
     for f in frames:
         with Image.open(BytesIO(f.jpeg_bytes)) as im:
@@ -136,17 +144,13 @@ def test_extract_frames_respects_max_width(sample_video: Path) -> None:
 
 
 def test_extract_frames_raises_no_video_stream(audio_only_file: Path) -> None:
-    params = ExtractionParams(
-        max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5
-    )
+    params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
     with pytest.raises(NoVideoStreamError):
         extract_frames(audio_only_file, params)
 
 
 def test_extract_frames_raises_file_corrupt(corrupt_video: Path) -> None:
-    params = ExtractionParams(
-        max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5
-    )
+    params = ExtractionParams(max_frames=95, scene_threshold=0.3, max_width=1024, jpeg_quality=5)
     with pytest.raises((FileCorruptError, NoVideoStreamError)):
         # A sufficiently corrupt file may also fail the video-stream probe first.
         extract_frames(corrupt_video, params)

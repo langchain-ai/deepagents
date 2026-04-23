@@ -6,10 +6,10 @@ Exact wording is snapshot-tested; changes require updating
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ErrorReason(str, Enum):
+class ErrorReason(StrEnum):
     """Reason a video could not be transcoded to frames."""
 
     FFMPEG_MISSING = "ffmpeg_missing"
@@ -44,7 +44,4 @@ def build_error_text(filename: str, reason: ErrorReason) -> str:
     if phrase is None:
         msg = f"unknown error reason: {reason!r}"
         raise ValueError(msg)
-    return (
-        f"[Video '{filename}' could not be processed: {phrase}. "
-        f"Please ask the user to describe it or retry.]"
-    )
+    return f"[Video '{filename}' could not be processed: {phrase}. Please ask the user to describe it or retry.]"

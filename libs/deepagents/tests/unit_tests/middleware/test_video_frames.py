@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-import pytest
+import base64
+from typing import Any
+from unittest.mock import MagicMock
 
+import pytest
+from langchain_core.messages import HumanMessage
+
+from deepagents.middleware import _ffmpeg, video_frames
 from deepagents.middleware._ffmpeg import (
+    ExtractedFrame,
     ExtractionFailedError,
     FFmpegMissingError,
     FileCorruptError,
@@ -14,6 +21,42 @@ from deepagents.middleware.video_frames import (
     VideoFrameExtractionMiddleware,
     _filename_for_video_block,
 )
+
+
+def _video_block(data: bytes = b"fake", mime: str = "video/mp4", filename: str = "clip.mp4") -> dict[str, Any]:
+    return {
+        "type": "video",
+        "source_type": "base64",
+        "mime_type": mime,
+        "data": base64.b64encode(data).decode(),
+        "source_metadata": {"filename": filename},
+    }
+
+
+def _text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def _make_request(model: MagicMock, messages: list[Any]) -> MagicMock:
+    req = MagicMock()
+    req.model = model
+    req.messages = messages
+
+    def _override(**kw: Any) -> MagicMock:
+        new = MagicMock()
+        new.model = model
+        new.messages = kw.get("messages", messages)
+        return new
+
+    req.override.side_effect = _override
+    return req
+
+
+def _model_with_provider(provider: str, model_name: str) -> MagicMock:
+    model = MagicMock()
+    model._get_ls_params.return_value = {"ls_provider": provider}
+    model.model_dump.return_value = {"model_name": model_name}
+    return model
 
 
 class TestInit:
@@ -80,47 +123,6 @@ class TestFilenameForVideoBlock:
         assert _filename_for_video_block(block) == "video"
 
 
-import base64
-from typing import Any, Callable
-from unittest.mock import MagicMock
-
-from langchain_core.messages import AIMessage, HumanMessage
-
-
-def _video_block(data: bytes = b"fake", mime: str = "video/mp4", filename: str = "clip.mp4") -> dict[str, Any]:
-    return {
-        "type": "video",
-        "source_type": "base64",
-        "mime_type": mime,
-        "data": base64.b64encode(data).decode(),
-        "source_metadata": {"filename": filename},
-    }
-
-
-def _text_block(text: str) -> dict[str, Any]:
-    return {"type": "text", "text": text}
-
-
-def _make_request(model: MagicMock, messages: list[Any]) -> MagicMock:
-    req = MagicMock()
-    req.model = model
-    req.messages = messages
-    def _override(**kw: Any) -> MagicMock:
-        new = MagicMock()
-        new.model = model
-        new.messages = kw.get("messages", messages)
-        return new
-    req.override.side_effect = _override
-    return req
-
-
-def _model_with_provider(provider: str, model_name: str) -> MagicMock:
-    model = MagicMock()
-    model._get_ls_params.return_value = {"ls_provider": provider}
-    model.model_dump.return_value = {"model_name": model_name}
-    return model
-
-
 class TestWrapModelCallPassThrough:
     def test_gemini_passes_through_unchanged(self) -> None:
         mw = VideoFrameExtractionMiddleware()
@@ -149,19 +151,12 @@ class TestWrapModelCallPassThrough:
 
 
 class TestWrapModelCallHappyPath:
-    def test_single_video_replaced_with_frame_sequence(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents.middleware import _ffmpeg, video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
+    def test_single_video_replaced_with_frame_sequence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [
             ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.0),
             ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0b", timestamp_s=1.0),
         ]
-        monkeypatch.setattr(
-            video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames
-        )
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
         monkeypatch.setattr(_ffmpeg, "check_ffmpeg_available", lambda: True)
 
         mw = VideoFrameExtractionMiddleware()
@@ -170,11 +165,12 @@ class TestWrapModelCallHappyPath:
         request = _make_request(model, messages)
 
         captured: dict[str, Any] = {}
-        def handler(req: Any) -> str:
+
+        def handler(req: Any) -> str:  # noqa: ANN401
             captured["messages"] = req.messages
             return "OK"
 
-        result = mw.wrap_model_call(request, handler)
+        result = mw.wrap_model_call(request, handler)  # type: ignore[arg-type]  # handler returns str as a mock ModelResponse
         assert result == "OK"
 
         new_messages = captured["messages"]
@@ -182,7 +178,7 @@ class TestWrapModelCallHappyPath:
         content = new_messages[0].content
         assert isinstance(content, list)
 
-        # Expect: [preamble, ts1, img1, ts2, img2]
+        # preamble + (ts, img) * 2 = 5 blocks total
         assert len(content) == 5
         assert content[0]["type"] == "text"
         assert "meeting.mp4" in content[0]["text"]
@@ -198,18 +194,15 @@ class TestWrapModelCallHappyPath:
         assert content[4]["source_metadata"]["frame_index"] == 1
 
         # Original message state was NOT mutated.
-        assert messages[0].content[0]["type"] == "video"
+        orig_content = messages[0].content
+        assert isinstance(orig_content, list)
+        first_block = orig_content[0]
+        assert isinstance(first_block, dict)
+        assert first_block["type"] == "video"
 
-    def test_ordering_preserved_with_interleaved_text(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
+    def test_ordering_preserved_with_interleaved_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
-        monkeypatch.setattr(
-            video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames
-        )
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
 
         mw = VideoFrameExtractionMiddleware()
         model = _model_with_provider("anthropic", "claude-sonnet-4-6")
@@ -227,11 +220,12 @@ class TestWrapModelCallHappyPath:
         request = _make_request(model, messages)
 
         captured: dict[str, Any] = {}
-        def handler(req: Any) -> str:
+
+        def handler(req: Any) -> str:  # noqa: ANN401
             captured["messages"] = req.messages
             return "OK"
 
-        mw.wrap_model_call(request, handler)
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
         content = captured["messages"][0].content
 
         # Text blocks retain their relative position.
@@ -249,12 +243,8 @@ class TestWrapModelCallHappyPath:
 
 
 class TestErrorPaths:
-    def _run_with_failure(
-        self, monkeypatch: pytest.MonkeyPatch, failure: Exception
-    ) -> list[Any]:
-        from deepagents.middleware import video_frames
-
-        def fail(*_a: Any, **_kw: Any) -> list[Any]:
+    def _run_with_failure(self, monkeypatch: pytest.MonkeyPatch, failure: Exception) -> list[Any]:
+        def fail(*_a: object, **_kw: object) -> list[Any]:
             raise failure
 
         monkeypatch.setattr(video_frames, "_run_extraction", fail)
@@ -265,11 +255,12 @@ class TestErrorPaths:
         request = _make_request(model, messages)
 
         captured: dict[str, Any] = {}
-        def handler(req: Any) -> str:
+
+        def handler(req: Any) -> str:  # noqa: ANN401
             captured["messages"] = req.messages
             return "OK"
 
-        mw.wrap_model_call(request, handler)
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
         return captured["messages"][0].content
 
     def test_ffmpeg_missing_produces_error_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -294,9 +285,6 @@ class TestErrorPaths:
 
 class TestOverride:
     def test_override_false_forces_extraction_on_gemini(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
         monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
 
@@ -305,22 +293,21 @@ class TestOverride:
         messages = [HumanMessage(content=[_video_block()])]
         request = _make_request(model, messages)
         captured: dict[str, Any] = {}
-        def handler(req: Any) -> str:
+
+        def handler(req: Any) -> str:  # noqa: ANN401
             captured["messages"] = req.messages
             return "OK"
 
-        mw.wrap_model_call(request, handler)
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
         content = captured["messages"][0].content
         assert any(b.get("type") == "image" for b in content)
 
 
 class TestCache:
     def test_repeat_video_hits_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         call_count = {"n": 0}
-        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+
+        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
             call_count["n"] += 1
             return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
 
@@ -338,13 +325,12 @@ class TestCache:
         assert call_count["n"] == 1
 
     def test_different_params_skip_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         call_count = {"n": 0}
-        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+
+        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
             call_count["n"] += 1
             return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
         model = _model_with_provider("anthropic", "claude-sonnet-4-6")
@@ -358,17 +344,16 @@ class TestCache:
         request = _make_request(model, [HumanMessage(content=[video])])
         mw2.wrap_model_call(request, lambda _r: "OK")
 
-        # Two different middlewares with different params → two extractions.
+        # Two different middlewares with different params -> two extractions.
         assert call_count["n"] == 2
 
     def test_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         call_count = {"n": 0}
-        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+
+        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
             call_count["n"] += 1
             return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
         mw = VideoFrameExtractionMiddleware(cache_size=2)
@@ -382,18 +367,17 @@ class TestCache:
 
         run(b"a")
         run(b"b")
-        run(b"c")   # Evicts 'a'.
-        run(b"a")   # Re-extract (evicted).
+        run(b"c")  # Evicts 'a'.
+        run(b"a")  # Re-extract (evicted).
         assert call_count["n"] == 4
 
     def test_cache_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         call_count = {"n": 0}
-        def fake(*_a: Any, **_kw: Any) -> list[ExtractedFrame]:
+
+        def fake(*_a: object, **_kw: object) -> list[ExtractedFrame]:
             call_count["n"] += 1
             return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+
         monkeypatch.setattr(video_frames, "_run_extraction", fake)
 
         mw = VideoFrameExtractionMiddleware(cache_size=0)
@@ -415,16 +399,13 @@ class TestAwrapModelCall:
         messages = [HumanMessage(content=[_video_block()])]
         request = _make_request(model, messages)
 
-        async def handler(req: Any) -> str:
+        async def handler(_req: object) -> str:
             return "ASYNC"
 
         result = await mw.awrap_model_call(request, handler)
         assert result == "ASYNC"
 
     async def test_async_transforms_on_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from deepagents.middleware import video_frames
-        from deepagents.middleware._ffmpeg import ExtractedFrame
-
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
         monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
 
@@ -434,7 +415,8 @@ class TestAwrapModelCall:
         request = _make_request(model, messages)
 
         captured: dict[str, Any] = {}
-        async def handler(req: Any) -> str:
+
+        async def handler(req: Any) -> str:  # noqa: ANN401
             captured["messages"] = req.messages
             return "OK"
 
@@ -445,6 +427,6 @@ class TestAwrapModelCall:
 
 
 def test_exported_from_package() -> None:
-    from deepagents.middleware import VideoFrameExtractionMiddleware as Exported
+    from deepagents.middleware import VideoFrameExtractionMiddleware as Exported  # noqa: PLC0415
 
     assert Exported is VideoFrameExtractionMiddleware

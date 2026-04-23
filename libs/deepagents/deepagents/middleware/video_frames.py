@@ -4,7 +4,7 @@ The middleware fires as a `wrap_model_call` hook. For non-video-capable provider
 (everything except Gemini by default), it:
 
 1. Deep-copies `request.messages`.
-2. Replaces every `VideoContentBlock` with a `[preamble, (ts, image) × N]`
+2. Replaces every `VideoContentBlock` with a `[preamble, (ts, image) x N]`
    sequence by shelling out to ffmpeg.
 3. Calls `handler(request.override(messages=transformed))`.
 
@@ -23,14 +23,18 @@ import logging
 from collections import OrderedDict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import AIMessage, AnyMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from langchain_core.messages import AIMessage, AnyMessage
 
 from deepagents._models import get_model_identifier, get_model_provider
 from deepagents.middleware import _ffmpeg
@@ -47,6 +51,17 @@ from deepagents.middleware._ffmpeg import (
 from deepagents.middleware._video_capability import is_video_capable
 
 logger = logging.getLogger(__name__)
+
+# Valid range constants for VideoFrameExtractionMiddleware constructor.
+_MAX_FRAMES_MIN = 1
+_MAX_FRAMES_MAX = 1000
+_MAX_WIDTH_MIN = 64
+_MAX_WIDTH_MAX = 4096
+_JPEG_QUALITY_MIN = 2
+_JPEG_QUALITY_MAX = 31
+_CACHE_SIZE_MAX = 10000
+# Minimum frame count that enables duration/interval estimation.
+_MIN_FRAMES_FOR_DURATION = 2
 
 _MIME_TO_EXT: dict[str, str] = {
     "video/mp4": "mp4",
@@ -78,8 +93,12 @@ def _filename_for_video_block(block: dict[str, Any]) -> str:
     return "video"
 
 
-def _is_video_block(block: Any) -> bool:
-    return isinstance(block, dict) and block.get("type") == "video"
+def _is_video_block(block: object) -> bool:
+    if not isinstance(block, dict):
+        return False
+    # ty narrows `dict` to `dict[Unknown, Unknown]`; `.get(str)` triggers
+    # invalid-argument-type because the key is typed as `Never`.
+    return block.get("type") == "video"  # type: ignore[arg-type]
 
 
 def _decode_video_bytes(block: dict[str, Any]) -> bytes:
@@ -90,7 +109,8 @@ def _decode_video_bytes(block: dict[str, Any]) -> bytes:
     try:
         return base64.b64decode(data, validate=True)
     except binascii.Error as exc:
-        raise ExtractionFailedError("video block 'data' is not valid base64") from exc
+        msg = "video block 'data' is not valid base64"
+        raise ExtractionFailedError(msg) from exc
 
 
 def _ext_for_mime(mime: str | None) -> str:
@@ -99,9 +119,7 @@ def _ext_for_mime(mime: str | None) -> str:
     return "mp4"
 
 
-def _run_extraction(
-    video_bytes: bytes, mime: str | None, params: ExtractionParams
-) -> list[ExtractedFrame]:
+def _run_extraction(video_bytes: bytes, mime: str | None, params: ExtractionParams) -> list[ExtractedFrame]:
     """Write the bytes to a temp file and invoke `_ffmpeg.extract_frames`.
 
     Seam for monkeypatching in middleware tests.
@@ -113,19 +131,18 @@ def _run_extraction(
         return _ffmpeg.extract_frames(Path(tmp.name), params)
 
 
-def _cache_key(
-    video_bytes: bytes, params: ExtractionParams
-) -> tuple[str, tuple[int, float, int, int]]:
+def _cache_key(video_bytes: bytes, params: ExtractionParams) -> tuple[str, tuple[int, float, int, int]]:
     digest = hashlib.sha256(video_bytes).hexdigest()
     params_tuple = (
-        params.max_frames, params.scene_threshold, params.max_width, params.jpeg_quality,
+        params.max_frames,
+        params.scene_threshold,
+        params.max_width,
+        params.jpeg_quality,
     )
     return digest, params_tuple
 
 
-def _build_preamble(
-    filename: str, num_frames: int, duration_s: float, baseline_interval: float
-) -> dict[str, Any]:
+def _build_preamble(filename: str, num_frames: int, duration_s: float, baseline_interval: float) -> dict[str, Any]:
     fps = 1.0 / baseline_interval if baseline_interval > 0 else 0.0
     return {
         "type": "text",
@@ -138,16 +155,10 @@ def _build_preamble(
     }
 
 
-def _frames_to_blocks(
-    frames: list[ExtractedFrame], filename: str, duration_s: float, baseline_interval: float
-) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = [
-        _build_preamble(filename, len(frames), duration_s, baseline_interval)
-    ]
+def _frames_to_blocks(frames: list[ExtractedFrame], filename: str, duration_s: float, baseline_interval: float) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = [_build_preamble(filename, len(frames), duration_s, baseline_interval)]
     for i, frame in enumerate(frames):
-        blocks.append(
-            {"type": "text", "text": f"Frame {i + 1} at t={frame.timestamp_s:.1f}s"}
-        )
+        blocks.append({"type": "text", "text": f"Frame {i + 1} at t={frame.timestamp_s:.1f}s"})
         blocks.append(
             {
                 "type": "image",
@@ -185,20 +196,36 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         video_capable_override: bool | None = None,
         cache_size: int = 256,
     ) -> None:
-        if not 1 <= max_frames <= 1000:
-            msg = f"max_frames must be in [1, 1000]; got {max_frames}"
+        """Initialise the middleware with extraction and caching parameters.
+
+        Args:
+            max_frames: Maximum number of frames to extract per video (1-1000).
+            scene_threshold: Scene-change sensitivity in [0.0, 1.0].
+            max_width: Maximum frame width in pixels (64-4096).
+            jpeg_quality: JPEG quality factor passed to ffmpeg's `-q:v` (2-31;
+                lower is higher quality).
+            video_capable_override: Force video-capable detection on (True), off
+                (False), or use the registry (None).
+            cache_size: Maximum number of videos to keep in the extraction cache.
+                0 disables caching.
+
+        Raises:
+            ValueError: If any parameter is outside its valid range.
+        """
+        if not _MAX_FRAMES_MIN <= max_frames <= _MAX_FRAMES_MAX:
+            msg = f"max_frames must be in [{_MAX_FRAMES_MIN}, {_MAX_FRAMES_MAX}]; got {max_frames}"
             raise ValueError(msg)
         if not 0.0 <= scene_threshold <= 1.0:
             msg = f"scene_threshold must be in [0.0, 1.0]; got {scene_threshold}"
             raise ValueError(msg)
-        if not 64 <= max_width <= 4096:
-            msg = f"max_width must be in [64, 4096]; got {max_width}"
+        if not _MAX_WIDTH_MIN <= max_width <= _MAX_WIDTH_MAX:
+            msg = f"max_width must be in [{_MAX_WIDTH_MIN}, {_MAX_WIDTH_MAX}]; got {max_width}"
             raise ValueError(msg)
-        if not 2 <= jpeg_quality <= 31:
-            msg = f"jpeg_quality must be in [2, 31]; got {jpeg_quality}"
+        if not _JPEG_QUALITY_MIN <= jpeg_quality <= _JPEG_QUALITY_MAX:
+            msg = f"jpeg_quality must be in [{_JPEG_QUALITY_MIN}, {_JPEG_QUALITY_MAX}]; got {jpeg_quality}"
             raise ValueError(msg)
-        if not 0 <= cache_size <= 10000:
-            msg = f"cache_size must be in [0, 10000]; got {cache_size}"
+        if not 0 <= cache_size <= _CACHE_SIZE_MAX:
+            msg = f"cache_size must be in [0, {_CACHE_SIZE_MAX}]; got {cache_size}"
             raise ValueError(msg)
 
         super().__init__()
@@ -209,9 +236,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         self.video_capable_override = video_capable_override
         self.cache_size = cache_size
 
-        self._cache: OrderedDict[
-            tuple[str, tuple[int, float, int, int]], list[ExtractedFrame]
-        ] = OrderedDict()
+        self._cache: OrderedDict[tuple[str, tuple[int, float, int, int]], list[ExtractedFrame]] = OrderedDict()
 
     @property
     def _params(self) -> ExtractionParams:
@@ -227,6 +252,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse | AIMessage:
+        """Intercept a model call and expand video blocks for non-video-capable models."""
         provider = get_model_provider(request.model)
         model_name = get_model_identifier(request.model) or ""
         if is_video_capable(provider, model_name, override=self.video_capable_override):
@@ -253,9 +279,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             return await handler(request)
         return await handler(request.override(messages=transformed))
 
-    def _transform_messages(
-        self, messages: list[AnyMessage]
-    ) -> tuple[list[AnyMessage], bool]:
+    def _transform_messages(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
         """Return (new_messages, whether_any_video_was_found)."""
         mutated = False
         new_messages = copy.deepcopy(list(messages))
@@ -270,7 +294,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
                     new_content.extend(self._expand_video_block(block))
                 else:
                     new_content.append(block)
-            message.content = new_content  # type: ignore[attr-defined]
+            message.content = new_content
         return new_messages, mutated
 
     def _expand_video_block(self, block: dict[str, Any]) -> list[dict[str, Any]]:
@@ -278,11 +302,9 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         try:
             video_bytes = _decode_video_bytes(block)
             frames = self._extract_with_cache(video_bytes, block.get("mime_type"))
-            if len(frames) >= 2:
+            if len(frames) >= _MIN_FRAMES_FOR_DURATION:
                 duration_s = frames[-1].timestamp_s - frames[0].timestamp_s
-                baseline_interval = (
-                    duration_s / (len(frames) - 1) if len(frames) > 1 else 1.0
-                )
+                baseline_interval = duration_s / (len(frames) - 1) if len(frames) > 1 else 1.0
             else:
                 duration_s = frames[0].timestamp_s if frames else 0.0
                 baseline_interval = 1.0
@@ -304,9 +326,7 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             logger.warning("unexpected extraction error for %r: %s", filename, exc)
             return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]
 
-    def _extract_with_cache(
-        self, video_bytes: bytes, mime: str | None
-    ) -> list[ExtractedFrame]:
+    def _extract_with_cache(self, video_bytes: bytes, mime: str | None) -> list[ExtractedFrame]:
         if self.cache_size == 0:
             return _run_extraction(video_bytes, mime, self._params)
 

@@ -16,7 +16,7 @@ checked loosely (any provider reporting a Gemini model qualifies).
 
 
 def is_video_capable(
-    provider: str | None,
+    provider: str | None,  # noqa: ARG001 — reserved for future provider-specific overrides
     model_name: str | None,
     *,
     override: bool | None = None,

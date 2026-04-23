@@ -75,8 +75,8 @@ _FFPROBE_TIMEOUT_S = 15
 def _run_ffprobe(video_path: Path) -> dict | None:
     """Run ffprobe and return parsed JSON, or None on any failure."""
     try:
-        result = subprocess.run(
-            [
+        result = subprocess.run(  # noqa: S603
+            [  # noqa: S607
                 "ffprobe",
                 "-v",
                 "error",
@@ -140,9 +140,7 @@ def probe_has_video_stream(video_path: Path) -> bool:
 # followed by zero-or-more `key=value` metadata lines. Match frame markers
 # tolerantly — any non-newline characters may appear between `frame:N` and
 # `pts_time:T` (e.g. `pts:P`), and trailing content on the line is ignored.
-_TS_LINE_RE = re.compile(
-    r"^frame:(\d+)[^\n]*?pts_time:([0-9]+(?:\.[0-9]+)?)", re.MULTILINE
-)
+_TS_LINE_RE = re.compile(r"^frame:(\d+)[^\n]*?pts_time:([0-9]+(?:\.[0-9]+)?)", re.MULTILINE)
 
 
 def _parse_timestamps(metadata_file: Path) -> dict[int, float]:
@@ -154,21 +152,13 @@ def _parse_timestamps(metadata_file: Path) -> dict[int, float]:
     return out
 
 
-def _build_filter_string(
-    baseline_interval: float, params: ExtractionParams, metadata_path: Path
-) -> str:
-    """Build the `-vf` filter graph string.
+def _build_filter_string(baseline_interval: float, params: ExtractionParams, metadata_path: Path) -> str:
+    r"""Build the `-vf` filter graph string.
 
     Commas separating filter-arg expressions inside `select=` / `scale=` must be
     escaped as `\\,` (a literal backslash + comma in the string passed to ffmpeg).
     """
-    select = (
-        "select='"
-        "isnan(prev_selected_t)"
-        f" + gte(t-prev_selected_t\\,{baseline_interval})"
-        f" + gt(scene\\,{params.scene_threshold})"
-        "'"
-    )
+    select = f"select='isnan(prev_selected_t) + gte(t-prev_selected_t\\,{baseline_interval}) + gt(scene\\,{params.scene_threshold})'"
     scale = f"scale='min({params.max_width}\\,iw)':-2"
     meta = f"metadata=print:file={metadata_path}"
     return f"{select}, {scale}, {meta}"
@@ -233,7 +223,7 @@ def extract_frames(
 
         timeout_s = max(30.0, duration_s * 2.0)
         try:
-            subprocess.run(
+            subprocess.run(  # noqa: S603
                 cmd,
                 capture_output=True,
                 text=True,
@@ -243,9 +233,8 @@ def extract_frames(
         except subprocess.CalledProcessError as exc:
             raise ExtractionFailedError(exc.stderr or "ffmpeg non-zero exit") from exc
         except subprocess.TimeoutExpired as exc:
-            raise ExtractionFailedError(
-                f"ffmpeg timed out after {timeout_s}s"
-            ) from exc
+            msg = f"ffmpeg timed out after {timeout_s}s"
+            raise ExtractionFailedError(msg) from exc
         except FileNotFoundError as exc:
             raise FFmpegMissingError(str(exc)) from exc
 
@@ -254,9 +243,7 @@ def extract_frames(
         frames: list[ExtractedFrame] = []
         for idx, path in enumerate(frame_paths):
             ts = timestamps.get(idx, float(idx) * baseline_interval)
-            frames.append(
-                ExtractedFrame(jpeg_bytes=path.read_bytes(), timestamp_s=ts)
-            )
+            frames.append(ExtractedFrame(jpeg_bytes=path.read_bytes(), timestamp_s=ts))
 
         # Belt-and-suspenders hard-trim: scene detection can overshoot.
         return frames[: params.max_frames]

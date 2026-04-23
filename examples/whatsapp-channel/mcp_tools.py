@@ -9,7 +9,9 @@ them as LangChain tools.
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import logging
 import shutil
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -19,6 +21,8 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection, MultiServerMCPClient
 
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 
@@ -57,6 +61,88 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
             f"Server '{server_name}' has unsupported transport type "
             f"'{server_type}'. Supported: stdio, sse, http"
         )
+
+    _validate_tool_filter_fields(server_name, server_config)
+
+
+def _validate_tool_filter_fields(
+    server_name: str, server_config: dict[str, Any]
+) -> None:
+    """Validate optional `allowedTools` / `disabledTools` fields."""
+    has_allowed = "allowedTools" in server_config
+    has_disabled = "disabledTools" in server_config
+    if has_allowed and has_disabled:
+        raise ValueError(
+            f"Server '{server_name}' cannot set both 'allowedTools' and"
+            " 'disabledTools' — pick one."
+        )
+
+    for field_name in ("allowedTools", "disabledTools"):
+        if field_name not in server_config:
+            continue
+        value = server_config[field_name]
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise TypeError(
+                f"Server '{server_name}' '{field_name}' must be a list of strings"
+            )
+
+
+_GLOB_METACHARS = frozenset("*?[")
+
+
+def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
+    """Return True if a single filter entry matches a tool name.
+
+    Entries with `*`, `?`, or `[` are treated as fnmatch globs; others are
+    matched literally. Each entry is tried against both the full prefixed
+    tool name and the bare (post-prefix) form.
+    """
+    is_glob = any(ch in _GLOB_METACHARS for ch in entry)
+    if is_glob:
+        if fnmatch.fnmatchcase(tool_name, entry):
+            return True
+        if tool_name.startswith(prefix):
+            return fnmatch.fnmatchcase(tool_name[len(prefix) :], entry)
+        return False
+    if tool_name == entry:
+        return True
+    return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
+
+
+def _apply_tool_filter(
+    tools: list[BaseTool],
+    server_name: str,
+    server_config: dict[str, Any],
+) -> list[BaseTool]:
+    """Filter a server's tools by its `allowedTools` / `disabledTools` list."""
+    allowed = server_config.get("allowedTools")
+    disabled = server_config.get("disabledTools")
+    if allowed is None and disabled is None:
+        return tools
+
+    prefix = f"{server_name}_"
+
+    def _any_entry_matches(tool_name: str, entries: list[str]) -> bool:
+        return any(_entry_matches_tool(e, tool_name, prefix) for e in entries)
+
+    if allowed is not None:
+        filtered = [t for t in tools if _any_entry_matches(t.name, allowed)]
+        missing = [
+            e
+            for e in allowed
+            if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
+        ]
+        if missing:
+            logger.warning(
+                "MCP server '%s' allowedTools entries matched no tools: %s",
+                server_name,
+                ", ".join(missing),
+            )
+        return filtered
+
+    return [t for t in tools if not _any_entry_matches(t.name, disabled or [])]
 
 
 def load_mcp_config(config_path: str) -> dict[str, Any]:
@@ -155,13 +241,14 @@ async def get_mcp_tools(
         manager.client = client
 
         all_tools: list[BaseTool] = []
-        for server_name in config["mcpServers"]:
+        for server_name, server_config in config["mcpServers"].items():
             session = await manager.exit_stack.enter_async_context(
                 client.session(server_name)
             )
             tools = await load_mcp_tools(
                 session, server_name=server_name, tool_name_prefix=True
             )
+            tools = _apply_tool_filter(tools, server_name, server_config)
             all_tools.extend(tools)
         all_tools.sort(key=lambda t: t.name)
     except Exception:

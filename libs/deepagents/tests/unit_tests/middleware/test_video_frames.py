@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from deepagents.middleware._ffmpeg import (
+    ExtractionFailedError,
+    FFmpegMissingError,
+    FileCorruptError,
+    NoVideoStreamError,
+)
 from deepagents.middleware.video_frames import (
     VideoFrameExtractionMiddleware,
     _filename_for_video_block,
@@ -240,3 +246,69 @@ class TestWrapModelCallHappyPath:
         assert content[6] == {"type": "text", "text": "Frame 1 at t=0.0s"}
         assert content[7]["type"] == "image"
         assert content[8] == _text_block("after")
+
+
+class TestErrorPaths:
+    def _run_with_failure(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Exception
+    ) -> list[Any]:
+        from deepagents.middleware import video_frames
+
+        def fail(*_a: Any, **_kw: Any) -> list[Any]:
+            raise failure
+
+        monkeypatch.setattr(video_frames, "_run_extraction", fail)
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        messages = [HumanMessage(content=[_video_block(filename="bad.mp4")])]
+        request = _make_request(model, messages)
+
+        captured: dict[str, Any] = {}
+        def handler(req: Any) -> str:
+            captured["messages"] = req.messages
+            return "OK"
+
+        mw.wrap_model_call(request, handler)
+        return captured["messages"][0].content
+
+    def test_ffmpeg_missing_produces_error_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        content = self._run_with_failure(monkeypatch, FFmpegMissingError("missing"))
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert "ffmpeg is not installed" in content[0]["text"]
+        assert "'bad.mp4'" in content[0]["text"]
+
+    def test_no_video_stream_produces_error_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        content = self._run_with_failure(monkeypatch, NoVideoStreamError("no stream"))
+        assert "no video stream" in content[0]["text"]
+
+    def test_file_corrupt_produces_error_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        content = self._run_with_failure(monkeypatch, FileCorruptError("corrupt"))
+        assert "corrupt or unreadable" in content[0]["text"]
+
+    def test_extraction_failed_produces_error_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        content = self._run_with_failure(monkeypatch, ExtractionFailedError("kaboom"))
+        assert "frame extraction failed" in content[0]["text"]
+
+
+class TestOverride:
+    def test_override_false_forces_extraction_on_gemini(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+
+        mw = VideoFrameExtractionMiddleware(video_capable_override=False)
+        model = _model_with_provider("google_genai", "gemini-2.0-flash")
+        messages = [HumanMessage(content=[_video_block()])]
+        request = _make_request(model, messages)
+        captured: dict[str, Any] = {}
+        def handler(req: Any) -> str:
+            captured["messages"] = req.messages
+            return "OK"
+
+        mw.wrap_model_call(request, handler)
+        content = captured["messages"][0].content
+        assert any(b.get("type") == "image" for b in content)

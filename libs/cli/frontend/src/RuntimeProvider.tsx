@@ -13,6 +13,7 @@ import {
   useLangGraphRuntime,
   type LangChainMessage,
 } from "@assistant-ui/react-langgraph";
+import { Client } from "@langchain/langgraph-sdk";
 import {
   createThread,
   getCheckpointId,
@@ -43,6 +44,15 @@ const ThreadActionsContext = createContext<ThreadActions>({
   newThread: () => {},
 });
 export const useThreadActions = () => useContext(ThreadActionsContext);
+
+type LangGraphClientFactory = () => Client;
+
+const LangGraphClientContext = createContext<LangGraphClientFactory>(() => {
+  throw new Error("useLangGraphClient must be used inside RuntimeProvider");
+});
+// Returns a factory; consumers call it once (e.g. in a `useMemo`) to get a
+// stable `Client` instance configured with the current auth headers.
+export const useLangGraphClient = () => useContext(LangGraphClientContext);
 
 type Props = {
   accessToken: string;
@@ -139,6 +149,17 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
     [currentExternalId, switchToExistingThread, newThread],
   );
 
+  const clientFactory = useCallback<LangGraphClientFactory>(
+    () =>
+      new Client({
+        apiUrl: ctxRef.current.apiUrl,
+        defaultHeaders: ctxRef.current.accessToken
+          ? { Authorization: `Bearer ${ctxRef.current.accessToken}` }
+          : undefined,
+      }),
+    [],
+  );
+
   // Changing assistant mid-conversation starts a fresh thread — old history
   // belongs to a different graph.
   const prevAssistantIdRef = useRef(assistantId);
@@ -153,9 +174,13 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
     <AssistantRuntimeProvider runtime={runtime}>
       <GraphValuesContext.Provider value={values}>
         <ThreadActionsContext.Provider value={threadActions}>
-          {children}
+          <LangGraphClientContext.Provider value={clientFactory}>
+            {children}
+          </LangGraphClientContext.Provider>
         </ThreadActionsContext.Provider>
       </GraphValuesContext.Provider>
     </AssistantRuntimeProvider>
   );
 }
+
+export default RuntimeProvider;

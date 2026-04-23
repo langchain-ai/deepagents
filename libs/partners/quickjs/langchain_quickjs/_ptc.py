@@ -26,10 +26,10 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, TypedDict
 
+from langchain_core.tools import BaseTool
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    from langchain_core.tools import BaseTool
 
 
 class PTCConfig(TypedDict, total=False):
@@ -45,7 +45,7 @@ class PTCConfig(TypedDict, total=False):
     exclude: list[str]
 
 
-PTCOption = bool | list[str] | PTCConfig
+PTCOption = bool | list[str] | list[BaseTool] | PTCConfig
 
 
 def filter_tools_for_ptc(
@@ -60,9 +60,18 @@ def filter_tools_for_ptc(
     to prevent the model from recursing ``tools.eval("tools.eval(...)")``.
     If the model wants a nested eval, it can just write nested code in one
     call — that's the whole point of PTC.
+
+    When ``config`` is a ``list[BaseTool]`` the provided tools are used
+    directly (minus ``self_tool_name``) and ``tools`` is ignored — the
+    caller is supplying the PTC set, not filtering the agent set.
     """
     if config is False:
         return []
+    if isinstance(config, list) and config and any(isinstance(t, BaseTool) for t in config):
+        if any(not isinstance(t, BaseTool) for t in config):
+            msg = "ptc list must be all str or all BaseTool, not mixed"
+            raise TypeError(msg)
+        return [t for t in config if t.name != self_tool_name]
     candidates = [t for t in tools if t.name != self_tool_name]
     if config is True:
         return candidates

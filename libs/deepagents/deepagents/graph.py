@@ -215,6 +215,61 @@ def _apply_tool_description_overrides(
     return copied_tools
 
 
+def _compose_fork_system_prompt(
+    parent_prompt: str | SystemMessage,
+    fork_suffix: str,
+) -> str:
+    """Compose a forked subagent's system prompt as ``parent + fork_suffix``.
+
+    Keeping the parent prefix byte-identical maximises prompt-cache alignment
+    across every provider (Anthropic ``cache_control``, OpenAI automatic,
+    Gemini implicit). The fork's own ``system_prompt`` is appended as a
+    suffix so the fork can still add instructions without breaking the shared
+    prefix.
+
+    If the parent supplied a ``SystemMessage`` rather than a bare string, its
+    text content blocks are joined into a string. Non-text blocks (images,
+    attachments) are dropped — they have no meaning in the forked subagent's
+    context and would not participate in prompt-cache alignment anyway.
+    """
+    if isinstance(parent_prompt, SystemMessage):
+        text_parts: list[str] = []
+        for block in parent_prompt.content_blocks:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+        parent_text = "".join(text_parts)
+    else:
+        parent_text = parent_prompt
+    return parent_text + "\n\n" + fork_suffix
+
+
+def _validate_fork_model_matches_parent(
+    subagent_name: str,
+    parent_model: BaseChatModel,
+    subagent_model: BaseChatModel,
+) -> None:
+    """Raise if the resolved subagent model does not match the parent's.
+
+    Prompt cache is keyed per-model on every provider. A forked subagent that
+    silently runs on a different model would burn tokens and hide the bug,
+    so mismatches fail loudly at build time.
+    """
+    parent_provider = get_model_provider(parent_model)
+    fork_provider = get_model_provider(subagent_model)
+    parent_id = get_model_identifier(parent_model)
+    fork_id = get_model_identifier(subagent_model)
+    if parent_provider != fork_provider or parent_id != fork_id:
+        msg = (
+            f"Forked subagent '{subagent_name}' must use the same model as the parent agent. "
+            f"Parent: {parent_provider}:{parent_id}. Subagent: {fork_provider}:{fork_id}. "
+            "Prompt cache is per-model on every provider; a mismatched model cannot share the "
+            "cached prefix. Omit 'model' from the subagent spec to inherit the parent's model."
+        )
+        raise ValueError(msg)
+
+
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -439,6 +494,20 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
+    # Assemble the parent's final system prompt up front so forked subagents
+    # can compose their prompts against a byte-identical prefix. Without this,
+    # the parent prefix would drift from what the child sees and prompt-cache
+    # hits would never fire.
+    base_prompt = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
+    if _profile.system_prompt_suffix is not None:
+        base_prompt = base_prompt + "\n\n" + _profile.system_prompt_suffix
+    if system_prompt is None:
+        final_system_prompt: str | SystemMessage = base_prompt
+    elif isinstance(system_prompt, SystemMessage):
+        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
+    else:
+        final_system_prompt = system_prompt + "\n\n" + base_prompt
+
     # Build general-purpose subagent with default middleware stack
     gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
@@ -484,11 +553,27 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             continue
         if "runnable" in spec:
             # CompiledSubAgent - use as-is
+            if spec.get("fork"):
+                msg = (
+                    f"CompiledSubAgent '{spec['name']}' cannot set fork=True. "
+                    "Compiled subagents own their own system prompt and graph; "
+                    "splice the parent prefix manually if needed."
+                )
+                raise ValueError(msg)
             inline_subagents.append(spec)
         else:
-            # SubAgent - fill in defaults and prepend base middleware
-            raw_subagent_model = spec.get("model", model)
+            is_fork = bool(spec.get("fork", False))
+            # SubAgent - fill in defaults and prepend base middleware.
+            # A forked subagent defaults to the parent's model if none is
+            # specified (prompt cache is per-model; sharing the parent's
+            # model is the only way the cached prefix can be reused).
+            if is_fork and "model" not in spec:
+                raw_subagent_model: str | BaseChatModel = model
+            else:
+                raw_subagent_model = spec.get("model", model)
             subagent_model = resolve_model(raw_subagent_model)
+            if is_fork:
+                _validate_fork_model_matches_parent(spec["name"], model, subagent_model)
 
             _subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
             _subagent_profile = _harness_profile_for_model(subagent_model, _subagent_spec)
@@ -539,6 +624,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             }
             if subagent_interrupt_on is not None:
                 processed_spec["interrupt_on"] = subagent_interrupt_on
+            if is_fork:
+                # Pin the composed prompt so the subagent's prefix is
+                # byte-identical to the parent's, which is what enables
+                # prompt-cache reuse on every supported provider.
+                processed_spec["system_prompt"] = _compose_fork_system_prompt(final_system_prompt, spec["system_prompt"])
+                processed_spec["fork"] = True
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it
@@ -604,20 +695,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # _PermissionMiddleware must be last so it sees all tools from prior middleware
     if permissions:
         deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
-
-    # Assemble base prompt: use _profile.base_system_prompt if set, else
-    # BASE_AGENT_PROMPT, then append profile suffix if present.
-    # Finally prepend user system_prompt (handled below).
-    base_prompt = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
-    if _profile.system_prompt_suffix is not None:
-        base_prompt = base_prompt + "\n\n" + _profile.system_prompt_suffix
-    if system_prompt is None:
-        final_system_prompt: str | SystemMessage = base_prompt
-    elif isinstance(system_prompt, SystemMessage):
-        final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
-    else:
-        # String: simple concatenation
-        final_system_prompt = system_prompt + "\n\n" + base_prompt
 
     return create_agent(
         model,

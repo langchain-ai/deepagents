@@ -8,8 +8,10 @@ tested against a real ffmpeg binary without pulling in the rest of deepagents.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -133,8 +135,128 @@ def probe_has_video_stream(video_path: Path) -> bool:
     return any(s.get("codec_type") == "video" for s in streams if isinstance(s, dict))
 
 
+# ffmpeg's `metadata=print` filter emits lines like
+#   frame:N    pts:P      pts_time:T
+# followed by zero-or-more `key=value` metadata lines. Match frame markers
+# tolerantly — any non-newline characters may appear between `frame:N` and
+# `pts_time:T` (e.g. `pts:P`), and trailing content on the line is ignored.
+_TS_LINE_RE = re.compile(
+    r"^frame:(\d+)[^\n]*?pts_time:([0-9]+(?:\.[0-9]+)?)", re.MULTILINE
+)
+
+
+def _parse_timestamps(metadata_file: Path) -> dict[int, float]:
+    """Parse `metadata=print` output into a frame_index → timestamp_s map."""
+    text = metadata_file.read_text() if metadata_file.exists() else ""
+    out: dict[int, float] = {}
+    for match in _TS_LINE_RE.finditer(text):
+        out[int(match.group(1))] = float(match.group(2))
+    return out
+
+
+def _build_filter_string(
+    baseline_interval: float, params: ExtractionParams, metadata_path: Path
+) -> str:
+    """Build the `-vf` filter graph string.
+
+    Commas separating filter-arg expressions inside `select=` / `scale=` must be
+    escaped as `\\,` (a literal backslash + comma in the string passed to ffmpeg).
+    """
+    select = (
+        "select='"
+        "isnan(prev_selected_t)"
+        f" + gte(t-prev_selected_t\\,{baseline_interval})"
+        f" + gt(scene\\,{params.scene_threshold})"
+        "'"
+    )
+    scale = f"scale='min({params.max_width}\\,iw)':-2"
+    meta = f"metadata=print:file={metadata_path}"
+    return f"{select}, {scale}, {meta}"
+
+
 def extract_frames(
     video_path: Path,
     params: ExtractionParams,
-) -> list[ExtractedFrame]:  # pragma: no cover - stub
-    raise NotImplementedError
+) -> list[ExtractedFrame]:
+    """Extract a capped, scene-aware sequence of JPEG frames from a video.
+
+    Args:
+        video_path: Path to a readable video file.
+        params: Extraction parameters.
+
+    Returns:
+        A list of `ExtractedFrame` ordered by source timestamp, with at most
+        `params.max_frames` entries.
+
+    Raises:
+        FFmpegMissingError: If `ffmpeg` / `ffprobe` are not on PATH.
+        NoVideoStreamError: If the file has no video stream.
+        FileCorruptError: If ffprobe can't determine duration.
+        ExtractionFailedError: If ffmpeg exits non-zero or times out.
+    """
+    if not check_ffmpeg_available():
+        msg = "ffmpeg or ffprobe not found on PATH"
+        raise FFmpegMissingError(msg)
+
+    if not probe_has_video_stream(video_path):
+        msg = f"no video stream in {video_path}"
+        raise NoVideoStreamError(msg)
+
+    duration_s = probe_duration(video_path)
+    if duration_s is None or duration_s <= 0:
+        msg = f"ffprobe reported no duration for {video_path}"
+        raise FileCorruptError(msg)
+
+    baseline_interval = max(1.0, duration_s / params.max_frames)
+
+    with tempfile.TemporaryDirectory(prefix="vfe_") as tmpdir_s:
+        tmpdir = Path(tmpdir_s)
+        metadata_file = tmpdir / "ts.txt"
+        output_pattern = tmpdir / "frame_%05d.jpg"
+        filter_str = _build_filter_string(baseline_interval, params, metadata_file)
+
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-vf",
+            filter_str,
+            "-fps_mode",
+            "vfr",
+            "-q:v",
+            str(params.jpeg_quality),
+            str(output_pattern),
+        ]
+
+        timeout_s = max(30.0, duration_s * 2.0)
+        try:
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=timeout_s,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise ExtractionFailedError(exc.stderr or "ffmpeg non-zero exit") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise ExtractionFailedError(
+                f"ffmpeg timed out after {timeout_s}s"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise FFmpegMissingError(str(exc)) from exc
+
+        timestamps = _parse_timestamps(metadata_file)
+        frame_paths = sorted(tmpdir.glob("frame_*.jpg"))
+        frames: list[ExtractedFrame] = []
+        for idx, path in enumerate(frame_paths):
+            ts = timestamps.get(idx, float(idx) * baseline_interval)
+            frames.append(
+                ExtractedFrame(jpeg_bytes=path.read_bytes(), timestamp_s=ts)
+            )
+
+        # Belt-and-suspenders hard-trim: scene detection can overshoot.
+        return frames[: params.max_frames]

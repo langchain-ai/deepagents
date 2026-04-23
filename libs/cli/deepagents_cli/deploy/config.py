@@ -129,6 +129,19 @@ class AuthConfig:
 
 
 @dataclass(frozen=True)
+class FrontendConfig:
+    """`[frontend]` section — bundled default frontend settings.
+
+    When `enabled = True`, `deepagent deploy` copies a pre-built React
+    chat UI into the deployment alongside the agent. Requires `[auth]`
+    to be configured (the frontend uses the same JWT).
+    """
+
+    enabled: bool = False
+    app_name: str | None = None
+
+
+@dataclass(frozen=True)
 class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
@@ -138,6 +151,7 @@ class DeployConfig:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
     auth: AuthConfig | None = None
+    frontend: FrontendConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -363,10 +377,11 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "frontend"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 _ALLOWED_AUTH_KEYS = frozenset({"provider"})
+_ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -442,7 +457,23 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
         auth = AuthConfig(provider=auth_provider)
 
-    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth)
+    frontend: FrontendConfig | None = None
+    frontend_data = data.get("frontend")
+    if frontend_data is not None:
+        unknown_frontend = set(frontend_data.keys()) - _ALLOWED_FRONTEND_KEYS
+        if unknown_frontend:
+            msg = (
+                f"Unknown key(s) in [frontend]: {sorted(unknown_frontend)}. "
+                f"Allowed: {sorted(_ALLOWED_FRONTEND_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        frontend_kwargs: dict[str, Any] = {
+            k: frontend_data[k] for k in _ALLOWED_FRONTEND_KEYS if k in frontend_data
+        }
+        frontend = FrontendConfig(**frontend_kwargs)
+
+    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth, frontend=frontend)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {

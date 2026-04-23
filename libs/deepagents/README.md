@@ -38,6 +38,33 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
 
+## Optional features
+
+### Video input (optional)
+
+`deepagents` can extract frames from video `VideoContentBlock`s and forward them as images to models that don't accept native video (Claude, OpenAI). This path requires **FFmpeg** as a system dependency (`ffmpeg` and `ffprobe` must be on `PATH`).
+
+Install:
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Debian/Ubuntu
+sudo apt-get install -y ffmpeg
+
+# Verify
+ffmpeg -version && ffprobe -version
+```
+
+Then install the deepagents `video` extra (currently a placeholder but declares intent for future Python-level video deps):
+
+```bash
+pip install 'deepagents[video]'
+```
+
+If FFmpeg is not present, any `VideoContentBlock` sent to a non-Gemini model will be replaced with an inline text block explaining the issue; the agent turn still completes.
+
 ## 💁 Contributing
 
 As an open-source project in a rapidly developing field, we are extremely open to contributions, whether it be in the form of a new feature, improved infrastructure, or better documentation.

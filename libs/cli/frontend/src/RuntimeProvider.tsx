@@ -19,6 +19,7 @@ import {
   getCheckpointId,
   getThreadState,
   sendMessage,
+  updateThreadMetadata,
   type ChatApiContext,
 } from "./lib/chatApi";
 import type { TodoItem } from "./types";
@@ -79,11 +80,31 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
   // up an existing LangGraph thread. UI history hydrates on the next stream.
   const pendingExternalIdRef = useRef<string | null>(null);
 
+  // Threads we created in this session that still need their title written
+  // from the first user message. See stream() below.
+  const untitledThreadsRef = useRef<Set<string>>(new Set());
+
   const runtime = useLangGraphRuntime({
     unstable_allowCancellation: true,
     stream: async function* (messages, { initialize, ...config }) {
       const { externalId } = await initialize();
       if (!externalId) throw new Error("Thread not found");
+
+      // Write a title from the first user message for threads we created in
+      // this session. Fire-and-forget — don't block streaming on this.
+      if (untitledThreadsRef.current.has(externalId)) {
+        untitledThreadsRef.current.delete(externalId);
+        const firstUser = messages.find(
+          (m) => m.type === "human",
+        );
+        const raw =
+          typeof firstUser?.content === "string" ? firstUser.content : "";
+        const title = raw.trim().slice(0, 60);
+        if (title) {
+          void updateThreadMetadata(ctxRef.current, externalId, { title });
+        }
+      }
+
       yield* sendMessage(ctxRef.current, {
         threadId: externalId,
         messages,
@@ -98,6 +119,7 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
         return { externalId: pending };
       }
       const { thread_id } = await createThread(ctxRef.current);
+      untitledThreadsRef.current.add(thread_id);
       setCurrentExternalId(thread_id);
       return { externalId: thread_id };
     },

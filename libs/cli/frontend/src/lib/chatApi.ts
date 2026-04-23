@@ -20,6 +20,13 @@ const createClient = (ctx: Pick<ChatApiContext, "apiUrl" | "accessToken">) =>
 export const createThread = (ctx: ChatApiContext) =>
   createClient(ctx).threads.create();
 
+export const updateThreadMetadata = (
+  ctx: ChatApiContext,
+  threadId: string,
+  metadata: Record<string, unknown>,
+) =>
+  createClient(ctx).threads.update(threadId, { metadata });
+
 export const getThreadState = (
   ctx: ChatApiContext,
   threadId: string,

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
 
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
 from langsmith.utils import LangSmithNotFoundError
@@ -15,6 +14,9 @@ from deepagents.backends import (
     ContextHubBackend,
     FilesystemBackend,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _COMMIT_HASH = "abcd1234" * 8  # 64-char hex
 _COMMIT_URL = "https://host/hub/-/test-agent:ef567890"
@@ -36,8 +38,8 @@ def _make_backend(
         commit_hash=_COMMIT_HASH,
         files=files,
     )
-    mock_client.context.pull_agent.return_value = context
-    mock_client.context.push_agent.return_value = _COMMIT_URL
+    mock_client.pull_agent.return_value = context
+    mock_client.push_agent.return_value = _COMMIT_URL
     backend = ContextHubBackend("-/test-agent", client=mock_client)
     return backend, mock_client
 
@@ -72,12 +74,12 @@ def test_pull_runs_only_once_for_multiple_reads() -> None:
     backend.read("/a.md")
     backend.read("/a.md")
     backend.ls("/")
-    assert mock_client.context.pull_agent.call_count == 1
+    assert mock_client.pull_agent.call_count == 1
 
 
 def test_pull_404_treated_as_empty_repo() -> None:
     mock_client = MagicMock()
-    mock_client.context.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
     backend = ContextHubBackend("-/new-agent", client=mock_client)
 
     result = backend.read("/any.md")
@@ -86,7 +88,7 @@ def test_pull_404_treated_as_empty_repo() -> None:
 
 def test_pull_non_404_failure_surfaces_as_error() -> None:
     mock_client = MagicMock()
-    mock_client.context.pull_agent.side_effect = RuntimeError("hub 5xx")
+    mock_client.pull_agent.side_effect = RuntimeError("hub 5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     result = backend.read("/anything")
@@ -101,8 +103,8 @@ def test_write_commits_file() -> None:
 
     assert result.error is None
     assert result.path == "/AGENTS.md"
-    mock_client.context.push_agent.assert_called_once()
-    call = mock_client.context.push_agent.call_args
+    mock_client.push_agent.assert_called_once()
+    call = mock_client.push_agent.call_args
     assert call.args[0] == "-/test-agent"
     files_arg = call.kwargs["files"]
     assert "AGENTS.md" in files_arg
@@ -115,7 +117,7 @@ def test_write_sends_parent_commit_from_pull() -> None:
     backend.read("/a.md")  # prime cache to populate commit_hash
     backend.write("/b.md", "b")
 
-    call = mock_client.context.push_agent.call_args
+    call = mock_client.push_agent.call_args
     assert call.kwargs["parent_commit"] == _COMMIT_HASH
 
 
@@ -124,7 +126,7 @@ def test_write_updates_commit_hash_from_url() -> None:
     backend.write("/a.md", "a")
     backend.write("/b.md", "b")
 
-    second_call = mock_client.context.push_agent.call_args_list[1]
+    second_call = mock_client.push_agent.call_args_list[1]
     assert second_call.kwargs["parent_commit"] == "ef567890"
 
 
@@ -146,7 +148,7 @@ def test_write_under_linked_entry_rejected() -> None:
 
     assert result.error is not None
     assert "Cannot write to a linked entry" in result.error
-    mock_client.context.push_agent.assert_not_called()
+    mock_client.push_agent.assert_not_called()
 
 
 def test_write_at_linked_root_rejected() -> None:
@@ -164,7 +166,7 @@ def test_write_sibling_of_linked_entry_allowed() -> None:
     )
     result = backend.write("/skills/code-reviewer.md", "sibling")
     assert result.error is None
-    mock_client.context.push_agent.assert_called_once()
+    mock_client.push_agent.assert_called_once()
 
 
 def test_write_under_linked_agent_rejected() -> None:
@@ -178,7 +180,7 @@ def test_write_under_linked_agent_rejected() -> None:
 
 def test_commit_failure_invalidates_cache() -> None:
     backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
-    mock_client.context.push_agent.side_effect = RuntimeError("500")
+    mock_client.push_agent.side_effect = RuntimeError("500")
 
     result = backend.write("/b.md", "b")
     assert result.error is not None
@@ -186,7 +188,7 @@ def test_commit_failure_invalidates_cache() -> None:
 
     # Next read should trigger a re-pull because cache was invalidated.
     backend.read("/a.md")
-    assert mock_client.context.pull_agent.call_count == 2
+    assert mock_client.pull_agent.call_count == 2
 
 
 def test_edit_replaces_single_occurrence() -> None:
@@ -197,7 +199,7 @@ def test_edit_replaces_single_occurrence() -> None:
 
     assert result.error is None
     assert result.occurrences == 1
-    call = mock_client.context.push_agent.call_args
+    call = mock_client.push_agent.call_args
     assert call.kwargs["files"]["a.md"].content == "hello earth"
 
 
@@ -280,7 +282,7 @@ def test_ls_nested_path() -> None:
 
 def test_ls_surfaces_pull_error() -> None:
     mock_client = MagicMock()
-    mock_client.context.pull_agent.side_effect = RuntimeError("5xx")
+    mock_client.pull_agent.side_effect = RuntimeError("5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     result = backend.ls("/")
@@ -342,7 +344,7 @@ def test_upload_text_file_succeeds() -> None:
     responses = backend.upload_files([("/note.md", b"hello")])
     assert len(responses) == 1
     assert responses[0].error is None
-    mock_client.context.push_agent.assert_called_once()
+    mock_client.push_agent.assert_called_once()
 
 
 def test_upload_binary_rejected() -> None:
@@ -377,7 +379,7 @@ def test_download_missing_file() -> None:
 
 def test_download_propagates_pull_failure() -> None:
     mock_client = MagicMock()
-    mock_client.context.pull_agent.side_effect = RuntimeError("5xx")
+    mock_client.pull_agent.side_effect = RuntimeError("5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     responses = backend.download_files(["/a.md"])
@@ -414,9 +416,6 @@ def test_server_expanded_linked_files_are_readable() -> None:
 
 def test_default_client_constructed_when_not_provided() -> None:
     """Verify the default Client() path is exercised (even though we don't call it)."""
-    # Patching the import site to avoid requiring LANGSMITH_API_KEY.
-    from unittest.mock import patch
-
     with patch("langsmith.Client") as mock_client_cls:
         ContextHubBackend("-/x")
         mock_client_cls.assert_called_once_with()
@@ -439,7 +438,7 @@ def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
 
     # Write under the routed prefix — should reach hub as "notes.md" (stripped).
     composite.write("/memories/notes.md", "hello hub")
-    call = mock_client.context.push_agent.call_args
+    call = mock_client.push_agent.call_args
     assert "notes.md" in call.kwargs["files"]
     assert call.kwargs["files"]["notes.md"].content == "hello hub"
 
@@ -451,7 +450,7 @@ def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
 
     # Write outside the route goes to the default backend, hub is untouched.
     composite.write("/fs-only.txt", "default side")
-    assert mock_client.context.push_agent.call_count == 1
+    assert mock_client.push_agent.call_count == 1
     assert (tmp_path / "fs-only.txt").read_text() == "default side"
 
     # ls on the route root yields paths WITH the /memories/ prefix restored.

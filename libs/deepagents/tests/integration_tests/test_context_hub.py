@@ -42,12 +42,12 @@ def backend(identifier: str) -> Iterator:
     yield ContextHubBackend(identifier, client=client)
 
     try:
-        client.context.delete_agent(identifier)
+        client.delete_agent(identifier)
     except Exception:  # noqa: BLE001 — best-effort cleanup
         logger.warning("Failed to delete test repo %r", identifier, exc_info=True)
 
 
-def test_lazy_create_on_first_write(backend, identifier) -> None:
+def test_lazy_create_on_first_write(backend) -> None:
     """Pulling a non-existent repo returns empty; first write lazily creates it."""
     missing = backend.read("/AGENTS.md")
     assert missing.error == "File '/AGENTS.md' not found"

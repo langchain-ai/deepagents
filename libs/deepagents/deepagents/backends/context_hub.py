@@ -82,7 +82,7 @@ class ContextHubBackend(BackendProtocol):
         from langsmith.utils import LangSmithNotFoundError  # noqa: PLC0415
 
         try:
-            context: AgentContext = self._client.context.pull_agent(self._identifier)
+            context: AgentContext = self._client.pull_agent(self._identifier)
         except LangSmithNotFoundError:
             self._cache = {}
             self._linked_entries = {}
@@ -113,7 +113,7 @@ class ContextHubBackend(BackendProtocol):
         """Push a single-file change and update the cache on success."""
         from langsmith.schemas import FileEntry  # noqa: PLC0415
 
-        url = self._client.context.push_agent(
+        url = self._client.push_agent(
             self._identifier,
             files={path: FileEntry(type="file", content=content)},
             parent_commit=self._commit_hash,
@@ -122,8 +122,8 @@ class ContextHubBackend(BackendProtocol):
         if match:
             self._commit_hash = match.group(1)
 
-        assert self._cache is not None
-        self._cache[path] = content
+        if self._cache is not None:
+            self._cache[path] = content
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -159,7 +159,7 @@ class ContextHubBackend(BackendProtocol):
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return ReadResult(error=f"Hub unavailable: {exc}")
         content = cache.get(hub_path)
@@ -196,7 +196,7 @@ class ContextHubBackend(BackendProtocol):
             if self._is_under_linked_entry(hub_path):
                 return WriteResult(error=_LINKED_ENTRY_WRITE_ERROR)
             self._commit(hub_path, content)
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub write failed for %r", self._identifier)
             self._cache = None
             return WriteResult(error=f"Hub unavailable: {exc}")
@@ -239,7 +239,7 @@ class ContextHubBackend(BackendProtocol):
 
             new_content, occurrences = result
             self._commit(hub_path, new_content)
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub edit failed for %r", self._identifier)
             self._cache = None
             return EditResult(error=f"Hub unavailable: {exc}")
@@ -257,7 +257,7 @@ class ContextHubBackend(BackendProtocol):
         hub_prefix = self._strip_prefix(path).rstrip("/")
         try:
             cache = self._ensure_cache()
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return LsResult(error=f"Hub unavailable: {exc}")
 
@@ -303,7 +303,7 @@ class ContextHubBackend(BackendProtocol):
         """
         try:
             cache = self._ensure_cache()
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
@@ -326,7 +326,7 @@ class ContextHubBackend(BackendProtocol):
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str = "/") -> GlobResult:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
         """Return files matching a glob pattern.
 
         Args:
@@ -338,15 +338,15 @@ class ContextHubBackend(BackendProtocol):
         """
         try:
             cache = self._ensure_cache()
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GlobResult(error=f"Hub unavailable: {exc}")
-        results: list[FileInfo] = []
-        for file_path in cache:
-            if fnmatch.fnmatch(f"/{file_path}", pattern) or fnmatch.fnmatch(
-                file_path, pattern
-            ):
-                results.append(FileInfo(path=f"/{file_path}", is_dir=False))
+        results: list[FileInfo] = [
+            FileInfo(path=f"/{file_path}", is_dir=False)
+            for file_path in cache
+            if fnmatch.fnmatch(f"/{file_path}", pattern)
+            or fnmatch.fnmatch(file_path, pattern)
+        ]
         return GlobResult(matches=results)
 
     def upload_files(
@@ -388,7 +388,7 @@ class ContextHubBackend(BackendProtocol):
         """
         try:
             cache = self._ensure_cache()
-        except Exception as exc:  # noqa: BLE001 — surface SDK failure as error
+        except Exception as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             # Backend-specific error string per protocol docs (FileOperationError
             # literal union doesn't cover hub failures).

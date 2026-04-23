@@ -7,7 +7,9 @@ tested against a real ffmpeg binary without pulling in the rest of deepagents.
 
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -65,14 +67,70 @@ def check_ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
 
-# Forward declarations so the module exports a stable public surface even
-# before the remaining functions are implemented in later tasks.
-def probe_duration(video_path: Path) -> float | None:  # pragma: no cover - stub
-    raise NotImplementedError
+_FFPROBE_TIMEOUT_S = 15
 
 
-def probe_has_video_stream(video_path: Path) -> bool:  # pragma: no cover - stub
-    raise NotImplementedError
+def _run_ffprobe(video_path: Path) -> dict | None:
+    """Run ffprobe and return parsed JSON, or None on any failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                str(video_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=_FFPROBE_TIMEOUT_S,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def probe_duration(video_path: Path) -> float | None:
+    """Return the duration of a video in seconds, or None if unavailable.
+
+    Args:
+        video_path: Path to a video file on disk.
+
+    Returns:
+        Duration in seconds as a float, or None if ffprobe fails or the
+        duration field is absent / unparseable.
+    """
+    data = _run_ffprobe(video_path)
+    if not data:
+        return None
+    duration_str = data.get("format", {}).get("duration")
+    if not isinstance(duration_str, str):
+        return None
+    try:
+        return float(duration_str)
+    except ValueError:
+        return None
+
+
+def probe_has_video_stream(video_path: Path) -> bool:
+    """Return True iff the file has at least one decodable video stream."""
+    data = _run_ffprobe(video_path)
+    if not data:
+        return False
+    streams = data.get("streams")
+    if not isinstance(streams, list):
+        return False
+    return any(s.get("codec_type") == "video" for s in streams if isinstance(s, dict))
 
 
 def extract_frames(

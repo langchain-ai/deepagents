@@ -10,6 +10,7 @@ from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgent
 from deepagents.profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
+    HarnessProfileConfig,
     ProviderProfile,
     register_harness_profile,
     register_provider_profile,
@@ -23,6 +24,7 @@ __all__ = [
     "FilesystemPermission",
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",
+    "HarnessProfileConfig",
     "MemoryMiddleware",
     "ProviderProfile",
     "SubAgent",

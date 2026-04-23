@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -211,6 +211,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
+    serialized_name: ClassVar[str] = "SummarizationMiddleware"
+    """Preferred config-file reference for class-form exclusion export."""
 
     @property
     def name(self) -> str:

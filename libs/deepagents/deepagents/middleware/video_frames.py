@@ -237,6 +237,22 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             return handler(request)
         return handler(request.override(messages=transformed))
 
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Any],
+    ) -> ModelResponse | AIMessage:
+        'Async variant of wrap_model_call; reuses the sync _transform_messages helper.'
+        provider = get_model_provider(request.model)
+        model_name = get_model_identifier(request.model) or ""
+        if is_video_capable(provider, model_name, override=self.video_capable_override):
+            return await handler(request)
+
+        transformed, mutated = self._transform_messages(request.messages)
+        if not mutated:
+            return await handler(request)
+        return await handler(request.override(messages=transformed))
+
     def _transform_messages(
         self, messages: list[AnyMessage]
     ) -> tuple[list[AnyMessage], bool]:

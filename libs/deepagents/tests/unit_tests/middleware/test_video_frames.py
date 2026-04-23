@@ -406,3 +406,39 @@ class TestCache:
                 lambda _r: "OK",
             )
         assert call_count["n"] == 3
+
+
+class TestAwrapModelCall:
+    async def test_async_pass_through_on_gemini(self) -> None:
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("google_genai", "gemini-2.0-flash")
+        messages = [HumanMessage(content=[_video_block()])]
+        request = _make_request(model, messages)
+
+        async def handler(req: Any) -> str:
+            return "ASYNC"
+
+        result = await mw.awrap_model_call(request, handler)
+        assert result == "ASYNC"
+
+    async def test_async_transforms_on_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from deepagents.middleware import video_frames
+        from deepagents.middleware._ffmpeg import ExtractedFrame
+
+        fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: fake_frames)
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        messages = [HumanMessage(content=[_video_block(filename="x.mp4")])]
+        request = _make_request(model, messages)
+
+        captured: dict[str, Any] = {}
+        async def handler(req: Any) -> str:
+            captured["messages"] = req.messages
+            return "OK"
+
+        result = await mw.awrap_model_call(request, handler)
+        assert result == "OK"
+        content = captured["messages"][0].content
+        assert any(b.get("type") == "image" for b in content)

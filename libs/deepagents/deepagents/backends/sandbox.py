@@ -101,7 +101,23 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling (issue #2880): the read template normalizes
+# CRLF to LF for the LLM, so old_string arrives LF-only even when the
+# file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
+# variant. The first match reveals the file line-ending style in that
+# region; apply the same transform to new so the file style is preserved.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -109,7 +125,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(path, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -176,7 +192,19 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -184,7 +212,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(target, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -487,6 +515,14 @@ except PermissionError:
         no file transfer.  For larger payloads, uploads old/new strings as
         temp files and runs a server-side replace script — the source file
         never leaves the sandbox.
+
+        `read()` normalizes CRLF to LF for the LLM, so `old_string` is
+        typically LF-only. The server-side script tries `old_string` as-is
+        first, then CRLF- and LF-normalized variants, and applies the same
+        transform to `new_string` so the file's line-ending style is
+        preserved on write. On mixed-ending files, `replace_all=True` only
+        touches occurrences in the first matching style — subsequent edits
+        can replace the rest.
 
         Args:
             file_path: Absolute path to the file to edit.

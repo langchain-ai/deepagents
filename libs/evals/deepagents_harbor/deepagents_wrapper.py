@@ -210,7 +210,7 @@ class DeepAgentsWrapper(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,  # noqa: ARG002  # required by BaseAgent interface
     ) -> None:
-        """Execute the Deep Agent on the given instruction.
+        """Execute the deep agent on the given instruction.
 
         Args:
             instruction: The task to complete

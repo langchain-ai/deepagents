@@ -326,7 +326,7 @@ class ChatTextArea(TextArea):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding(
-            "shift+enter,alt+enter,ctrl+enter",
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
             "insert_newline",
             "New Line",
             show=False,

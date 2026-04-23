@@ -30,7 +30,16 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "cursor_down", "Next", show=False, priority=True),
+        Binding("shift+tab", "cursor_up", "Previous", show=False, priority=True),
     ]
+    """Key bindings for the selector.
+
+    Esc dismisses and restores the original theme. Arrow keys and Enter are
+    handled natively by the embedded `OptionList`; Tab / Shift+Tab are bound
+    here to advance the option list cursor for consistency with other
+    selector screens (where Tab cycles focus across multiple widgets).
+    """
 
     CSS = """
     ThemeSelectorScreen {
@@ -69,6 +78,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         text-align: center;
     }
     """
+    """Styling for the centered modal shell, title, option list, and help footer."""
 
     def __init__(self, current_theme: str) -> None:
         """Initialize the ThemeSelectorScreen.
@@ -103,7 +113,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             option_list.highlighted = highlight_index
             yield option_list
             help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} preview"
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Esc cancel"
             )
@@ -162,3 +172,11 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         """Restore the original theme and dismiss."""
         self.app.theme = self._original_theme
         self.dismiss(None)
+
+    def action_cursor_down(self) -> None:
+        """Move the option list cursor down (Tab)."""
+        self.query_one(OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        """Move the option list cursor up (Shift+Tab)."""
+        self.query_one(OptionList).action_cursor_up()

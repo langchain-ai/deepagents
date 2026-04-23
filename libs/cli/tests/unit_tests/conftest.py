@@ -138,3 +138,18 @@ def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         "deepagents_cli.widgets.chat_input._default_history_path",
         lambda: tmp_path / "history.jsonl",
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_kitty_kbd_probe_cache() -> None:
+    """Reset the `functools.cache` on the kitty-keyboard-protocol probe.
+
+    The probe is cached for the lifetime of the process in production,
+    but stale state leaks across tests that patch the probe function or
+    rely on platform-specific behaviour. Clearing on every test keeps
+    results deterministic regardless of file order or `pytest-xdist`
+    sharding.
+    """
+    from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    supports_kitty_keyboard_protocol.cache_clear()

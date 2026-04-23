@@ -88,6 +88,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.4`
 - `openai:gpt-5.5`
 
+### `mega` (1 model)
+
+- `openai:gpt-5.5-pro`
+
 ### `fast` (3 models)
 
 - `anthropic:claude-sonnet-4-6`
@@ -188,7 +192,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (55 models)
+## `all` (56 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -239,6 +243,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
 - `openai:gpt-5.5`
+- `openai:gpt-5.5-pro`
 - `openai:gpt-5.4-mini`
 - `openrouter:minimax/minimax-m2.7`
 - `openrouter:z-ai/glm-5.1`

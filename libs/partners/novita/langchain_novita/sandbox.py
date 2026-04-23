@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from novita_sandbox.code_interpreter import (
-    CommandExitException,
-    InvalidArgumentException,
-    NotFoundException,
-    Sandbox,
-)
-
 from deepagents.backends.protocol import (
     ExecuteResponse,
     FileDownloadResponse,
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
+from novita_sandbox.code_interpreter import (
+    CommandExitException,
+    InvalidArgumentException,
+    NotFoundException,
+    Sandbox,
+)
 
 
 class NovitaSandbox(BaseSandbox):
@@ -49,31 +48,43 @@ class NovitaSandbox(BaseSandbox):
             output = result.stdout or ""
             if result.stderr and result.stderr.strip():
                 output += f"\n<stderr>{result.stderr.strip()}</stderr>"
-            return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
+            return ExecuteResponse(
+                output=output, exit_code=result.exit_code, truncated=False
+            )
         except CommandExitException as e:
             output = e.stdout or ""
             if e.stderr and e.stderr.strip():
                 output += f"\n<stderr>{e.stderr.strip()}</stderr>"
-            return ExecuteResponse(output=output, exit_code=e.exit_code, truncated=False)
+            return ExecuteResponse(
+                output=output, exit_code=e.exit_code, truncated=False
+            )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox."""
         results: list[FileDownloadResponse] = []
         for path in paths:
             if not path.startswith("/"):
-                results.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+                results.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
+                )
                 continue
             try:
                 raw = self._sandbox.files.read(path, format="bytes")
-                results.append(FileDownloadResponse(path=path, content=bytes(raw), error=None))
+                results.append(
+                    FileDownloadResponse(path=path, content=bytes(raw), error=None)
+                )
             except NotFoundException:
                 results.append(
-                    FileDownloadResponse(path=path, content=None, error="file_not_found")
+                    FileDownloadResponse(
+                        path=path, content=None, error="file_not_found"
+                    )
                 )
             except InvalidArgumentException as e:
                 msg = str(e).lower()
                 error = "is_directory" if "is a directory" in msg else "file_not_found"
-                results.append(FileDownloadResponse(path=path, content=None, error=error))
+                results.append(
+                    FileDownloadResponse(path=path, content=None, error=error)
+                )
         return results
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

@@ -11,17 +11,50 @@ The middleware fires as a `wrap_model_call` hook. For non-video-capable provider
 Persisted state is never mutated. A per-instance LRU cache keyed by
 `(sha256(video_bytes), extraction_params)` ensures a given video is extracted
 at most once per process.
-
-This module currently provides only the class initializer and a filename helper;
-`wrap_model_call` and the extraction pipeline are implemented in follow-up tasks.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import copy
+import logging
 from collections import OrderedDict
-from typing import Any
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import Any, Callable
 
-from deepagents.middleware._ffmpeg import ExtractedFrame, ExtractionParams
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
+from langchain_core.messages import AIMessage, AnyMessage
+
+from deepagents._models import get_model_identifier, get_model_provider
+from deepagents.middleware import _ffmpeg
+from deepagents.middleware._error_blocks import ErrorReason, build_error_text
+from deepagents.middleware._ffmpeg import (
+    ExtractedFrame,
+    ExtractionError,
+    ExtractionFailedError,
+    ExtractionParams,
+    FFmpegMissingError,
+    FileCorruptError,
+    NoVideoStreamError,
+)
+from deepagents.middleware._video_capability import is_video_capable
+
+logger = logging.getLogger(__name__)
+
+_MIME_TO_EXT: dict[str, str] = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/x-msvideo": "avi",
+    "video/webm": "webm",
+    "video/x-m4v": "m4v",
+    "video/x-ms-wmv": "wmv",
+}
 
 
 def _filename_for_video_block(block: dict[str, Any]) -> str:
@@ -44,25 +77,91 @@ def _filename_for_video_block(block: dict[str, Any]) -> str:
     return "video"
 
 
-class VideoFrameExtractionMiddleware:
+def _is_video_block(block: Any) -> bool:
+    return isinstance(block, dict) and block.get("type") == "video"
+
+
+def _decode_video_bytes(block: dict[str, Any]) -> bytes:
+    data = block.get("data")
+    if not isinstance(data, str):
+        msg = "video block missing 'data'"
+        raise ExtractionFailedError(msg)
+    try:
+        return base64.b64decode(data, validate=True)
+    except binascii.Error as exc:
+        raise ExtractionFailedError("video block 'data' is not valid base64") from exc
+
+
+def _ext_for_mime(mime: str | None) -> str:
+    if mime and mime in _MIME_TO_EXT:
+        return _MIME_TO_EXT[mime]
+    return "mp4"
+
+
+def _run_extraction(
+    video_bytes: bytes, mime: str | None, params: ExtractionParams
+) -> list[ExtractedFrame]:
+    """Write the bytes to a temp file and invoke `_ffmpeg.extract_frames`.
+
+    Seam for monkeypatching in middleware tests.
+    """
+    ext = _ext_for_mime(mime)
+    with NamedTemporaryFile(suffix=f".{ext}", delete=True) as tmp:
+        tmp.write(video_bytes)
+        tmp.flush()
+        return _ffmpeg.extract_frames(Path(tmp.name), params)
+
+
+def _build_preamble(
+    filename: str, num_frames: int, duration_s: float, baseline_interval: float
+) -> dict[str, Any]:
+    fps = 1.0 / baseline_interval if baseline_interval > 0 else 0.0
+    return {
+        "type": "text",
+        "text": (
+            f"The following {num_frames} images are frames extracted from the "
+            f"video '{filename}' (duration {duration_s:.1f}s, extracted at "
+            f"~{fps:.2f} fps + scene changes). Each frame is preceded by a "
+            f"timestamp."
+        ),
+    }
+
+
+def _frames_to_blocks(
+    frames: list[ExtractedFrame], filename: str, duration_s: float, baseline_interval: float
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = [
+        _build_preamble(filename, len(frames), duration_s, baseline_interval)
+    ]
+    for i, frame in enumerate(frames):
+        blocks.append(
+            {"type": "text", "text": f"Frame {i + 1} at t={frame.timestamp_s:.1f}s"}
+        )
+        blocks.append(
+            {
+                "type": "image",
+                "source_type": "base64",
+                "mime_type": "image/jpeg",
+                "data": base64.b64encode(frame.jpeg_bytes).decode(),
+                "source_metadata": {
+                    "extracted_from": filename,
+                    "original_duration_s": duration_s,
+                    "frame_index": i,
+                    "timestamp_s": frame.timestamp_s,
+                },
+            }
+        )
+    return blocks
+
+
+def _error_block(filename: str, reason: ErrorReason) -> dict[str, Any]:
+    return {"type": "text", "text": build_error_text(filename, reason)}
+
+
+class VideoFrameExtractionMiddleware(AgentMiddleware):
     """Middleware that transcodes video blocks to frame sequences for non-video-capable models.
 
-    See `docs/superpowers/specs/2026-04-23-video-frame-extraction-design.md` for
-    the full design.
-
-    Args:
-        max_frames: Hard cap on frames per video. Default 95 (Claude 100-image
-            headroom).
-        scene_threshold: FFmpeg `scene` threshold for adaptive frame selection.
-        max_width: Longest image edge in pixels. Aspect ratio preserved.
-        jpeg_quality: FFmpeg `-q:v` (2 = best, 31 = worst).
-        video_capable_override: `None` to auto-detect via registry, `True` to
-            always skip extraction, `False` to always extract.
-        cache_size: Maximum distinct videos kept in the instance LRU cache.
-            Zero disables caching.
-
-    Raises:
-        ValueError: If any parameter is out of its allowed range.
+    See `docs/superpowers/specs/2026-04-23-video-frame-extraction-design.md`.
     """
 
     def __init__(
@@ -91,6 +190,7 @@ class VideoFrameExtractionMiddleware:
             msg = f"cache_size must be in [0, 10000]; got {cache_size}"
             raise ValueError(msg)
 
+        super().__init__()
         self.max_frames = max_frames
         self.scene_threshold = scene_threshold
         self.max_width = max_width
@@ -110,3 +210,69 @@ class VideoFrameExtractionMiddleware:
             max_width=self.max_width,
             jpeg_quality=self.jpeg_quality,
         )
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse | AIMessage:
+        provider = get_model_provider(request.model)
+        model_name = get_model_identifier(request.model) or ""
+        if is_video_capable(provider, model_name, override=self.video_capable_override):
+            return handler(request)
+
+        transformed, mutated = self._transform_messages(request.messages)
+        if not mutated:
+            return handler(request)
+        return handler(request.override(messages=transformed))
+
+    def _transform_messages(
+        self, messages: list[AnyMessage]
+    ) -> tuple[list[AnyMessage], bool]:
+        """Return (new_messages, whether_any_video_was_found)."""
+        mutated = False
+        new_messages = copy.deepcopy(list(messages))
+        for message in new_messages:
+            content = getattr(message, "content", None)
+            if not isinstance(content, list):
+                continue
+            new_content: list[Any] = []
+            for block in content:
+                if _is_video_block(block):
+                    mutated = True
+                    new_content.extend(self._expand_video_block(block))
+                else:
+                    new_content.append(block)
+            message.content = new_content  # type: ignore[attr-defined]
+        return new_messages, mutated
+
+    def _expand_video_block(self, block: dict[str, Any]) -> list[dict[str, Any]]:
+        filename = _filename_for_video_block(block)
+        try:
+            video_bytes = _decode_video_bytes(block)
+            frames = _run_extraction(video_bytes, block.get("mime_type"), self._params)
+            if len(frames) >= 2:
+                duration_s = frames[-1].timestamp_s - frames[0].timestamp_s
+                baseline_interval = (
+                    duration_s / (len(frames) - 1) if len(frames) > 1 else 1.0
+                )
+            else:
+                duration_s = frames[0].timestamp_s if frames else 0.0
+                baseline_interval = 1.0
+            return _frames_to_blocks(frames, filename, duration_s, baseline_interval)
+        except FFmpegMissingError as exc:
+            logger.warning("ffmpeg missing; replacing video %r: %s", filename, exc)
+            return [_error_block(filename, ErrorReason.FFMPEG_MISSING)]
+        except NoVideoStreamError as exc:
+            logger.warning("no video stream in %r: %s", filename, exc)
+            return [_error_block(filename, ErrorReason.NO_VIDEO_STREAM)]
+        except FileCorruptError as exc:
+            logger.warning("corrupt video %r: %s", filename, exc)
+            return [_error_block(filename, ErrorReason.FILE_CORRUPT)]
+        except ExtractionFailedError as exc:
+            logger.warning("extraction failed for %r: %s", filename, exc)
+            return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]
+        except ExtractionError as exc:
+            # Any other ExtractionError subclass we forgot to enumerate.
+            logger.warning("unexpected extraction error for %r: %s", filename, exc)
+            return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]

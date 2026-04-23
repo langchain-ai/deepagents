@@ -5008,6 +5008,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_cli.widgets.notification_center import (
             NotificationCenterScreen,
         )
@@ -5032,6 +5033,9 @@ class DeepAgentsApp(App):
             self.screen,
             (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
         ):
+            self.screen.action_move_up()
+            return
+        if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.

@@ -163,8 +163,10 @@ class MCPViewerScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
         Binding("k", "move_up", "Up", show=False, priority=True),
+        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
+        Binding("tab", "move_down", "Down", show=False, priority=True),
         Binding("enter", "toggle_expand", "Expand", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
@@ -368,7 +370,7 @@ class MCPViewerScreen(ModalScreen[None]):
                     flat_index += 1
 
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
             f" {glyphs.bullet} Enter expand/collapse"
             f" {glyphs.bullet} Esc close"
         )

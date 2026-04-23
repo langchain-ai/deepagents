@@ -146,6 +146,16 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 0
 
+            # Tab advances selection
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            # Shift+Tab moves selection back
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
     async def test_enter_toggles_expand(self) -> None:
         """Enter key expands and collapses tool description."""
         app = MCPViewerTestApp()

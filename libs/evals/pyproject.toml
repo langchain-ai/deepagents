@@ -185,3 +185,7 @@ known-first-party = ["deepagents_evals", "deepagents_harbor"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Fixture directories hold subject-under-test code (mini-repos the agent
+# operates on), not pytest tests. Without this, pytest tries to collect
+# fixture test files and crashes on their stand-alone conftest.py imports.
+norecursedirs = [".*", "build", "dist", "*.egg", "venv", ".venv", "fixtures"]

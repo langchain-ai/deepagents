@@ -446,12 +446,12 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdelta-channel-messages" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdeepagents-perf-combo" },
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages" },
+    { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdeepagents-perf-combo" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
-    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=delta-channel-writes-based" },
-    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=delta-channel-writes-based" },
+    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeepagents-perf-combo" },
+    { name = "langgraph-sdk", git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeepagents-perf-combo" },
     { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]
@@ -810,7 +810,7 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.2.15"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdelta-channel-messages#e5791e9835d5a3d6514386c45cc9a4db0567c668" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdeepagents-perf-combo#801eb75fd73426bc9cd1807cbd96bf0718193e13" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -834,7 +834,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.3.0"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdelta-channel-messages#e5791e9835d5a3d6514386c45cc9a4db0567c668" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdeepagents-perf-combo#801eb75fd73426bc9cd1807cbd96bf0718193e13" }
 dependencies = [
     { name = "jsonpatch" },
     { name = "langsmith" },
@@ -900,7 +900,7 @@ wheels = [
 [[package]]
 name = "langgraph"
 version = "1.1.9"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeepagents-perf-combo#58a0003cbb7bab67269613e8ce929d5e7dbe5ce3" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -913,7 +913,7 @@ dependencies = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.0.2"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fcheckpoint&branch=sr%2Fdeepagents-perf-combo#58a0003cbb7bab67269613e8ce929d5e7dbe5ce3" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
@@ -922,7 +922,7 @@ dependencies = [
 [[package]]
 name = "langgraph-prebuilt"
 version = "1.0.10"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fprebuilt&branch=sr%2Fdeepagents-perf-combo#58a0003cbb7bab67269613e8ce929d5e7dbe5ce3" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "langgraph-sdk"
 version = "0.3.13"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=delta-channel-writes-based#b9fad696ecbfacbabf0cb3f812311c4ee6c90335" }
+source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Fsdk-py&branch=sr%2Fdeepagents-perf-combo#58a0003cbb7bab67269613e8ce929d5e7dbe5ce3" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },

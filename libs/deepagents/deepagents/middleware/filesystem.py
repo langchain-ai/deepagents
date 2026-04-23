@@ -115,7 +115,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_reducer, typ=dict)]
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_reducer)]
     """Files in the filesystem. Uses DeltaChannel to store per-step deltas, reducing checkpoint size from O(N²) to O(N)."""
 
 

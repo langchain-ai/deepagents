@@ -42,6 +42,7 @@ on:
           - set1
           - set2
           - frontier
+          - mega
           - fast
           - open
           - anthropic
@@ -102,6 +103,8 @@ on:
           - "openai:gpt-5.2-codex"
           - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
           - "openrouter:z-ai/glm-5.1"

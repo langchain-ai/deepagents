@@ -422,6 +422,30 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "openai:gpt-5.5",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5-pro",
+        frozenset(
+            {
+                "eval:mega",
+                "harbor:mega",
+            }
+        ),
+    ),
+    Model(
         "openai:gpt-5.4-mini",
         frozenset(
             {
@@ -493,6 +517,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("set1", "set1"),
             ("set2", "set2"),
             ("frontier", "frontier"),
+            ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
         ],

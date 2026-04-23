@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from langchain_tests.integration_tests import SandboxIntegrationTests
+from novita_sandbox.code_interpreter import Sandbox
 
 from langchain_novita import NovitaSandbox
 
@@ -16,8 +17,6 @@ if TYPE_CHECKING:
 class TestNovitaSandboxStandard(SandboxIntegrationTests):
     @pytest.fixture(scope="class")
     def sandbox(self) -> Iterator[SandboxBackendProtocol]:
-        from novita_sandbox.code_interpreter import Sandbox
-
         sdk_sandbox = Sandbox.create()
         backend = NovitaSandbox(sandbox=sdk_sandbox)
         try:

@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from deepagents.backends.protocol import ExecuteResponse
+from novita_sandbox.code_interpreter import (
+    CommandExitException,
+    InvalidArgumentException,
+)
+
 import langchain_novita
 from langchain_novita.sandbox import NovitaSandbox
+
+NONZERO_EXIT_CODE = 127
 
 
 def _make_sandbox() -> tuple[NovitaSandbox, MagicMock]:
@@ -18,13 +26,11 @@ def test_import_novita() -> None:
 
 
 def test_sandbox_id() -> None:
-    sb, mock_sdk = _make_sandbox()
+    sb, _ = _make_sandbox()
     assert sb.id == "novita-sb-123"
 
 
 def test_execute_returns_stdout() -> None:
-    from deepagents.backends.protocol import ExecuteResponse
-
     sb, mock_sdk = _make_sandbox()
     mock_result = MagicMock()
     mock_result.stdout = "hello world"
@@ -41,20 +47,18 @@ def test_execute_returns_stdout() -> None:
 
 
 def test_execute_nonzero_exit_code() -> None:
-    from novita_sandbox.code_interpreter import CommandExitException
-
     sb, mock_sdk = _make_sandbox()
     exc = CommandExitException(
         stdout="",
         stderr="command not found",
-        exit_code=127,
+        exit_code=NONZERO_EXIT_CODE,
         error=None,
     )
     mock_sdk.commands.run.side_effect = exc
 
     result = sb.execute("bad_command")
 
-    assert result.exit_code == 127
+    assert result.exit_code == NONZERO_EXIT_CODE
     assert "command not found" in result.output
 
 
@@ -69,7 +73,7 @@ def test_execute_uses_default_timeout() -> None:
     sb.execute("echo ok")
 
     call_kwargs = mock_sdk.commands.run.call_args
-    assert call_kwargs.kwargs.get("timeout") == int(30 * 60)
+    assert call_kwargs.kwargs.get("timeout") == (30 * 60)
 
 
 def test_execute_timeout_zero_passes_none() -> None:
@@ -104,14 +108,12 @@ def test_download_files_success() -> None:
 
 
 def test_download_files_is_directory() -> None:
-    from novita_sandbox.code_interpreter import InvalidArgumentException
-
     sb, mock_sdk = _make_sandbox()
     mock_sdk.files.read.side_effect = InvalidArgumentException(
         "path '/tmp/somedir' is a directory"
     )
 
-    results = sb.download_files(["/tmp/somedir"])
+    results = sb.download_files(["/tmp/somedir"])  # noqa: S108
     assert results[0].error == "is_directory"
     assert results[0].content is None
 

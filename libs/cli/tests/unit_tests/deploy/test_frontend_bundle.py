@@ -15,6 +15,7 @@ from deepagents_cli.deploy.config import (
     FrontendConfig,
 )
 
+
 @pytest.fixture
 def shipped_frontend_dist(tmp_path, monkeypatch):
     """Fake the shipped frontend_dist so tests don't require a real Vite build.
@@ -196,7 +197,7 @@ def test_langgraph_json_no_http_app_when_frontend_disabled(
 
 
 def test_deploy_dry_run_supabase_end_to_end(tmp_path, monkeypatch, capsys):
-    """Run `_deploy(dry_run=True)` against a full project tree, using the real shipped bundle."""
+    """End-to-end `_deploy(dry_run=True)` with the real shipped bundle."""
     project = tmp_path / "proj"
     project.mkdir()
     (project / "AGENTS.md").write_text("prompt", encoding="utf-8")

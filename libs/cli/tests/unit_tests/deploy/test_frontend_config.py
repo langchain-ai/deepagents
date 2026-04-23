@@ -22,33 +22,39 @@ def test_frontend_config_defaults():
 
 
 def test_frontend_section_parses_enabled_true():
-    cfg = _parse_config({
-        "agent": {"name": "my-agent"},
-        "auth": {"provider": "supabase"},
-        "frontend": {"enabled": True},
-    })
+    cfg = _parse_config(
+        {
+            "agent": {"name": "my-agent"},
+            "auth": {"provider": "supabase"},
+            "frontend": {"enabled": True},
+        }
+    )
     assert cfg.frontend is not None
     assert cfg.frontend.enabled is True
     assert cfg.frontend.app_name is None
 
 
 def test_frontend_section_parses_app_name():
-    cfg = _parse_config({
-        "agent": {"name": "my-agent"},
-        "auth": {"provider": "clerk"},
-        "frontend": {"enabled": True, "app_name": "My App"},
-    })
+    cfg = _parse_config(
+        {
+            "agent": {"name": "my-agent"},
+            "auth": {"provider": "clerk"},
+            "frontend": {"enabled": True, "app_name": "My App"},
+        }
+    )
     assert cfg.frontend is not None
     assert cfg.frontend.app_name == "My App"
 
 
 def test_frontend_section_rejects_unknown_keys():
     with pytest.raises(ValueError, match="Unknown key"):
-        _parse_config({
-            "agent": {"name": "my-agent"},
-            "auth": {"provider": "supabase"},
-            "frontend": {"enabled": True, "theme": "dark"},
-        })
+        _parse_config(
+            {
+                "agent": {"name": "my-agent"},
+                "auth": {"provider": "supabase"},
+                "frontend": {"enabled": True, "theme": "dark"},
+            }
+        )
 
 
 def test_frontend_omitted_defaults_to_none():

@@ -7,7 +7,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (33 models)
+### `set0` (34 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -41,9 +41,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.2-codex`
 - `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
-### `set1` (13 models)
+### `set1` (14 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-6`
@@ -58,6 +59,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.2-codex`
 - `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 
 ### `set2` (17 models)
 
@@ -79,11 +81,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-### `frontier` (3 models)
+### `frontier` (4 models)
 
 - `anthropic:claude-opus-4-6`
 - `google_genai:gemini-3.1-pro-preview`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 
 ### `fast` (3 models)
 
@@ -160,7 +163,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:qwen3-coder:480b-cloud`
 - `ollama:deepseek-v3.2:cloud`
 
-### `openai` (10 models)
+### `openai` (11 models)
 
 - `openai:gpt-4o`
 - `openai:gpt-4o-mini`
@@ -171,6 +174,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.2-codex`
 - `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
 ### `openrouter` (3 models)
@@ -184,7 +188,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (54 models)
+## `all` (55 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -234,6 +238,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.2-codex`
 - `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 - `openrouter:minimax/minimax-m2.7`
 - `openrouter:z-ai/glm-5.1`

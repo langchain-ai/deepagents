@@ -30,7 +30,7 @@ from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from deepagents_repl import REPLMiddleware
+from langchain_quickjs import REPLMiddleware
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"),
@@ -127,12 +127,18 @@ async def test_ptc_respects_exclude_config() -> None:
         ],
     )
 
-    response = await agent.ainvoke({
-        "messages": [HumanMessage(content=(
-            "Inside the `eval` tool, run the JavaScript expression "
-            "`typeof tools.task` and return what it says."
-        ))],
-    })
+    response = await agent.ainvoke(
+        {
+            "messages": [
+                HumanMessage(
+                    content=(
+                        "Inside the `eval` tool, run the JavaScript expression "
+                        "`typeof tools.task` and return what it says."
+                    )
+                )
+            ],
+        }
+    )
 
     tool_messages = [m for m in response["messages"] if isinstance(m, ToolMessage)]
     eval_messages = [m for m in tool_messages if m.name == "eval"]

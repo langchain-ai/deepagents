@@ -109,7 +109,9 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
         camel = to_camel_case(t.name)
         schema = _safe_json_schema(t)
         signature = _render_signature(camel, schema)
-        description = (t.description or "").strip().splitlines()[0] if t.description else ""
+        description = (
+            (t.description or "").strip().splitlines()[0] if t.description else ""
+        )
         blocks.append(f"/** {description} */\n{signature}")
     body = "\n\n".join(blocks)
     return (
@@ -129,8 +131,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        if hasattr(tool.args_schema, "model_json_schema"):
-            return tool.args_schema.model_json_schema()
+        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
+        if callable(model_json_schema):
+            return model_json_schema()
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
         return None
     return None

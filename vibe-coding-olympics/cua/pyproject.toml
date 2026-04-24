@@ -1,0 +1,10 @@
+[project]
+name = "vibe-coding-olympics-cua"
+version = "0.1.0"
+description = "GPT-5.4 computer-use demo (Browserbase + Playwright) for the Vibe Coding Olympics"
+requires-python = ">=3.11"
+dependencies = [
+    "browserbase>=1.8.0",
+    "openai>=2.32.0",
+    "playwright>=1.58.0",
+]

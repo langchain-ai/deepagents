@@ -46,7 +46,7 @@ On startup the runner connects to OBS, primes the idle scene, and clears all fou
 # Start round
 curl -sS -X POST localhost:8765/transition \
   -H 'content-type: application/json' \
-  -d '{"event":"start","payload":{"prompt":"build a cat shrine","round_num":1,"contestants":["Alice","Bob"]}}'
+  -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'
 
 # End round → scoreboard
 curl -sS -X POST localhost:8765/transition \

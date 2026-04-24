@@ -43,7 +43,7 @@ Expect: `{"obs_connected":true,"phase":"idle"}`. OBS should be on `Idle` with al
 ```bash
 curl -s -X POST localhost:8765/transition \
   -H 'content-type: application/json' \
-  -d '{"event":"start","payload":{"prompt":"build a cat shrine","round_num":1,"contestants":["Alice","Bob"]}}'
+  -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'
 ```
 
 OBS switches to `Coding`. Text sources show:
@@ -110,7 +110,7 @@ Runner log prints `OBS unreachable at startup: …`. Then:
 curl -s localhost:8765/healthz
 curl -s -X POST localhost:8765/transition \
   -H 'content-type: application/json' \
-  -d '{"event":"start","payload":{"prompt":"x","round_num":1}}' \
+  -d '{"event":"start","payload":{"prompt":"x"}}' \
   -w '\nHTTP %{http_code}\n'
 ```
 
@@ -122,7 +122,7 @@ Expect `obs_connected:false` and `HTTP 503`. OBS does not change.
 curl -s localhost:8765/healthz; echo
 sleep 2
 curl -s -X POST localhost:8765/transition -H 'content-type: application/json' \
-  -d '{"event":"start","payload":{"prompt":"build a cat shrine","round_num":1,"contestants":["Alice","Bob"]}}'; echo
+  -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'; echo
 sleep 3
 curl -s -X POST localhost:8765/transition -H 'content-type: application/json' \
   -d '{"event":"end","payload":{"scores":{"Alice":8.2,"Bob":7.5}}}'; echo

@@ -46,6 +46,10 @@ class Event(StrEnum):
 
 _TRANSITIONS: dict[tuple[Phase, Event], Phase] = {
     (Phase.IDLE, Event.START): Phase.CODING,
+    # `start` from SCOREBOARD rolls straight into the next round — a
+    # producer rarely wants to park in IDLE between rounds. `start`
+    # from CODING is still 409 because that would mask a forgotten END.
+    (Phase.SCOREBOARD, Event.START): Phase.CODING,
     (Phase.CODING, Event.END): Phase.SCOREBOARD,
     # `reset` is a panic-button: always legal, always lands in IDLE.
     # Idempotent from IDLE so the UI can double-click without a 409.
@@ -68,7 +72,6 @@ class Snapshot:
     """
 
     phase: Phase = Phase.IDLE
-    round_num: int | None = None
     prompt: str | None = None
     contestants: list[str] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
@@ -173,13 +176,10 @@ class StateMachine:
     def _enter_coding(self, payload: dict[str, Any]) -> None:
         """Switch to the coding scene and write round metadata."""
         prompt = str(payload.get("prompt", ""))
-        round_num_raw = payload.get("round_num")
-        round_num = int(round_num_raw) if round_num_raw is not None else None
         contestants = list(payload.get("contestants") or [])
 
         self._snapshot = Snapshot(
             phase=Phase.CODING,
-            round_num=round_num,
             prompt=prompt,
             contestants=contestants,
         )
@@ -198,7 +198,6 @@ class StateMachine:
         scores = {str(k): float(v) for k, v in raw.items()}
         self._snapshot = Snapshot(
             phase=Phase.SCOREBOARD,
-            round_num=self._snapshot.round_num,
             prompt=self._snapshot.prompt,
             contestants=self._snapshot.contestants,
             scores=scores,

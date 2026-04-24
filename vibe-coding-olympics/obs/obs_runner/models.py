@@ -24,7 +24,6 @@ class StateResponse(BaseModel):
     """Current machine snapshot returned by `GET /state` and transitions."""
 
     phase: Phase
-    round_num: int | None = None
     prompt: str | None = None
     contestants: list[str] = Field(default_factory=list)
     scores: dict[str, float] = Field(default_factory=dict)

@@ -30,7 +30,6 @@ VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/
 class StartRequest(BaseModel):
     prompt: str
     contestants: list[str] = Field(default_factory=list)
-    round_num: int | None = None
 
 
 class EndRequest(BaseModel):
@@ -320,13 +319,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/round/start")
     async def round_start(req: StartRequest) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "prompt": req.prompt,
-            "contestants": req.contestants,
-        }
-        if req.round_num is not None:
-            payload["round_num"] = req.round_num
-        return await _forward("start", payload)
+        return await _forward(
+            "start",
+            {"prompt": req.prompt, "contestants": req.contestants},
+        )
 
     @app.post("/api/round/end")
     async def round_end(req: EndRequest) -> dict[str, Any]:

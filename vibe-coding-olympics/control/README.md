@@ -42,7 +42,7 @@ Open `http://localhost:8766` in a browser.
 | --- | --- | --- | --- |
 | `/` | GET | — | Serves the HTML control panel |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner |
-| `/api/round/start` | POST | `{prompt, contestants[], round_num?}` | Fires `start` on the FSM |
+| `/api/round/start` | POST | `{prompt, contestants[]}` | Fires `start` on the FSM |
 | `/api/round/end` | POST | `{scores: {name: float}}` | Fires `end` on the FSM |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM |
 | `/api/players` | GET | — | Lists active player ports |

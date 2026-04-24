@@ -54,13 +54,11 @@ def test_full_round_drives_expected_scenes(config: Config) -> None:
         Event.START,
         {
             "prompt": "build a cat shrine",
-            "round_num": 1,
             "contestants": ["Alice", "Bob"],
         },
     )
     assert machine.snapshot.phase is Phase.CODING
     assert machine.snapshot.prompt == "build a cat shrine"
-    assert machine.snapshot.round_num == 1
     assert comp.last_text("PromptText") == "build a cat shrine"
     assert comp.last_text("RoundNum") is None
     assert comp.last_text("Contestant1Name") == "Alice"
@@ -89,6 +87,32 @@ def test_illegal_transition_rejected(config: Config) -> None:
         machine.dispatch(Event.END, {})
 
 
+def test_start_from_scoreboard_rolls_next_round(config: Config) -> None:
+    """A producer should not need an explicit reset between rounds."""
+    comp = FakeCompositor()
+    machine = StateMachine(comp, config)
+    machine.prime()
+    machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A", "B"]})
+    machine.dispatch(Event.END, {"scores": {"A": 1.0, "B": 2.0}})
+    # Start straight from SCOREBOARD with a new prompt/contestants.
+    machine.dispatch(Event.START, {"prompt": "r2", "contestants": ["C", "D"]})
+    assert machine.snapshot.phase is Phase.CODING
+    assert machine.snapshot.prompt == "r2"
+    assert machine.snapshot.contestants == ["C", "D"]
+    # Previous scores are replaced by the empty default on re-entry.
+    assert machine.snapshot.scores == {}
+    assert comp.last_text("Contestant1Name") == "C"
+    assert comp.last_text("Contestant2Name") == "D"
+
+
+def test_start_from_coding_still_rejected(config: Config) -> None:
+    """`start` from CODING must 409 — otherwise it hides a missing END."""
+    machine = StateMachine(FakeCompositor(), config)
+    machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A"]})
+    with pytest.raises(InvalidTransitionError):
+        machine.dispatch(Event.START, {"prompt": "r2", "contestants": ["B"]})
+
+
 def test_reset_is_always_legal(config: Config) -> None:
     """Reset must be an idempotent panic-button from every phase.
 
@@ -100,11 +124,11 @@ def test_reset_is_always_legal(config: Config) -> None:
     machine.dispatch(Event.RESET, {})
     assert machine.snapshot.phase is Phase.IDLE
     # From CODING
-    machine.dispatch(Event.START, {"prompt": "x", "round_num": 1, "contestants": ["A"]})
+    machine.dispatch(Event.START, {"prompt": "x", "contestants": ["A"]})
     machine.dispatch(Event.RESET, {})
     assert machine.snapshot.phase is Phase.IDLE
     # From SCOREBOARD
-    machine.dispatch(Event.START, {"prompt": "x", "round_num": 1, "contestants": ["A"]})
+    machine.dispatch(Event.START, {"prompt": "x", "contestants": ["A"]})
     machine.dispatch(Event.END, {"scores": {"A": 1.0}})
     machine.dispatch(Event.RESET, {})
     assert machine.snapshot.phase is Phase.IDLE
@@ -123,7 +147,6 @@ def test_score_mapped_to_contestant_slot(config: Config) -> None:
         Event.START,
         {
             "prompt": "x",
-            "round_num": 2,
             "contestants": ["Bob", "Alice"],
         },
     )
@@ -142,7 +165,7 @@ def test_missing_score_leaves_slot_blank(config: Config) -> None:
     machine.prime()
     machine.dispatch(
         Event.START,
-        {"prompt": "x", "round_num": 1, "contestants": ["Alice", "Bob"]},
+        {"prompt": "x", "contestants": ["Alice", "Bob"]},
     )
     machine.dispatch(Event.END, {"scores": {"Alice": 8.0}})
 
@@ -156,7 +179,7 @@ def test_contestants_beyond_slot_cap_are_dropped(config: Config) -> None:
     machine.prime()
     machine.dispatch(
         Event.START,
-        {"prompt": "x", "round_num": 1, "contestants": ["A", "B", "C"]},
+        {"prompt": "x", "contestants": ["A", "B", "C"]},
     )
     assert comp.last_text("Contestant1Name") == "A"
     assert comp.last_text("Contestant2Name") == "B"

@@ -33,6 +33,8 @@ from deepagents_cli.deploy.config import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_cli.deploy.config import SandboxProvider, SandboxScope
+
 
 def _minimal_project(tmp_path: Path, *, mcp: bool = False) -> Path:
     """Create a minimal project directory and return its path."""
@@ -749,16 +751,19 @@ class TestScratchpadRouting:
     (no sandbox), so no explicit route is needed.
     """
 
-    def test_scratchpad_prefix_constant_and_composite_kwarg_always_present(self) -> None:
-        """Template always declares /scratchpad/ as the prefix and passes it to the composite."""
-        for provider, scope in (
+    def test_scratchpad_prefix_constant_and_composite_kwarg_always_present(
+        self,
+    ) -> None:
+        """Template declares /scratchpad/ and passes it to the composite each mode."""
+        cases: tuple[tuple[SandboxProvider, SandboxScope], ...] = (
             ("langsmith", "assistant"),
             ("langsmith", "thread"),
             ("none", "thread"),
-        ):
+        )
+        for provider, scope in cases:
             config = DeployConfig(
                 agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
-                sandbox=SandboxConfig(provider=provider, scope=scope),  # type: ignore[arg-type]
+                sandbox=SandboxConfig(provider=provider, scope=scope),
             )
             result = _render_deploy_graph(config, mcp_present=False)
             assert 'SCRATCHPAD_PREFIX = "/scratchpad/"' in result
@@ -780,7 +785,9 @@ class TestScratchpadRouting:
             sandbox=SandboxConfig(provider="langsmith", scope="assistant"),
         )
         result = _render_deploy_graph(config, mcp_present=False)
-        assert 'if SANDBOX_PROVIDER != "none" and SANDBOX_SCOPE == "assistant":' in result
+        assert (
+            'if SANDBOX_PROVIDER != "none" and SANDBOX_SCOPE == "assistant":' in result
+        )
         assert "routes[SCRATCHPAD_PREFIX] = StateBackend()" in result
 
     @pytest.mark.parametrize(
@@ -795,22 +802,22 @@ class TestScratchpadRouting:
     def test_factory_installs_route_only_for_shared_sandbox(
         self,
         tmp_path: Path,
-        provider: str,
-        scope: str,
+        provider: SandboxProvider,
+        scope: SandboxScope,
         expect_route: bool,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Execute the generated factory and verify /scratchpad/ is routed as expected."""
+        """Execute the generated factory; verify /scratchpad/ routing per mode."""
         import importlib.util
         import shutil
         import sys
 
         import langgraph.config as lgc
-
         from deepagents.backends.state import StateBackend as _StateBackend
 
         config = DeployConfig(
             agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
-            sandbox=SandboxConfig(provider=provider, scope=scope),  # type: ignore[arg-type]
+            sandbox=SandboxConfig(provider=provider, scope=scope),
         )
         src = _render_deploy_graph(config, mcp_present=False)
 
@@ -824,20 +831,30 @@ class TestScratchpadRouting:
         shutil.copy2(_ch_mod.__file__, tmp_path / "_context_hub.py")
         (tmp_path / "deploy_graph.py").write_text(src, encoding="utf-8")
 
-        sys.path.insert(0, str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+        spec = importlib.util.spec_from_file_location(
+            f"dg_scratch_{provider}_{scope}",
+            tmp_path / "deploy_graph.py",
+        )
+        assert spec is not None
+        assert spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"dg_scratch_{provider}_{scope}",
-                tmp_path / "deploy_graph.py",
-            )
-            assert spec and spec.loader
-            mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
             # Stub sandbox creation and langgraph config so the factory can run
             # without real credentials or a live runtime.
-            mod._get_or_create_sandbox = lambda cache_key: _StateBackend()  # noqa: ARG005
-            lgc.get_config = lambda: {"configurable": {"thread_id": "t1"}}
+            monkeypatch.setattr(
+                mod,
+                "_get_or_create_sandbox",
+                lambda cache_key: _StateBackend(),  # noqa: ARG005
+            )
+            monkeypatch.setattr(
+                lgc,
+                "get_config",
+                lambda: {"configurable": {"thread_id": "t1"}},
+            )
 
             factory = mod._build_backend_factory("test-agent")
             composite = factory(None)
@@ -845,4 +862,4 @@ class TestScratchpadRouting:
             assert composite.scratchpad_prefix == "/scratchpad/"
             assert ("/scratchpad/" in composite.routes) is expect_route
         finally:
-            sys.path.remove(str(tmp_path))
+            sys.modules.pop(spec.name, None)

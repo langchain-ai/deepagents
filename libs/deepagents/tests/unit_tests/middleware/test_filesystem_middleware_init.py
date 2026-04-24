@@ -89,9 +89,8 @@ def _captured_system_prompt(middleware: FilesystemMiddleware) -> str:
     """Run `wrap_model_call` with a capturing handler and return the injected prompt."""
     captured: dict[str, Any] = {}
 
-    def _handler(request: ModelRequest):  # noqa: ANN202
+    def _handler(request: ModelRequest):
         captured["request"] = request
-        return None  # wrap_model_call doesn't inspect the return value here
 
     middleware.wrap_model_call(_build_model_request(), _handler)
     request = captured["request"]
@@ -101,9 +100,7 @@ def _captured_system_prompt(middleware: FilesystemMiddleware) -> str:
     if isinstance(content, str):
         return content
     # Block-form content: concatenate the text from text blocks.
-    return "\n".join(
-        block["text"] for block in content if isinstance(block, dict) and block.get("type") == "text"
-    )
+    return "\n".join(block["text"] for block in content if isinstance(block, dict) and block.get("type") == "text")
 
 
 class TestScratchpadPromptInjection:

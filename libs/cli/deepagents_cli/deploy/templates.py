@@ -586,6 +586,7 @@ class SandboxSyncMiddleware(AgentMiddleware):
                 store=runtime.store,
                 config=config,
                 tool_call_id=None,
+                tools=[],
             )
             return self._backend(tool_runtime)
         return self._backend

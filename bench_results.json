@@ -1,0 +1,97 @@
+{
+  "versions": {
+    "error": "module 'langgraph' has no attribute '__version__'"
+  },
+  "results": [
+    {
+      "turns": 5,
+      "durability": "exit",
+      "elapsed_s": 0.43,
+      "peak_mb": 0.8,
+      "blobs_mb": 0.0,
+      "writes_mb": 0.0,
+      "storage_mb": 0.01,
+      "total_mb": 0.01
+    },
+    {
+      "turns": 25,
+      "durability": "exit",
+      "elapsed_s": 2.03,
+      "peak_mb": 1.0,
+      "blobs_mb": 0.0,
+      "writes_mb": 0.0,
+      "storage_mb": 0.03,
+      "total_mb": 0.03
+    },
+    {
+      "turns": 50,
+      "durability": "exit",
+      "elapsed_s": 4.17,
+      "peak_mb": 1.1,
+      "blobs_mb": 0.0,
+      "writes_mb": 0.0,
+      "storage_mb": 0.05,
+      "total_mb": 0.05
+    },
+    {
+      "turns": 100,
+      "durability": "exit",
+      "elapsed_s": 8.36,
+      "peak_mb": 1.4,
+      "blobs_mb": 0.0,
+      "writes_mb": 0.0,
+      "storage_mb": 0.11,
+      "total_mb": 0.11
+    },
+    {
+      "turns": 200,
+      "durability": "exit",
+      "elapsed_s": 17.05,
+      "peak_mb": 1.9,
+      "blobs_mb": 0.0,
+      "writes_mb": 0.0,
+      "storage_mb": 0.22,
+      "total_mb": 0.22
+    },
+    {
+      "turns": 5,
+      "durability": "async",
+      "elapsed_s": 0.44,
+      "peak_mb": 3.3,
+      "blobs_mb": 0.3,
+      "writes_mb": 1.29,
+      "storage_mb": 0.08,
+      "total_mb": 1.66
+    },
+    {
+      "turns": 25,
+      "durability": "async",
+      "elapsed_s": 2.84,
+      "peak_mb": 14.9,
+      "blobs_mb": 1.48,
+      "writes_mb": 6.46,
+      "storage_mb": 0.39,
+      "total_mb": 8.33
+    },
+    {
+      "turns": 50,
+      "durability": "async",
+      "elapsed_s": 7.12,
+      "peak_mb": 28.9,
+      "blobs_mb": 2.96,
+      "writes_mb": 12.92,
+      "storage_mb": 0.78,
+      "total_mb": 16.66
+    },
+    {
+      "turns": 100,
+      "durability": "async",
+      "elapsed_s": 19.96,
+      "peak_mb": 57.4,
+      "blobs_mb": 5.91,
+      "writes_mb": 25.84,
+      "storage_mb": 1.57,
+      "total_mb": 33.32
+    }
+  ]
+}

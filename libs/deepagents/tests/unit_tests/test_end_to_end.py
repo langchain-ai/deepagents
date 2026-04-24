@@ -2090,11 +2090,11 @@ class TestLargeHumanMessageEviction:
 
     @pytest.mark.xfail(
         reason=(
-            "DeltaChannel(add_messages) replay doesn't dedup by ID across step deltas, "
-            "so the evicted HumanMessage and its replacement both survive. "
-            "Upstream langgraph fix needed; tracked against sr/deepagents-perf-combo."
+            "DeltaChannel(add_messages) replay can miss ID-dedup across step deltas on "
+            "some platforms (observed on macOS, passes on Linux). Upstream langgraph "
+            "fix needed; tracked against sr/deepagents-perf-combo."
         ),
-        strict=True,
+        strict=False,
     )
     def test_multi_turn_eviction(self) -> None:
         """Tagged messages are truncated on subsequent turns.

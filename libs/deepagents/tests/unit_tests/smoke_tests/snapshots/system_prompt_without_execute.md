@@ -96,6 +96,10 @@ Subagent lifecycle:
 3. **Return** → The subagent provides a single structured result
 4. **Reconcile** → Incorporate or synthesize the result into the main thread
 
+Context modes:
+- By default, the subagent receives a fresh message context containing only your task description.
+- Set `fork_context=true` when the subagent needs the current conversation context as its starting point. This costs more tokens, so use it only when the existing context materially helps the subtask.
+
 When NOT to use the task tool:
 - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)
 - If the task is trivial (a few tool calls or simple lookup)

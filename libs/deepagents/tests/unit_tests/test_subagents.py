@@ -20,7 +20,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
@@ -30,6 +30,7 @@ from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
 
+import deepagents.middleware.subagents as subagents_middleware
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
@@ -1507,6 +1508,251 @@ class TestSubAgents:
 
         assert len(received_configs) > 0, "Lambda should have been invoked"
         assert all(t in received_configs[0].get("tags", []) for t in test_tags), f"Missing tags in config: {received_configs[0].get('tags')}"
+
+    def test_task_default_uses_fresh_message_context(self) -> None:
+        """Default task calls should keep the existing isolated message behavior."""
+        captured_states: list[dict[str, Any]] = []
+
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:  # noqa: ARG001
+            captured_states.append(state)
+            return {"messages": [AIMessage(content="Fresh response")]}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do fresh work", "subagent_type": "worker"},
+                                "id": "call_fresh",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=RunnableLambda(lambda_subagent))],
+        )
+
+        parent_agent.invoke(
+            {
+                "messages": [
+                    HumanMessage(content="Important parent context."),
+                    AIMessage(content="Prior assistant answer."),
+                ],
+                "files": {
+                    "/notes.txt": {
+                        "content": "shared file",
+                        "encoding": "utf-8",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "modified_at": "2026-01-01T00:00:00Z",
+                    }
+                },
+            },
+            config={"configurable": {"thread_id": "test_fresh_task_context"}},
+        )
+
+        assert len(captured_states) == 1
+        assert [message.content for message in captured_states[0]["messages"]] == ["Do fresh work"]
+        assert captured_states[0]["files"]["/notes.txt"]["content"] == "shared file"
+
+    def test_task_fork_context_copies_effective_messages_and_state(self) -> None:
+        """Forked tasks should inherit context without the active task tool-call message."""
+        captured_states: list[dict[str, Any]] = []
+        captured_configs: list[RunnableConfig] = []
+
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+            captured_states.append(state)
+            captured_configs.append(config)
+            return {"messages": [AIMessage(content=f"Forked response for {state['messages'][-1].content}")]}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do forked work A",
+                                    "subagent_type": "worker-a",
+                                    "fork_context": True,
+                                },
+                                "id": "call_fork_a",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do forked work B",
+                                    "subagent_type": "worker-b",
+                                    "fork_context": True,
+                                },
+                                "id": "call_fork_b",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        runnable = RunnableLambda(lambda_subagent)
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(name="worker-a", description="Does work A.", runnable=runnable),
+                CompiledSubAgent(name="worker-b", description="Does work B.", runnable=runnable),
+            ],
+        )
+
+        parent_agent.invoke(
+            {
+                "messages": [
+                    HumanMessage(content="Important parent context."),
+                    AIMessage(content="Prior assistant answer."),
+                ],
+                "files": {
+                    "/notes.txt": {
+                        "content": "shared file",
+                        "encoding": "utf-8",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "modified_at": "2026-01-01T00:00:00Z",
+                    }
+                },
+            },
+            config={"configurable": {"thread_id": "test_fork_task_context"}},
+        )
+
+        assert len(captured_states) == 2
+        states_by_instruction = {state["messages"][-1].content: state for state in captured_states}
+        assert set(states_by_instruction) == {"Do forked work A", "Do forked work B"}
+
+        for instruction, state in states_by_instruction.items():
+            assert [message.content for message in state["messages"]] == [
+                "Important parent context.",
+                "Prior assistant answer.",
+                instruction,
+            ]
+            assert all(not (isinstance(message, AIMessage) and message.tool_calls) for message in state["messages"])
+            assert state["files"]["/notes.txt"]["content"] == "shared file"
+            assert "todos" not in state
+            assert "structured_response" not in state
+            assert "skills_metadata" not in state
+            assert "memory_contents" not in state
+            assert "_summarization_event" not in state
+
+        child_thread_ids = {config["configurable"]["thread_id"] for config in captured_configs}
+        assert child_thread_ids == {
+            "test_fork_task_context:subagent:call_fork_a",
+            "test_fork_task_context:subagent:call_fork_b",
+        }
+
+    def test_task_fork_context_applies_summarization_event_before_copying_messages(self) -> None:
+        """Forked message history should use the same effective view as summarization middleware."""
+        messages: list[AnyMessage] = [
+            HumanMessage(content="Old human context."),
+            AIMessage(content="Old assistant context."),
+            HumanMessage(content="Recent human context."),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {
+                            "description": "Do forked work",
+                            "subagent_type": "worker",
+                            "fork_context": True,
+                        },
+                        "id": "call_fork",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        ]
+        event = {
+            "cutoff_index": 2,
+            "summary_message": HumanMessage(content="Summary of old context."),
+            "file_path": "/conversation_history/test.md",
+        }
+
+        effective = subagents_middleware._apply_summarization_event(messages, event)
+        forked = [
+            *subagents_middleware._drop_active_tool_call_message(effective, "call_fork"),
+            HumanMessage(content="Do forked work"),
+        ]
+
+        assert [message.content for message in forked] == [
+            "Summary of old context.",
+            "Recent human context.",
+            "Do forked work",
+        ]
+        assert all(not (isinstance(message, AIMessage) and message.tool_calls) for message in forked)
+
+    async def test_task_fork_context_async_path_matches_sync_state_behavior(self) -> None:
+        """Async task invocation should build the same forked state as sync invocation."""
+        captured_states: list[dict[str, Any]] = []
+        captured_configs: list[RunnableConfig] = []
+
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+            captured_states.append(state)
+            captured_configs.append(config)
+            return {"messages": [AIMessage(content="Async forked response")]}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do async forked work",
+                                    "subagent_type": "worker",
+                                    "fork_context": True,
+                                },
+                                "id": "call_async_fork",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=RunnableLambda(lambda_subagent))],
+        )
+
+        await parent_agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(content="Async parent context."),
+                    AIMessage(content="Async prior answer."),
+                ]
+            },
+            config={"configurable": {"thread_id": "test_async_fork_task_context"}},
+        )
+
+        assert len(captured_states) == 1
+        assert [message.content for message in captured_states[0]["messages"]] == [
+            "Async parent context.",
+            "Async prior answer.",
+            "Do async forked work",
+        ]
+        assert captured_configs[0]["configurable"]["thread_id"] == "test_async_fork_task_context:subagent:call_async_fork"
 
     def test_context_passed_to_subagent_tool_runtime(self) -> None:
         """Test that context passed to main agent is available in subagent's ToolRuntime.context."""

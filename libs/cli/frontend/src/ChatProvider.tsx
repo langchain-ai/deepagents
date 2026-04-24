@@ -39,6 +39,7 @@ export function ChatProvider({ accessToken, children }: ChatProviderProps) {
     assistantId: ASSISTANT_ID,
     threadId: currentThreadId,
     onThreadId: setCurrentThreadId,
+    filterSubagentMessages: true,
     defaultHeaders: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
   });
 

@@ -6,7 +6,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { useStream } from "@langchain/react";
+import { useStream, type DeepAgentTypeConfigLike } from "@langchain/react";
 import type { BaseMessage } from "@langchain/core/messages";
 import { ASSISTANT_ID } from "./constants";
 import type { TodoItem } from "./types";
@@ -17,8 +17,14 @@ interface AgentState {
   todos?: TodoItem[];
 }
 
+// Branded state for useStream's deep-agent overload. The phantom
+// property exists only in the type system — never present at runtime.
+type DeepAgentState = AgentState & {
+  "~deepAgentTypes": DeepAgentTypeConfigLike;
+};
+
 type ChatContextValue = {
-  stream: ReturnType<typeof useStream<AgentState>>;
+  stream: ReturnType<typeof useStream<DeepAgentState>>;
   currentThreadId: string | null;
   switchToThread: (id: string) => void;
   newThread: () => void;
@@ -34,7 +40,7 @@ type ChatProviderProps = {
 export function ChatProvider({ accessToken, children }: ChatProviderProps) {
   const [currentThreadId, setCurrentThreadId] = useState<string | null>(null);
 
-  const stream = useStream<AgentState>({
+  const stream = useStream<DeepAgentState>({
     apiUrl: window.location.origin,
     assistantId: ASSISTANT_ID,
     threadId: currentThreadId,

@@ -264,13 +264,91 @@ def test_registry_reuses_thread_repl() -> None:
 
 def test_middleware_del_closes_runtime() -> None:
     mw = REPLMiddleware()
-    # Force Runtime creation
+    # Force a slot to exist
     _ = mw._registry.get("t")
-    rt = mw._registry._runtime
-    assert rt is not None
+    slots = list(mw._registry._slots.values())
+    assert len(slots) == 1
+    rt = slots[0].runtime
     with patch.object(rt, "close", wraps=rt.close) as close_spy:
         mw.__del__()
         assert close_spy.called
+
+
+def test_per_thread_slot_has_own_worker_and_runtime() -> None:
+    """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        reg.get("thread-a")
+        reg.get("thread-b")
+        slot_a = reg._slots["thread-a"]
+        slot_b = reg._slots["thread-b"]
+        assert slot_a.worker is not slot_b.worker
+        assert slot_a.runtime is not slot_b.runtime
+        assert slot_a.worker._name == "quickjs-worker-thread-a"
+        assert slot_b.worker._name == "quickjs-worker-thread-b"
+    finally:
+        reg.close()
+
+
+def test_ttl_evicts_stale_slot_on_next_get() -> None:
+    """A slot past ``idle_ttl_sec`` is closed the next time any thread
+    calls ``get()`` — the returning stale thread gets a fresh slot."""
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        idle_ttl_sec=60.0,
+    )
+    try:
+        repl_a_first = reg.get("thread-a")
+        first_runtime = reg._slots["thread-a"].runtime
+        # Fake staleness: rewind last_used well past the TTL.
+        reg._slots["thread-a"].last_used -= 120.0
+        repl_a_second = reg.get("thread-a")
+        # Fresh slot, fresh Runtime.
+        assert repl_a_second is not repl_a_first
+        assert reg._slots["thread-a"].runtime is not first_runtime
+    finally:
+        reg.close()
+
+
+def test_ttl_eviction_fires_for_any_thread_s_call() -> None:
+    """Lazy eviction runs on every ``get()``, not just the stale thread's —
+    so a new thread's arrival cleans up old idle ones."""
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        idle_ttl_sec=60.0,
+    )
+    try:
+        reg.get("old")
+        reg._slots["old"].last_used -= 120.0
+        reg.get("fresh")
+        assert "old" not in reg._slots
+        assert "fresh" in reg._slots
+    finally:
+        reg.close()
+
+
+def test_max_active_threads_evicts_lru() -> None:
+    """When ``max_active_threads`` is reached, the least-recently-used
+    slot is closed before a new one is created."""
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_active_threads=2,
+    )
+    try:
+        reg.get("a")
+        reg.get("b")
+        # "a" is older than "b" at this point.
+        reg.get("c")
+        assert "a" not in reg._slots
+        assert set(reg._slots) == {"b", "c"}
+    finally:
+        reg.close()
 
 
 # ---------------------------------------------------------------------------

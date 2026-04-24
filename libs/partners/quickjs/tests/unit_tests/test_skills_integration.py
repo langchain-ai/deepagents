@@ -177,11 +177,66 @@ async def test_install_cache_avoids_second_fetch(
     assert registry._skill_installs["cached"].loaded is first_loaded
 
 
-async def test_installed_skill_visible_from_second_thread(
+async def test_skill_cache_survives_slot_eviction(tmp_path: Path) -> None:
+    """``_skill_installs`` is Runtime-independent, so TTL-evicting a slot
+    doesn't discard the fetched source. A returning thread installs
+    from cache without another backend roundtrip."""
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        idle_ttl_sec=60.0,
+    )
+    try:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        skill_dir = str(tmp_path / "skills" / "persist")
+        _write(
+            backend,
+            {
+                f"{skill_dir}/SKILL.md": "---\nname: persist\ndescription: x\n---\n",
+                f"{skill_dir}/index.js": "export const k = 7;",
+            },
+        )
+        meta = _metadata("persist", path=f"{skill_dir}/SKILL.md", module="index.js")
+
+        repl_a = reg.get("t1")
+        await reg.aensure_skills_installed(
+            frozenset({"persist"}), {"persist": meta}, backend, repl_a
+        )
+        cached_loaded = reg._skill_installs["persist"].loaded
+        assert cached_loaded is not None
+
+        # Evict t1 (simulate long idle), then return — fresh slot.
+        reg._slots["t1"].last_used -= 120.0
+        repl_a_new = reg.get("t1")
+        assert repl_a_new is not repl_a
+        # Source cache still holds the original LoadedSkill object.
+        assert reg._skill_installs["persist"].loaded is cached_loaded
+
+        # New slot must install on its own Runtime, but source comes
+        # from cache. After the install, the import resolves.
+        await reg.aensure_skills_installed(
+            frozenset({"persist"}), {"persist": meta}, backend, repl_a_new
+        )
+        outcome = await repl_a_new.eval_async(
+            'const m = await import("@/skills/persist"); m.k'
+        )
+        assert outcome.error_type is None
+        assert outcome.result == "7"
+    finally:
+        reg.close()
+
+
+async def test_skill_source_cached_across_threads(
     registry: _Registry, tmp_path: Path
 ) -> None:
-    """Install is per-Runtime, not per-Context. Second thread's Context
-    can import the skill without a new install pass."""
+    """Source is cached at the registry level; each thread's Runtime
+    installs from cache without re-fetching from the backend.
+
+    Per-thread Runtimes need their own install pass (module store is
+    per-Runtime), but the expensive step — reading from the backend —
+    only happens once per skill. Second thread gets a cache hit.
+    """
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "shared")
     _write(
@@ -197,9 +252,16 @@ async def test_installed_skill_visible_from_second_thread(
     await registry.aensure_skills_installed(
         frozenset({"shared"}), {"shared": meta}, backend, repl_a
     )
+    first_loaded = registry._skill_installs["shared"].loaded
 
-    # Thread B — no new install call — can still import.
     repl_b = registry.get("thread-b")
+    # Thread-b must install on its own Runtime, but source comes from
+    # the shared cache — no re-fetch.
+    await registry.aensure_skills_installed(
+        frozenset({"shared"}), {"shared": meta}, backend, repl_b
+    )
+    assert registry._skill_installs["shared"].loaded is first_loaded
+
     outcome = await repl_b.eval_async(
         'const m = await import("@/skills/shared"); globalThis.r = m.k;'
     )

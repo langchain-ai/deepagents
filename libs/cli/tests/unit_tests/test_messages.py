@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from rich.style import Style
+from rich.theme import Theme
 from textual.content import Content
 
 from deepagents_cli import theme
@@ -130,7 +131,7 @@ class TestMutedRichMarkdown:
     )
 
     @staticmethod
-    def _render(renderable: object) -> str:
+    def _render(renderable: object, theme: Theme | None = None) -> str:
         import io
 
         from rich.console import Console
@@ -139,8 +140,10 @@ class TestMutedRichMarkdown:
             file=io.StringIO(),
             force_terminal=True,
             color_system="truecolor",
+            no_color=False,
             width=80,
             legacy_windows=False,
+            theme=theme,
         )
         console.print(renderable)
         return console.file.getvalue()  # type: ignore[attr-defined]
@@ -149,11 +152,19 @@ class TestMutedRichMarkdown:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
         from rich.markdown import Markdown as RichMarkdown
 
-        baseline = self._render(RichMarkdown(self._DOC))
-        muted = self._render(_MutedRichMarkdown(self._DOC))
+        theme = Theme(
+            {
+                "markdown.h3": "bold magenta",
+                "markdown.table.header": "cyan",
+                "markdown.table.border": "cyan",
+            },
+            inherit=True,
+        )
+        baseline = self._render(RichMarkdown(self._DOC), theme=theme)
+        muted = self._render(_MutedRichMarkdown(self._DOC), theme=theme)
 
-        # Default Rich theme paints `markdown.h3` magenta (ANSI code 35)
-        # and `markdown.table.*` cyan (ANSI code 36).
+        # Verify against an explicit theme so Rich default theme changes do not
+        # make this test environment-dependent.
         assert "\x1b[1;35m" in baseline
         assert "\x1b[36m" in baseline
 

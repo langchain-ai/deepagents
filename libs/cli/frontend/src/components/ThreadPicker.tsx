@@ -6,10 +6,10 @@ import { useLangGraphClient, useThreadActions } from "../RuntimeProvider";
 type ThreadSummary = Thread<Record<string, unknown>>;
 
 const ThreadPicker: FC = () => {
-  // Factory is stable; call it once and memoize the resulting Client so
-  // downstream effects don't loop.
+  // Always call the factory fresh to pick up the current access token —
+  // auth providers like Clerk rotate JWTs every ~60s, so a cached Client
+  // would hand the SDK a stale token and we'd 401 after the first minute.
   const createClient = useLangGraphClient();
-  const client = useMemo(() => createClient(), [createClient]);
   const { currentExternalId, switchToExistingThread, newThread } =
     useThreadActions();
 
@@ -31,7 +31,7 @@ const ThreadPicker: FC = () => {
     setLoadError(null);
 
     try {
-      const result = await client.threads.search<ThreadSummary["values"]>({
+      const result = await createClient().threads.search<ThreadSummary["values"]>({
         limit: 20,
       });
       setThreads(result);
@@ -40,7 +40,7 @@ const ThreadPicker: FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [client]);
+  }, [createClient]);
 
   useEffect(() => {
     if (!open) return;

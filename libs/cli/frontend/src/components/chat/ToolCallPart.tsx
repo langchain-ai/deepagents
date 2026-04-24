@@ -1,15 +1,11 @@
 import type { FC } from "react";
-import type { BaseMessage } from "@langchain/core/messages";
-
-type ToolCall = {
-  id: string;
-  name: string;
-  args: unknown;
-};
+import type { ToolMessage } from "@langchain/core/messages";
+import type { ToolCall } from "@langchain/core/messages/tool";
+import { TOOL_RENDERERS } from "./tools";
 
 type Props = {
   toolCall: ToolCall;
-  toolResult?: BaseMessage;
+  toolResult?: ToolMessage;
   status?: "running" | "success" | "error";
 };
 
@@ -21,6 +17,18 @@ const STATUS_DOT: Record<NonNullable<Props["status"]> | "default", string> = {
 };
 
 const ToolCallPart: FC<Props> = ({ toolCall, toolResult, status }) => {
+  const Renderer = TOOL_RENDERERS[toolCall.name];
+  if (Renderer) {
+    return (
+      <Renderer
+        toolCall={toolCall}
+        toolResult={toolResult}
+        status={status ?? "running"}
+      />
+    );
+  }
+
+  // Generic pill fallback
   const dotClass = STATUS_DOT[status ?? "default"];
 
   const resultContent =

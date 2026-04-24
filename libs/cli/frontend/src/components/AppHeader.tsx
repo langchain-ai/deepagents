@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { APP_DESCRIPTION, APP_NAME } from "../constants";
 import { useTheme } from "../ThemeProvider";
 import ThreadPicker from "./ThreadPicker";
@@ -5,9 +6,11 @@ import ThreadPicker from "./ThreadPicker";
 export default function AppHeader({
   userEmail,
   onSignOut,
+  threadPicker,
 }: {
   userEmail: string | null;
   onSignOut: () => Promise<void>;
+  threadPicker?: ReactNode;
 }) {
   const { theme, toggleTheme } = useTheme();
   const logoSrc = theme === "dark" ? "/app/logo-dark.svg" : "/app/logo-light.svg";
@@ -57,7 +60,7 @@ export default function AppHeader({
         >
           Sign out
         </button>
-        <ThreadPicker />
+        {threadPicker !== undefined ? threadPicker : <ThreadPicker />}
       </div>
     </header>
   );

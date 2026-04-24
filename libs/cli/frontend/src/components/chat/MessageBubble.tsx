@@ -44,7 +44,7 @@ const MessageBubble: FC<Props> = ({ message }) => {
   const toolCallNodes: React.ReactNode[] = [];
 
   if (type === "ai") {
-    const toolCalls: Array<{ id: string; name: string; args: unknown }> =
+    const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> =
       (message as any).tool_calls ?? [];
     toolCalls.forEach((tc) => {
       toolCallNodes.push(

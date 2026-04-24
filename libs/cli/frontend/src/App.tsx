@@ -8,6 +8,7 @@ import Thread from "./components/Thread";
 import AppHeader from "./components/AppHeader";
 import { ChatProvider } from "./ChatProvider";
 import NewThread from "./components/NewThread";
+import NewThreadPicker from "./components/chat/ThreadPicker";
 
 const USE_NEW_CHAT = import.meta.env.VITE_NEW_CHAT === "1";
 
@@ -61,7 +62,11 @@ function AuthenticatedApp({
     return (
       <ChatProvider accessToken={accessToken}>
         <div className="flex h-dvh flex-col bg-[var(--background)]">
-          <AppHeader userEmail={userEmail} onSignOut={onSignOut} />
+          <AppHeader
+            userEmail={userEmail}
+            onSignOut={onSignOut}
+            threadPicker={<NewThreadPicker />}
+          />
           <NewThread />
         </div>
       </ChatProvider>

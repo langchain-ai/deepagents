@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useStream, type DeepAgentTypeConfigLike } from "@langchain/react";
 import type { BaseMessage } from "@langchain/core/messages";
+import { Client } from "@langchain/langgraph-sdk";
 import { ASSISTANT_ID } from "./constants";
 import type { TodoItem } from "./types";
 
@@ -27,6 +28,8 @@ type ChatContextValue = {
   currentThreadId: string | null;
   switchToThread: (id: string) => void;
   newThread: () => void;
+  accessToken: string | undefined;
+  createClient: () => Client;
 };
 
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
@@ -56,9 +59,20 @@ export function ChatProvider({ accessToken, children }: ChatProviderProps) {
     setCurrentThreadId(null);
   }, []);
 
+  const createClient = useCallback(
+    () =>
+      new Client({
+        apiUrl: window.location.origin,
+        defaultHeaders: accessToken
+          ? { Authorization: `Bearer ${accessToken}` }
+          : undefined,
+      }),
+    [accessToken],
+  );
+
   return (
     <ChatContext.Provider
-      value={{ stream, currentThreadId, switchToThread, newThread }}
+      value={{ stream, currentThreadId, switchToThread, newThread, accessToken, createClient }}
     >
       {children}
     </ChatContext.Provider>

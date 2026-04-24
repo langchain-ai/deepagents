@@ -123,6 +123,13 @@ async def main(connection):
         raise RuntimeError("new iterm2 tab has no sessions")
     top = sessions[0]
 
+    # Tag this session so control.py can find it later by port. Tag is both
+    # the session name (shown in iTerm2's title bar) and a user-variable so
+    # the shell's auto-title can't silently clobber it.
+    tag = f"vibe-player-{PORT}"
+    await top.async_set_name(tag)
+    await top.async_set_variable("user.vibe_player", PORT)
+
     # Prime env + cwd in the CLI pane so the agent's shell-outs see VIBE_* vars.
     await top.async_send_text(
         "export "

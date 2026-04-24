@@ -810,7 +810,7 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.2.15"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdeepagents-perf-combo#add3fff93751f99972f3f83c1001ace48f64f904" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&branch=sr%2Fdeepagents-perf-combo#43faee1fa5fb90431f04d9037aa405989104f970" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
@@ -834,7 +834,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.3.0"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdeepagents-perf-combo#add3fff93751f99972f3f83c1001ace48f64f904" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=sr%2Fdeepagents-perf-combo#43faee1fa5fb90431f04d9037aa405989104f970" }
 dependencies = [
     { name = "jsonpatch" },
     { name = "langsmith" },
@@ -900,7 +900,7 @@ wheels = [
 [[package]]
 name = "langgraph"
 version = "1.1.9"
-source = { git = "https://github.com/langchain-ai/langgraph?subdirectory=libs%2Flanggraph&branch=sr%2Fdeepagents-perf-combo#18cbe46baf7a0051044939af928b9775dfa3ae0a" }
+source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Flanggraph&branch=sr%2Fdeepagents-perf-combo#18cbe46baf7a0051044939af928b9775dfa3ae0a" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph-checkpoint" },

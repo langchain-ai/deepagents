@@ -11,7 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRe
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -381,6 +381,120 @@ class _SubagentSpec(TypedDict):
     subagent_system_prompt: NotRequired[str]
 
 
+class _SystemPromptPaddingMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Append a fixed text block to the system message without adding tools."""
+
+    def __init__(self, text: str, *, name: str) -> None:
+        super().__init__()
+        self._text = text
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        new_system_message = append_to_system_message(request.system_message, self._text)
+        return handler(request.override(system_message=new_system_message))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        new_system_message = append_to_system_message(request.system_message, self._text)
+        return await handler(request.override(system_message=new_system_message))
+
+
+def _build_subagent_system_prompt(
+    subagents: Sequence[SubAgent | CompiledSubAgent | _SubagentSpec],
+    system_prompt: str | None = TASK_SYSTEM_PROMPT,
+) -> str | None:
+    """Build the system prompt block appended by `SubAgentMiddleware`."""
+    if not system_prompt or not subagents:
+        return system_prompt
+    agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+    return system_prompt + "\n\nAvailable subagent types:\n" + agents_desc
+
+
+def _build_fork_subagent_system_prompt(
+    subagents: Sequence[SubAgent | CompiledSubAgent | _SubagentSpec],
+) -> str:
+    """Build the task-tool prompt block used to align forked subagent cache."""
+    system_prompt = _build_subagent_system_prompt(subagents)
+    if system_prompt is None:
+        msg = "Forked subagent cache alignment requires a subagent system prompt."
+        raise ValueError(msg)
+    return system_prompt
+
+
+def _prepare_forked_subagent_spec(
+    spec: SubAgent,
+    *,
+    parent_system_prompt: str | SystemMessage,
+    sync_prompt_padding_text: str,
+    async_prompt_padding_text: str | None,
+    middleware_before_sync_padding: Sequence[AgentMiddleware[Any, Any, Any]],
+    middleware_before_async_padding: Sequence[AgentMiddleware[Any, Any, Any]],
+    parent_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+    user_middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+    middleware_after_user: Sequence[AgentMiddleware[Any, Any, Any]],
+) -> SubAgent:
+    """Finalize a forked `SubAgent` spec without leaking recursive task tools."""
+    fork_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        *middleware_before_sync_padding,
+        _SystemPromptPaddingMiddleware(
+            text=sync_prompt_padding_text,
+            name="ForkSubAgentSystemPromptPadding",
+        ),
+        *middleware_before_async_padding,
+    ]
+    if async_prompt_padding_text is not None:
+        fork_middleware.append(
+            _SystemPromptPaddingMiddleware(
+                text=async_prompt_padding_text,
+                name="ForkAsyncSubAgentSystemPromptPadding",
+            )
+        )
+    fork_middleware.extend(parent_middleware)
+    fork_middleware.extend(user_middleware)
+    fork_middleware.extend(middleware_after_user)
+
+    fork_tool_names = []
+    for tool in spec.get("tools", []) or []:
+        name = getattr(tool, "name", None)
+        if name is None and isinstance(tool, dict):
+            value = cast("dict[str, Any]", tool).get("name")
+            name = value if isinstance(value, str) else None
+        if isinstance(name, str):
+            fork_tool_names.append(name)
+    tools_line = ", ".join(f"`{n}`" for n in fork_tool_names) if fork_tool_names else "(none — rely on built-in filesystem/todo tools)"
+    subagent_system_prompt = (
+        f"You are running as a forked subagent named `{spec['name']}`. "
+        "The system prompt above was inherited verbatim from the parent agent to "
+        "preserve prompt-cache reuse; it may mention capabilities that do not apply "
+        "to you. Your actual environment:\n"
+        f"\n- Your declared tools: {tools_line}"
+        "\n- You do NOT have the `task` tool. You cannot spawn further subagents."
+        "\n\nYour role as this subagent:\n"
+        f"{spec['system_prompt']}"
+    )
+
+    return cast(
+        "SubAgent",
+        {
+            **spec,
+            "system_prompt": parent_system_prompt,
+            "middleware": fork_middleware,
+            "subagent_system_prompt": subagent_system_prompt,
+        },
+    )
+
+
 def _messages_before_current_task_call(messages: Sequence[Any], tool_call_id: str | None) -> list[Any]:
     """Return parent messages before the AI turn that requested this task call.
 
@@ -646,12 +760,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         task_tool = _build_task_tool(subagent_specs, task_description)
 
-        # Build system prompt with available agents
-        if system_prompt and subagent_specs:
-            agents_desc = "\n".join(f"- {s['name']}: {s['description']}" for s in subagent_specs)
-            self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n" + agents_desc
-        else:
-            self.system_prompt = system_prompt
+        self.system_prompt = _build_subagent_system_prompt(subagent_specs, system_prompt)
 
         self.tools = [task_tool]
 

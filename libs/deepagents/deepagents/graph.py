@@ -7,12 +7,13 @@ middleware.
 
 import logging
 import warnings
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse, ResponseT, _InputAgentState, _OutputAgentState
+from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -30,7 +31,7 @@ from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware.async_subagents import ASYNC_TASK_SYSTEM_PROMPT, AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware, _build_async_subagent_system_prompt
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -38,10 +39,11 @@ from deepagents.middleware.permissions import FilesystemPermission, _PermissionM
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
-    TASK_SYSTEM_PROMPT,
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    _build_fork_subagent_system_prompt,
+    _prepare_forked_subagent_spec,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import _get_harness_profile, _HarnessProfile
@@ -216,48 +218,6 @@ def _apply_tool_description_overrides(
     return copied_tools
 
 
-class _ForkSystemPromptPadding(AgentMiddleware[Any, Any, Any]):
-    """Appends a fixed text block to the system message at model-call time.
-
-    The forked subagent's middleware stack must inject the same system-text
-    content in the same byte-for-byte order as the parent's stack, otherwise
-    the prompt cache's longest-prefix-match breaks early. This middleware
-    stands in for the parent's ``SubAgentMiddleware`` at the same position
-    in the chain, injecting the same ``TASK_SYSTEM_PROMPT + available-agents``
-    block — but without giving the fork the ``task`` tool (so forks cannot
-    recursively spawn more subagents).
-    """
-
-    def __init__(self, text: str, *, name: str) -> None:
-        super().__init__()
-        self._text = text
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[Any],
-        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
-    ) -> ModelResponse[Any]:
-        from deepagents.middleware._utils import append_to_system_message  # noqa: PLC0415
-
-        new_system_message = append_to_system_message(request.system_message, self._text)
-        return handler(request.override(system_message=new_system_message))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[Any],
-        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
-    ) -> ModelResponse[Any]:
-        from deepagents.middleware._utils import append_to_system_message  # noqa: PLC0415
-
-        new_system_message = append_to_system_message(request.system_message, self._text)
-        return await handler(request.override(system_message=new_system_message))
-
-
 def _validate_fork_model_matches_parent(
     subagent_name: str,
     parent_model: BaseChatModel,
@@ -281,6 +241,18 @@ def _validate_fork_model_matches_parent(
             "cached prefix. Omit 'model' from the subagent spec to inherit the parent's model."
         )
         raise ValueError(msg)
+
+
+@dataclass(slots=True)
+class _PendingForkSpec:
+    """Fork spec plus middleware fragments that need the final subagent list."""
+
+    spec: SubAgent
+    middleware_before_sync_padding: list[AgentMiddleware[Any, Any, Any]]
+    middleware_before_async_padding: list[AgentMiddleware[Any, Any, Any]]
+    parent_middleware: list[AgentMiddleware[Any, Any, Any]]
+    user_middleware: list[AgentMiddleware[Any, Any, Any]]
+    middleware_after_user: list[AgentMiddleware[Any, Any, Any]]
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -559,6 +531,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Set up subagent middleware
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
+    pending_fork_specs: list[_PendingForkSpec] = []
     for spec in subagents or []:
         if "graph_id" in spec:
             # Then spec is an AsyncSubAgent
@@ -605,17 +578,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             subagent_skills = spec.get("skills")
             if is_fork:
-                # Fork composition is deferred: the middleware list must mirror
-                # the parent's stack ordering (TodoList, Skills, Filesystem,
-                # <SubAgentMiddleware slot>, Summarize, PatchToolCalls, ...)
-                # so system-text additions happen in the same byte order. The
-                # ``<SubAgentMiddleware slot>`` is filled with a padding
-                # middleware that injects the same ``TASK_SYSTEM_PROMPT +
-                # available-agents`` text the parent's SubAgentMiddleware
-                # would — but without giving the fork the ``task`` tool. The
-                # agents list is only complete after the default
-                # general-purpose spec is inserted, so we build the stack
-                # below in a post-loop pass.
                 processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
                     **spec,
                     "model": subagent_model,
@@ -624,13 +586,47 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 if subagent_interrupt_on is not None:
                     processed_spec["interrupt_on"] = subagent_interrupt_on
                 processed_spec["fork"] = True
-                fork_dict = cast("dict[str, Any]", processed_spec)
-                fork_dict["_fork_user_system_prompt"] = spec["system_prompt"]
-                fork_dict["_fork_profile"] = _subagent_profile
-                fork_dict["_fork_permissions"] = subagent_permissions
-                fork_dict["_fork_skills"] = skills if skills is not None else subagent_skills
-                fork_dict["_fork_parent_middleware"] = list(middleware or [])
-                fork_dict["_fork_user_middleware"] = list(spec.get("middleware", []))
+
+                fork_skills = skills if skills is not None else subagent_skills
+                middleware_before_sync_padding: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
+                if fork_skills:
+                    middleware_before_sync_padding.append(SkillsMiddleware(backend=backend, sources=fork_skills))
+                middleware_before_sync_padding.append(
+                    FilesystemMiddleware(
+                        backend=backend,
+                        custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    )
+                )
+                middleware_before_async_padding: list[AgentMiddleware[Any, Any, Any]] = [
+                    create_summarization_middleware(subagent_model, backend),
+                    PatchToolCallsMiddleware(),
+                ]
+                middleware_after_user: list[AgentMiddleware[Any, Any, Any]] = [
+                    *_resolve_extra_middleware(_subagent_profile),
+                ]
+                if _subagent_profile.excluded_tools:
+                    middleware_after_user.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+                middleware_after_user.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+                if memory is not None:
+                    middleware_after_user.append(
+                        MemoryMiddleware(
+                            backend=backend,
+                            sources=memory,
+                            add_cache_control=True,
+                        )
+                    )
+                if subagent_permissions:
+                    middleware_after_user.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
+                pending_fork_specs.append(
+                    _PendingForkSpec(
+                        spec=processed_spec,
+                        middleware_before_sync_padding=middleware_before_sync_padding,
+                        middleware_before_async_padding=middleware_before_async_padding,
+                        parent_middleware=list(middleware or []),
+                        user_middleware=list(spec.get("middleware", [])),
+                        middleware_after_user=middleware_after_user,
+                    )
+                )
             else:
                 # Non-fork subagent: build middleware list now (no fork-specific ordering requirements).
                 subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -675,101 +671,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add a general purpose subagent if it doesn't exist yet
         inline_subagents.insert(0, general_purpose_spec)
 
-    # Finish fork composition now that the full agents list is known.
-    #
-    # Goal: byte-for-byte match between the parent's runtime system message
-    # and the fork's, so Anthropic's longest-prefix-match serves the fork
-    # from the parent's cache entry — covering not just the system prompt
-    # but the inherited messages that follow it.
-    #
-    # Two things must line up:
-    #   1. The ``system_prompt`` handed to the fork's ``create_agent`` is
-    #      exactly the parent's final top-level system prompt, preserving
-    #      string prompts and ``SystemMessage`` content blocks as-is.
-    #   2. The fork's middleware stack mirrors the parent's stack ordering.
-    #      Each middleware that appends to the system message (TodoList,
-    #      Skills, Filesystem, ...) runs in the same order, so the running
-    #      byte stream matches. The parent's ``SubAgentMiddleware`` slot is
-    #      filled with a padding middleware that appends the same
-    #      ``TASK_SYSTEM_PROMPT + available-agents`` text the parent's
-    #      SubAgentMiddleware would — without giving the fork the ``task``
-    #      tool (so forks cannot recursively spawn subagents).
-    #
-    # The preamble that rides inside the trailing HumanMessage then
-    # corrects any claims from that inherited system text that do not
-    # match the fork's real environment.
-    agents_desc_for_fork = "\n".join(f"- {s['name']}: {s['description']}" for s in inline_subagents)
-    fork_subagent_padding_text = TASK_SYSTEM_PROMPT + "\n\nAvailable subagent types:\n" + agents_desc_for_fork
-    if async_subagents:
-        async_agents_desc_for_fork = "\n".join(f"- {s['name']}: {s['description']}" for s in async_subagents)
-        fork_async_padding_text = ASYNC_TASK_SYSTEM_PROMPT + "\n\nAvailable async subagent types:\n" + async_agents_desc_for_fork
-    else:
-        fork_async_padding_text = None
-    for fork_spec in inline_subagents:
-        if not fork_spec.get("fork"):
-            continue
-        fork_dict = cast("dict[str, Any]", fork_spec)
-        user_role_text: str = fork_dict.pop("_fork_user_system_prompt", "")
-        fork_profile: _HarnessProfile = fork_dict.pop("_fork_profile")
-        fork_permissions = fork_dict.pop("_fork_permissions")
-        fork_skills = fork_dict.pop("_fork_skills")
-        fork_parent_middleware = fork_dict.pop("_fork_parent_middleware")
-        fork_user_middleware = fork_dict.pop("_fork_user_middleware")
-
-        # Build middleware stack in parent order: TodoList, (Skills), Filesystem,
-        # <padding for SubAgentMiddleware>, Summarize, PatchToolCalls, user
-        # middleware, provider, (exclusions), caching, (permissions).
-        fork_middleware: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
-        if fork_skills:
-            fork_middleware.append(SkillsMiddleware(backend=backend, sources=fork_skills))
-        fork_middleware.append(
-            FilesystemMiddleware(
-                backend=backend,
-                custom_tool_descriptions=fork_profile.tool_description_overrides,
+    if pending_fork_specs:
+        sync_padding = _build_fork_subagent_system_prompt(inline_subagents)
+        async_padding = _build_async_subagent_system_prompt(async_subagents) if async_subagents else None
+        for fork in pending_fork_specs:
+            prepared = _prepare_forked_subagent_spec(
+                fork.spec,
+                parent_system_prompt=final_system_prompt,
+                sync_prompt_padding_text=sync_padding,
+                async_prompt_padding_text=async_padding,
+                middleware_before_sync_padding=fork.middleware_before_sync_padding,
+                middleware_before_async_padding=fork.middleware_before_async_padding,
+                parent_middleware=fork.parent_middleware,
+                user_middleware=fork.user_middleware,
+                middleware_after_user=fork.middleware_after_user,
             )
-        )
-        fork_middleware.append(_ForkSystemPromptPadding(text=fork_subagent_padding_text, name="ForkSubAgentSystemPromptPadding"))
-        fork_middleware.extend(
-            [
-                create_summarization_middleware(fork_dict["model"], backend),
-                PatchToolCallsMiddleware(),
-            ]
-        )
-        if fork_async_padding_text is not None:
-            fork_middleware.append(_ForkSystemPromptPadding(text=fork_async_padding_text, name="ForkAsyncSubAgentSystemPromptPadding"))
-        fork_middleware.extend(fork_parent_middleware)
-        fork_middleware.extend(fork_user_middleware)
-        fork_middleware.extend(_resolve_extra_middleware(fork_profile))
-        if fork_profile.excluded_tools:
-            fork_middleware.append(_ToolExclusionMiddleware(excluded=fork_profile.excluded_tools))
-        fork_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-        if memory is not None:
-            fork_middleware.append(
-                MemoryMiddleware(
-                    backend=backend,
-                    sources=memory,
-                    add_cache_control=True,
-                )
-            )
-        if fork_permissions:
-            fork_middleware.append(_PermissionMiddleware(rules=fork_permissions, backend=backend))
-
-        fork_dict["middleware"] = fork_middleware
-        fork_dict["system_prompt"] = final_system_prompt
-
-        fork_tool_names = [n for n in (_tool_name(t) for t in fork_spec.get("tools", []) or []) if n]
-        tools_line = ", ".join(f"`{n}`" for n in fork_tool_names) if fork_tool_names else "(none — rely on built-in filesystem/todo tools)"
-        preamble = (
-            f"You are running as a forked subagent named `{fork_spec['name']}`. "
-            "The system prompt above was inherited verbatim from the parent agent to "
-            "preserve prompt-cache reuse; it may mention capabilities that do not apply "
-            "to you. Your actual environment:\n"
-            f"\n- Your declared tools: {tools_line}"
-            "\n- You do NOT have the `task` tool. You cannot spawn further subagents."
-            "\n\nYour role as this subagent:\n"
-            f"{user_role_text}"
-        )
-        fork_dict["subagent_system_prompt"] = preamble
+            for idx, candidate in enumerate(inline_subagents):
+                if candidate is fork.spec:
+                    inline_subagents[idx] = prepared
+                    break
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [

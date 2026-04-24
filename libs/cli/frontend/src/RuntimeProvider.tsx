@@ -94,11 +94,27 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
       // this session. Fire-and-forget — don't block streaming on this.
       if (untitledThreadsRef.current.has(externalId)) {
         untitledThreadsRef.current.delete(externalId);
-        const firstUser = messages.find(
-          (m) => m.type === "human",
-        );
-        const raw =
-          typeof firstUser?.content === "string" ? firstUser.content : "";
+        // Accept both LangChain (`type: "human"`) and OpenAI-style
+        // (`role: "user"`) shapes — assistant-ui-langgraph may pass either.
+        const firstUser = messages.find((m) => {
+          const mm = m as { type?: string; role?: string };
+          return mm.type === "human" || mm.role === "user";
+        });
+        const content = firstUser?.content;
+        let raw = "";
+        if (typeof content === "string") {
+          raw = content;
+        } else if (Array.isArray(content)) {
+          raw = content
+            .map((p) => {
+              if (typeof p === "string") return p;
+              const pp = p as { text?: string; type?: string };
+              return pp.type === "text" && typeof pp.text === "string"
+                ? pp.text
+                : "";
+            })
+            .join(" ");
+        }
         const title = raw.trim().slice(0, 60);
         if (title) {
           void updateThreadMetadata(ctxRef.current, externalId, { title });

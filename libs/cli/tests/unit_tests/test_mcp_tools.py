@@ -372,6 +372,83 @@ class TestLoadMCPConfig:
         )
         assert load_mcp_config(path)["mcpServers"]["api"]["type"] == "sse"
 
+    def test_url_only_server_defaults_to_http_transport(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """`url`-only entries are treated as HTTP remote servers.
+
+        Matches Claude Code's `.mcp.json` convention: `{"url": "..."}` alone
+        implies a remote server rather than stdio missing a `command`.
+        """
+        path = write_config(
+            {"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp"}}}
+        )
+        # Should not raise; load_mcp_config validates by calling _resolve_server_type.
+        assert "notion" in load_mcp_config(path)["mcpServers"]
+
+    def test_url_only_inference_does_not_override_explicit_type(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """Explicit `type` always wins over url-based inference."""
+        path = write_config(
+            {"mcpServers": {"api": {"type": "sse", "url": "https://example.com/mcp"}}}
+        )
+        loaded = load_mcp_config(path)["mcpServers"]["api"]
+        assert loaded["type"] == "sse"
+
+    def test_resolve_server_type_direct(self) -> None:
+        """Direct unit test for `_resolve_server_type` inference rules."""
+        from deepagents_cli.mcp_tools import _resolve_server_type
+
+        assert _resolve_server_type({"command": "x"}) == "stdio"
+        assert _resolve_server_type({"url": "https://x"}) == "http"
+        assert _resolve_server_type({"type": "sse", "url": "https://x"}) == "sse"
+        assert _resolve_server_type({"transport": "http"}) == "http"
+        assert _resolve_server_type({}) == "stdio"
+
+    def test_stdio_with_url_rejected(self, write_config: Callable[..., str]) -> None:
+        """Stdio + url is contradictory — url would be silently dropped."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "weird": {
+                        "type": "stdio",
+                        "command": "cat",
+                        "url": "https://example.com/mcp",
+                    }
+                }
+            }
+        )
+        with pytest.raises(ValueError, match=r"stdio.*url|url.*stdio"):
+            load_mcp_config(path)
+
+    def test_remote_with_command_rejected(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """Remote type + command is contradictory — command silently dropped."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "weird": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "command": "cat",
+                    }
+                }
+            }
+        )
+        with pytest.raises(ValueError, match=r"remote.*command|command"):
+            load_mcp_config(path)
+
+    def test_mcp_config_error_is_value_error(self) -> None:
+        """`MCPConfigError` subclasses `ValueError` for backward-compatible catching."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
+        assert issubclass(MCPConfigError, ValueError)
+        msg = "boom"
+        with pytest.raises(ValueError, match="boom"):
+            raise MCPConfigError(msg)
+
 
 class TestDiscoverMcpConfigs:
     """Tests for file-system discovery of MCP config files."""

@@ -428,6 +428,27 @@ def _truncate(text: str, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _format_startup_error(error: BaseException) -> str:
+    """Format a server-startup exception for the welcome banner.
+
+    `wait_for_server_healthy` appends a tail of the subprocess log to its
+    `RuntimeError` message (see `_LOG_TAIL_CHARS` in `server.py`), which
+    would overwhelm the banner. Trim to the headline so the user sees an
+    actionable line instead of a scrolling traceback; `DEEPAGENTS_CLI_DEBUG=1`
+    preserves the full log on disk for triage.
+
+    Args:
+        error: The exception raised during server startup.
+
+    Returns:
+        A single-line `Type: message` summary suitable for the banner.
+    """
+    first_line = str(error).splitlines()[0].strip() if str(error) else ""
+    if not first_line:
+        first_line = error.__class__.__name__
+    return f"{type(error).__name__}: {_truncate(first_line, limit=300)}"
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -1730,8 +1751,14 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
         self._connecting = False
-        self._server_startup_error = f"{type(event.error).__name__}: {event.error}"
+        if isinstance(event.error, MCPConfigError):
+            # Already carries the path + hint; showing the class name is noise.
+            self._server_startup_error = str(event.error)
+        else:
+            self._server_startup_error = _format_startup_error(event.error)
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
         # Update banner to show persistent failure state
         try:

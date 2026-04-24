@@ -101,6 +101,15 @@ _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Server names become token-file basenames and must remain path-safe."""
 
 
+class MCPConfigError(ValueError):
+    """An MCP configuration file is malformed or structurally invalid.
+
+    Subclasses `ValueError` so existing `except ValueError` handlers
+    keep working; new code can catch this specifically to render a
+    user-actionable message (typically with a file path and hint).
+    """
+
+
 def _is_transient_session_error(exc: BaseException) -> bool:
     """Return `True` when `exc` signals the MCP session transport is dead.
 
@@ -359,7 +368,11 @@ class MCPSessionManager:
 def _resolve_server_type(server_config: dict[str, Any]) -> str:
     """Determine the transport type for a server config.
 
-    Supports both `type` and `transport` field names, defaulting to `stdio`.
+    Accepts `type` or `transport` interchangeably. When neither is set, a
+    `url` field implies a remote server (defaulting to `http`) and the
+    absence of `url` implies stdio. This matches Claude Code's `.mcp.json`
+    convention where remote entries are commonly written as `{"url": "..."}`
+    alone.
 
     Args:
         server_config: Server configuration dictionary.
@@ -370,7 +383,12 @@ def _resolve_server_type(server_config: dict[str, Any]) -> str:
     transport = server_config.get("type")
     if transport is not None:
         return transport
-    return server_config.get("transport", "stdio")
+    transport = server_config.get("transport")
+    if transport is not None:
+        return transport
+    if "url" in server_config:
+        return "http"
+    return "stdio"
 
 
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
@@ -409,6 +427,14 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
             )
             raise ValueError(error_msg)
 
+        if "command" in server_config:
+            error_msg = (
+                f"Server '{server_name}' has type '{server_type}' (remote) "
+                "but also declares a 'command' field. Remove 'command' or "
+                'set `"type": "stdio"`.'
+            )
+            raise ValueError(error_msg)
+
         headers = server_config.get("headers")
         if headers is not None and not isinstance(headers, dict):
             error_msg = f"Server '{server_name}' 'headers' must be a dictionary"
@@ -425,6 +451,14 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
     elif server_type == "stdio":
         if "command" not in server_config:
             error_msg = f"Server '{server_name}' missing required 'command' field"
+            raise ValueError(error_msg)
+
+        if "url" in server_config:
+            error_msg = (
+                f"Server '{server_name}' has type 'stdio' but also declares "
+                "a 'url' field. Remove 'url' or set "
+                '`"type": "http"` (or `"sse"`) for a remote server.'
+            )
             raise ValueError(error_msg)
 
         if "args" in server_config and not isinstance(server_config["args"], list):

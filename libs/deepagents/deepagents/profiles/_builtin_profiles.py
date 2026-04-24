@@ -25,6 +25,11 @@ import logging
 import warnings
 from importlib.metadata import entry_points
 
+from deepagents.profiles.harness import (
+    _anthropic_haiku_4_5,
+    _anthropic_opus_4_7,
+    _anthropic_sonnet_4_6,
+)
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
 from deepagents.profiles.provider import _openai, _openrouter
 
@@ -86,6 +91,9 @@ def _ensure_builtin_profiles_loaded() -> None:
         return
     _openai.register()
     _openrouter.register()
+    _anthropic_opus_4_7.register()
+    _anthropic_sonnet_4_6.register()
+    _anthropic_haiku_4_5.register()
     _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
     _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
     _BOOTSTRAP_HARNESS_KEYS = frozenset(_HARNESS_PROFILES)

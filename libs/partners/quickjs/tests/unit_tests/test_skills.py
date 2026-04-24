@@ -353,8 +353,8 @@ def test_loaded_scope_installs_on_context(tmp_path: Path) -> None:
     meta = _metadata("hello", path=f"{skill_dir}/SKILL.md", module="index.js")
     loaded = load_skill(meta, backend)
 
-    with Runtime() as rt, rt.new_context() as ctx:
-        ctx.install(ModuleScope({loaded.specifier: loaded.scope}))
+    with Runtime() as rt, rt.new_context():
+        rt.install(ModuleScope({loaded.specifier: loaded.scope}))
 
 
 __all__: list[Any] = []

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import SystemMessage
-from quickjs_rs import Runtime
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
+from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
 from langchain_quickjs._repl import _Registry, _ThreadREPL, format_outcome
@@ -19,18 +23,35 @@ from langchain_quickjs._repl import _Registry, _ThreadREPL, format_outcome
 
 
 @pytest.fixture
-def runtime() -> Runtime:
-    """A fresh QuickJS Runtime for tests that drive _ThreadREPL directly."""
-    rt = Runtime()
+def worker() -> ThreadWorker:
+    w = ThreadWorker()
     try:
-        yield rt
+        yield w
     finally:
-        rt.close()
+        w.close()
 
 
 @pytest.fixture
-def repl(runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(runtime, timeout=5.0, capture_console=True)
+def runtime(worker: ThreadWorker) -> Runtime:
+    """A fresh QuickJS Runtime for tests that drive _ThreadREPL directly."""
+
+    async def _make() -> Runtime:
+        return Runtime()
+
+    rt = worker.run_sync(_make())
+    try:
+        yield rt
+    finally:
+
+        async def _close() -> None:
+            rt.close()
+
+        worker.run_sync(_close())
+
+
+@pytest.fixture
+def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
+    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +154,9 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
     assert second.result == "42"
 
 
-def test_threads_are_isolated(runtime: Runtime) -> None:
-    a = _ThreadREPL(runtime, timeout=5.0, capture_console=True)
-    b = _ThreadREPL(runtime, timeout=5.0, capture_console=True)
+def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
+    a = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    b = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
     a.eval_sync("let shared = 'from_a'")
     outcome = b.eval_sync("typeof shared")
     # QuickJS returns "undefined" for missing globals — an isolated context
@@ -162,8 +183,8 @@ def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
     assert outcome.error_type == "SyntaxError"
 
 
-def test_timeout(runtime: Runtime) -> None:
-    tight = _ThreadREPL(runtime, timeout=0.1, capture_console=True)
+def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
+    tight = _ThreadREPL(worker, runtime, timeout=0.1, capture_console=True)
     outcome = tight.eval_sync("while(true){}")
     assert outcome.error_type == "Timeout"
 
@@ -183,8 +204,8 @@ def test_console_log_is_captured(repl: _ThreadREPL) -> None:
     assert "<result>2</result>" in formatted
 
 
-def test_console_can_be_disabled(runtime: Runtime) -> None:
-    quiet = _ThreadREPL(runtime, timeout=5.0, capture_console=False)
+def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None:
+    quiet = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=False)
     outcome = quiet.eval_sync("typeof console")
     # With the bridge off, the global is absent.
     assert outcome.result == "undefined"
@@ -297,22 +318,36 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
     assert outcome.error_type == "Deadlock"
 
 
-async def test_async_concurrent_calls_serialize(repl: _ThreadREPL) -> None:
-    """Two concurrent eval_async on the same thread should queue, not raise.
+async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
+    """Overlapping async evals on the same context surface as
+    ``ConcurrentEvalError`` rather than silently serialising.
 
-    If the internal lock is removed this test will flakily raise
-    ``ConcurrentEvalError`` rather than returning two clean outcomes.
+    A model issuing overlapping evals against shared state is almost
+    always a prompting bug; a loud failure is a better signal than
+    silent queueing. The slow tool forces a yield so the two evals
+    actually overlap (pure sync code takes the non-promise fast path).
     """
-    import asyncio as _asyncio
 
-    a, b = await _asyncio.gather(
-        repl.eval_async("1 + 1"),
-        repl.eval_async("2 + 2"),
+    class _NoArgs(BaseModel):
+        pass
+
+    async def _slow(**_: Any) -> str:
+        await asyncio.sleep(0.05)
+        return "ok"
+
+    slow_tool = StructuredTool.from_function(
+        name="slow",
+        description="Sleeps briefly.",
+        coroutine=_slow,
+        args_schema=_NoArgs,
     )
-    assert a.result == "2"
-    assert b.result == "4"
-    assert a.error_type is None
-    assert b.error_type is None
+    repl.install_tools([slow_tool])
+
+    a, b = await asyncio.gather(
+        repl.eval_async("await tools.slow({})"),
+        repl.eval_async("await tools.slow({})"),
+    )
+    assert "ConcurrentEval" in {a.error_type, b.error_type}, (a, b)
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:

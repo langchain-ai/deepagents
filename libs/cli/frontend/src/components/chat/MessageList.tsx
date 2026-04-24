@@ -1,6 +1,8 @@
-import { useEffect, useRef, type FC, type ReactNode } from "react";
+import { useEffect, useRef, useMemo, type FC, type ReactNode } from "react";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { ToolMessage } from "@langchain/core/messages";
 import MessageBubble from "./MessageBubble";
+import { getMessageType } from "../../lib/messages";
 
 type Props = {
   messages: BaseMessage[];
@@ -34,6 +36,19 @@ const MessageList: FC<Props> = ({ messages, children }) => {
     return () => observer.disconnect();
   }, []);
 
+  const toolResultsByCallId = useMemo(() => {
+    const map = new Map<string, ToolMessage>();
+    for (const msg of messages) {
+      const mType = getMessageType(msg);
+      if (mType === "tool") {
+        const toolMsg = msg as ToolMessage;
+        const id = (toolMsg as { tool_call_id?: string }).tool_call_id;
+        if (typeof id === "string") map.set(id, toolMsg);
+      }
+    }
+    return map;
+  }, [messages]);
+
   return (
     <div
       ref={scrollRef}
@@ -42,8 +57,8 @@ const MessageList: FC<Props> = ({ messages, children }) => {
     >
       <div ref={contentRef} className="mx-auto flex w-full max-w-4xl flex-col gap-3">
         {messages.map((msg, i) => (
-          <div key={(msg as any).id ?? i}>
-            <MessageBubble message={msg} />
+          <div key={(msg as { id?: string }).id ?? i}>
+            <MessageBubble message={msg} toolResultsByCallId={toolResultsByCallId} />
             {children?.(msg)}
           </div>
         ))}

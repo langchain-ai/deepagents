@@ -1,7 +1,7 @@
 import { useState, type FC, type ReactElement, type ReactNode } from "react";
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { ToolMessage } from "@langchain/core/messages";
-import { useChat } from "../../ChatProvider";
+import { useChat, type AgentState } from "../../ChatProvider";
 
 export type ToolCallRenderer = (props: {
   toolCall: ToolCall;
@@ -404,7 +404,7 @@ export const ThinkTool: ToolCallRenderer = ({ toolCall }) => {
 
 export const TodosTool: ToolCallRenderer = ({ toolCall, status }) => {
   const { stream } = useChat();
-  const todos = (stream.values as any)?.todos ?? [];
+  const todos = (stream.values as unknown as AgentState | undefined)?.todos ?? [];
   const toolName = toolCall.name;
   const isPending = status === "running";
   const isError = status === "error";
@@ -457,6 +457,9 @@ const SubagentIcon = () => (
   </svg>
 );
 
+// Retained for future HITL / task-approval UI. Currently the `task` key
+// in TOOL_RENDERERS maps to NoopTool and subagent progress is rendered
+// via SubagentPipeline.
 export const SubagentTool: ToolCallRenderer = ({ toolCall, toolResult, status }) => {
   const a = getArgs(toolCall.args);
   const subagentType = (a.subagent_type ?? a.type ?? "subagent") as string;

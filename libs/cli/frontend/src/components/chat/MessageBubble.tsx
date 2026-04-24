@@ -1,22 +1,19 @@
 import type { FC } from "react";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { ToolMessage } from "@langchain/core/messages";
+import type { ToolCall } from "@langchain/core/messages/tool";
 import TextPart from "./TextPart";
 import ToolCallPart from "./ToolCallPart";
+import { getMessageType } from "../../lib/messages";
 
 type Props = {
   message: BaseMessage;
+  toolResultsByCallId: Map<string, ToolMessage>;
 };
-
-function getMessageType(message: BaseMessage): string {
-  if (typeof message.getType === "function") {
-    return message.getType();
-  }
-  return (message as any).type ?? "unknown";
-}
 
 type ContentPart = { type: string; text?: string };
 
-const MessageBubble: FC<Props> = ({ message }) => {
+const MessageBubble: FC<Props> = ({ message, toolResultsByCallId }) => {
   const type = getMessageType(message);
 
   if (type === "tool") {
@@ -44,11 +41,18 @@ const MessageBubble: FC<Props> = ({ message }) => {
   const toolCallNodes: React.ReactNode[] = [];
 
   if (type === "ai") {
-    const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> =
-      (message as any).tool_calls ?? [];
+    const toolCalls: ToolCall[] = (message as { tool_calls?: ToolCall[] }).tool_calls ?? [];
     toolCalls.forEach((tc) => {
+      const toolResult = toolResultsByCallId.get(tc.id ?? "");
+      const status: "running" | "success" | "error" =
+        toolResult === undefined
+          ? "running"
+          : (toolResult as { status?: string }).status === "error" ||
+              (toolResult as { additional_kwargs?: { error?: unknown } }).additional_kwargs?.error
+            ? "error"
+            : "success";
       toolCallNodes.push(
-        <ToolCallPart key={tc.id} toolCall={tc} status="running" />,
+        <ToolCallPart key={tc.id} toolCall={tc} toolResult={toolResult} status={status} />,
       );
     });
   }

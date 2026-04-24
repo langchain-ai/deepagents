@@ -11,7 +11,7 @@ import { Client } from "@langchain/langgraph-sdk";
 import { ASSISTANT_ID } from "./constants";
 import type { TodoItem } from "./types";
 
-interface AgentState {
+export interface AgentState {
   messages: BaseMessage[];
   files?: Record<string, unknown>;
   todos?: TodoItem[];

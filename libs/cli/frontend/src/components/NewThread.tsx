@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useChat } from "../ChatProvider";
+import { useChat, type AgentState } from "../ChatProvider";
 import { useTheme } from "../ThemeProvider";
 import { APP_NAME } from "../constants";
 import MessageList from "./chat/MessageList";
@@ -8,13 +8,7 @@ import SubagentPipeline from "./chat/SubagentPipeline";
 import TodosPanel from "./TodosPanel";
 import FilesPanel from "./FilePanels";
 import type { BaseMessage } from "@langchain/core/messages";
-
-function getMessageType(message: BaseMessage): string {
-  if (typeof (message as any).getType === "function") {
-    return (message as any).getType();
-  }
-  return (message as any).type ?? "unknown";
-}
+import { getMessageType } from "../lib/messages";
 
 const SUGGESTIONS = [
   "What can you help me with today?",
@@ -59,8 +53,9 @@ export default function NewThread() {
   const [showTodos, setShowTodos] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
 
-  const todos = (stream.values as any)?.todos ?? [];
-  const files = (stream.values as any)?.files ?? {};
+  const values = stream.values as unknown as AgentState | undefined;
+  const todos = values?.todos ?? [];
+  const files = values?.files ?? {};
   const fileCount = Object.keys(files).length;
 
   const handleSubmit = (text: string) => {

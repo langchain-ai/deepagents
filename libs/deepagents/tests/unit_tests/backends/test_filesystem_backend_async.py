@@ -219,7 +219,7 @@ async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Pa
         store=None,
         stream_writer=lambda _: None,
         config={},
-    tools=[],
+        tools=[],
     )
 
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)

@@ -679,7 +679,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 store=runtime.store,
                 config=config,
                 tool_call_id=None,
-            tools=[],
+                tools=[],
             )
             backend = self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
             if backend is None:

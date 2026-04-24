@@ -38,7 +38,7 @@ def _make_runtime(tool_call_id: str = "tc_test") -> ToolRuntime:
         store=None,
         stream_writer=lambda _: None,
         config={},
-    tools=[],
+        tools=[],
     )
 
 
@@ -72,7 +72,7 @@ def _make_runtime_with_task(
         store=None,
         stream_writer=lambda _: None,
         config={},
-    tools=[],
+        tools=[],
     )
 
 
@@ -287,7 +287,7 @@ class TestCheckTool:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -393,7 +393,7 @@ class TestUpdateTool:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = update.func(
             task_id="thread_abc",
@@ -470,7 +470,7 @@ class TestListTasksTool:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = list_tool.func(runtime=rt)
         assert isinstance(result, Command)
@@ -533,7 +533,7 @@ class TestListTasksTool:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = list_tool.func(runtime=rt)
         assert isinstance(result, Command)
@@ -581,7 +581,7 @@ class TestListTasksTool:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = list_tool.func(runtime=rt, status_filter="running")
         assert isinstance(result, Command)
@@ -660,7 +660,7 @@ class TestAsyncTools:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = await check.coroutine(
             task_id="thread_abc",
@@ -700,7 +700,7 @@ class TestAsyncTools:
             store=None,
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
         result = await update.coroutine(
             task_id="thread_abc",

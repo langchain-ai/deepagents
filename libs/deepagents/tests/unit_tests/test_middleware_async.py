@@ -645,7 +645,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
         # Execute should return error message, not raise exception
@@ -684,7 +684,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -727,7 +727,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
         backend = FormattingMockSandboxBackend()
@@ -771,7 +771,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
         backend = FailureMockSandboxBackend()
@@ -815,7 +815,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
-        tools=[],
+            tools=[],
         )
 
         backend = TruncatedMockSandboxBackend()

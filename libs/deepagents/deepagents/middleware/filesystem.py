@@ -28,7 +28,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.channels.delta import DeltaChannel
+from langgraph.channels._delta import DeltaChannel
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field

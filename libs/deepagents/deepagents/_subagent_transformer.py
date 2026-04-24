@@ -631,41 +631,70 @@ def _normalize_output_content(value: Any) -> Any:
     """Coerce a tool's `output` payload into `messages.*`-compatible content.
 
     The `task` tool returns a pregel ``Command`` value when its
-    subagent completes. Stream-side, that surfaces on
-    `tool-finished` as
-    ``{"graph": None, "update": {"messages": [<tool msg>, ...]},
-    "resume": None, "goto": [...]}``. The synthesized AI message's
-    content is extracted from the *last* message in
-    ``update.messages`` — that's the tool-role reply carrying the
-    subagent's final text. Other shapes fall back as follows:
+    subagent completes. By the time it reaches the transformer on
+    `tool-finished`, it may be either:
+
+    - A live ``Command`` instance whose ``.update`` dict holds a
+      ``messages`` list of ``BaseMessage`` (typically ``ToolMessage``)
+      instances — observed when the transformer runs in-process before
+      serde.
+    - A plain dict
+      ``{"graph": None, "update": {"messages": [<msg dict>, ...]},
+      "resume": None, "goto": [...]}`` — the post-serde form on the
+      wire.
+
+    Either way, we extract the *last* message in ``update.messages``
+    — that's the tool-role reply carrying the subagent's final text
+    — and recurse into its content. Other shapes fall back as
+    follows:
 
     - `None` → empty string (renders as an empty AI message).
     - `str` → itself (single text block).
     - `list` → passed through for per-block handling in
       `_emit_synthesized_message`.
     - `dict` with an ``update.messages`` list → recurse into the
-      last message's ``content`` (Command-shaped tool output).
+      last message (dict-shape).
     - `dict` with a ``content`` key → recurse into ``content``
-      (BaseMessage-like / artifact-like shapes).
+      (BaseMessage-dict / artifact-like shapes).
+    - Object with ``.update["messages"]`` → recurse into the last
+      message (``Command`` instance, duck-typed to avoid a hard
+      ``langgraph.types`` dependency).
+    - Object with ``.content`` → recurse into it (``BaseMessage``
+      instance, also duck-typed).
     - Anything else → `str(value)` (defensive; keeps the wire
       string-typed).
     """
     if value is None:
         return ""
-    if isinstance(value, (str, list)):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
         return value
     if isinstance(value, dict):
         update = value.get("update")
         if isinstance(update, dict):
             messages = update.get("messages")
             if isinstance(messages, list) and messages:
-                last = messages[-1]
-                if isinstance(last, dict):
-                    return _normalize_output_content(last)
+                return _normalize_output_content(messages[-1])
         content = value.get("content")
         if content is not None:
             return _normalize_output_content(content)
         return str(value)
+
+    # Duck-typed pregel ``Command``: ``.update["messages"][-1]`` holds
+    # the tool-role reply we want to surface as the AI message body.
+    update_attr = getattr(value, "update", None)
+    if isinstance(update_attr, dict):
+        messages = update_attr.get("messages")
+        if isinstance(messages, list) and messages:
+            return _normalize_output_content(messages[-1])
+
+    # Duck-typed ``BaseMessage``: pull its ``.content`` (``str`` or
+    # list of blocks).
+    content_attr = getattr(value, "content", None)
+    if content_attr is not None and not callable(content_attr):
+        return _normalize_output_content(content_attr)
+
     return str(value)
 
 

@@ -1400,3 +1400,35 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+class TestScratchpadPrefix:
+    """`scratchpad_prefix` is an informational attribute for middleware."""
+
+    def test_defaults_to_none(self):
+        comp = CompositeBackend(default=StoreBackend(), routes={})
+        assert comp.scratchpad_prefix is None
+
+    def test_stored_when_provided(self):
+        comp = CompositeBackend(
+            default=StoreBackend(),
+            routes={},
+            scratchpad_prefix="/scratchpad/",
+        )
+        assert comp.scratchpad_prefix == "/scratchpad/"
+
+    def test_does_not_affect_routing(self):
+        """scratchpad_prefix alone does not install a route — routing is via `routes`."""
+        comp = CompositeBackend(
+            default=StoreBackend(),
+            routes={},
+            scratchpad_prefix="/scratchpad/",
+        )
+        # No route installed, so _route_for_path should return the default.
+        backend, _, prefix = _route_for_path(
+            default=comp.default,
+            sorted_routes=comp.sorted_routes,
+            path="/scratchpad/notes.md",
+        )
+        assert backend is comp.default
+        assert prefix is None

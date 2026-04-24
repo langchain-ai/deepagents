@@ -128,6 +128,10 @@ class CompositeBackend(BackendProtocol):
         sorted_routes: Routes sorted by length (longest first) for correct matching.
         artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
             Defaults to `"/"`.
+        scratchpad_prefix: Optional path prefix (e.g., `"/scratchpad/"`) that
+            middleware may advertise to the agent as an ephemeral, per-session
+            scratchpad. Purely informational — routing is still driven by
+            ``routes``. Defaults to ``None``.
 
     Examples:
         ```python
@@ -144,6 +148,7 @@ class CompositeBackend(BackendProtocol):
         routes: dict[str, BackendProtocol],
         *,
         artifacts_root: str = "/",
+        scratchpad_prefix: str | None = None,
     ) -> None:
         """Initialize composite backend.
 
@@ -153,6 +158,10 @@ class CompositeBackend(BackendProtocol):
                 and should end with "/" (e.g., "/memories/").
             artifacts_root: Root path for artifacts, such as messages offloaded
                 by middleware. Defaults to `"/"`.
+            scratchpad_prefix: Optional path prefix (e.g., `"/scratchpad/"`) that
+                middleware may advertise to the agent as an ephemeral, per-session
+                scratchpad. Purely informational — routing is still driven by
+                ``routes``. Defaults to ``None``.
         """
         # Default backend
         self.default = default
@@ -164,6 +173,7 @@ class CompositeBackend(BackendProtocol):
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
 
         self.artifacts_root = artifacts_root
+        self.scratchpad_prefix = scratchpad_prefix
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(

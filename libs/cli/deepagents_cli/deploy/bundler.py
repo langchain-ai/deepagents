@@ -304,6 +304,7 @@ def _render_deploy_graph(
         sandbox_snapshot=config.sandbox.template,
         sandbox_image=config.sandbox.image,
         sandbox_scope=config.sandbox.scope,
+        sandbox_provider=config.sandbox.provider,
         sandbox_block=sandbox_block,
         mcp_tools_block=mcp_tools_block,
         mcp_tools_load_call=mcp_tools_load_call,

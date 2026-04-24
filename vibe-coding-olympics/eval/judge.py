@@ -1,7 +1,12 @@
-"""CLI judge for the Vibe Coding Olympics.
+"""Single-site judge CLI for the Vibe Coding Olympics.
 
-Captures screenshots of two player websites, runs LLM evaluators, prints a
-results table, writes results to JSON, and optionally logs to LangSmith.
+Captures a website, runs the LLM-as-judge evaluators, scores accessibility
+from an axe-core audit, prints a per-axis table, writes JSON, and
+optionally logs to LangSmith. Callers that want to evaluate multiple sites
+should call `evaluate_site()` concurrently with `asyncio.gather`.
+
+Aggregation into a single overall score is intentionally deferred to the
+caller — see `aggregate.py` for the helper.
 """
 
 from __future__ import annotations
@@ -11,398 +16,283 @@ import asyncio
 import base64
 import json
 import sys
-from itertools import starmap
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-from evaluators import ALL_EVALUATORS, FEEDBACK_KEYS
-
-# ---------------------------------------------------------------------------
-# Screenshot capture
-# ---------------------------------------------------------------------------
+from aggregate import score_accessibility
+from capture import AccessibilityReport, Capture, capture_site
+from evaluators import EVALUATORS_BY_AXIS
+from langsmith_log import log_to_langsmith
 
 
-async def capture(url: str) -> tuple[str, bytes]:
-    """Capture a full-page screenshot and HTML source from a URL.
+@dataclass
+class SiteScore:
+    """Per-site evaluation result."""
 
-    Uses a headless Chromium browser with a 1280x900 viewport. Waits for
-    network idle before capturing (15s timeout).
-
-    Args:
-        url: The website URL to capture.
-
-    Returns:
-        Tuple of (html_source, png_bytes).
-
-    Raises:
-        RuntimeError: If the page fails to load or screenshot.
-    """
-    from playwright.async_api import async_playwright
-
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            try:
-                page = await browser.new_page(
-                    viewport={"width": 1280, "height": 900},
-                )
-                await page.goto(url, wait_until="networkidle", timeout=15000)
-                html = await page.content()
-                png = await page.screenshot(full_page=True)
-            finally:
-                await browser.close()
-    except Exception as exc:
-        msg = f"Failed to capture {url}: {exc}"
-        raise RuntimeError(msg) from exc
-    else:
-        return html, png
+    site_name: str
+    url: str
+    prompt: str
+    axes: dict[str, float | None]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    round_num: int | None = None
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
+_AXIS_DISPLAY: dict[str, str] = {
+    "color": "Color",
+    "typography": "Typography",
+    "layout": "Layout",
+    "content_completeness": "Content",
+    "creativity": "Creativity",
+    "interpretation_quality": "Interpretation",
+    "accessibility": "Accessibility",
+}
 
 
-def run_evaluators(
-    prompt: str,
-    html: str,
-    screenshot_b64: str,
-) -> dict[str, int]:
-    """Run all evaluators for a single player.
+def _run_llm_evaluators(
+    prompt: str, html: str, screenshot_b64: str
+) -> dict[str, float | None]:
+    """Run every LLM evaluator against one captured site.
+
+    Each evaluator is isolated — a single failure never poisons the others.
 
     Args:
         prompt: The original prompt given to the contestant.
-        html: The HTML source of the contestant's website.
+        html: Rendered HTML source of the page.
         screenshot_b64: Base64-encoded PNG screenshot.
 
     Returns:
-        Mapping of feedback key to integer score (0 through 10).
-        Failed evaluators default to 0 with a warning on stderr.
+        Mapping of axis name to score in [0.0, 1.0], or `None` on failure.
     """
-    scores: dict[str, int] = {}
-    for evaluator, key in zip(ALL_EVALUATORS, FEEDBACK_KEYS, strict=True):
+    scores: dict[str, float | None] = {}
+    for axis, evaluator in EVALUATORS_BY_AXIS.items():
         try:
             result = evaluator(
                 inputs=prompt,
                 outputs=html,
                 screenshot_b64=screenshot_b64,
             )
-            raw = float(result["score"])
-            scores[key] = round(raw * 10)
+            scores[axis] = float(result["score"])
         except Exception as exc:
-            msg = f"Evaluator '{key}' failed: {exc}"
+            msg = f"Evaluator '{axis}' failed: {exc}"
             print(f"  WARNING: {msg}", file=sys.stderr)
-            scores[key] = 0
+            scores[axis] = None
     return scores
 
 
-_DISPLAY_NAMES: dict[str, str] = {
-    "visual_design": "Visual Design",
-    "content_completeness": "Content",
-    "creativity": "Creativity",
-    "prompt_adherence": "Prompt Adherence",
-}
-
-
-# ---------------------------------------------------------------------------
-# Results printing
-# ---------------------------------------------------------------------------
-
-
-def print_results(
-    round_num: int,
-    prompt: str,
-    p1_name: str,
-    p1_scores: dict[str, int],
-    p1_total: int,
-    p2_name: str,
-    p2_scores: dict[str, int],
-    p2_total: int,
-    winner: str,
-) -> None:
-    """Print the formatted results table to stdout.
+def _build_metadata(report: AccessibilityReport | None) -> dict[str, Any]:
+    """Extract structured metadata from the capture for logging/debugging.
 
     Args:
-        round_num: Competition round number.
-        prompt: The prompt given to contestants.
-        p1_name: Player 1 display name.
-        p1_scores: Player 1 scores by feedback key.
-        p1_total: Player 1 total score.
-        p2_name: Player 2 display name.
-        p2_scores: Player 2 scores by feedback key.
-        p2_total: Player 2 total score.
-        winner: Name of the winning player.
+        report: The axe-core report, if one ran.
+
+    Returns:
+        Metadata dict suitable for embedding in the JSON output.
     """
-    max_total = len(FEEDBACK_KEYS) * 10
-    bar = "\u2550" * 51
-    thin = "\u2500" * 5
-
-    print()
-    print(bar)
-    print(f"  VIBE CODING OLYMPICS \u2014 ROUND {round_num}")
-    print(f'  Prompt: "{prompt}"')
-    print(bar)
-    print()
-
-    col1 = max(len(p1_name), 5)
-    col2 = max(len(p2_name), 5)
-    header = f"{'':20s}{p1_name:>{col1}s}    {p2_name:>{col2}s}"
-    print(header)
-
-    for key in FEEDBACK_KEYS:
-        label = _DISPLAY_NAMES.get(key, key)
-        s1 = p1_scores.get(key, 0)
-        s2 = p2_scores.get(key, 0)
-        print(f"  {label:18s}{s1:>{col1}d}    {s2:>{col2}d}")
-
-    print(f"{'':20s}{thin:>{col1}s}   {thin:>{col2}s}")
-    print(
-        f"  {'TOTAL':18s}{p1_total:>{col1}d}/{max_total}"
-        f"  {p2_total:>{col2}d}/{max_total}"
-    )
-    print()
-    print(f"  WINNER: {winner}")
-    print(bar)
-    print()
+    if report is None:
+        return {"accessibility_audit": "skipped_or_failed"}
+    return {
+        "accessibility_audit": "ok",
+        "accessibility_violations": report.violation_count,
+        "accessibility_serious_violations": report.serious_violation_count,
+        "accessibility_passes": report.passes_count,
+    }
 
 
-# ---------------------------------------------------------------------------
-# JSON output
-# ---------------------------------------------------------------------------
-
-
-def write_json(
-    round_num: int,
+async def evaluate_site(
+    *,
+    url: str,
+    site_name: str,
     prompt: str,
-    p1_name: str,
-    p1_scores: dict[str, int],
-    p1_total: int,
-    p2_name: str,
-    p2_scores: dict[str, int],
-    p2_total: int,
-    winner: str,
-) -> Path:
-    """Write results to `results/round-{round_num}.json`, creating the dir if needed.
+    round_num: int | None = None,
+    run_axe: bool = True,
+) -> tuple[SiteScore, Capture]:
+    """Capture and score one site end-to-end.
+
+    Designed to be safe to call concurrently — all state (screenshot files,
+    JSON output) is keyed on `site_name` so parallel callers do not collide
+    as long as they pass distinct names.
 
     Args:
-        round_num: Competition round number.
-        prompt: The prompt given to contestants.
-        p1_name: Player 1 display name.
-        p1_scores: Player 1 scores by feedback key.
-        p1_total: Player 1 total score.
-        p2_name: Player 2 display name.
-        p2_scores: Player 2 scores by feedback key.
-        p2_total: Player 2 total score.
-        winner: Name of the winning player.
+        url: The site URL to fetch.
+        site_name: Display name used for file paths and LangSmith metadata.
+        prompt: The original prompt given to the contestant.
+        round_num: Optional round number; influences output filenames and
+            LangSmith experiment prefix when set.
+        run_axe: If `True`, run the axe-core accessibility audit and
+            include an `accessibility` axis in the score.
+
+    Returns:
+        Tuple of (`SiteScore`, `Capture`). The capture is returned so
+        callers can persist screenshots, forward HTML to LangSmith, or
+        feed downstream tooling without re-fetching.
+    """
+    capture = await capture_site(url, run_axe=run_axe)
+    screenshot_b64 = base64.b64encode(capture.screenshot_png).decode()
+
+    axes: dict[str, float | None] = _run_llm_evaluators(
+        prompt, capture.html, screenshot_b64
+    )
+    if run_axe:
+        axes["accessibility"] = score_accessibility(capture.accessibility)
+
+    score = SiteScore(
+        site_name=site_name,
+        url=url,
+        prompt=prompt,
+        axes=axes,
+        metadata=_build_metadata(capture.accessibility),
+        round_num=round_num,
+    )
+    return score, capture
+
+
+def print_score(score: SiteScore) -> None:
+    """Print a single-site per-axis scoreboard to stdout.
+
+    Args:
+        score: The `SiteScore` to render.
+    """
+    bar = "═" * 56
+    print()
+    print(bar)
+    header = f"  {score.site_name}"
+    if score.round_num is not None:
+        header += f"  —  Round {score.round_num}"
+    print(header)
+    print(f'  Prompt: "{score.prompt}"')
+    print(f"  URL:    {score.url}")
+    print(bar)
+    for axis, value in score.axes.items():
+        label = _AXIS_DISPLAY.get(axis, axis)
+        if value is None:
+            rendered = "  n/a"
+        else:
+            rendered = f"{round(value * 10):>4d}/10"
+        print(f"  {label:22s}{rendered}")
+    print(bar)
+    print()
+
+
+def write_json(score: SiteScore, out_dir: Path) -> Path:
+    """Write a `SiteScore` to JSON under `out_dir`.
+
+    Filename is `round-{n}-{site}.json` when `round_num` is set, else
+    `{site}.json`.
+
+    Args:
+        score: Result to serialize.
+        out_dir: Directory to write into; created if missing.
 
     Returns:
         Path to the written JSON file.
     """
-    results_dir = Path("results")
-    results_dir.mkdir(exist_ok=True)
-    out = results_dir / f"round-{round_num}.json"
-    data = {
-        "round": round_num,
-        "prompt": prompt,
-        "player1": {
-            "name": p1_name,
-            "scores": p1_scores,
-            "total": p1_total,
-        },
-        "player2": {
-            "name": p2_name,
-            "scores": p2_scores,
-            "total": p2_total,
-        },
-        "winner": winner,
-    }
-    out.write_text(json.dumps(data, indent=2) + "\n")
-    return out
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = score.site_name.replace(" ", "_")
+    if score.round_num is not None:
+        filename = f"round-{score.round_num}-{safe_name}.json"
+    else:
+        filename = f"{safe_name}.json"
+    path = out_dir / filename
+    path.write_text(json.dumps(asdict(score), indent=2) + "\n")
+    return path
 
 
-# ---------------------------------------------------------------------------
-# LangSmith logging (best-effort)
-# ---------------------------------------------------------------------------
-
-
-def log_to_langsmith(
-    round_num: int,
-    prompt: str,
-    player_name: str,
-    html: str,
-    screenshot_b64: str,
-    scores: dict[str, int],
+def _save_screenshot(
+    png: bytes, site_name: str, round_num: int | None
 ) -> None:
-    """Log one player's evaluation to LangSmith.
-
-    Best-effort: prints to stderr and continues on failure.
-
-    Args:
-        round_num: Competition round number.
-        prompt: The prompt given to contestants.
-        player_name: Display name of the player being logged.
-        html: HTML source of the player's website.
-        screenshot_b64: Base64-encoded PNG screenshot.
-        scores: Mapping of feedback key to integer score (0-10).
-    """
-    try:
-        from langsmith import evaluate as ls_evaluate
-    except ImportError:
-        return
-
-    try:
-
-        def _target(inputs: dict[str, Any]) -> dict[str, Any]:
-            return {
-                "html": inputs["html"],
-                "screenshot_b64": inputs["screenshot_b64"],
-            }
-
-        def _make_evaluator(key: str, score: int) -> Callable[..., dict[str, Any]]:
-            def _eval(
-                run: Any,  # noqa: ARG001
-                example: Any,  # noqa: ARG001
-            ) -> dict[str, Any]:
-                return {"key": key, "score": score / 10.0}
-
-            return _eval
-
-        evaluators = list(starmap(_make_evaluator, scores.items()))
-
-        ls_evaluate(
-            target=_target,
-            data=[
-                {
-                    "inputs": {
-                        "prompt": prompt,
-                        "html": html,
-                        "screenshot_b64": screenshot_b64,
-                    },
-                }
-            ],
-            evaluators=evaluators,
-            experiment_prefix=f"round-{round_num}-{player_name}",
-            metadata={
-                "event": "interrupt-2026",
-                "round": round_num,
-                "player": player_name,
-                "prompt": prompt,
-            },
-        )
-        print(f"  LangSmith: logged {player_name}")
-    except Exception as exc:
-        msg = f"LangSmith: failed for {player_name}: {exc}"
-        print(f"  {msg}", file=sys.stderr)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-async def async_main(args: argparse.Namespace) -> None:
-    """Run the full judging pipeline.
-
-    Pipeline: capture -> evaluate -> print results -> write JSON -> log.
-
-    Args:
-        args: Parsed CLI arguments with prompt, URLs, names, and round number.
-    """
-    prompt = args.prompt
-    round_num = args.round
-
-    # 1. Capture screenshots in parallel
-    print(f"Capturing screenshots for round {round_num}...")
-    results = await asyncio.gather(
-        capture(args.p1_url),
-        capture(args.p2_url),
-        return_exceptions=True,
-    )
-    errors = [r for r in results if isinstance(r, BaseException)]
-    if errors:
-        for err in errors:
-            msg = str(err)
-            print(msg, file=sys.stderr)
-        sys.exit(1)
-    (html1, png1), (html2, png2) = results  # type: ignore[misc]
-
-    # Save screenshots for debugging
+    """Persist the raw screenshot to `screenshots/` for debugging."""
     try:
         ss_dir = Path("screenshots")
-        ss_dir.mkdir(exist_ok=True)  # noqa: ASYNC240
-        (ss_dir / f"round-{round_num}-p1.png").write_bytes(png1)
-        (ss_dir / f"round-{round_num}-p2.png").write_bytes(png2)
+        ss_dir.mkdir(exist_ok=True)
+        safe_name = site_name.replace(" ", "_")
+        if round_num is not None:
+            filename = f"round-{round_num}-{safe_name}.png"
+        else:
+            filename = f"{safe_name}.png"
+        (ss_dir / filename).write_bytes(png)
     except OSError as exc:
-        msg = f"Warning: could not save screenshots: {exc}"
+        msg = f"Warning: could not save screenshot: {exc}"
         print(msg, file=sys.stderr)
 
-    b64_1 = base64.b64encode(png1).decode()
-    b64_2 = base64.b64encode(png2).decode()
 
-    print("Running evaluators...")
-    p1_scores = run_evaluators(prompt, html1, b64_1)
-    p2_scores = run_evaluators(prompt, html2, b64_2)
+async def _async_cli(args: argparse.Namespace) -> None:
+    """CLI pipeline: capture -> score -> print -> write -> log.
 
-    p1_total = sum(p1_scores.values())
-    p2_total = sum(p2_scores.values())
-
-    # P1 wins ties (arbitrary tiebreak for MVP)
-    winner = args.p1_name if p1_total >= p2_total else args.p2_name
-
-    # Print results first so they're visible even if file writes fail
-    print_results(
-        round_num,
-        prompt,
-        args.p1_name,
-        p1_scores,
-        p1_total,
-        args.p2_name,
-        p2_scores,
-        p2_total,
-        winner,
+    Args:
+        args: Parsed argparse namespace.
+    """
+    print(f"Capturing {args.url}...")
+    score, capture = await evaluate_site(
+        url=args.url,
+        site_name=args.name,
+        prompt=args.prompt,
+        round_num=args.round,
+        run_axe=not args.no_axe,
     )
 
+    _save_screenshot(capture.screenshot_png, args.name, args.round)
+    print_score(score)
+
     try:
-        json_path = write_json(
-            round_num,
-            prompt,
-            args.p1_name,
-            p1_scores,
-            p1_total,
-            args.p2_name,
-            p2_scores,
-            p2_total,
-            winner,
-        )
-        print(f"Results written to {json_path}")
+        path = write_json(score, Path(args.out))
+        print(f"Results written to {path}")
     except OSError as exc:
         msg = f"Warning: could not write results JSON: {exc}"
         print(msg, file=sys.stderr)
 
-    log_to_langsmith(round_num, prompt, args.p1_name, html1, b64_1, p1_scores)
-    log_to_langsmith(round_num, prompt, args.p2_name, html2, b64_2, p2_scores)
+    if not args.no_langsmith:
+        screenshot_b64 = base64.b64encode(capture.screenshot_png).decode()
+        log_to_langsmith(
+            site_name=score.site_name,
+            prompt=score.prompt,
+            html=capture.html,
+            screenshot_b64=screenshot_b64,
+            axes=score.axes,
+            round_num=score.round_num,
+            metadata=score.metadata,
+        )
 
 
 def main() -> None:
-    """Parse arguments and run the judge."""
+    """Parse CLI arguments and run the single-site judge."""
     parser = argparse.ArgumentParser(
-        description="Vibe Coding Olympics judge — screenshot and score two websites.",
+        description=(
+            "Vibe Coding Olympics judge — score a single website against "
+            "a prompt. Run multiple instances concurrently to score "
+            "multiple sites."
+        ),
+    )
+    parser.add_argument("--url", required=True, help="Website URL.")
+    parser.add_argument("--name", required=True, help="Site display name.")
+    parser.add_argument(
+        "--prompt", required=True, help="The prompt given to the contestant."
     )
     parser.add_argument(
-        "--prompt", required=True, help="The prompt given to contestants."
+        "--round",
+        type=int,
+        default=None,
+        help="Optional round number for filenames and LangSmith metadata.",
     )
-    parser.add_argument("--p1-url", required=True, help="Player 1 website URL.")
-    parser.add_argument("--p1-name", required=True, help="Player 1 display name.")
-    parser.add_argument("--p2-url", required=True, help="Player 2 website URL.")
-    parser.add_argument("--p2-name", required=True, help="Player 2 display name.")
-    parser.add_argument("--round", type=int, default=1, help="Round number.")
+    parser.add_argument(
+        "--out",
+        default="results",
+        help="Output directory for JSON results. (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--no-axe",
+        action="store_true",
+        help="Skip the axe-core accessibility audit.",
+    )
+    parser.add_argument(
+        "--no-langsmith",
+        action="store_true",
+        help="Skip LangSmith logging (also controlled by env/config).",
+    )
 
     args = parser.parse_args()
     try:
-        asyncio.run(async_main(args))
+        asyncio.run(_async_cli(args))
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)

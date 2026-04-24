@@ -32,8 +32,6 @@ def _make_backend(
     """
     mock_client = MagicMock()
     context = SimpleNamespace(
-        owner="-",
-        repo="test-agent",
         commit_id="00000000-0000-0000-0000-000000000000",
         commit_hash=_COMMIT_HASH,
         files=files,

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
     from mcp import ClientSession
@@ -373,7 +375,7 @@ class MCPSessionManager:
         return _MCPSessionEntry(session=session, exit_stack=exit_stack)
 
 
-def _resolve_server_type(server_config: dict[str, Any]) -> str:
+def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
     """Determine the transport type for a server config.
 
     Accepts `type` or `transport` interchangeably. When neither is set, a

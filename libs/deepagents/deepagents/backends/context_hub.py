@@ -89,8 +89,10 @@ class ContextHubBackend(BackendProtocol):
         self._commit_hash = context.commit_hash
         self._cache = {}
         self._linked_entries = {}
+        from langsmith.schemas import FileEntry  # noqa: PLC0415
+
         for path, entry in context.files.items():
-            if entry.type == "file":
+            if isinstance(entry, FileEntry):
                 self._cache[path] = entry.content
             else:
                 self._linked_entries[path] = entry.repo_handle

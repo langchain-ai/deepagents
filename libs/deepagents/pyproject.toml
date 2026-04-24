@@ -26,6 +26,8 @@ dependencies = [
     "langchain-anthropic>=1.4.0,<2.0.0",
     "langchain-google-genai>=4.2.1,<5.0.0",
     "wcmatch",
+    "langgraph",
+    "langgraph-sdk",
 ]
 
 
@@ -140,5 +142,11 @@ python-version = "3.11"
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"
+
+[tool.uv.sources]
+langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core", branch = "sr/deepagents-perf-combo" }
+langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", branch = "sr/deepagents-perf-combo" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/langgraph", branch = "sr/deepagents-perf-combo" }
+langgraph-sdk = { git = "https://github.com/langchain-ai/langgraph", subdirectory = "libs/sdk-py", branch = "sr/deepagents-perf-combo" }
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"

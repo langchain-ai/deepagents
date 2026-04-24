@@ -33,6 +33,7 @@ def _runtime(tool_call_id: str = "tc"):
         store=None,
         stream_writer=lambda _: None,
         config={},
+        tools=[],
     )
 
 

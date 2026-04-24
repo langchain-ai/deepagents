@@ -295,6 +295,7 @@ async def test_store_backend_intercept_large_tool_result_async(file_format):
         store=mem_store,
         stream_writer=lambda _: None,
         config={},
+        tools=[],
     )
     result = middleware._intercept_large_tool_result(tool_message, rt)
 
@@ -337,6 +338,7 @@ async def test_store_backend_aintercept_large_tool_result_async(file_format):
         store=mem_store,
         stream_writer=lambda _: None,
         config={},
+        tools=[],
     )
 
     # Use the async intercept path (what awrap_tool_call uses)

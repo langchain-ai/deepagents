@@ -28,6 +28,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.channels._delta import DeltaChannel
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -114,8 +115,8 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
-    """Files in the filesystem."""
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_reducer)]
+    """Files in the filesystem. Uses DeltaChannel to store per-step deltas, reducing checkpoint size from O(N²) to O(N)."""
 
 
 class LsSchema(BaseModel):
@@ -1444,6 +1445,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             store=runtime.store,
             config=config,
             tool_call_id=None,
+            tools=[],
         )
         return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
 

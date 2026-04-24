@@ -812,11 +812,12 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
-    # Verify memory was loaded from state
-    checkpoint = agent.checkpointer.get(config)
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["files"]
-    assert "memory_contents" in checkpoint["channel_values"]
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
+    # Verify memory was loaded from state (use public API — DeltaChannel stores
+    # a sentinel in the raw checkpoint; agent.get_state resolves it)
+    state = agent.get_state(config).values
+    assert "/user/.deepagents/AGENTS.md" in state["files"]
+    assert "memory_contents" in state
+    assert "/user/.deepagents/AGENTS.md" in state["memory_contents"]
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

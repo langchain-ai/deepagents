@@ -166,6 +166,7 @@ def test_tool_payload_ignores_model_supplied_runtime_dict() -> None:
         stream_writer=lambda _: None,
         store=None,
         tool_call_id="call_1",
+        tools=[],
     )
     interpreter = Interpreter(functions={"get_user_id": get_user_id}, runtime=runtime)
 

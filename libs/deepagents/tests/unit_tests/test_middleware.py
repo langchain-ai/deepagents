@@ -66,7 +66,7 @@ def _make_backend(files=None):
 
 
 def _runtime(tool_call_id=""):
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={}, tools=[])
 
 
 class TestAddMiddleware:
@@ -1197,6 +1197,7 @@ class TestFilesystemMiddleware:
             store=None,
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1228,6 +1229,7 @@ class TestFilesystemMiddleware:
             store=None,
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1252,6 +1254,7 @@ class TestFilesystemMiddleware:
             store=None,
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1277,6 +1280,7 @@ class TestFilesystemMiddleware:
             store=None,
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1307,6 +1311,7 @@ class TestFilesystemMiddleware:
             store=None,
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
@@ -1347,6 +1352,7 @@ class TestFilesystemMiddleware:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         # Execute should return error message, not raise exception
@@ -1380,6 +1386,7 @@ class TestFilesystemMiddleware:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = FormattingMockSandboxBackend()
@@ -1416,6 +1423,7 @@ class TestFilesystemMiddleware:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = FailureMockSandboxBackend()
@@ -1452,6 +1460,7 @@ class TestFilesystemMiddleware:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TruncatedMockSandboxBackend()
@@ -1483,6 +1492,7 @@ class TestFilesystemMiddleware:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         # StateBackend doesn't support execution
@@ -1945,6 +1955,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -1976,6 +1987,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -2009,6 +2021,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -2038,6 +2051,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -2072,6 +2086,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -2103,6 +2118,7 @@ class TestBuiltinTruncationTools:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+            tools=[],
         )
 
         backend = TimeoutCaptureSandbox()

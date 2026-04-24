@@ -1696,9 +1696,9 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
-    checkpoint = agent.checkpointer.get(config)
-    assert "/skills/user/test-skill/SKILL.md" in checkpoint["channel_values"]["files"]
-    assert checkpoint["channel_values"]["skills_metadata"] == [
+    state = agent.get_state(config).values
+    assert "/skills/user/test-skill/SKILL.md" in state["files"]
+    assert state["skills_metadata"] == [
         {
             "allowed_tools": [],
             "compatibility": None,

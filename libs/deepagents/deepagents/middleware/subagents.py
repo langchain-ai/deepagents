@@ -528,16 +528,9 @@ available-agents list. Also scanned by tests to verify the list rendering."""
 
 FORK_USAGE_GUIDANCE = (
     "\n\n### Forked subagents\n"
-    f"Some subagents above are marked `{FORKED_SUBAGENT_MARKER}`. A forked "
-    "subagent already sees the entire conversation up to this point — the "
-    "main agent's system prompt, prior user and assistant messages, and all "
-    "tool results. **Do not restate shared context in the `description`.** "
-    "Pass only the task delta: the specific action you want the subagent to "
-    "take, plus any pointers (file paths, message references, artifact ids) "
-    "that disambiguate what to act on. Restating inherited context costs "
-    "tokens and defeats the cache reuse that fork mode is designed to "
-    "provide. Non-forked subagents are stateless and still require full "
-    "context in `description` as before."
+    f"Subagents marked `{FORKED_SUBAGENT_MARKER}` inherit the full "
+    "conversation context, so only a minimal task-specific instruction is "
+    "needed in `description`."
 )
 """Guidance block appended to the task tool description when at least one
 forked subagent is registered. Teaches the main agent to pass only the task
@@ -628,10 +621,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 runtime.state.get("messages", []),
                 runtime.tool_call_id,
             )
-            # The fork's own instructions ride along inside the trailing
-            # HumanMessage so the parent's system prompt and inherited message
-            # history stay byte-for-byte identical, which is what lets the
-            # provider's prompt cache serve the full parent prefix.
+            # Keep fork-specific instructions out of the system prompt so the
+            # inherited parent prefix remains cache-aligned.
             preamble = subagent_system_prompts.get(subagent_type, "")
             final_content = f"{preamble}\n\n{description}" if preamble else description
             subagent_state["messages"] = [*parent_messages, HumanMessage(content=final_content)]

@@ -55,11 +55,8 @@ class ContextHubBackend(BackendProtocol):
         """Initialize ContextHubBackend.
 
         Args:
-            identifier: Hub identifier of the target agent repo, in the form
-                ``"owner/name"`` or ``"-/name"`` (for the current tenant).
-            client: Optional :class:`langsmith.Client`. When ``None``, a
-                default ``Client()`` is constructed and inherits configuration
-                from ambient env vars (``LANGSMITH_API_KEY``, etc.).
+            identifier: Hub agent repo, as ``"owner/name"`` or ``"-/name"``.
+            client: LangSmith client. Defaults to ``Client()``.
         """
         from langsmith import Client as _Client  # noqa: PLC0415
 
@@ -70,12 +67,7 @@ class ContextHubBackend(BackendProtocol):
         self._commit_hash: str | None = None
 
     def _load_tree(self) -> None:
-        """Fetch the file tree via the SDK.
-
-        Treats ``LangSmithNotFoundError`` as an empty repo (the first commit
-        lazily creates it). Any other failure is propagated; the caller is
-        expected to surface it as a ``Result(error=...)``.
-        """
+        """Fetch the file tree. A missing repo is treated as empty (first commit creates it)."""
         from langsmith.utils import LangSmithNotFoundError  # noqa: PLC0415
 
         try:
@@ -129,14 +121,7 @@ class ContextHubBackend(BackendProtocol):
         return path.lstrip("/")
 
     def _is_under_linked_entry(self, hub_path: str) -> bool:
-        """Check whether a write to ``hub_path`` would land inside a linked entry.
-
-        Linked entries (``SkillEntry`` / ``AgentEntry``) reference other hub
-        repos authored and versioned separately. Writing to paths under them
-        would fight the linked repo's ownership model and the server would
-        reject the commit. To edit a linked skill or agent, construct a
-        separate ``ContextHubBackend`` pointing at that repo's identifier.
-        """
+        """Return True if ``hub_path`` is at or under a linked entry root."""
         self._ensure_cache()
         for linked in self._linked_entries:
             normalized = linked.rstrip("/")
@@ -149,11 +134,11 @@ class ContextHubBackend(BackendProtocol):
 
         Args:
             file_path: Absolute file path.
-            offset: Line offset to start reading from (0-indexed).
-            limit: Maximum number of lines to read.
+            offset: 0-indexed starting line.
+            limit: Maximum number of lines.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested window.
+            ReadResult with raw (unformatted) content.
         """
         hub_path = self._strip_prefix(file_path)
         try:
@@ -179,16 +164,7 @@ class ContextHubBackend(BackendProtocol):
         )
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        """Commit ``content`` to ``file_path`` in the hub repo.
-
-        Args:
-            file_path: Absolute file path.
-            content: Text content to store.
-
-        Returns:
-            WriteResult with the committed path, or an error if the write
-            targets a linked entry or the hub call fails.
-        """
+        """Commit ``content`` to ``file_path``. Rejects writes under linked entries."""
         hub_path = self._strip_prefix(file_path)
         try:
             self._ensure_cache()
@@ -208,18 +184,7 @@ class ContextHubBackend(BackendProtocol):
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
-        """Replace ``old_string`` with ``new_string`` in ``file_path``.
-
-        Args:
-            file_path: Absolute file path.
-            old_string: Exact string to replace.
-            new_string: Replacement string.
-            replace_all: If True, replace every occurrence; otherwise fail
-                when more than one match is found.
-
-        Returns:
-            EditResult with the path and replacement count, or an error.
-        """
+        """Replace ``old_string`` with ``new_string``. Fails on multiple matches unless ``replace_all=True``."""
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
@@ -243,14 +208,7 @@ class ContextHubBackend(BackendProtocol):
         return EditResult(path=file_path, occurrences=occurrences)
 
     def ls(self, path: str = "/") -> LsResult:
-        """List files and directories directly under ``path`` (non-recursive).
-
-        Args:
-            path: Absolute directory path.
-
-        Returns:
-            LsResult with immediate file and subdirectory entries.
-        """
+        """List immediate files and subdirectories under ``path`` (non-recursive)."""
         hub_prefix = self._strip_prefix(path).rstrip("/")
         try:
             cache = self._ensure_cache()
@@ -287,17 +245,7 @@ class ContextHubBackend(BackendProtocol):
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search file contents for lines matching a regex pattern.
-
-        Args:
-            pattern: Regex pattern to search for.
-            path: Optional path prefix to restrict the search.
-            glob: Optional filename glob to filter which files are searched.
-
-        Returns:
-            GrepResult with matching lines, or an error if the pattern is
-            invalid or the hub pull fails.
-        """
+        """Search file contents for lines matching ``pattern``, optionally filtered by ``path`` prefix and ``glob``."""
         try:
             cache = self._ensure_cache()
         except Exception as exc:
@@ -324,15 +272,7 @@ class ContextHubBackend(BackendProtocol):
         return GrepResult(matches=matches)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:  # noqa: ARG002
-        """Return files matching a glob pattern.
-
-        Args:
-            pattern: Glob pattern to match against file paths.
-            path: Base directory (unused for the flat hub namespace).
-
-        Returns:
-            GlobResult with matching FileInfo entries.
-        """
+        """Return files matching ``pattern`` (``path`` is unused — hub namespace is flat)."""
         try:
             cache = self._ensure_cache()
         except Exception as exc:
@@ -346,15 +286,7 @@ class ContextHubBackend(BackendProtocol):
         return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload text files into the hub repo.
-
-        Args:
-            files: List of ``(path, bytes)`` tuples. Content must decode as
-                utf-8; binary uploads are rejected with ``invalid_path``.
-
-        Returns:
-            FileUploadResponse per input, in order.
-        """
+        """Upload text files. Non-utf-8 bytes are rejected with ``invalid_path``."""
         results: list[FileUploadResponse] = []
         for path, content in files:
             try:
@@ -372,14 +304,7 @@ class ContextHubBackend(BackendProtocol):
         return results
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files from the hub repo as raw bytes.
-
-        Args:
-            paths: List of absolute file paths to download.
-
-        Returns:
-            FileDownloadResponse per input, in order.
-        """
+        """Download files as raw bytes. Missing paths return ``file_not_found``."""
         try:
             cache = self._ensure_cache()
         except Exception as exc:

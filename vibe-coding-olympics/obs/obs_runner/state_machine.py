@@ -47,6 +47,10 @@ class Event(StrEnum):
 _TRANSITIONS: dict[tuple[Phase, Event], Phase] = {
     (Phase.IDLE, Event.START): Phase.CODING,
     (Phase.CODING, Event.END): Phase.SCOREBOARD,
+    # `reset` is a panic-button: always legal, always lands in IDLE.
+    # Idempotent from IDLE so the UI can double-click without a 409.
+    (Phase.IDLE, Event.RESET): Phase.IDLE,
+    (Phase.CODING, Event.RESET): Phase.IDLE,
     (Phase.SCOREBOARD, Event.RESET): Phase.IDLE,
 }
 

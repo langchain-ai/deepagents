@@ -56,7 +56,14 @@ async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
             msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
             raise HTTPException(status_code=502, detail=msg) from exc
     if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+        # Unwrap the upstream JSON detail so the UI sees one error
+        # layer, not `{"detail": "{\"detail\": ...}"}`.
+        try:
+            body = response.json()
+            detail = body.get("detail", body) if isinstance(body, dict) else body
+        except ValueError:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail)
     return response.json()
 
 
@@ -177,6 +184,14 @@ _INDEX_HTML = """<!doctype html>
   <h2>Game state</h2>
   <button class="secondary" id="btn-state">Get state</button>
   <button class="danger" id="btn-reset">Reset to Idle</button>
+  <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #2a2a2a;">
+    <button id="btn-full-round">Run full round</button>
+    <div style="color:#707070;font-size:0.8rem;margin-top:0.5rem;">
+      <strong>Demo only.</strong> Fires <code>start</code> &rarr; wait 2s &rarr;
+      <code>end</code> &rarr; wait 2s &rarr; <code>reset</code>, using the inputs
+      above. Not intended for a live round.
+    </div>
+  </div>
 </section>
 
 <section>
@@ -240,6 +255,42 @@ document.getElementById('btn-end').onclick = () => {
 
 document.getElementById('btn-state').onclick = () => api('/api/state');
 document.getElementById('btn-reset').onclick = () => api('/api/round/reset', {});
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+document.getElementById('btn-full-round').onclick = async () => {
+  const btn = document.getElementById('btn-full-round');
+  btn.disabled = true;
+  try {
+    const prompt = val('prompt');
+    const c1 = val('c1');
+    const c2 = val('c2');
+    const contestants = [c1, c2].filter(Boolean);
+    if (!prompt || contestants.length === 0) {
+      log('prompt and at least one contestant are required', true);
+      return;
+    }
+    const scores = {};
+    if (c1) scores[c1] = num('s1');
+    if (c2) scores[c2] = num('s2');
+
+    log('full round: start');
+    let r = await api('/api/round/start', { prompt, contestants });
+    if (!r.ok) return;
+    await sleep(2000);
+
+    log('full round: end');
+    r = await api('/api/round/end', { scores });
+    if (!r.ok) return;
+    await sleep(2000);
+
+    log('full round: reset');
+    await api('/api/round/reset', {});
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 document.getElementById('btn-list').onclick = () => api('/api/players');
 document.getElementById('btn-clear').onclick = () => api('/api/players/clear', { all: true });
 document.getElementById('btn-reset-players').onclick = () => api('/api/players/reset', { all: true });

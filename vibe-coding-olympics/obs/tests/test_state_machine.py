@@ -89,6 +89,27 @@ def test_illegal_transition_rejected(config: Config) -> None:
         machine.dispatch(Event.END, {})
 
 
+def test_reset_is_always_legal(config: Config) -> None:
+    """Reset must be an idempotent panic-button from every phase.
+
+    Producers double-click the Reset control between rounds; a 409 on
+    the no-op path is an annoyance, not a signal.
+    """
+    machine = StateMachine(FakeCompositor(), config)
+    # From IDLE
+    machine.dispatch(Event.RESET, {})
+    assert machine.snapshot.phase is Phase.IDLE
+    # From CODING
+    machine.dispatch(Event.START, {"prompt": "x", "round_num": 1, "contestants": ["A"]})
+    machine.dispatch(Event.RESET, {})
+    assert machine.snapshot.phase is Phase.IDLE
+    # From SCOREBOARD
+    machine.dispatch(Event.START, {"prompt": "x", "round_num": 1, "contestants": ["A"]})
+    machine.dispatch(Event.END, {"scores": {"A": 1.0}})
+    machine.dispatch(Event.RESET, {})
+    assert machine.snapshot.phase is Phase.IDLE
+
+
 def test_score_mapped_to_contestant_slot(config: Config) -> None:
     """Scores must land in the same slot as their contestant in `CODING`.
 

@@ -17,6 +17,26 @@
   --accent-foreground: #030710;
   --input-border: #b8dfff;
   --input-focus: #7fc8ff;
+  --header-blur-bg: rgba(250, 252, 255, 0.85);
+}
+
+[data-theme="dark"] {
+  --background: #030710;
+  --surface: #0a1220;
+  --foreground: #fafcff;
+  --muted: #111a2b;
+  --muted-foreground: #8a9aac;
+  --border: #1f3a5c;
+  --border-subtle: #152641;
+  --primary: #7fc8ff;
+  --primary-foreground: #030710;
+  --accent: #7fc8ff;
+  --accent-hover: #99d4ff;
+  --accent-bg: #152641;
+  --accent-foreground: #fafcff;
+  --input-border: #1f3a5c;
+  --input-focus: #7fc8ff;
+  --header-blur-bg: rgba(3, 7, 16, 0.85);
 }
 
 body {
@@ -44,7 +64,7 @@ body {
 .header-blur {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  background: rgba(250, 252, 255, 0.85);
+  background: var(--header-blur-bg);
 }
 
 /* Gradient text */

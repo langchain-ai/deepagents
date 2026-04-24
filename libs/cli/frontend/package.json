@@ -13,6 +13,7 @@
     "@assistant-ui/react-langgraph": "^0.13.10",
     "@assistant-ui/react-streamdown": "^0.1.10",
     "@clerk/clerk-react": "^5.0.0",
+    "@clerk/themes": "^2.4.57",
     "@langchain/langgraph-sdk": "^1.7.2",
     "@supabase/supabase-js": "^2.99.3",
     "react": "^19.0.0",

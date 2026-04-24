@@ -5,6 +5,7 @@ import {
   useAuth,
   useUser,
 } from "@clerk/clerk-react";
+import { dark } from "@clerk/themes";
 import {
   createContext,
   useContext,
@@ -15,6 +16,7 @@ import {
 } from "react";
 
 import { getRuntimeConfig } from "../runtimeConfig";
+import { useTheme } from "../ThemeProvider";
 import type { AuthAdapter, SessionState } from "./types";
 
 type Ctx = { state: SessionState };
@@ -46,31 +48,43 @@ function ClerkSessionBridge({ children }: { children: ReactNode }) {
     };
   }, [getToken, isLoaded, isSignedIn, user?.id]);
 
-  const state: SessionState = useMemo(() => {
-    if (!isLoaded) return { status: "loading" };
-    if (!isSignedIn) return { status: "signed-out" };
-    if (!accessToken) return { status: "loading" };
-    return {
-      status: "signed-in",
-      accessToken,
-      userIdentity: user?.id ?? "",
-      userEmail: user?.primaryEmailAddress?.emailAddress ?? null,
-      signOut: async () => {
-        await signOut();
-      },
-    };
+  // Memoize the whole context value so the provider doesn't force every
+  // consumer to re-render on unrelated parent re-renders. Memoizing `state`
+  // alone wouldn't help — an inline `{{ state }}` literal would still get a
+  // fresh reference each render.
+  const value = useMemo<Ctx>(() => {
+    let state: SessionState;
+    if (!isLoaded) state = { status: "loading" };
+    else if (!isSignedIn) state = { status: "signed-out" };
+    else if (!accessToken) state = { status: "loading" };
+    else {
+      state = {
+        status: "signed-in",
+        accessToken,
+        userIdentity: user?.id ?? "",
+        userEmail: user?.primaryEmailAddress?.emailAddress ?? null,
+        signOut: async () => {
+          await signOut();
+        },
+      };
+    }
+    return { state };
   }, [isLoaded, isSignedIn, accessToken, user?.id, user?.primaryEmailAddress, signOut]);
 
-  return <ClerkCtx.Provider value={{ state }}>{children}</ClerkCtx.Provider>;
+  return <ClerkCtx.Provider value={value}>{children}</ClerkCtx.Provider>;
 }
 
 function ClerkAdapterProvider({ children }: { children: ReactNode }) {
   const cfg = getRuntimeConfig();
+  const { theme } = useTheme();
   if (cfg.auth !== "clerk") {
     throw new Error("ClerkProvider mounted with non-clerk runtime config");
   }
   return (
-    <ClerkProvider publishableKey={cfg.clerkPublishableKey}>
+    <ClerkProvider
+      publishableKey={cfg.clerkPublishableKey}
+      appearance={theme === "dark" ? { baseTheme: dark } : undefined}
+    >
       <ClerkSessionBridge>{children}</ClerkSessionBridge>
     </ClerkProvider>
   );

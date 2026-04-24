@@ -62,9 +62,15 @@ CWD="$(pwd -P)"
 
 healthy() { curl -fs -o /dev/null -m 1 "$URL" 2>/dev/null; }
 
+# NOTE: all port-to-PID lookups below restrict to TCP LISTEN sockets
+# (`-sTCP:LISTEN`). `lsof -ti :PORT` without that flag also returns PIDs of
+# *clients* with an established connection to the port — e.g. a browser
+# talking to Vite/HMR. Returning those PIDs would make kill_port SIGKILL the
+# browser, and make server_cwd_matches fingerprint the browser's cwd instead
+# of the server's.
 server_cwd_matches() {
   local pid scwd
-  pid="$(lsof -ti ":$PORT" 2>/dev/null | head -1)"
+  pid="$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null | head -1)"
   [ -n "$pid" ] || return 1
   scwd="$(lsof -p "$pid" 2>/dev/null | awk '$4=="cwd"{print $NF; exit}')"
   [ -n "$scwd" ] || return 1
@@ -74,7 +80,7 @@ server_cwd_matches() {
 wait_for_port_free() {
   local deadline=$((SECONDS + 5))
   while [ $SECONDS -lt "$deadline" ]; do
-    lsof -ti ":$PORT" >/dev/null 2>&1 || return 0
+    lsof -ti ":$PORT" -sTCP:LISTEN >/dev/null 2>&1 || return 0
     sleep 0.1
   done
   return 1
@@ -91,7 +97,7 @@ wait_for_health() {
 
 kill_port() {
   local pids
-  pids="$(lsof -ti ":$PORT" 2>/dev/null || true)"
+  pids="$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)"
   [ -n "$pids" ] || return 0
   log "freeing port $PORT (killing pids: $pids)"
   # shellcheck disable=SC2086

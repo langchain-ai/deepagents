@@ -52,6 +52,22 @@ echo "Log:        $LOG"
 
 export VIBE_PORT="$PORT" VIBE_DIR="$DIR" VIBE_PROMPT="$PROMPT" VIBE_LOG="$LOG"
 
+# Free the port up front so the poller below can't race a zombie Vite from a
+# previous round. Without this, the poller's first curl would succeed against
+# the old server and `open` Firefox on the stale page — which then gets
+# killed moments later when start-server.sh tears the zombie down.
+# LISTEN-only to avoid SIGKILLing clients (e.g. a still-open browser tab)
+# that hold an established connection to the port.
+if command -v lsof >/dev/null 2>&1; then
+  stale_pids="$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$stale_pids" ]; then
+    echo "Freeing port $PORT from previous round (pids: $stale_pids)"
+    # shellcheck disable=SC2086
+    kill -9 $stale_pids 2>/dev/null || true
+    sleep 0.3
+  fi
+fi
+
 # Poll for the Vite server in the background, open the browser as soon as
 # it's reachable. Fire-and-forget — waits up to ~60s, then gives up quietly
 # so a failed round doesn't leave a zombie poller around.

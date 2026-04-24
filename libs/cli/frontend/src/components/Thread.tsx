@@ -15,6 +15,7 @@ import {
 import { StreamdownTextPrimitive } from "@assistant-ui/react-streamdown";
 import { APP_NAME } from "../constants";
 import { useGraphValues } from "../RuntimeProvider";
+import { useTheme } from "../ThemeProvider";
 import { TOOL_RENDERERS } from "./tools";
 import {
   SubagentPipeline,
@@ -48,37 +49,38 @@ export const ThreadView: FC = () => {
   );
 };
 
-const ThreadEmpty: FC = () => (
-  <ThreadPrimitive.Empty>
-    <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
-      <svg
-        className="anim-stagger-1 mb-4 h-12 w-12"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="var(--accent)"
-        strokeWidth="1.5"
-      >
-        <path d="M12 2L2 12l10 10 10-10L12 2z" />
-        <path d="M12 8L8 12l4 4 4-4-4-4z" />
-      </svg>
-      <h2 className="anim-stagger-2 text-2xl font-semibold lc-gradient-text">
-        {APP_NAME}
-      </h2>
-      <p className="anim-stagger-2 mt-2 text-[var(--muted-foreground)]">
-        How can I help you today?
-      </p>
-      <div className="anim-stagger-3 mt-6 flex flex-wrap justify-center gap-2">
-        {SUGGESTIONS.map((s) => (
-          <ThreadPrimitive.Suggestion key={s} prompt={s} asChild>
-            <button className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent-bg)] hover:text-[var(--foreground)]">
-              {s}
-            </button>
-          </ThreadPrimitive.Suggestion>
-        ))}
+const ThreadEmpty: FC = () => {
+  const { theme } = useTheme();
+  const logoSrc = theme === "dark" ? "/app/logo-dark.svg" : "/app/logo-light.svg";
+  return (
+    <ThreadPrimitive.Empty>
+      <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+        <img
+          src={logoSrc}
+          alt={APP_NAME}
+          className="anim-stagger-1 mb-4 h-14 w-14 rounded-xl"
+          width={56}
+          height={56}
+        />
+        <h2 className="anim-stagger-2 text-2xl font-semibold lc-gradient-text">
+          {APP_NAME}
+        </h2>
+        <p className="anim-stagger-2 mt-2 text-[var(--muted-foreground)]">
+          How can I help you today?
+        </p>
+        <div className="anim-stagger-3 mt-6 flex flex-wrap justify-center gap-2">
+          {SUGGESTIONS.map((s) => (
+            <ThreadPrimitive.Suggestion key={s} prompt={s} asChild>
+              <button className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent-bg)] hover:text-[var(--foreground)]">
+                {s}
+              </button>
+            </ThreadPrimitive.Suggestion>
+          ))}
+        </div>
       </div>
-    </div>
-  </ThreadPrimitive.Empty>
-);
+    </ThreadPrimitive.Empty>
+  );
+};
 
 const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);

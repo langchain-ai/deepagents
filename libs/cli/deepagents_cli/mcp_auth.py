@@ -93,17 +93,30 @@ class McpServerSpec(TypedDict, total=False):
 logger = logging.getLogger(__name__)
 
 _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+"""Matches `${VAR}` placeholders inside config strings for env-var substitution."""
+
 _STORAGE_VERSION = 1
+"""Schema version stamped into persisted credential files; bump on incompatible
+shape changes so `_load_*` can reject or migrate older payloads."""
 
 # Public OAuth client IDs — safe to check in. No secret is associated, and
 # Slack/GitHub treat these as browser-style public clients where the security
 # boundary is the redirect URI / device flow rather than client secrecy.
 _SLACK_MCP_CLIENT_ID = "4518649543379.10944517634130"
+"""Public OAuth client ID registered with Slack for the hosted MCP endpoint."""
+
 _SLACK_REDIRECT_URI = "https://localhost"
+"""Loopback redirect URI Slack hands the authorization code back to; the user
+copy-pastes the resulting URL into the CLI rather than running a local server."""
 
 _GITHUB_MCP_CLIENT_ID = "Iv23libxz8qOApH0WQL3"
+"""Public OAuth client ID for the GitHub App backing GitHub's remote MCP."""
+
 _GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
+"""GitHub Device Authorization Grant endpoint that issues the user/device code pair."""
+
 _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
+"""GitHub OAuth token endpoint polled while the user completes the device flow."""
 
 
 class _OAuthFlavor(Enum):
@@ -119,8 +132,19 @@ class _OAuthFlavor(Enum):
     """
 
     SLACK = "slack"
+    """Slack-hosted MCP: Authorization Code flow with a hardcoded public
+    client ID and the loopback redirect URI; the user pastes the
+    redirected URL back into the CLI."""
+
     GITHUB_DEVICE = "github_device"
+    """GitHub-hosted MCP: Device Authorization Grant against
+    `github.com/login/device/code`; the CLI polls the token endpoint
+    while the user approves the device code in a browser."""
+
     GENERIC = "generic"
+    """Spec-compliant MCP server: Dynamic Client Registration plus the
+    standard Authorization Code + PKCE flow — used when no provider
+    special-case fires."""
 
 
 def _is_slack_mcp_url(url: str) -> bool:

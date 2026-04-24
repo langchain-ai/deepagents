@@ -48,7 +48,7 @@ const MessageBubble: FC<Props> = ({ message }) => {
       (message as any).tool_calls ?? [];
     toolCalls.forEach((tc) => {
       toolCallNodes.push(
-        <ToolCallPart key={tc.id} toolCall={tc} status="success" />,
+        <ToolCallPart key={tc.id} toolCall={tc} status="running" />,
       );
     });
   }

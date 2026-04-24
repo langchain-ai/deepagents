@@ -32,7 +32,8 @@ const Composer: FC<Props> = ({ onSubmit, onStop, isLoading, disabled }) => {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (disabled) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
@@ -49,6 +50,7 @@ const Composer: FC<Props> = ({ onSubmit, onStop, isLoading, disabled }) => {
             value={value}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
+            disabled={disabled}
             placeholder="Send a message..."
             rows={1}
             className="min-h-[44px] max-h-[200px] w-full resize-none bg-transparent px-4 pt-3 pb-1 text-sm outline-none placeholder:text-[var(--muted-foreground)]"

@@ -4,6 +4,7 @@ import MessageBubble from "./MessageBubble";
 
 type Props = {
   messages: BaseMessage[];
+  /** Optional render-prop appended after each message — used by later tasks to inject subagent pipelines. */
   children?: (msg: BaseMessage) => ReactNode;
 };
 
@@ -11,6 +12,7 @@ const BOTTOM_THRESHOLD = 50;
 
 const MessageList: FC<Props> = ({ messages, children }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
   const handleScroll = () => {
@@ -21,11 +23,16 @@ const MessageList: FC<Props> = ({ messages, children }) => {
   };
 
   useEffect(() => {
-    if (!isAtBottomRef.current) return;
-    const el = scrollRef.current;
+    const el = contentRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+    const observer = new ResizeObserver(() => {
+      if (isAtBottomRef.current && scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <div
@@ -33,7 +40,7 @@ const MessageList: FC<Props> = ({ messages, children }) => {
       onScroll={handleScroll}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 py-4 sm:px-4 sm:py-6"
     >
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+      <div ref={contentRef} className="mx-auto flex w-full max-w-4xl flex-col gap-3">
         {messages.map((msg, i) => (
           <div key={(msg as any).id ?? i}>
             <MessageBubble message={msg} />

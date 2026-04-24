@@ -1,7 +1,7 @@
 """Fork-mode subagent tests — imported into test_subagents.py.
 
 Split out to keep test_subagents.py readable; the fork path touches seeding,
-prompt composition, model validation, and telemetry.
+prompt composition, model inheritance, and telemetry.
 """
 
 from __future__ import annotations
@@ -591,8 +591,7 @@ class TestForkSubagents:
 
     def test_fork_without_model_inherits_parent_model(self) -> None:
         parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="noop")]))
-        # Should build without raising; model validation passes because
-        # fork inherits the parent instance itself.
+        # Should build without raising; fork inherits the parent instance.
         create_deep_agent(
             model=parent_model,
             subagents=[
@@ -606,11 +605,10 @@ class TestForkSubagents:
             ],
         )
 
-    def test_fork_with_mismatched_model_raises(self) -> None:
+    def test_fork_with_explicit_model_raises(self) -> None:
         parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="noop")]))
-        # Different provider derived from the class name → validation rejects.
-        mismatched = _RecordingChatModel()
-        with pytest.raises(ValueError, match="Forked subagent 'forked' must use the same model"):
+        explicit_model = _RecordingChatModel()
+        with pytest.raises(ValueError, match="Forked subagent 'forked' cannot declare a model"):
             create_deep_agent(
                 model=parent_model,
                 subagents=[
@@ -618,7 +616,7 @@ class TestForkSubagents:
                         "name": "forked",
                         "description": "Fork worker.",
                         "system_prompt": "FORK",
-                        "model": mismatched,
+                        "model": explicit_model,
                         "tools": [],
                         "fork": True,
                     }

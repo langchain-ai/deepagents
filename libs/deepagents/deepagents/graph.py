@@ -218,31 +218,6 @@ def _apply_tool_description_overrides(
     return copied_tools
 
 
-def _validate_fork_model_matches_parent(
-    subagent_name: str,
-    parent_model: BaseChatModel,
-    subagent_model: BaseChatModel,
-) -> None:
-    """Raise if the resolved subagent model does not match the parent's.
-
-    Prompt cache is keyed per-model on every provider. A forked subagent that
-    silently runs on a different model would burn tokens and hide the bug,
-    so mismatches fail loudly at build time.
-    """
-    parent_provider = get_model_provider(parent_model)
-    fork_provider = get_model_provider(subagent_model)
-    parent_id = get_model_identifier(parent_model)
-    fork_id = get_model_identifier(subagent_model)
-    if parent_provider != fork_provider or parent_id != fork_id:
-        msg = (
-            f"Forked subagent '{subagent_name}' must use the same model as the parent agent. "
-            f"Parent: {parent_provider}:{parent_id}. Subagent: {fork_provider}:{fork_id}. "
-            "Prompt cache is per-model on every provider; a mismatched model cannot share the "
-            "cached prefix. Omit 'model' from the subagent spec to inherit the parent's model."
-        )
-        raise ValueError(msg)
-
-
 @dataclass(slots=True)
 class _PendingForkSpec:
     """Fork spec plus middleware fragments that need the final subagent list."""
@@ -253,6 +228,119 @@ class _PendingForkSpec:
     parent_middleware: list[AgentMiddleware[Any, Any, Any]]
     user_middleware: list[AgentMiddleware[Any, Any, Any]]
     middleware_after_user: list[AgentMiddleware[Any, Any, Any]]
+
+
+def _prepare_standard_subagent_spec(
+    spec: SubAgent,
+    *,
+    model: BaseChatModel,
+    tools: list[BaseTool | Callable | dict[str, Any]] | None,
+    profile: _HarnessProfile,
+    backend: BackendProtocol | BackendFactory,
+    permissions: list[FilesystemPermission] | None,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+) -> SubAgent:
+    """Fill defaults and middleware for a non-fork declarative subagent."""
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        TodoListMiddleware(),
+        FilesystemMiddleware(
+            backend=backend,
+            custom_tool_descriptions=profile.tool_description_overrides,
+        ),
+        create_summarization_middleware(model, backend),
+        PatchToolCallsMiddleware(),
+    ]
+    if spec.get("skills"):
+        middleware.append(SkillsMiddleware(backend=backend, sources=spec["skills"]))
+    middleware.extend(spec.get("middleware", []))
+    middleware.extend(_resolve_extra_middleware(profile))
+    if profile.excluded_tools:
+        middleware.append(_ToolExclusionMiddleware(excluded=profile.excluded_tools))
+    middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if permissions:
+        middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
+    processed = cast(
+        "SubAgent",
+        {
+            **spec,
+            "model": model,
+            "tools": tools or [],
+            "middleware": middleware,
+        },
+    )
+    if interrupt_on is not None:
+        processed["interrupt_on"] = interrupt_on
+    return processed
+
+
+def _prepare_pending_fork_spec(
+    spec: SubAgent,
+    *,
+    model: BaseChatModel,
+    tools: list[BaseTool | Callable | dict[str, Any]] | None,
+    profile: _HarnessProfile,
+    backend: BackendProtocol | BackendFactory,
+    parent_skills: list[str] | None,
+    parent_middleware: Sequence[AgentMiddleware],
+    memory: list[str] | None,
+    permissions: list[FilesystemPermission] | None,
+    interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+) -> _PendingForkSpec:
+    """Prepare the fork pieces that do not depend on the final subagent list."""
+    if "model" in spec:
+        msg = (
+            f"Forked subagent '{spec['name']}' cannot declare a model. "
+            "Forked subagents always inherit the parent agent's model."
+        )
+        raise ValueError(msg)
+
+    processed: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+        **spec,
+        "model": model,
+        "tools": tools or [],
+        "fork": True,
+    }
+    if interrupt_on is not None:
+        processed["interrupt_on"] = interrupt_on
+
+    fork_skills = parent_skills if parent_skills is not None else spec.get("skills")
+    middleware_before_sync_padding: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
+    if fork_skills:
+        middleware_before_sync_padding.append(SkillsMiddleware(backend=backend, sources=fork_skills))
+    middleware_before_sync_padding.append(
+        FilesystemMiddleware(
+            backend=backend,
+            custom_tool_descriptions=profile.tool_description_overrides,
+        )
+    )
+
+    middleware_after_user: list[AgentMiddleware[Any, Any, Any]] = [*_resolve_extra_middleware(profile)]
+    if profile.excluded_tools:
+        middleware_after_user.append(_ToolExclusionMiddleware(excluded=profile.excluded_tools))
+    middleware_after_user.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if memory is not None:
+        middleware_after_user.append(
+            MemoryMiddleware(
+                backend=backend,
+                sources=memory,
+                add_cache_control=True,
+            )
+        )
+    if permissions:
+        middleware_after_user.append(_PermissionMiddleware(rules=permissions, backend=backend))
+
+    return _PendingForkSpec(
+        spec=processed,
+        middleware_before_sync_padding=middleware_before_sync_padding,
+        middleware_before_async_padding=[
+            create_summarization_middleware(model, backend),
+            PatchToolCallsMiddleware(),
+        ],
+        parent_middleware=list(parent_middleware),
+        user_middleware=list(spec.get("middleware", [])),
+        middleware_after_user=middleware_after_user,
+    )
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -549,17 +637,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             inline_subagents.append(spec)
         else:
             is_fork = bool(spec.get("fork", False))
-            # SubAgent - fill in defaults and prepend base middleware.
-            # A forked subagent defaults to the parent's model if none is
-            # specified (prompt cache is per-model; sharing the parent's
-            # model is the only way the cached prefix can be reused).
-            if is_fork and "model" not in spec:
-                raw_subagent_model: str | BaseChatModel = model
-            else:
-                raw_subagent_model = spec.get("model", model)
+            # Forks always use the parent model; non-forks may override it.
+            raw_subagent_model: str | BaseChatModel = model if is_fork else spec.get("model", model)
             subagent_model = resolve_model(raw_subagent_model)
-            if is_fork:
-                _validate_fork_model_matches_parent(spec["name"], model, subagent_model)
 
             _subagent_spec = raw_subagent_model if isinstance(raw_subagent_model, str) else None
             _subagent_profile = _harness_profile_for_model(subagent_model, _subagent_spec)
@@ -576,93 +656,31 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            subagent_skills = spec.get("skills")
             if is_fork:
-                processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-                    **spec,
-                    "model": subagent_model,
-                    "tools": subagent_tools or [],
-                }
-                if subagent_interrupt_on is not None:
-                    processed_spec["interrupt_on"] = subagent_interrupt_on
-                processed_spec["fork"] = True
-
-                fork_skills = skills if skills is not None else subagent_skills
-                middleware_before_sync_padding: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
-                if fork_skills:
-                    middleware_before_sync_padding.append(SkillsMiddleware(backend=backend, sources=fork_skills))
-                middleware_before_sync_padding.append(
-                    FilesystemMiddleware(
-                        backend=backend,
-                        custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    )
+                pending = _prepare_pending_fork_spec(
+                    spec,
+                    model=subagent_model,
+                    tools=subagent_tools,
+                    profile=_subagent_profile,
+                    backend=backend,
+                    parent_skills=skills,
+                    parent_middleware=middleware,
+                    memory=memory,
+                    permissions=subagent_permissions,
+                    interrupt_on=subagent_interrupt_on,
                 )
-                middleware_before_async_padding: list[AgentMiddleware[Any, Any, Any]] = [
-                    create_summarization_middleware(subagent_model, backend),
-                    PatchToolCallsMiddleware(),
-                ]
-                middleware_after_user: list[AgentMiddleware[Any, Any, Any]] = [
-                    *_resolve_extra_middleware(_subagent_profile),
-                ]
-                if _subagent_profile.excluded_tools:
-                    middleware_after_user.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-                middleware_after_user.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-                if memory is not None:
-                    middleware_after_user.append(
-                        MemoryMiddleware(
-                            backend=backend,
-                            sources=memory,
-                            add_cache_control=True,
-                        )
-                    )
-                if subagent_permissions:
-                    middleware_after_user.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
-                pending_fork_specs.append(
-                    _PendingForkSpec(
-                        spec=processed_spec,
-                        middleware_before_sync_padding=middleware_before_sync_padding,
-                        middleware_before_async_padding=middleware_before_async_padding,
-                        parent_middleware=list(middleware or []),
-                        user_middleware=list(spec.get("middleware", [])),
-                        middleware_after_user=middleware_after_user,
-                    )
-                )
+                processed_spec = pending.spec
+                pending_fork_specs.append(pending)
             else:
-                # Non-fork subagent: build middleware list now (no fork-specific ordering requirements).
-                subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                    TodoListMiddleware(),
-                    FilesystemMiddleware(
-                        backend=backend,
-                        custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    ),
-                    create_summarization_middleware(subagent_model, backend),
-                    PatchToolCallsMiddleware(),
-                ]
-                if subagent_skills:
-                    subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-                subagent_middleware.extend(spec.get("middleware", []))
-
-                # Provider-specific middleware for this subagent's model
-                subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
-                if _subagent_profile.excluded_tools:
-                    subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-
-                # Prompt caching
-                subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-                if subagent_permissions:
-                    subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
-
-                processed_spec = cast(
-                    "SubAgent",
-                    {
-                        **spec,
-                        "model": subagent_model,
-                        "tools": subagent_tools or [],
-                        "middleware": subagent_middleware,
-                    },
+                processed_spec = _prepare_standard_subagent_spec(
+                    spec,
+                    model=subagent_model,
+                    tools=subagent_tools,
+                    profile=_subagent_profile,
+                    backend=backend,
+                    permissions=subagent_permissions,
+                    interrupt_on=subagent_interrupt_on,
                 )
-                if subagent_interrupt_on is not None:
-                    processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it

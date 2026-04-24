@@ -433,6 +433,30 @@ def _build_task_tool(  # noqa: C901
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
+    def _build_subagent_config(runtime: ToolRuntime) -> dict[str, Any]:
+        """Derive the subagent's RunnableConfig from the parent's runtime config.
+
+        Forwarding the parent's config is what lets Pregel's streaming
+        callback handlers propagate into the subagent, so its internal
+        lifecycle / values / messages events land on the parent's
+        stream instead of being swallowed by a fresh (detached) config.
+
+        A `ls_tool_call_id` entry is added to ``metadata`` so downstream
+        stream transformers can correlate the subagent's nested
+        ``tools:<pregel_uuid>`` namespace with the originating
+        ``tool_call_id`` without mutating ``checkpoint_ns`` or emitting
+        synthetic events.
+        """
+        parent_config = runtime.config or {}
+        parent_metadata = parent_config.get("metadata") or {}
+        return {
+            **parent_config,
+            "metadata": {
+                **parent_metadata,
+                "ls_tool_call_id": runtime.tool_call_id,
+            },
+        }
+
     def task(
         description: str,
         subagent_type: str,
@@ -445,8 +469,9 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        subagent_config = _build_subagent_config(runtime)
         with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state)
+            result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -461,8 +486,9 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        subagent_config = _build_subagent_config(runtime)
         with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state)
+            result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

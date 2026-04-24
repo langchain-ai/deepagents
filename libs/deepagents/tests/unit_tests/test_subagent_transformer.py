@@ -1,10 +1,21 @@
-"""Unit tests for `SubagentTransformer` — synthetic lifecycle events.
+"""Unit tests for `SubagentTransformer`.
 
 These tests exercise the transformer in isolation by pushing protocol
 events directly into a `StreamMux` configured with
 `SubagentTransformer` alongside the usual `values` / `messages` /
 `subgraphs` transformers. Mirrors the structure of langgraph's
 `test_stream_subgraph_transformer.py`.
+
+Covered behaviors:
+
+- Handle promotion for declared subagents via `lifecycle.started`.
+- `cause` augmentation correlating root-scope ``tools.tool-started``
+  events to the subagent's ``lifecycle.started`` by
+  ``subagent_type`` and oldest-first insertion order.
+- Wire-level namespace rewrite that remaps ``tools:<pregel_uuid>``
+  first segments to ``tools:<tool_call_id>`` on every downstream
+  event without mutating the SubgraphTransformer's internal
+  ``_by_ns`` key.
 """
 
 from __future__ import annotations
@@ -467,3 +478,179 @@ class TestSubagentTransformerCauseAugmentation:
         )
         mux.push(started)
         assert "cause" not in started["params"]["data"]
+
+
+class TestSubagentTransformerNamespaceRewrite:
+    """Pregel-uuid → tool-call-id namespace rewriting on the wire."""
+
+    NAMES = frozenset({"researcher", "coder"})
+
+    def _mux(self) -> tuple[StreamMux, SubagentTransformer]:
+        mux = StreamMux(factories=_factories(self.NAMES), is_async=False)
+        transformer = mux.transformer_by_key("subagents")
+        assert isinstance(transformer, SubagentTransformer)
+        _subscribe(transformer._log)
+        return mux, transformer
+
+    def test_started_rewrites_pregel_uuid_to_tool_call_id(self) -> None:
+        """A pregel-uuid ns on `lifecycle.started` is rewritten to `tools:<tcid>`."""
+        mux, transformer = self._mux()
+        pregel_seg = "tools:598518b1-67d5-f5d4-716b-d4ab890914d3"
+        started = _lifecycle(
+            "started",
+            namespace=[pregel_seg],
+            graph_name="researcher",
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="toolu_ABC",
+                input={"subagent_type": "researcher", "description": "do"},
+            )
+        )
+        mux.push(started)
+
+        assert started["params"]["namespace"] == ["tools:toolu_ABC"]
+        assert started["params"]["data"]["cause"] == {
+            "type": "toolCall",
+            "tool_call_id": "toolu_ABC",
+        }
+        # The map records the Pregel-assigned segment → tcid rewrite
+        # for later events under the same segment.
+        assert transformer._ns_rewrite == {pregel_seg: "tools:toolu_ABC"}
+
+    def test_subsequent_events_inherit_rewrite(self) -> None:
+        """Values / messages / terminal lifecycle under the pregel ns all get remapped."""
+        mux, transformer = self._mux()
+        pregel_seg = "tools:pregel-uuid-1"
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc1",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _lifecycle(
+                "started", namespace=[pregel_seg], graph_name="researcher"
+            )
+        )
+
+        values = _values({"messages": []}, namespace=[pregel_seg])
+        deep_values = _values({"k": 1}, namespace=[pregel_seg, "model:m1"])
+        completed = _lifecycle("completed", namespace=[pregel_seg])
+
+        mux.push(values)
+        mux.push(deep_values)
+        mux.push(completed)
+
+        assert values["params"]["namespace"] == ["tools:tc1"]
+        assert deep_values["params"]["namespace"] == ["tools:tc1", "model:m1"]
+        assert completed["params"]["namespace"] == ["tools:tc1"]
+
+    def test_unknown_pregel_segment_passes_through(self) -> None:
+        """Events at an un-paired pregel segment are left untouched."""
+        mux, transformer = self._mux()
+        # No `tool-started` preceded, so the transformer has no mapping.
+        values = _values({"k": 1}, namespace=["tools:unknown-uuid"])
+        mux.push(values)
+        assert values["params"]["namespace"] == ["tools:unknown-uuid"]
+        assert transformer._ns_rewrite == {}
+
+    def test_trivial_mapping_not_recorded(self) -> None:
+        """If `lifecycle.started` already arrives at `tools:<tcid>`, no rewrite is stored."""
+        mux, transformer = self._mux()
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc1",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _lifecycle(
+                "started",
+                namespace=["tools:tc1"],
+                graph_name="researcher",
+            )
+        )
+        assert transformer._ns_rewrite == {}
+
+    def test_parallel_subagents_rewrite_independently(self) -> None:
+        """Two concurrently-dispatched subagents each get their own mapping."""
+        mux, transformer = self._mux()
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_a",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_b",
+                input={"subagent_type": "coder"},
+            )
+        )
+        started_a = _lifecycle(
+            "started",
+            namespace=["tools:uuid-a"],
+            graph_name="researcher",
+        )
+        started_b = _lifecycle(
+            "started",
+            namespace=["tools:uuid-b"],
+            graph_name="coder",
+        )
+        mux.push(started_a)
+        mux.push(started_b)
+
+        assert started_a["params"]["namespace"] == ["tools:tc_a"]
+        assert started_b["params"]["namespace"] == ["tools:tc_b"]
+
+        values_a = _values({"k": "a"}, namespace=["tools:uuid-a"])
+        values_b = _values({"k": "b"}, namespace=["tools:uuid-b"])
+        mux.push(values_a)
+        mux.push(values_b)
+
+        assert values_a["params"]["namespace"] == ["tools:tc_a"]
+        assert values_b["params"]["namespace"] == ["tools:tc_b"]
+
+    def test_rewrite_does_not_confuse_subgraph_handle(self) -> None:
+        """SubgraphTransformer still keys `_by_ns` off the pre-rewrite namespace."""
+        mux, transformer = self._mux()
+        pregel_seg = "tools:pregel-uuid-x"
+        mux.push(
+            _tools(
+                "tool-started",
+                namespace=[],
+                tool_name="task",
+                tool_call_id="tc_x",
+                input={"subagent_type": "researcher"},
+            )
+        )
+        mux.push(
+            _lifecycle(
+                "started", namespace=[pregel_seg], graph_name="researcher"
+            )
+        )
+
+        sub_t = mux.transformer_by_key("subgraphs")
+        # SubgraphTransformer saw the event BEFORE the rewrite (its
+        # factory slot precedes SubagentTransformer's), so it keys
+        # off the pre-rewrite pregel_uuid tuple. The Subagent handle
+        # wraps the same SubgraphRunStream.
+        assert (pregel_seg,) in sub_t._by_ns  # type: ignore[attr-defined]
+        (handle,) = list(transformer._log._items)
+        assert handle._subgraph is sub_t._by_ns[(pregel_seg,)]  # type: ignore[attr-defined]

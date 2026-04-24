@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
 import { ASSISTANT_ID } from "./constants";
@@ -6,8 +8,18 @@ import Thread from "./components/Thread";
 import AppHeader from "./components/AppHeader";
 
 export default function App() {
+  return (
+    <Suspense fallback={<SplashScreen />}>
+      <AppWithAdapter />
+    </Suspense>
+  );
+}
+
+function AppWithAdapter() {
+  // `useAuthAdapter()` suspends until the dynamic-imported adapter module
+  // has loaded. The <Suspense> boundary above shows a splash during the
+  // load.
   const adapter = useAuthAdapter();
-  if (!adapter) return <SplashScreen />;
   return (
     <adapter.Provider>
       <Gate adapter={adapter} />
@@ -32,7 +44,7 @@ function Gate({ adapter }: { adapter: AuthAdapter }) {
 }
 
 function SplashScreen() {
-  return <div className="min-h-dvh bg-slate-50" />;
+  return <div className="min-h-dvh bg-[var(--background)]" />;
 }
 
 function AuthenticatedApp({

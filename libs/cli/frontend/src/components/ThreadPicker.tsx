@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { useCallback, useEffect, useState, type FC } from "react";
 import { type Thread } from "@langchain/langgraph-sdk";
 import { getErrorMessage } from "../lib/format";
 import { useLangGraphClient, useThreadActions } from "../RuntimeProvider";
@@ -42,11 +42,8 @@ const ThreadPicker: FC = () => {
     }
   }, [createClient]);
 
-  useEffect(() => {
-    if (!open) return;
-    void loadThreads();
-  }, [loadThreads, open]);
-
+  // Escape key to close the dropdown. This is a DOM subscription — exactly
+  // what useEffect is for.
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -56,15 +53,25 @@ const ThreadPicker: FC = () => {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open]);
 
-  const label = useMemo(
-    () => (currentExternalId ? `${currentExternalId.slice(0, 8)}...` : "Threads"),
-    [currentExternalId],
-  );
+  // User-triggered fetch lives in the event handler, not an Effect.
+  // React docs: "If you're fetching in response to a user event, do it in
+  // the event handler." — https://react.dev/learn/you-might-not-need-an-effect
+  const handleToggleOpen = () => {
+    setOpen((prev) => {
+      const next = !prev;
+      if (next) void loadThreads();
+      return next;
+    });
+  };
+
+  const label = currentExternalId
+    ? `${currentExternalId.slice(0, 8)}...`
+    : "Threads";
 
   return (
     <div className="relative">
       <button
-        onClick={() => setOpen((value) => !value)}
+        onClick={handleToggleOpen}
         className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
       >
         <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

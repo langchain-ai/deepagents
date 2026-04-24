@@ -343,7 +343,7 @@ const Thread: FC = () => {
   const { todos, files } = useGraphValues();
   const [showTodos, setShowTodos] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
-  const fileCount = useMemo(() => Object.keys(files).length, [files]);
+  const fileCount = Object.keys(files).length;
 
   return (
     <>

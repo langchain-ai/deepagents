@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { use } from "react";
 
 import { getRuntimeConfig } from "../runtimeConfig";
 import type { AuthAdapter } from "./types";
@@ -12,6 +12,9 @@ let _cache: Promise<AuthAdapter> | null = null;
  * At runtime, only the chunk matching `runtimeConfig.auth` is fetched — so
  * the other SDK's code is shipped in the dist folder but never downloaded
  * by the user's browser.
+ *
+ * The result is memoized at module scope — safe for repeated calls (which
+ * `use()` may do during render-pass retries).
  */
 export function loadAuth(): Promise<AuthAdapter> {
   if (_cache) return _cache;
@@ -27,25 +30,14 @@ export function loadAuth(): Promise<AuthAdapter> {
 }
 
 /**
- * React hook that returns the adapter once its module has loaded.
- * Returns `null` during the initial fetch.
+ * Returns the resolved auth adapter. Suspends the caller until the adapter
+ * module has loaded — use inside a `<Suspense>` boundary.
+ *
+ * Prefer this over a `useState + useEffect + null-check` pattern: that's
+ * the anti-pattern called out in
+ * https://react.dev/learn/you-might-not-need-an-effect — the React 19
+ * `use()` hook handles async resources natively.
  */
-export function useAuthAdapter(): AuthAdapter | null {
-  const promise = useMemo(() => loadAuth(), []);
-  const [adapter, setAdapter] = useState<AuthAdapter | null>(null);
-  useEffect(() => {
-    let active = true;
-    void promise.then((a) => {
-      if (active) setAdapter(a);
-    });
-    return () => {
-      active = false;
-    };
-  }, [promise]);
-  return adapter;
-}
-
-// Parameter `children` is typed for callers that use a render-prop pattern.
-export interface AuthLoaderRenderProp {
-  (adapter: AuthAdapter): ReactNode;
+export function useAuthAdapter(): AuthAdapter {
+  return use(loadAuth());
 }

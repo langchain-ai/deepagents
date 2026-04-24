@@ -35,9 +35,7 @@ logger = logging.getLogger(__name__)
 
 _LINKED_ENTRY_WRITE_ERROR = "Cannot write to a linked entry. Linked entries are read-only from this backend."
 
-# Filenames that configure an agent (root agent or a sub-agent). Not
-# runtime-editable via this backend — bootstrap them out-of-band (hub UI or
-# explicit push_agent). Match is case-insensitive (compared as lowercase).
+# Agent-config basenames (case-insensitive) that are read-only at runtime.
 _IMMUTABLE_BASENAMES = frozenset({"agents.md"})
 _IMMUTABLE_WRITE_ERROR = "'/{}' is read-only. Agent configuration files are not runtime-editable."
 

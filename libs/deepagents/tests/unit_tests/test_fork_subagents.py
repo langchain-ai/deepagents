@@ -10,13 +10,16 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.subagents import (
     FORK_USAGE_GUIDANCE,
     FORKED_SUBAGENT_MARKER,
@@ -26,7 +29,8 @@ from deepagents.middleware.subagents import (
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.runnables import RunnableConfig
@@ -42,6 +46,7 @@ class _RecordingChatModel(BaseChatModel):
     """
 
     recorded_calls: list[list[Any]] = []  # noqa: RUF012  # pydantic field, per-instance
+    bound_tools_calls: list[list[Any]] = []  # noqa: RUF012  # pydantic field, per-instance
     scripted_subagent: str = "forked"
     scripted_task_description: str = "do it"
     _call_idx: int = 0
@@ -80,7 +85,26 @@ class _RecordingChatModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=response)])
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> Any:  # type: ignore[override]  # noqa: ANN401
+        try:
+            self.bound_tools_calls.append(list(tools))
+        except TypeError:
+            self.bound_tools_calls.append([tools])
         return self
+
+
+class _SystemAppendingMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Test middleware that appends deterministic text to the system prompt."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._text = text
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        return handler(request.override(system_message=append_to_system_message(request.system_message, self._text)))
 
 
 class _RecordingRunnable(Runnable):
@@ -109,6 +133,62 @@ def _make_tool_runtime(*, state: dict[str, Any], tool_call_id: str = "tc-1") -> 
         stream_writer=lambda _: None,
         config={},
     )
+
+
+def _system_text(messages: list[Any]) -> str:
+    return next(str(m.content) for m in messages if isinstance(m, SystemMessage))
+
+
+def _tool_names(tools: list[Any]) -> set[str]:
+    names: set[str] = set()
+    for tool in tools:
+        name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _make_fork_agent(model: _RecordingChatModel, **kwargs: Any) -> Runnable:
+    return create_deep_agent(
+        model=model,
+        system_prompt="PARENT_PROMPT_PREFIX",
+        subagents=[
+            {
+                "name": "forked",
+                "description": "Fork worker.",
+                "system_prompt": "FORK_SUFFIX",
+                "tools": [],
+                "fork": True,
+            }
+        ],
+        **kwargs,
+    )
+
+
+def _invoke_and_capture_parent_fork(model: _RecordingChatModel, **kwargs: Any) -> tuple[list[Any], list[Any]]:
+    agent = _make_fork_agent(model, **kwargs)
+    agent.invoke({"messages": [HumanMessage(content="MAIN_USER_MSG")]})
+
+    assert len(model.recorded_calls) >= 2
+    return model.recorded_calls[0], model.recorded_calls[1]
+
+
+def _write_skill(root: Path, *, name: str = "parity-skill") -> str:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"""---
+name: {name}
+description: Skill for fork prompt parity.
+---
+
+# {name}
+
+Keep prompt cache prefixes stable.
+""",
+        encoding="utf-8",
+    )
+    return str(root)
 
 
 class TestForkSubagents:
@@ -173,6 +253,96 @@ class TestForkSubagents:
         assert [m.content for m in seeded] == ["cached parent context", "do thing"]
         assert all(not isinstance(m, AIMessage) for m in seeded)
         assert all(not isinstance(m, ToolMessage) for m in seeded)
+
+    def test_fork_drops_entire_current_ai_turn_with_parallel_task_calls(self) -> None:
+        fork_runnable = _RecordingRunnable()
+        task_tool = _build_task_tool(
+            [
+                {"name": "forked", "description": "Fork worker.", "runnable": fork_runnable, "fork": True},
+            ]
+        )
+
+        parent_msgs = [
+            HumanMessage(content="cached parent context"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"description": "first task", "subagent_type": "forked"},
+                        "id": "tc-current",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "task",
+                        "args": {"description": "parallel sibling", "subagent_type": "forked"},
+                        "id": "tc-sibling",
+                        "type": "tool_call",
+                    },
+                ],
+            ),
+        ]
+
+        task_tool.func(
+            description="first task",
+            subagent_type="forked",
+            runtime=_make_tool_runtime(state={"messages": parent_msgs}, tool_call_id="tc-current"),
+        )
+
+        seeded = fork_runnable.state_inputs[0]["messages"]
+        assert [m.content for m in seeded] == ["cached parent context", "first task"]
+        assert all(not isinstance(m, AIMessage) for m in seeded)
+
+    def test_fork_preserves_prior_completed_tool_history_when_trimming_current_task(self) -> None:
+        fork_runnable = _RecordingRunnable()
+        task_tool = _build_task_tool(
+            [
+                {"name": "forked", "description": "Fork worker.", "runnable": fork_runnable, "fork": True},
+            ]
+        )
+
+        prior_tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search",
+                    "args": {"query": "cacheable context"},
+                    "id": "tc-prior",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        prior_tool_result = ToolMessage(content="prior result", tool_call_id="tc-prior")
+        parent_msgs = [
+            HumanMessage(content="earlier user context"),
+            prior_tool_call,
+            prior_tool_result,
+            AIMessage(content="prior answer"),
+            HumanMessage(content="current cached request"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"description": "fork now", "subagent_type": "forked"},
+                        "id": "tc-current",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        ]
+
+        task_tool.func(
+            description="fork now",
+            subagent_type="forked",
+            runtime=_make_tool_runtime(state={"messages": parent_msgs}, tool_call_id="tc-current"),
+        )
+
+        seeded = fork_runnable.state_inputs[0]["messages"]
+        assert seeded[:-1] == parent_msgs[:-1]
+        assert seeded[-1].content == "fork now"
+        assert prior_tool_call in seeded
+        assert prior_tool_result in seeded
 
     def test_fork_sets_ls_agent_type_to_fork_subagent(self) -> None:
         fork_runnable = _RecordingRunnable()
@@ -274,6 +444,150 @@ class TestForkSubagents:
             f"Fork's own instructions were not injected as a preamble into the "
             f"trailing HumanMessage. Last HumanMessage content: {last_human.content!r}"
         )
+
+    def test_fork_system_prompt_matches_parent_with_memory(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        memory_path = str(tmp_path / "AGENTS.md")
+        backend.upload_files([(memory_path, b"# Memory\nPreserve this cached memory block.")])
+        model = _RecordingChatModel()
+
+        parent_input, fork_input = _invoke_and_capture_parent_fork(
+            model,
+            backend=backend,
+            memory=[memory_path],
+        )
+
+        parent_system = _system_text(parent_input)
+        fork_system = _system_text(fork_input)
+        assert parent_system == fork_system
+        assert "Preserve this cached memory block." in parent_system
+
+    def test_fork_system_prompt_matches_parent_with_async_subagents(self) -> None:
+        model = _RecordingChatModel()
+        agent = create_deep_agent(
+            model=model,
+            system_prompt="PARENT_PROMPT_PREFIX",
+            subagents=[
+                {
+                    "name": "remote-researcher",
+                    "description": "Remote async worker.",
+                    "graph_id": "remote_graph",
+                },
+                {
+                    "name": "forked",
+                    "description": "Fork worker.",
+                    "system_prompt": "FORK_SUFFIX",
+                    "tools": [],
+                    "fork": True,
+                },
+            ],
+        )
+        agent.invoke({"messages": [HumanMessage(content="MAIN_USER_MSG")]})
+
+        parent_system = _system_text(model.recorded_calls[0])
+        fork_system = _system_text(model.recorded_calls[1])
+        assert parent_system == fork_system
+        assert "Available async subagent types:" in parent_system
+        assert "- remote-researcher: Remote async worker." in parent_system
+
+    def test_fork_system_prompt_matches_parent_with_top_level_skills(self, tmp_path: Path) -> None:
+        skills_root = _write_skill(tmp_path / "skills")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        model = _RecordingChatModel()
+
+        parent_input, fork_input = _invoke_and_capture_parent_fork(
+            model,
+            backend=backend,
+            skills=[skills_root],
+        )
+
+        parent_system = _system_text(parent_input)
+        fork_system = _system_text(fork_input)
+        assert parent_system == fork_system
+        assert "Skill for fork prompt parity." in parent_system
+
+    def test_fork_system_prompt_matches_parent_with_top_level_system_middleware(self) -> None:
+        model = _RecordingChatModel()
+
+        parent_input, fork_input = _invoke_and_capture_parent_fork(
+            model,
+            middleware=[_SystemAppendingMiddleware("CUSTOM_PARENT_SYSTEM_APPEND")],
+        )
+
+        parent_system = _system_text(parent_input)
+        fork_system = _system_text(fork_input)
+        assert parent_system == fork_system
+        assert "CUSTOM_PARENT_SYSTEM_APPEND" in parent_system
+
+    def test_fork_available_agents_block_matches_parent_with_multiple_subagents(self) -> None:
+        model = _RecordingChatModel()
+        agent = create_deep_agent(
+            model=model,
+            system_prompt="PARENT_PROMPT_PREFIX",
+            subagents=[
+                {
+                    "name": "plain",
+                    "description": "Plain worker.",
+                    "system_prompt": "PLAIN",
+                    "tools": [],
+                },
+                {
+                    "name": "forked",
+                    "description": "Fork worker.",
+                    "system_prompt": "FORK_SUFFIX",
+                    "tools": [],
+                    "fork": True,
+                },
+            ],
+        )
+        agent.invoke({"messages": [HumanMessage(content="MAIN_USER_MSG")]})
+
+        parent_system = _system_text(model.recorded_calls[0])
+        fork_system = _system_text(model.recorded_calls[1])
+        assert parent_system == fork_system
+        assert "- general-purpose: General-purpose agent for researching complex questions" in parent_system
+        assert "- plain: Plain worker." in parent_system
+        assert "- forked: Fork worker." in parent_system
+
+    def test_fork_does_not_receive_recursive_task_tool(self) -> None:
+        model = _RecordingChatModel()
+        agent = _make_fork_agent(model)
+        agent.invoke({"messages": [HumanMessage(content="MAIN_USER_MSG")]})
+
+        assert len(model.bound_tools_calls) >= 2
+        parent_tool_names = _tool_names(model.bound_tools_calls[0])
+        fork_tool_names = _tool_names(model.bound_tools_calls[1])
+        assert "task" in parent_tool_names
+        assert "task" not in fork_tool_names
+
+    def test_fork_preserves_system_message_content_blocks(self) -> None:
+        model = _RecordingChatModel()
+        system_prompt = SystemMessage(
+            content=[
+                {"type": "text", "text": "PARENT_BLOCK_A"},
+                {"type": "text", "text": "\nPARENT_BLOCK_B"},
+            ]
+        )
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=system_prompt,
+            subagents=[
+                {
+                    "name": "forked",
+                    "description": "Fork worker.",
+                    "system_prompt": "FORK_SUFFIX",
+                    "tools": [],
+                    "fork": True,
+                }
+            ],
+        )
+        agent.invoke({"messages": [HumanMessage(content="MAIN_USER_MSG")]})
+
+        parent_system_message = next(m for m in model.recorded_calls[0] if isinstance(m, SystemMessage))
+        fork_system_message = next(m for m in model.recorded_calls[1] if isinstance(m, SystemMessage))
+        assert fork_system_message.content == parent_system_message.content
+        assert "PARENT_BLOCK_A" in str(parent_system_message.content)
+        assert "PARENT_BLOCK_B" in str(parent_system_message.content)
 
     def test_fork_without_model_inherits_parent_model(self) -> None:
         parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="noop")]))

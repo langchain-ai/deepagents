@@ -66,8 +66,8 @@ class _UsageCapture(BaseCallbackHandler):
     and read when it ends.
 
     Classes:
-    - ``fork-subagent``: system message contains both the parent prefix
-      and the worker's fork suffix — the composed fork prompt.
+    - ``fork-subagent``: system message contains the parent prefix and the
+      trailing HumanMessage contains the fork preamble marker.
     - ``subagent``: system message contains only the worker's suffix —
       non-fork subagent.
     - ``main``: everything else — the top-level agent's own calls.

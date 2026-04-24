@@ -30,7 +30,7 @@ from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import ASYNC_TASK_SYSTEM_PROMPT, AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -228,9 +228,14 @@ class _ForkSystemPromptPadding(AgentMiddleware[Any, Any, Any]):
     recursively spawn more subagents).
     """
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, name: str) -> None:
         super().__init__()
         self._text = text
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def wrap_model_call(
         self,
@@ -251,26 +256,6 @@ class _ForkSystemPromptPadding(AgentMiddleware[Any, Any, Any]):
 
         new_system_message = append_to_system_message(request.system_message, self._text)
         return await handler(request.override(system_message=new_system_message))
-
-
-def _flatten_system_prompt(prompt: str | SystemMessage) -> str:
-    """Return the parent system prompt as a plain string.
-
-    Used to feed the parent's system prompt into the fork's runnable verbatim.
-    If the parent supplied a ``SystemMessage``, its text content blocks are
-    joined into a string; non-text blocks (images, attachments) are dropped
-    since they have no meaning in the forked subagent's context and would
-    not participate in prompt-cache alignment anyway.
-    """
-    if isinstance(prompt, SystemMessage):
-        text_parts: list[str] = []
-        for block in prompt.content_blocks:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
-        return "".join(text_parts)
-    return prompt
 
 
 def _validate_fork_model_matches_parent(
@@ -643,7 +628,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 fork_dict["_fork_user_system_prompt"] = spec["system_prompt"]
                 fork_dict["_fork_profile"] = _subagent_profile
                 fork_dict["_fork_permissions"] = subagent_permissions
-                fork_dict["_fork_skills"] = subagent_skills
+                fork_dict["_fork_skills"] = skills if skills is not None else subagent_skills
+                fork_dict["_fork_parent_middleware"] = list(middleware or [])
                 fork_dict["_fork_user_middleware"] = list(spec.get("middleware", []))
             else:
                 # Non-fork subagent: build middleware list now (no fork-specific ordering requirements).
@@ -698,9 +684,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     #
     # Two things must line up:
     #   1. The ``system_prompt`` handed to the fork's ``create_agent`` is
-    #      what that agent sends as its initial SystemMessage. We set it to
-    #      the parent's flattened top-level system prompt (same bytes the
-    #      parent's ``create_agent`` sees).
+    #      exactly the parent's final top-level system prompt, preserving
+    #      string prompts and ``SystemMessage`` content blocks as-is.
     #   2. The fork's middleware stack mirrors the parent's stack ordering.
     #      Each middleware that appends to the system message (TodoList,
     #      Skills, Filesystem, ...) runs in the same order, so the running
@@ -715,8 +700,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # match the fork's real environment.
     agents_desc_for_fork = "\n".join(f"- {s['name']}: {s['description']}" for s in inline_subagents)
     fork_subagent_padding_text = TASK_SYSTEM_PROMPT + "\n\nAvailable subagent types:\n" + agents_desc_for_fork
-    flattened_parent_system = _flatten_system_prompt(final_system_prompt)
-
+    if async_subagents:
+        async_agents_desc_for_fork = "\n".join(f"- {s['name']}: {s['description']}" for s in async_subagents)
+        fork_async_padding_text = ASYNC_TASK_SYSTEM_PROMPT + "\n\nAvailable async subagent types:\n" + async_agents_desc_for_fork
+    else:
+        fork_async_padding_text = None
     for fork_spec in inline_subagents:
         if not fork_spec.get("fork"):
             continue
@@ -725,6 +713,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         fork_profile: _HarnessProfile = fork_dict.pop("_fork_profile")
         fork_permissions = fork_dict.pop("_fork_permissions")
         fork_skills = fork_dict.pop("_fork_skills")
+        fork_parent_middleware = fork_dict.pop("_fork_parent_middleware")
         fork_user_middleware = fork_dict.pop("_fork_user_middleware")
 
         # Build middleware stack in parent order: TodoList, (Skills), Filesystem,
@@ -739,23 +728,34 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 custom_tool_descriptions=fork_profile.tool_description_overrides,
             )
         )
-        fork_middleware.append(_ForkSystemPromptPadding(text=fork_subagent_padding_text))
+        fork_middleware.append(_ForkSystemPromptPadding(text=fork_subagent_padding_text, name="ForkSubAgentSystemPromptPadding"))
         fork_middleware.extend(
             [
                 create_summarization_middleware(fork_dict["model"], backend),
                 PatchToolCallsMiddleware(),
             ]
         )
+        if fork_async_padding_text is not None:
+            fork_middleware.append(_ForkSystemPromptPadding(text=fork_async_padding_text, name="ForkAsyncSubAgentSystemPromptPadding"))
+        fork_middleware.extend(fork_parent_middleware)
         fork_middleware.extend(fork_user_middleware)
         fork_middleware.extend(_resolve_extra_middleware(fork_profile))
         if fork_profile.excluded_tools:
             fork_middleware.append(_ToolExclusionMiddleware(excluded=fork_profile.excluded_tools))
         fork_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        if memory is not None:
+            fork_middleware.append(
+                MemoryMiddleware(
+                    backend=backend,
+                    sources=memory,
+                    add_cache_control=True,
+                )
+            )
         if fork_permissions:
             fork_middleware.append(_PermissionMiddleware(rules=fork_permissions, backend=backend))
 
         fork_dict["middleware"] = fork_middleware
-        fork_dict["system_prompt"] = flattened_parent_system
+        fork_dict["system_prompt"] = final_system_prompt
 
         fork_tool_names = [n for n in (_tool_name(t) for t in fork_spec.get("tools", []) or []) if n]
         tools_line = ", ".join(f"`{n}`" for n in fork_tool_names) if fork_tool_names else "(none — rely on built-in filesystem/todo tools)"

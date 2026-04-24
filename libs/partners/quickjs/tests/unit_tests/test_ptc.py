@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
-from quickjs_rs import Runtime
+from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
 from langchain_quickjs._ptc import (
@@ -17,7 +17,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
     to_camel_case,
 )
-from langchain_quickjs._repl import _QuickjsWorker, _ThreadREPL
+from langchain_quickjs._repl import _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -67,8 +67,8 @@ def _echo_tool(name: str = "echo") -> BaseTool:
 
 
 @pytest.fixture
-def worker() -> _QuickjsWorker:
-    w = _QuickjsWorker()
+def worker() -> ThreadWorker:
+    w = ThreadWorker()
     try:
         yield w
     finally:
@@ -76,7 +76,7 @@ def worker() -> _QuickjsWorker:
 
 
 @pytest.fixture
-def runtime(worker: _QuickjsWorker) -> Runtime:
+def runtime(worker: ThreadWorker) -> Runtime:
     async def _make() -> Runtime:
         return Runtime()
 
@@ -92,7 +92,7 @@ def runtime(worker: _QuickjsWorker) -> Runtime:
 
 
 @pytest.fixture
-def repl(worker: _QuickjsWorker, runtime: Runtime) -> _ThreadREPL:
+def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
     return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
 
 

@@ -8,10 +8,10 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import SystemMessage
-from quickjs_rs import Runtime
+from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
-from langchain_quickjs._repl import _QuickjsWorker, _Registry, _ThreadREPL, format_outcome
+from langchain_quickjs._repl import _Registry, _ThreadREPL, format_outcome
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -19,8 +19,8 @@ from langchain_quickjs._repl import _QuickjsWorker, _Registry, _ThreadREPL, form
 
 
 @pytest.fixture
-def worker() -> _QuickjsWorker:
-    w = _QuickjsWorker()
+def worker() -> ThreadWorker:
+    w = ThreadWorker()
     try:
         yield w
     finally:
@@ -28,7 +28,7 @@ def worker() -> _QuickjsWorker:
 
 
 @pytest.fixture
-def runtime(worker: _QuickjsWorker) -> Runtime:
+def runtime(worker: ThreadWorker) -> Runtime:
     """A fresh QuickJS Runtime for tests that drive _ThreadREPL directly."""
 
     async def _make() -> Runtime:
@@ -46,7 +46,7 @@ def runtime(worker: _QuickjsWorker) -> Runtime:
 
 
 @pytest.fixture
-def repl(worker: _QuickjsWorker, runtime: Runtime) -> _ThreadREPL:
+def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
     return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
 
 
@@ -150,7 +150,7 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
     assert second.result == "42"
 
 
-def test_threads_are_isolated(worker: _QuickjsWorker, runtime: Runtime) -> None:
+def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     a = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
     b = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
     a.eval_sync("let shared = 'from_a'")
@@ -179,7 +179,7 @@ def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
     assert outcome.error_type == "SyntaxError"
 
 
-def test_timeout(worker: _QuickjsWorker, runtime: Runtime) -> None:
+def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
     tight = _ThreadREPL(worker, runtime, timeout=0.1, capture_console=True)
     outcome = tight.eval_sync("while(true){}")
     assert outcome.error_type == "Timeout"
@@ -200,7 +200,7 @@ def test_console_log_is_captured(repl: _ThreadREPL) -> None:
     assert "<result>2</result>" in formatted
 
 
-def test_console_can_be_disabled(worker: _QuickjsWorker, runtime: Runtime) -> None:
+def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None:
     quiet = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=False)
     outcome = quiet.eval_sync("typeof console")
     # With the bridge off, the global is absent.

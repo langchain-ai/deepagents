@@ -13,6 +13,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -25,13 +27,11 @@ from quickjs_rs import (
     MemoryLimitError,
     ModuleScope,
     Runtime,
+    ThreadWorker,
 )
 from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
-
-from langchain_core.messages import ToolMessage
-from langgraph.types import Command
 
 from langchain_quickjs._ptc import to_camel_case
 from langchain_quickjs._skills import LoadedSkill, SkillLoadError, aload_skill
@@ -303,90 +303,6 @@ def _inject_tool_args_for_ptc(
     return enriched
 
 
-class _QuickjsWorker:
-    """Dedicated OS thread with its own asyncio event loop.
-
-    ``quickjs_rs.Runtime`` and ``quickjs_rs.Context`` are ``!Send`` — they
-    panic if used from a thread other than the one that created them.
-    This worker owns that thread; all Runtime/Context operations are
-    dispatched here via ``run_sync`` (blocks caller) or ``run_async``
-    (returns an awaitable tied to the caller's loop).
-    """
-
-    def __init__(self) -> None:
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._thread: threading.Thread | None = None
-        self._ready = threading.Event()
-        self._start_lock = threading.Lock()
-
-    def _ensure_started(self) -> None:
-        if self._loop is not None:
-            return
-        with self._start_lock:
-            if self._loop is not None:
-                return
-
-            def _runner() -> None:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._loop = loop
-                self._ready.set()
-                try:
-                    loop.run_forever()
-                finally:
-                    try:
-                        pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
-                        for t in pending:
-                            t.cancel()
-                        if pending:
-                            loop.run_until_complete(
-                                asyncio.gather(*pending, return_exceptions=True)
-                            )
-                    except Exception:  # noqa: BLE001 — shutdown is best-effort
-                        pass
-                    loop.close()
-
-            self._thread = threading.Thread(
-                target=_runner, name="quickjs-worker", daemon=True
-            )
-            self._thread.start()
-            self._ready.wait()
-
-    def run_sync(self, coro: Any) -> Any:
-        """Submit ``coro`` to the worker loop and block until it completes."""
-        self._ensure_started()
-        assert self._loop is not None
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
-
-    def run_async(self, coro: Any) -> asyncio.Future[Any]:
-        """Submit ``coro`` to the worker loop; return a future on the caller's loop."""
-        self._ensure_started()
-        assert self._loop is not None
-        return asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, self._loop))
-
-    def close(self) -> None:
-        if self._loop is None or self._thread is None:
-            return
-        # Force a gc pass on the worker thread so any unreachable
-        # QjsHandle / Context objects get finalized here, where the
-        # owning thread still exists. Without this, a later gc on any
-        # other thread (e.g. pytest's gc_collect_harder at session end)
-        # would hit the !Send drop check and raise.
-        async def _gc() -> None:
-            import gc  # noqa: PLC0415 — deliberate: runs inside the worker loop
-
-            gc.collect()
-
-        try:
-            asyncio.run_coroutine_threadsafe(_gc(), self._loop).result(timeout=1.0)
-        except Exception:  # noqa: BLE001 — best-effort, don't block shutdown
-            pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5.0)
-        self._loop = None
-        self._thread = None
-
-
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
@@ -397,7 +313,7 @@ class _ThreadREPL:
 
     def __init__(
         self,
-        worker: _QuickjsWorker,
+        worker: ThreadWorker,
         runtime: Runtime,
         *,
         timeout: float,
@@ -582,7 +498,7 @@ class _ThreadREPL:
         await self._worker.run_async(self._ainstall_module_scope(scope))
 
     async def _ainstall_module_scope(self, scope: ModuleScope) -> None:
-        self._ctx.install(scope)
+        self._runtime.install(scope)
 
     async def _aeval_async(self, code: str) -> EvalOutcome:
         # Hold the lock around the whole eval_async call so concurrent
@@ -693,13 +609,13 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
-    _worker: _QuickjsWorker = field(default_factory=_QuickjsWorker)
+    _worker: ThreadWorker = field(default_factory=ThreadWorker)
     _runtime: Runtime | None = None
     _repls: dict[str, _ThreadREPL] = field(default_factory=dict)
     _init_lock: threading.Lock = field(default_factory=threading.Lock)
     # Per-Runtime skill install cache. `ModuleScope` storage is per-
     # Runtime in quickjs-rs v0.4 (see src/runtime.rs:132-146), and
-    # ``ctx.install`` is additive — re-install of a bare specifier
+    # ``runtime.install`` is additive — re-install of a bare specifier
     # after first import is a silent no-op. So we only need to install
     # each skill *once* per Runtime, even if multiple threads reference
     # it. Successes go under ``loaded``; failures are cached too so a

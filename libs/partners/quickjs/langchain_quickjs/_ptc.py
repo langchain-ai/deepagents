@@ -67,7 +67,11 @@ def filter_tools_for_ptc(
     """
     if config is False:
         return []
-    if isinstance(config, list) and config and any(isinstance(t, BaseTool) for t in config):
+    if (
+        isinstance(config, list)
+        and config
+        and any(isinstance(t, BaseTool) for t in config)
+    ):
         if any(not isinstance(t, BaseTool) for t in config):
             msg = "ptc list must be all str or all BaseTool, not mixed"
             raise TypeError(msg)

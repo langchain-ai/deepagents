@@ -374,8 +374,10 @@ class TestNoMcpArg:
 class TestMcpCommandDispatch:
     """Tests for `cli_main()` dispatch of `deepagents mcp` subcommands."""
 
-    def test_mcp_login_uses_global_mcp_config_fallback(self) -> None:
-        """`deepagents mcp login` falls back to top-level `--mcp-config`."""
+    def test_mcp_login_rejects_global_mcp_config(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`deepagents mcp login` errors if only top-level `--mcp-config` is set."""
         from deepagents_cli.main import cli_main
 
         with (
@@ -401,14 +403,13 @@ class TestMcpCommandDispatch:
         ):
             cli_main()
 
-        assert exc_info.value.code == 0
-        mock_login.assert_awaited_once_with(
-            server="notion",
-            config_path="/global/config.json",
-        )
+        assert exc_info.value.code == 2
+        mock_login.assert_not_awaited()
+        err = capsys.readouterr().err
+        assert "--mcp-config is not supported for 'mcp login'" in err
 
-    def test_mcp_login_prefers_subcommand_config_over_global(self) -> None:
-        """Subcommand `--config` overrides the top-level `--mcp-config`."""
+    def test_mcp_login_accepts_subcommand_config_with_global(self) -> None:
+        """Subcommand `--config` is used even if top-level `--mcp-config` is set."""
         from deepagents_cli.main import cli_main
 
         with (

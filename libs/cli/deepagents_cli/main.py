@@ -1777,14 +1777,18 @@ def cli_main() -> None:
             from deepagents_cli.ui import show_mcp_help
 
             if args.mcp_command == "login":
-                # Subcommand-scoped `--config` wins over the global
-                # `--mcp-config` if both are set.
-                config_path = args.config_path or getattr(args, "mcp_config", None)
+                if getattr(args, "mcp_config", None) and not args.config_path:
+                    print(  # noqa: T201
+                        "--mcp-config is not supported for 'mcp login'. "
+                        "Use: deepagents mcp login <server> --config <path>",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
                 sys.exit(
                     asyncio.run(
                         run_mcp_login(
                             server=args.server,
-                            config_path=config_path,
+                            config_path=args.config_path,
                         )
                     )
                 )

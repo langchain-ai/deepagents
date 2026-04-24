@@ -778,3 +778,83 @@ class TestRecentAgentIsValid:
 
         with patch("pathlib.Path.is_dir", side_effect=PermissionError("denied")):
             assert _recent_agent_is_valid("coder") is False
+
+
+class TestUpdateSubcommand:
+    """Control-flow tests for `deepagents update` and `--update`.
+
+    Each branch has a destructive or user-visible failure mode (editable
+    install would have pip clobber a dev checkout; PyPI-unreachable must
+    not be confused with up-to-date). These tests pin the dispatch order.
+    """
+
+    @staticmethod
+    def _run_update(
+        *,
+        editable: bool,
+        is_update_available_return: tuple[bool, str | None],
+    ) -> tuple[int, MagicMock, MagicMock]:
+        """Invoke `cli_main()` with `update` subcommand; return exit code + mocks."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "update"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.config._is_editable_install", return_value=editable),
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=is_update_available_return,
+            ) as is_update_mock,
+            patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_upgrade_mock,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        return int(exc_info.value.code or 0), is_update_mock, perform_upgrade_mock
+
+    def test_editable_install_skips_upgrade(self) -> None:
+        """Editable install exits 0 without calling `is_update_available`/upgrade.
+
+        A regression here would run `pip install --upgrade` on an editable
+        checkout and overwrite the dev install.
+        """
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=True,
+            is_update_available_return=(True, "99.0.0"),
+        )
+        assert code == 0
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_called()
+
+    def test_pypi_unreachable_exits_nonzero(self) -> None:
+        """`(False, None)` from `is_update_available` surfaces as exit 1."""
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(False, None),
+        )
+        assert code == 1
+        perform_upgrade_mock.assert_not_called()
+
+    def test_up_to_date_exits_zero_without_upgrade(self) -> None:
+        """`(False, "x.y.z")` exits 0 and does not call `perform_upgrade`."""
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(False, "1.2.3"),
+        )
+        assert code == 0
+        perform_upgrade_mock.assert_not_called()
+
+    def test_update_available_runs_upgrade(self) -> None:
+        """`(True, "x.y.z")` triggers `perform_upgrade` and exits 0 on success."""
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+        )
+        assert code == 0
+        perform_upgrade_mock.assert_awaited_once()

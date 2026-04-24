@@ -1,15 +1,47 @@
 """Tests for version-related functionality."""
 
+from __future__ import annotations
+
 import subprocess
 import sys
 import tomllib
 from importlib.metadata import version as pkg_version
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from deepagents_cli._version import __version__
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+@pytest.fixture(autouse=True)
+def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
+    """Prevent `/version` tests from hitting real PyPI for CLI or SDK release age.
+
+    The `DeepAgentsApp` background `_check_for_updates()` worker calls
+    `is_update_available()` on startup, which makes a live PyPI request.
+    Without blocking this, a newly published CLI version on PyPI mutates
+    `app._update_available` mid-test, breaking assertions that assume the
+    initial `(False, None)` state.
+
+    Tests that exercise SDK release-age behavior directly override
+    `CACHE_FILE` themselves; this fixture only ensures tests that don't care
+    about that field never make a network request on cache miss.
+    """
+    cache_path = tmp_path / "latest_version.json"
+    with (
+        patch("deepagents_cli.update_check.CACHE_FILE", cache_path),
+        patch("deepagents_cli.update_check.get_sdk_release_time", return_value=None),
+        patch(
+            "deepagents_cli.update_check.is_update_available",
+            return_value=(False, None),
+        ),
+    ):
+        yield
 
 
 def test_version_matches_pyproject() -> None:
@@ -31,7 +63,7 @@ def test_version_matches_pyproject() -> None:
 
 
 def test_cli_version_flag() -> None:
-    """Verify that `--version` flag outputs the correct version."""
+    """Verify that `--version` flag outputs the correct version and extras."""
     result = subprocess.run(
         [sys.executable, "-m", "deepagents_cli.main", "--version"],
         capture_output=True,
@@ -43,6 +75,11 @@ def test_cli_version_flag() -> None:
     assert f"deepagents-cli {__version__}" in result.stdout
     sdk_version = pkg_version("deepagents")
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
+    # Extras block is plain-text (no markdown table or headings).
+    assert "Installed optional dependencies:" in result.stdout
+    assert "langchain-anthropic" in result.stdout
+    assert "| Extra" not in result.stdout
+    assert "###" not in result.stdout
 
 
 async def test_version_slash_command_message_format() -> None:
@@ -59,9 +96,31 @@ async def test_version_slash_command_message_format() -> None:
         await pilot.pause()
 
         app_msgs = app.query(AppMessage)
-        content = str(app_msgs[-1]._content)
+        plain = [m for m in app_msgs if not m._is_markdown]
+        content = str(plain[-1]._content)
         assert f"deepagents-cli version: {__version__}" in content
         assert f"deepagents (SDK) version: {sdk_version}" in content
+
+
+async def test_version_slash_command_includes_optional_dependencies() -> None:
+    """Verify `/version` mounts a markdown message with the extras table."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._handle_command("/version")
+        await pilot.pause()
+
+        md_msgs = [m for m in app.query(AppMessage) if m._is_markdown]
+        assert md_msgs
+        source = str(md_msgs[-1]._content)
+        assert "### Installed optional dependencies" in source
+        assert "| Extra" in source
+        assert "| Package" in source
+        assert "| Version" in source
+        assert "langchain-anthropic" in source
 
 
 async def test_version_slash_command_sdk_unavailable() -> None:
@@ -83,7 +142,7 @@ async def test_version_slash_command_sdk_unavailable() -> None:
             await app._handle_command("/version")
         await pilot.pause()
 
-        app_msgs = app.query(AppMessage)
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert f"deepagents-cli version: {__version__}" in content
         assert "deepagents (SDK) version: unknown" in content
@@ -102,9 +161,180 @@ async def test_version_slash_command_cli_version_unavailable() -> None:
             await app._handle_command("/version")
         await pilot.pause()
 
-        app_msgs = app.query(AppMessage)
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "deepagents-cli version: unknown" in content
+
+
+async def test_version_slash_command_includes_release_age(tmp_path) -> None:
+    """Verify `/version` appends the cached release age for the CLI version."""
+    import json
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    cache_path = tmp_path / "latest_version.json"
+    iso = (datetime.now(tz=UTC) - timedelta(days=3)).isoformat()
+    cache_path.write_text(
+        json.dumps(
+            {
+                "release_times": {__version__: iso},
+                "checked_at": time.time(),
+            }
+        )
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch("deepagents_cli.update_check.CACHE_FILE", cache_path):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert f"deepagents-cli version: {__version__}, released " in content
+        assert "ago" in content
+
+
+async def test_version_slash_command_includes_sdk_release_age() -> None:
+    """Verify `/version` appends the cached release age for the installed SDK."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    sdk_version = pkg_version("deepagents")
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Override the autouse stub to simulate a populated cache.
+        with (
+            patch(
+                "deepagents_cli.update_check.get_sdk_release_time",
+                return_value="2026-04-10T12:00:00Z",
+            ),
+            patch(
+                "deepagents_cli.sessions.format_relative_timestamp",
+                return_value="1w ago",
+            ),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert f"deepagents (SDK) version: {sdk_version}, released 1w ago" in content
+
+
+async def test_version_slash_command_mentions_update_available() -> None:
+    """Verify `/version` appends an update-available hint when one was detected."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._update_available = (True, "99.99.99")
+        await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available: v99.99.99" in content
+        assert "Run: " in content
+
+
+async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None:
+    """Verify `/version` does not add the update hint when none is pending."""
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Default state — no update detected by the background check.
+        assert app._update_available == (False, None)
+        await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available" not in content
+
+
+async def test_update_slash_command_editable_install_short_circuits() -> None:
+    """Editable install must not invoke `perform_upgrade` from the TUI.
+
+    A regression here would run `pip install --upgrade deepagents-cli` on
+    an editable dev checkout and overwrite the local install.
+    """
+    from unittest.mock import AsyncMock
+
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_cli.config._is_editable_install",
+                return_value=True,
+            ),
+            patch("deepagents_cli.update_check.is_update_available") as is_update_mock,
+            patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Updates are not available for editable installs" in content
+        assert f"Currently on v{__version__}" in content
+
+
+async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
+    """`latest is None` from `is_update_available` must not run upgrade.
+
+    Regression guard: collapsing this branch into the up-to-date message
+    would tell users they're current when the check actually failed.
+    """
+    from unittest.mock import AsyncMock
+
+    from deepagents_cli.app import DeepAgentsApp
+    from deepagents_cli.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_cli.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=(False, None),
+            ),
+            patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Could not determine the latest version" in content
 
 
 def test_help_mentions_version_flag() -> None:

@@ -225,6 +225,7 @@ class TextualUIAdapter:
             ]
             | None
         ) = None,
+        on_tool_complete: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -257,6 +258,14 @@ class TextualUIAdapter:
         """Async callback for `ask_user` interrupts.
 
         When awaited, returns a `Future` that resolves to user answers.
+        """
+
+        self._on_tool_complete = on_tool_complete
+        """Sync callback fired after each `ToolMessage` is processed.
+
+        The app uses this to refresh the footer's git branch as soon as an
+        agent-executed tool (e.g. `git checkout`) returns, instead of waiting
+        for the full turn to finish.
         """
 
         # State tracking
@@ -704,6 +713,17 @@ async def execute_task_textual(
                         # bottom of the messages container.
                         if adapter._set_spinner and not adapter._current_tool_messages:
                             await adapter._set_spinner("Thinking")
+
+                        if adapter._on_tool_complete is not None:
+                            try:
+                                adapter._on_tool_complete()
+                            except Exception:
+                                # A footer refresh failure must never abort
+                                # agent streaming — log and keep going.
+                                logger.warning(
+                                    "on_tool_complete callback failed",
+                                    exc_info=True,
+                                )
                         continue
 
                     # Extract token usage (before content_blocks check
@@ -761,9 +781,6 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide spinner when assistant starts responding
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner(None)
                                     msg_id = f"asst-{uuid.uuid4().hex[:8]}"
                                     # Mark active BEFORE mounting so pruning
                                     # (triggered by mount) won't remove it
@@ -775,6 +792,19 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
+                                    # Keep the Thinking spinner visible after
+                                    # the streaming message so the user still
+                                    # sees activity if the model pauses between
+                                    # finishing text and emitting its next
+                                    # action (e.g. a tool call). The mount
+                                    # above placed the new message at the end
+                                    # of the container; this re-anchors the
+                                    # spinner after it.
+                                    if (
+                                        adapter._set_spinner
+                                        and not adapter._current_tool_messages
+                                    ):
+                                        await adapter._set_spinner("Thinking")
 
                                 # Append just the new text chunk for smoother
                                 # streaming (uses MarkdownStream internally for

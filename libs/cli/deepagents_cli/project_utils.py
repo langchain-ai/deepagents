@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_cli._env_vars import SERVER_ENV_PREFIX
+from deepagents_cli._git import find_git_root
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -133,10 +134,7 @@ def get_server_project_context(
 
 
 def find_project_root(start_path: str | Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
-
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
+    """Find the project root by looking for git metadata.
 
     Args:
         start_path: Directory to start searching from.
@@ -146,14 +144,7 @@ def find_project_root(start_path: str | Path | None = None) -> Path | None:
         Path to the project root if found, None otherwise.
     """
     current = Path(start_path or Path.cwd()).expanduser().resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
+    return find_git_root(current)
 
 
 def find_project_agent_md(project_root: Path) -> list[Path]:

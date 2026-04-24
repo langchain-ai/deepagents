@@ -320,15 +320,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "🎉 All Checks Passed"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Get all job results (excluding 'changes' which always succeeds)
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"
 
-          # Check for failures or cancellations
-          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
-            echo "Some jobs failed or were cancelled"
+          if echo "$results" | grep -q '"failure"'; then
+            echo "Some jobs failed"
             exit 1
+          fi
+
+          # On main pushes, concurrency preemption routinely cancels
+          # in-flight jobs when a newer commit arrives — the next run will
+          # validate the latest state, so don't flag those as failures.
+          # On PRs and merge_group runs, a cancellation is almost always a
+          # human action or a real problem, so keep the gate strict.
+          if [ "$EVENT_NAME" != "push" ]; then
+            if echo "$results" | grep -q '"cancelled"'; then
+              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs)"
+              exit 1
+            fi
           fi
 
           echo "All required checks passed (skipped jobs are OK)"

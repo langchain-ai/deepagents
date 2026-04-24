@@ -42,6 +42,7 @@ on:
           - set1
           - set2
           - frontier
+          - mega
           - fast
           - open
           - anthropic
@@ -63,6 +64,7 @@ on:
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:fireworks/deepseek-v3p2"
@@ -102,8 +104,12 @@ on:
           - "openai:gpt-5.2-codex"
           - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:moonshotai/kimi-k2.5"
+          - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"

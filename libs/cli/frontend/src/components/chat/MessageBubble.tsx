@@ -74,7 +74,7 @@ const MessageBubble: FC<Props> = ({ message }) => {
   // ai (and any unknown role) — left-aligned, no background
   return (
     <div className="anim-msg flex flex-col items-start gap-2">
-      <div className="ai-bubble max-w-[90%] rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm leading-relaxed shadow-sm">
+      <div className="ai-bubble max-w-[90%] px-4 py-2.5 text-sm leading-relaxed">
         {textNodes}
       </div>
       {toolCallNodes.length > 0 && (

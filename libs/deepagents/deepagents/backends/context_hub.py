@@ -37,8 +37,8 @@ _LINKED_ENTRY_WRITE_ERROR = "Cannot write to a linked entry. Linked entries are 
 
 # Filenames that configure an agent (root agent or a sub-agent). Not
 # runtime-editable via this backend — bootstrap them out-of-band (hub UI or
-# explicit push_agent).
-_IMMUTABLE_BASENAMES = frozenset({"AGENTS.md"})
+# explicit push_agent). Match is case-insensitive (compared as lowercase).
+_IMMUTABLE_BASENAMES = frozenset({"agents.md"})
 _IMMUTABLE_WRITE_ERROR = "'/{}' is read-only. Agent configuration files are not runtime-editable."
 
 # Matches the ":<hash>" suffix appended by langsmith's _build_context_url.
@@ -128,9 +128,9 @@ class ContextHubBackend(BackendProtocol):
 
     @staticmethod
     def _is_immutable_path(hub_path: str) -> bool:
-        """Return True if ``hub_path`` is a protected agent-config file at any depth."""
+        """Return True if ``hub_path`` is a protected agent-config file at any depth (case-insensitive)."""
         basename = hub_path.rsplit("/", 1)[-1]
-        return basename in _IMMUTABLE_BASENAMES
+        return basename.lower() in _IMMUTABLE_BASENAMES
 
     def _is_under_linked_entry(self, hub_path: str) -> bool:
         """Return True if ``hub_path`` is at or under a linked entry root."""

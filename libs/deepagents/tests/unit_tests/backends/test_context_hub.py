@@ -220,12 +220,22 @@ def test_write_agents_md_at_any_depth_rejected() -> None:
     mock_client.push_agent.assert_not_called()
 
 
+def test_write_agents_md_case_insensitive_rejected() -> None:
+    """Case variations of AGENTS.md are all blocked."""
+    backend, mock_client = _make_backend()
+    for path in ("/agents.md", "/Agents.md", "/AGENTS.MD", "/subagents/x/Agents.Md"):
+        result = backend.write(path, "# attempt")
+        assert result.error is not None, f"expected rejection for {path}"
+        assert "read-only" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
 def test_write_agents_md_like_filename_allowed() -> None:
-    """Files whose names merely *contain* 'AGENTS.md' are not blocked — exact basename match only."""
+    """Files whose names merely *contain* 'AGENTS.md' are not blocked — basename must match exactly."""
     backend, mock_client = _make_backend()
     result = backend.write("/MY_AGENTS.md.bak", "not agent config")
     assert result.error is None
-    result2 = backend.write("/agents.md", "lowercase, different file")
+    result2 = backend.write("/agents.txt", "different extension")
     assert result2.error is None
     assert mock_client.push_agent.call_count == 2
 

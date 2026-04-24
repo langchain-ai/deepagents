@@ -193,12 +193,41 @@ def test_upload_root_agents_md_rejected() -> None:
     assert mock_client.push_agent.call_count == 1
 
 
-def test_write_agents_md_in_subdirectory_allowed() -> None:
-    """Only *root* AGENTS.md is the agent config; a nested AGENTS.md is just a file."""
+def test_write_subagent_agents_md_rejected() -> None:
+    """Sub-agent AGENTS.md (e.g. /subagents/reviewer/AGENTS.md) is also agent config."""
     backend, mock_client = _make_backend()
-    result = backend.write("/docs/AGENTS.md", "not the agent config")
+    result = backend.write("/subagents/reviewer/AGENTS.md", "# sub-agent config")
+    assert result.error is not None
+    assert "read-only" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_edit_subagent_agents_md_rejected() -> None:
+    backend, mock_client = _make_backend(**{"subagents/reviewer/AGENTS.md": FileEntry(type="file", content="# hello")})
+    result = backend.edit("/subagents/reviewer/AGENTS.md", "hello", "world")
+    assert result.error is not None
+    assert "read-only" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_write_agents_md_at_any_depth_rejected() -> None:
+    """Any basename AGENTS.md is treated as agent config, regardless of depth."""
+    backend, mock_client = _make_backend()
+    for path in ("/AGENTS.md", "/docs/AGENTS.md", "/a/b/c/AGENTS.md"):
+        result = backend.write(path, "# attempt")
+        assert result.error is not None, f"expected rejection for {path}"
+        assert "read-only" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_write_agents_md_like_filename_allowed() -> None:
+    """Files whose names merely *contain* 'AGENTS.md' are not blocked — exact basename match only."""
+    backend, mock_client = _make_backend()
+    result = backend.write("/MY_AGENTS.md.bak", "not agent config")
     assert result.error is None
-    mock_client.push_agent.assert_called_once()
+    result2 = backend.write("/agents.md", "lowercase, different file")
+    assert result2.error is None
+    assert mock_client.push_agent.call_count == 2
 
 
 def test_commit_failure_invalidates_cache() -> None:

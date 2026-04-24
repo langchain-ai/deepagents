@@ -1,5 +1,6 @@
 """Deep Agents package."""
 
+from deepagents._subagent_transformer import SubagentRunStream, SubagentTransformer
 from deepagents._version import __version__
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -17,6 +18,8 @@ __all__ = [
     "MemoryMiddleware",
     "SubAgent",
     "SubAgentMiddleware",
+    "SubagentRunStream",
+    "SubagentTransformer",
     "__version__",
     "create_deep_agent",
 ]

@@ -127,6 +127,15 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
+    # 5b. Vendor ContextHubBackend alongside the graph when hub-backed. The
+    # deployed bundle cannot import `deepagents_cli` (it is a dev-time CLI,
+    # not a cloud runtime dependency), so we ship a copy of the module and
+    # the generated graph imports it locally.
+    if config.memories.backend == "hub":
+        src = Path(__file__).parent / "context_hub.py"
+        shutil.copy2(src, build_dir / "_context_hub.py")
+        logger.info("Vendored %s → _context_hub.py", src.name)
+
     # 6. Generate auth.py if [auth] is configured.
     auth_present = config.auth is not None
     if config.auth is not None:
@@ -288,6 +297,8 @@ def _render_deploy_graph(
         sync_subagents_block = ""
         sync_subagents_load_call = "pass  # no sync subagents"
 
+    memories_hub_identifier = config.memories.identifier or f"-/{config.agent.name}"
+
     return DEPLOY_GRAPH_TEMPLATE.format(
         model=config.agent.model,
         sandbox_snapshot=config.sandbox.template,
@@ -300,6 +311,8 @@ def _render_deploy_graph(
         has_user_memories=has_user_memories,
         sync_subagents_block=sync_subagents_block,
         sync_subagents_load_call=sync_subagents_load_call,
+        memories_backend=config.memories.backend,
+        memories_hub_identifier=memories_hub_identifier,
     )
 
 
@@ -367,6 +380,12 @@ def _render_pyproject(
         if auth_pkg:
             deps.append(auth_pkg)
 
+    # ContextHubBackend uses AgentContext/FileEntry from langsmith 0.7.35+.
+    # deepagents floors langsmith at a lower version, so pin explicitly when
+    # the deployed graph needs the hub APIs.
+    if config.memories.backend == "hub":
+        deps.append("langsmith>=0.7.35")
+
     extra_deps_lines = "".join(f'    "{dep}",\n' for dep in deps)
 
     return PYPROJECT_TEMPLATE.format(
@@ -424,6 +443,12 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
             print(f"    {name} \u2014 {desc}")
 
     print(f"\n  Sandbox: {config.sandbox.provider}")
+    memories_backend = config.memories.backend
+    if memories_backend == "hub":
+        hub_identifier = config.memories.identifier or f"-/{config.agent.name}"
+        print(f"  Memories: hub ({hub_identifier})")
+    else:
+        print(f"  Memories: {memories_backend}")
     print(f"\n  Build directory: {build_dir}")
     generated = sorted(f.name for f in build_dir.iterdir() if f.is_file())
     print(f"  Generated files: {', '.join(generated)}")

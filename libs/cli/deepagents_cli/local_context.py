@@ -224,7 +224,7 @@ if command -v node >/dev/null 2>&1; then
   NV="$(node --version 2>/dev/null | sed 's/^v//')"
   [ -n "$NV" ] && RT="${RT:+${RT}, }Node ${NV}"
 fi
-[ -n "$RT" ] && echo "**Runtimes**: ${RT}" && echo ""
+[ -n "$RT" ] && echo "**Detected Runtimes**: ${RT}" && echo ""
 """
 
 
@@ -246,7 +246,7 @@ if $IN_GIT; then
       master) MAINS="${MAINS:+${MAINS}, }\`master\`" ;;
     esac
   done
-  [ -n "$MAINS" ] && GT="${GT}, main branch available: ${MAINS}"
+  [ -n "$MAINS" ] && GT="${GT}, ${MAINS} available"
 
   DC=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   if [ "$DC" -gt 0 ]; then
@@ -301,13 +301,18 @@ if [ -n "$FILES" ]; then
   TOTAL=$(echo "$FILES" | wc -l | tr -d ' ')
   SHOWN_FILES=$(echo "$FILES" | head -20)
   SHOWN=$(echo "$SHOWN_FILES" | wc -l | tr -d ' ')
-  echo "**Files** (${SHOWN} shown):"
+  TOTAL=${TOTAL:-0}
+  SHOWN=${SHOWN:-0}
+  if [ "$SHOWN" -lt "$TOTAL" ]; then
+    echo "**Files** (showing ${SHOWN} of ${TOTAL}):"
+  else
+    echo "**Files** (${TOTAL}):"
+  fi
   echo "$SHOWN_FILES" | while IFS= read -r f; do
     if [ -d "$f" ]; then echo "- ${f}/"
     else echo "- ${f}"
     fi
   done
-  [ "$SHOWN" -lt "$TOTAL" ] && echo "... ($((TOTAL - SHOWN)) more files)"
   echo ""
 fi"""
 
@@ -323,12 +328,19 @@ if command -v tree >/dev/null 2>&1; then
   TREE_EXCL='node_modules|.venv|__pycache__|.pytest_cache'
   TREE_EXCL="${TREE_EXCL}|.git|.mypy_cache|.ruff_cache"
   TREE_EXCL="${TREE_EXCL}|.tox|.coverage|.eggs|dist|build"
-  T=$(tree -L 3 --noreport --dirsfirst \
-    -I "$TREE_EXCL" 2>/dev/null | head -22)
-  if [ -n "$T" ]; then
+  T_FULL=$(tree -L 3 --noreport --dirsfirst \
+    -I "$TREE_EXCL" 2>/dev/null)
+  if [ -n "$T_FULL" ]; then
+    TOTAL_LINES=$(echo "$T_FULL" | wc -l | tr -d ' ')
+    T=$(echo "$T_FULL" | head -22)
+    SHOWN_LINES=$(echo "$T" | wc -l | tr -d ' ')
+    TOTAL_LINES=${TOTAL_LINES:-0}
+    SHOWN_LINES=${SHOWN_LINES:-0}
     echo "**Tree** (3 levels):"
     echo '```text'
     echo "$T"
+    [ "$SHOWN_LINES" -lt "$TOTAL_LINES" ] \
+      && echo "... ($((TOTAL_LINES - SHOWN_LINES)) more lines truncated)"
     echo '```'
     echo ""
   fi

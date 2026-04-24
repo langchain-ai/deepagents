@@ -117,15 +117,15 @@ def _make_summarization_event(cutoff: int) -> dict[str, Any]:
 SAMPLE_CONTEXT = (
     "## Local Context\n\n"
     "**Current Directory**: `/home/user/project`\n\n"
-    "**Git**: Current branch `main`, main branch available: `main`, `master`,"
+    "**Git**: Current branch `main`, `main`, `master` available,"
     " 1 uncommitted change\n\n"
-    "**Runtimes**: Python 3.12.4, Node 20.11.0\n"
+    "**Detected Runtimes**: Python 3.12.4, Node 20.11.0\n"
 )
 
 SAMPLE_CONTEXT_NO_GIT = (
     "## Local Context\n\n"
     "**Current Directory**: `/home/user/project`\n\n"
-    "**Runtimes**: Python 3.12.4\n"
+    "**Detected Runtimes**: Python 3.12.4\n"
 )
 
 
@@ -218,9 +218,7 @@ class TestLocalContextMiddleware:
         assert result is not None
         ctx = result["local_context"]
         assert "**Git**: Current branch `main`" in ctx
-        assert "main branch available:" in ctx
-        assert "`main`" in ctx
-        assert "`master`" in ctx
+        assert "`main`, `master` available" in ctx
         assert "1 uncommitted change" in ctx
 
     def test_before_agent_no_git(self) -> None:
@@ -1018,7 +1016,7 @@ class TestSectionRuntimes:
     def test_runs_and_detects_python(self, tmp_path: Path) -> None:
         out = _run_section(_section_runtimes(), tmp_path)
         # python3 is available in CI and dev; just check format
-        assert "**Runtimes**:" in out
+        assert "**Detected Runtimes**:" in out
         assert "Python " in out
 
 
@@ -1059,7 +1057,7 @@ class TestSectionGit:
     def test_main_branch_listed(self, tmp_path: Path) -> None:
         _git_init_commit(tmp_path, branch="main")
         out = _run_section(_section_git(), tmp_path, with_header=True)
-        assert "main branch available: `main`" in out
+        assert "`main` available" in out
 
     def test_uncommitted_changes_singular(self, tmp_path: Path) -> None:
         _git_init_commit(tmp_path)
@@ -1119,13 +1117,15 @@ class TestSectionFiles:
         out = _run_section(_section_files(), tmp_path)
         assert "- README.md" in out
         assert "- src/" in out
+        # Below the 20-file cap: header shows the total, not a "showing X of Y".
+        assert "**Files** (2):" in out
+        assert "showing" not in out
 
     def test_caps_at_20(self, tmp_path: Path) -> None:
         for i in range(25):
             (tmp_path / f"file{i:02d}.txt").write_text("")
         out = _run_section(_section_files(), tmp_path)
-        assert "(20 shown)" in out
-        assert "5 more files" in out
+        assert "(showing 20 of 25)" in out
 
     def test_excludes_pycache(self, tmp_path: Path) -> None:
         (tmp_path / "__pycache__").mkdir()
@@ -1167,6 +1167,29 @@ class TestSectionTree:
             check=False,
         )
         assert "**Tree**" not in result.stdout
+
+    def test_truncation_indicator_when_tree_exceeds_cap(self, tmp_path: Path) -> None:
+        """Tree output longer than 22 lines emits a truncation notice."""
+        import shutil
+
+        if shutil.which("tree") is None:
+            pytest.skip("tree not installed")
+        # Create enough top-level dirs that `tree -L 3` output exceeds 22 lines.
+        for i in range(30):
+            (tmp_path / f"d{i:02d}").mkdir()
+        out = _run_section(_section_tree(), tmp_path)
+        assert "more lines truncated" in out
+
+    def test_no_truncation_indicator_when_small(self, tmp_path: Path) -> None:
+        """Tree output at or under 22 lines does not emit truncation notice."""
+        import shutil
+
+        if shutil.which("tree") is None:
+            pytest.skip("tree not installed")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "main.py").write_text("")
+        out = _run_section(_section_tree(), tmp_path)
+        assert "truncated" not in out
 
 
 class TestSectionMakefile:

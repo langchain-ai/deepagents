@@ -43,9 +43,7 @@ def _make_backend(
 
 
 def test_read_returns_content() -> None:
-    backend, _ = _make_backend(
-        **{"AGENTS.md": FileEntry(type="file", content="# hi\nworld")}
-    )
+    backend, _ = _make_backend(**{"AGENTS.md": FileEntry(type="file", content="# hi\nworld")})
     result = backend.read("/AGENTS.md")
     assert result.error is None
     assert result.file_data is not None
@@ -139,9 +137,7 @@ def test_write_updates_cache_after_commit() -> None:
 
 
 def test_write_under_linked_entry_rejected() -> None:
-    backend, mock_client = _make_backend(
-        **{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")}
-    )
+    backend, mock_client = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
     result = backend.write("/skills/code-reviewer/prompt.md", "malicious")
 
     assert result.error is not None
@@ -150,27 +146,21 @@ def test_write_under_linked_entry_rejected() -> None:
 
 
 def test_write_at_linked_root_rejected() -> None:
-    backend, _ = _make_backend(
-        **{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")}
-    )
+    backend, _ = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
     result = backend.write("/skills/code-reviewer", "override")
     assert result.error is not None
     assert "Cannot write to a linked entry" in result.error
 
 
 def test_write_sibling_of_linked_entry_allowed() -> None:
-    backend, mock_client = _make_backend(
-        **{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")}
-    )
+    backend, mock_client = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
     result = backend.write("/skills/code-reviewer.md", "sibling")
     assert result.error is None
     mock_client.push_agent.assert_called_once()
 
 
 def test_write_under_linked_agent_rejected() -> None:
-    backend, _ = _make_backend(
-        **{"subagents/reviewer": AgentEntry(type="agent", repo_handle="reviewer")}
-    )
+    backend, _ = _make_backend(**{"subagents/reviewer": AgentEntry(type="agent", repo_handle="reviewer")})
     result = backend.write("/subagents/reviewer/config.json", "x")
     assert result.error is not None
     assert "Cannot write to a linked entry" in result.error
@@ -190,9 +180,7 @@ def test_commit_failure_invalidates_cache() -> None:
 
 
 def test_edit_replaces_single_occurrence() -> None:
-    backend, mock_client = _make_backend(
-        **{"a.md": FileEntry(type="file", content="hello world")}
-    )
+    backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="hello world")})
     result = backend.edit("/a.md", "world", "earth")
 
     assert result.error is None
@@ -353,9 +341,7 @@ def test_upload_binary_rejected() -> None:
 
 def test_upload_partial_success() -> None:
     backend, _ = _make_backend()
-    responses = backend.upload_files(
-        [("/ok.md", b"hello"), ("/bad.bin", b"\x80")]
-    )
+    responses = backend.upload_files([("/ok.md", b"hello"), ("/bad.bin", b"\x80")])
     assert len(responses) == 2
     assert responses[0].error is None
     assert responses[1].error == "invalid_path"
@@ -465,5 +451,3 @@ def test_composite_backend_routes_prefix_correctly(tmp_path: Path) -> None:
     glob_mem = composite.glob("*.md", path="/memories")
     assert glob_mem.matches is not None
     assert any(m["path"] == "/memories/notes.md" for m in glob_mem.matches)
-
-

@@ -140,9 +140,7 @@ def test_download_files_round_trip(backend) -> None:
 
 
 def test_upload_files_round_trip(backend) -> None:
-    responses = backend.upload_files(
-        [("/u1.md", b"one"), ("/u2.md", b"two"), ("/bad.bin", b"\x80\xff")]
-    )
+    responses = backend.upload_files([("/u1.md", b"one"), ("/u2.md", b"two"), ("/bad.bin", b"\x80\xff")])
     assert responses[0].error is None
     assert responses[1].error is None
     assert responses[2].error == "invalid_path"

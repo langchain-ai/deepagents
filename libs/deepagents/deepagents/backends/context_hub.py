@@ -33,10 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LINKED_ENTRY_WRITE_ERROR = (
-    "Cannot write to a linked entry. Linked entries are read-only from "
-    "this backend."
-)
+_LINKED_ENTRY_WRITE_ERROR = "Cannot write to a linked entry. Linked entries are read-only from this backend."
 
 # Matches the ":<hash>" suffix appended by langsmith's _build_context_url.
 _URL_COMMIT_SUFFIX_RE = re.compile(r":([0-9a-f]{8,64})$")
@@ -231,9 +228,7 @@ class ContextHubBackend(BackendProtocol):
             if current is None:
                 return EditResult(error=f"Error: File '{file_path}' not found")
 
-            result = perform_string_replacement(
-                current, old_string, new_string, replace_all
-            )
+            result = perform_string_replacement(current, old_string, new_string, replace_all)
             if isinstance(result, str):
                 return EditResult(error=result)
 
@@ -344,14 +339,11 @@ class ContextHubBackend(BackendProtocol):
         results: list[FileInfo] = [
             FileInfo(path=f"/{file_path}", is_dir=False)
             for file_path in cache
-            if fnmatch.fnmatch(f"/{file_path}", pattern)
-            or fnmatch.fnmatch(file_path, pattern)
+            if fnmatch.fnmatch(f"/{file_path}", pattern) or fnmatch.fnmatch(file_path, pattern)
         ]
         return GlobResult(matches=results)
 
-    def upload_files(
-        self, files: list[tuple[str, bytes]]
-    ) -> list[FileUploadResponse]:
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload text files into the hub repo.
 
         Args:
@@ -401,9 +393,7 @@ class ContextHubBackend(BackendProtocol):
             hub_path = self._strip_prefix(path)
             content = cache.get(hub_path)
             if content is not None:
-                results.append(
-                    FileDownloadResponse(path=path, content=content.encode("utf-8"))
-                )
+                results.append(FileDownloadResponse(path=path, content=content.encode("utf-8")))
             else:
                 results.append(FileDownloadResponse(path=path, error="file_not_found"))
         return results

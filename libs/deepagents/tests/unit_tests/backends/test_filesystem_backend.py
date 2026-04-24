@@ -231,6 +231,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         store=None,
         stream_writer=lambda _: None,
         config={},
+    tools=[],
     )
 
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)

@@ -377,6 +377,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 store=runtime.store,
                 config=config,
                 tool_call_id=None,
+            tools=[],
             )
             return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
         return self._backend

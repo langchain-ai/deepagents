@@ -25,6 +25,7 @@ def make_runtime(tid: str = "tc", *, store=None):
         store=store or InMemoryStore(),
         stream_writer=lambda _: None,
         config={},
+        tools=[],
     )
 
 

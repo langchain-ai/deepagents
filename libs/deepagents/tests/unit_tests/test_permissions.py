@@ -14,7 +14,7 @@ from deepagents.middleware.permissions import FilesystemPermission, _check_fs_pe
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={}, tools=[])
 
 
 def _make_backend(files: dict | None = None) -> StoreBackend:

@@ -33,7 +33,7 @@ def _make_backend(files=None):
 
 
 def _runtime():
-    return ToolRuntime(state={}, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
+    return ToolRuntime(state={}, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={}, tools=[])
 
 
 class TestFilesystemMiddlewareAsync:
@@ -574,7 +574,7 @@ class TestFilesystemMiddlewareAsync:
             {
                 "file_path": "/test.txt",
                 "content": "Hello world",
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}, tools=[]),
             }
         )
         # StoreBackend writes to the store and returns a plain string
@@ -598,7 +598,7 @@ class TestFilesystemMiddlewareAsync:
                 "file_path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}, tools=[]),
             }
         )
         # StoreBackend writes to the store and returns a plain string
@@ -623,7 +623,7 @@ class TestFilesystemMiddlewareAsync:
                 "old_string": "Hello",
                 "new_string": "Hi",
                 "replace_all": True,
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}, tools=[]),
             }
         )
         assert isinstance(result, str)
@@ -645,6 +645,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+        tools=[],
         )
 
         # Execute should return error message, not raise exception
@@ -683,6 +684,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+        tools=[],
         )
 
         backend = TimeoutCaptureSandbox()
@@ -725,6 +727,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+        tools=[],
         )
 
         backend = FormattingMockSandboxBackend()
@@ -768,6 +771,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+        tools=[],
         )
 
         backend = FailureMockSandboxBackend()
@@ -811,6 +815,7 @@ class TestFilesystemMiddlewareAsync:
             store=InMemoryStore(),
             stream_writer=lambda _: None,
             config={},
+        tools=[],
         )
 
         backend = TruncatedMockSandboxBackend()

@@ -1445,6 +1445,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             store=runtime.store,
             config=config,
             tool_call_id=None,
+        tools=[],
         )
         return self.backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
 

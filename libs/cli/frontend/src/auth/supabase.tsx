@@ -163,11 +163,55 @@ function SupabaseAuthUI() {
           view={recoveryMode ? "update_password" : "sign_in"}
           appearance={{
             theme: ThemeSupa,
+            // Two color blocks; `theme={theme}` prop below selects which one
+            // the widget uses. Keeping both matched against our CSS vars in
+            // index.css so the widget feels native to the app in either
+            // mode.
             variables: {
               default: {
                 colors: {
                   brand: "#7fc8ff",
                   brandAccent: "#99d4ff",
+                  brandButtonText: "#030710",
+                  defaultButtonBackground: "#ffffff",
+                  defaultButtonBackgroundHover: "#f2faff",
+                  defaultButtonBorder: "#b8dfff",
+                  defaultButtonText: "#030710",
+                  dividerBackground: "#e5f4ff",
+                  inputBackground: "#ffffff",
+                  inputBorder: "#b8dfff",
+                  inputBorderHover: "#99d4ff",
+                  inputBorderFocus: "#7fc8ff",
+                  inputText: "#030710",
+                  inputLabelText: "#030710",
+                  inputPlaceholder: "#6b8299",
+                  messageText: "#030710",
+                  messageTextDanger: "#dc2626",
+                  anchorTextColor: "#6b8299",
+                  anchorTextHoverColor: "#030710",
+                },
+              },
+              dark: {
+                colors: {
+                  brand: "#7fc8ff",
+                  brandAccent: "#99d4ff",
+                  brandButtonText: "#030710",
+                  defaultButtonBackground: "#0a1220",
+                  defaultButtonBackgroundHover: "#111a2b",
+                  defaultButtonBorder: "#1f3a5c",
+                  defaultButtonText: "#fafcff",
+                  dividerBackground: "#1f3a5c",
+                  inputBackground: "#0a1220",
+                  inputBorder: "#1f3a5c",
+                  inputBorderHover: "#7fc8ff",
+                  inputBorderFocus: "#7fc8ff",
+                  inputText: "#fafcff",
+                  inputLabelText: "#fafcff",
+                  inputPlaceholder: "#8a9aac",
+                  messageText: "#fafcff",
+                  messageTextDanger: "#f87171",
+                  anchorTextColor: "#8a9aac",
+                  anchorTextHoverColor: "#fafcff",
                 },
               },
             },

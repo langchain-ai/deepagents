@@ -6,6 +6,10 @@ import { ASSISTANT_ID } from "./constants";
 import RuntimeProvider from "./RuntimeProvider";
 import Thread from "./components/Thread";
 import AppHeader from "./components/AppHeader";
+import { ChatProvider } from "./ChatProvider";
+import NewThread from "./components/NewThread";
+
+const USE_NEW_CHAT = import.meta.env.VITE_NEW_CHAT === "1";
 
 export default function App() {
   return (
@@ -53,6 +57,17 @@ function AuthenticatedApp({
   userEmail: string | null;
   onSignOut: () => Promise<void>;
 }) {
+  if (USE_NEW_CHAT) {
+    return (
+      <ChatProvider accessToken={accessToken}>
+        <div className="flex h-dvh flex-col bg-[var(--background)]">
+          <AppHeader userEmail={userEmail} onSignOut={onSignOut} />
+          <NewThread />
+        </div>
+      </ChatProvider>
+    );
+  }
+
   return (
     <RuntimeProvider accessToken={accessToken} assistantId={ASSISTANT_ID}>
       <div className="flex h-dvh flex-col bg-[var(--background)]">

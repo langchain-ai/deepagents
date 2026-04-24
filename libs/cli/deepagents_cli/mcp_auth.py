@@ -19,16 +19,13 @@ import os
 import re
 import stat
 from collections.abc import Awaitable, Callable
-from enum import Enum
 from pathlib import Path
 from typing import Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.shared.auth import (
-    AnyUrl,
     OAuthClientInformationFull,
-    OAuthClientMetadata,
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -98,100 +95,6 @@ _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _STORAGE_VERSION = 1
 """Schema version stamped into persisted credential files; bump on incompatible
 shape changes so `_load_*` can reject or migrate older payloads."""
-
-# Public OAuth client IDs — safe to check in. No secret is associated, and
-# Slack/GitHub treat these as browser-style public clients where the security
-# boundary is the redirect URI / device flow rather than client secrecy.
-_SLACK_MCP_CLIENT_ID = "4518649543379.10944517634130"
-"""Public OAuth client ID registered with Slack for the hosted MCP endpoint."""
-
-_SLACK_REDIRECT_URI = "https://localhost"
-"""Loopback redirect URI Slack hands the authorization code back to; the user
-copy-pastes the resulting URL into the CLI rather than running a local server."""
-
-_GITHUB_MCP_CLIENT_ID = "Iv23libxz8qOApH0WQL3"
-"""Public OAuth client ID for the GitHub App backing GitHub's remote MCP."""
-
-_GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
-"""GitHub Device Authorization Grant endpoint that issues the user/device code pair."""
-
-_GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
-"""GitHub OAuth token endpoint polled while the user completes the device flow."""
-
-
-class _OAuthFlavor(Enum):
-    """Provider-specific OAuth dispatch label.
-
-    Each flavor encodes a set of provider facts — whether login uses the
-    Authorization Code paste-back dance vs. the Device Authorization
-    Grant, the hardcoded client ID (if any), redirect URI requirements,
-    and whether extra auth-URL params are accepted. The login flow
-    branches on this enum instead of re-running URL predicates at every
-    site, and new flavors are added by extending this one enum plus
-    `_detect_flavor`.
-    """
-
-    SLACK = "slack"
-    """Slack-hosted MCP: Authorization Code flow with a hardcoded public
-    client ID and the loopback redirect URI; the user pastes the
-    redirected URL back into the CLI."""
-
-    GITHUB_DEVICE = "github_device"
-    """GitHub-hosted MCP: Device Authorization Grant against
-    `github.com/login/device/code`; the CLI polls the token endpoint
-    while the user approves the device code in a browser."""
-
-    GENERIC = "generic"
-    """Spec-compliant MCP server: Dynamic Client Registration plus the
-    standard Authorization Code + PKCE flow — used when no provider
-    special-case fires."""
-
-
-def _is_slack_mcp_url(url: str) -> bool:
-    """Return `True` when `url` points at a Slack-hosted MCP endpoint."""
-    host = urlparse(url).hostname or ""
-    return host == "slack.com" or host.endswith(".slack.com")
-
-
-def _is_github_mcp_url(url: str) -> bool:
-    """Return `True` when `url` points at GitHub's remote MCP endpoint."""
-    return (urlparse(url).hostname or "") == "api.githubcopilot.com"
-
-
-def _detect_flavor(server_url: str) -> _OAuthFlavor:
-    """Classify `server_url` into a provider-specific OAuth dispatch label.
-
-    Args:
-        server_url: Remote MCP endpoint URL.
-
-    Returns:
-        The matching `_OAuthFlavor` (`GENERIC` when no special-case fires).
-    """
-    if _is_slack_mcp_url(server_url):
-        return _OAuthFlavor.SLACK
-    if _is_github_mcp_url(server_url):
-        return _OAuthFlavor.GITHUB_DEVICE
-    return _OAuthFlavor.GENERIC
-
-
-async def _prompt_slack_team() -> str | None:
-    """Interactively ask the user which Slack workspace to install into.
-
-    Runs the blocking `input()` in a worker thread so `login()` stays safe
-    to await from an already-running event loop (Textual worker, IPython).
-
-    Returns:
-        The entered Slack team ID, or `None` if the prompt was left blank.
-    """
-    import asyncio
-
-    raw = await asyncio.to_thread(
-        input,
-        "Slack team ID to install the app into "
-        "(e.g. T01234567 — leave blank to pick on Slack's page): ",
-    )
-    stripped = raw.strip()
-    return stripped or None
 
 
 def resolve_headers(
@@ -533,21 +436,9 @@ def build_oauth_provider(
     else:
         redirect, callback = _make_reauth_required_handlers(server_name=server_name)
 
-    if _detect_flavor(server_url) is _OAuthFlavor.SLACK:
-        metadata = OAuthClientMetadata(
-            client_name="deepagents-cli",
-            redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
-        )
-    else:
-        metadata = OAuthClientMetadata(
-            client_name="deepagents-cli",
-            redirect_uris=[AnyUrl("http://localhost/callback")],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-        )
+    from deepagents_cli.mcp_providers import resolve_provider
+
+    metadata = resolve_provider(server_url).client_metadata()
 
     return OAuthClientProvider(
         server_url=server_url,
@@ -555,22 +446,6 @@ def build_oauth_provider(
         storage=storage,
         redirect_handler=redirect,
         callback_handler=callback,
-    )
-
-
-async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
-    """Write the hardcoded Slack `client_info` to `storage` if not already set."""
-    existing = await storage.get_client_info()
-    if existing is not None and existing.client_id == _SLACK_MCP_CLIENT_ID:
-        return
-    await storage.set_client_info(
-        OAuthClientInformationFull(
-            client_id=_SLACK_MCP_CLIENT_ID,
-            redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
-        )
     )
 
 
@@ -683,25 +558,6 @@ async def _run_device_flow(
     raise RuntimeError(msg)
 
 
-async def _preseed_github_auth(storage: FileTokenStorage) -> None:
-    """Run GitHub Device Flow and persist the token and stub client info."""
-    token = await _run_device_flow(
-        device_code_url=_GITHUB_DEVICE_CODE_URL,
-        token_url=_GITHUB_TOKEN_URL,
-        client_id=_GITHUB_MCP_CLIENT_ID,
-    )
-    await storage.set_tokens_and_client_info(
-        token,
-        OAuthClientInformationFull(
-            client_id=_GITHUB_MCP_CLIENT_ID,
-            redirect_uris=[AnyUrl("http://localhost/callback")],
-            grant_types=["urn:ietf:params:oauth:grant-type:device_code"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
-        ),
-    )
-
-
 def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     """Find an `MCPReauthRequiredError` anywhere inside `exc`'s tree.
 
@@ -780,28 +636,27 @@ async def login(
         )
         raise ValueError(msg)
 
-    storage = FileTokenStorage(server_name, server_url=server_config["url"])
-    flavor = _detect_flavor(server_config["url"])
+    from deepagents_cli.mcp_providers import resolve_provider
 
-    if flavor is _OAuthFlavor.GITHUB_DEVICE:
-        await _preseed_github_auth(storage)
+    storage = FileTokenStorage(server_name, server_url=server_config["url"])
+    policy = resolve_provider(server_config["url"])
+    result = await policy.run_login(
+        server_name=server_name,
+        server_url=server_config["url"],
+        storage=storage,
+    )
+
+    if result.completed:
         print(  # noqa: T201
             f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
         )
         return
 
-    extra_auth_params: dict[str, str] = {}
-    if flavor is _OAuthFlavor.SLACK:
-        await _preseed_slack_client_info(storage)
-        team_id = await _prompt_slack_team()
-        if team_id:
-            extra_auth_params["team"] = team_id
-
     provider = build_oauth_provider(
         server_name=server_name,
         server_url=server_config["url"],
         storage=storage,
-        extra_auth_params=extra_auth_params or None,
+        extra_auth_params=result.extra_auth_params or None,
     )
     conn: StreamableHttpConnection | SSEConnection
     if transport == "http":

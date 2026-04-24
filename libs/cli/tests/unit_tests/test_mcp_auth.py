@@ -291,7 +291,7 @@ class TestBuildOAuthProvider:
 
     def test_slack_url_is_detected(self) -> None:
         """The Slack URL detector treats slack.com subdomains as Slack."""
-        from deepagents_cli.mcp_auth import _is_slack_mcp_url
+        from deepagents_cli.mcp_providers.slack import _is_slack_mcp_url
 
         assert _is_slack_mcp_url("https://slack.com/mcp")
         assert _is_slack_mcp_url("https://deep.slack.com/mcp")
@@ -698,7 +698,8 @@ class TestLogin:
         """GitHub URLs short-circuit to device flow and persist client info."""
         from mcp.shared.auth import OAuthToken
 
-        from deepagents_cli.mcp_auth import _GITHUB_MCP_CLIENT_ID, login
+        from deepagents_cli.mcp_auth import login
+        from deepagents_cli.mcp_providers.github import _GITHUB_MCP_CLIENT_ID
 
         async def _fake_device_flow(
             *,
@@ -719,7 +720,7 @@ class TestLogin:
 
         with (
             patch(
-                "deepagents_cli.mcp_auth._run_device_flow",
+                "deepagents_cli.mcp_providers.github._run_device_flow",
                 _fake_device_flow,
             ),
             patch(
@@ -771,7 +772,7 @@ class TestLogin:
 
         with (
             patch(
-                "deepagents_cli.mcp_auth._prompt_slack_team",
+                "deepagents_cli.mcp_providers.slack._prompt_slack_team",
                 _fake_prompt_team,
             ),
             patch(
@@ -799,7 +800,7 @@ class TestLogin:
 
     async def test_slack_preseed_is_idempotent(self) -> None:
         """Preseeding Slack client info a second time reads rather than writes."""
-        from deepagents_cli.mcp_auth import (
+        from deepagents_cli.mcp_providers.slack import (
             _SLACK_MCP_CLIENT_ID,
             _preseed_slack_client_info,
         )

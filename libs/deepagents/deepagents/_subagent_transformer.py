@@ -307,16 +307,25 @@ class SubagentTransformer(StreamTransformer):
     # ─── Synthetic emission ───────────────────────────────────────────
 
     def _handle_task_tool_event(self, event: ProtocolEvent) -> None:
-        """Branch on the root-scope `task` tool phase to drive synthesis."""
+        """Branch on the root-scope `task` tool phase to drive synthesis.
+
+        ``tool_name`` is only present on ``tool-started`` in the protocol
+        (``tool-finished`` / ``tool-error`` omit it). We latch onto the
+        ``task`` filter at start and then drive terminal synthesis purely
+        from membership in ``self._synthesized`` — which is keyed by
+        ``tool_call_id`` and only populated when a ``task`` tool-started
+        has previously been observed. Non-``task`` tool calls never enter
+        the map, so their terminal events naturally no-op.
+        """
         data = cast("dict[str, Any]", event["params"]["data"])
-        if data.get("tool_name") != "task":
-            return
         phase = data.get("event")
         tcid = data.get("tool_call_id")
         if not isinstance(tcid, str):
             return
 
         if phase == "tool-started":
+            if data.get("tool_name") != "task":
+                return
             raw_input = data.get("input")
             input_d: dict[str, Any] = (
                 raw_input if isinstance(raw_input, dict) else {}
@@ -325,8 +334,12 @@ class SubagentTransformer(StreamTransformer):
             description = str(input_d.get("description") or "")
             self._emit_synthetic_start(tcid, subagent_type, description)
         elif phase == "tool-finished":
+            if tcid not in self._synthesized:
+                return
             self._emit_synthetic_finish(tcid, data.get("output"), is_error=False)
         elif phase == "tool-error":
+            if tcid not in self._synthesized:
+                return
             self._emit_synthetic_finish(tcid, data.get("message"), is_error=True)
 
     def _emit_synthetic_start(

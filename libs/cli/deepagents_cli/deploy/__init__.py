@@ -7,8 +7,10 @@ from deepagents_cli.deploy.commands import (
     setup_deploy_parsers,
 )
 from deepagents_cli.deploy.config import SandboxProvider, SandboxScope
+from deepagents_cli.deploy.context_hub import ContextHubBackend
 
 __all__ = [
+    "ContextHubBackend",
     "SandboxProvider",
     "SandboxScope",
     "execute_deploy_command",

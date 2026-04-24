@@ -33,22 +33,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_LINKED_ENTRY_WRITE_ERROR = "Cannot write to a linked entry. Linked entries are read-only from this backend."
-
-# Agent-config basenames (case-insensitive) that are read-only at runtime.
-_IMMUTABLE_BASENAMES = frozenset({"agents.md"})
-_IMMUTABLE_WRITE_ERROR = "'/{}' is read-only. Agent configuration files are not runtime-editable."
-
 # Matches the ":<hash>" suffix appended by langsmith's _build_context_url.
 _URL_COMMIT_SUFFIX_RE = re.compile(r":([0-9a-f]{8,64})$")
 
 
 class ContextHubBackend(BackendProtocol):
-    """Backend that stores files in a LangSmith Hub agent repo (persistent).
-
-    Linked agent/skill entries in the repo are read-only; writes that target
-    paths under a linked entry fail fast.
-    """
+    """Backend that stores files in a LangSmith Hub agent repo (persistent)."""
 
     def __init__(
         self,
@@ -124,21 +114,6 @@ class ContextHubBackend(BackendProtocol):
     def _strip_prefix(path: str) -> str:
         return path.lstrip("/")
 
-    @staticmethod
-    def _is_immutable_path(hub_path: str) -> bool:
-        """Return True if ``hub_path`` is a protected agent-config file at any depth (case-insensitive)."""
-        basename = hub_path.rsplit("/", 1)[-1]
-        return basename.lower() in _IMMUTABLE_BASENAMES
-
-    def _is_under_linked_entry(self, hub_path: str) -> bool:
-        """Return True if ``hub_path`` is at or under a linked entry root."""
-        self._ensure_cache()
-        for linked in self._linked_entries:
-            normalized = linked.rstrip("/")
-            if hub_path == normalized or hub_path.startswith(normalized + "/"):
-                return True
-        return False
-
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content for the requested line range.
 
@@ -174,14 +149,10 @@ class ContextHubBackend(BackendProtocol):
         )
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        """Commit ``content`` to ``file_path``. Rejects writes under linked entries."""
+        """Commit ``content`` to ``file_path``."""
         hub_path = self._strip_prefix(file_path)
-        if self._is_immutable_path(hub_path):
-            return WriteResult(error=_IMMUTABLE_WRITE_ERROR.format(hub_path))
         try:
-            self._ensure_cache()
-            if self._is_under_linked_entry(hub_path):
-                return WriteResult(error=_LINKED_ENTRY_WRITE_ERROR)
+            self._ensure_cache()  # populates _commit_hash for parent_commit on push
             self._commit(hub_path, content)
         except Exception as exc:
             logger.exception("Hub write failed for %r", self._identifier)
@@ -198,13 +169,8 @@ class ContextHubBackend(BackendProtocol):
     ) -> EditResult:
         """Replace ``old_string`` with ``new_string``. Fails on multiple matches unless ``replace_all=True``."""
         hub_path = self._strip_prefix(file_path)
-        if self._is_immutable_path(hub_path):
-            return EditResult(error=_IMMUTABLE_WRITE_ERROR.format(hub_path))
         try:
             cache = self._ensure_cache()
-            if self._is_under_linked_entry(hub_path):
-                return EditResult(error=_LINKED_ENTRY_WRITE_ERROR)
-
             current = cache.get(hub_path)
             if current is None:
                 return EditResult(error=f"Error: File '{file_path}' not found")

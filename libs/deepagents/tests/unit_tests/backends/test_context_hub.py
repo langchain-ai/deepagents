@@ -136,108 +136,11 @@ def test_write_updates_cache_after_commit() -> None:
     assert result.file_data["content"] == "hello"
 
 
-def test_write_under_linked_entry_rejected() -> None:
-    backend, mock_client = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
-    result = backend.write("/skills/code-reviewer/prompt.md", "malicious")
-
-    assert result.error is not None
-    assert "Cannot write to a linked entry" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_write_at_linked_root_rejected() -> None:
-    backend, _ = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
-    result = backend.write("/skills/code-reviewer", "override")
-    assert result.error is not None
-    assert "Cannot write to a linked entry" in result.error
-
-
 def test_write_sibling_of_linked_entry_allowed() -> None:
     backend, mock_client = _make_backend(**{"skills/code-reviewer": SkillEntry(type="skill", repo_handle="code-reviewer")})
     result = backend.write("/skills/code-reviewer.md", "sibling")
     assert result.error is None
     mock_client.push_agent.assert_called_once()
-
-
-def test_write_under_linked_agent_rejected() -> None:
-    backend, _ = _make_backend(**{"subagents/reviewer": AgentEntry(type="agent", repo_handle="reviewer")})
-    result = backend.write("/subagents/reviewer/config.json", "x")
-    assert result.error is not None
-    assert "Cannot write to a linked entry" in result.error
-
-
-def test_write_root_agents_md_rejected() -> None:
-    backend, mock_client = _make_backend()
-    result = backend.write("/AGENTS.md", "# attempt to overwrite agent config")
-    assert result.error is not None
-    assert "read-only" in result.error
-    assert "AGENTS.md" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_edit_root_agents_md_rejected() -> None:
-    backend, mock_client = _make_backend(**{"AGENTS.md": FileEntry(type="file", content="# hello")})
-    result = backend.edit("/AGENTS.md", "hello", "world")
-    assert result.error is not None
-    assert "read-only" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_upload_root_agents_md_rejected() -> None:
-    backend, mock_client = _make_backend()
-    responses = backend.upload_files([("/notes.md", b"ok"), ("/AGENTS.md", b"nope")])
-    assert responses[0].error is None
-    assert responses[1].error is not None
-    assert "read-only" in responses[1].error
-    # Only the notes.md write should have hit the hub.
-    assert mock_client.push_agent.call_count == 1
-
-
-def test_write_subagent_agents_md_rejected() -> None:
-    """Sub-agent AGENTS.md (e.g. /subagents/reviewer/AGENTS.md) is also agent config."""
-    backend, mock_client = _make_backend()
-    result = backend.write("/subagents/reviewer/AGENTS.md", "# sub-agent config")
-    assert result.error is not None
-    assert "read-only" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_edit_subagent_agents_md_rejected() -> None:
-    backend, mock_client = _make_backend(**{"subagents/reviewer/AGENTS.md": FileEntry(type="file", content="# hello")})
-    result = backend.edit("/subagents/reviewer/AGENTS.md", "hello", "world")
-    assert result.error is not None
-    assert "read-only" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_write_agents_md_at_any_depth_rejected() -> None:
-    """Any basename AGENTS.md is treated as agent config, regardless of depth."""
-    backend, mock_client = _make_backend()
-    for path in ("/AGENTS.md", "/docs/AGENTS.md", "/a/b/c/AGENTS.md"):
-        result = backend.write(path, "# attempt")
-        assert result.error is not None, f"expected rejection for {path}"
-        assert "read-only" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_write_agents_md_case_insensitive_rejected() -> None:
-    """Case variations of AGENTS.md are all blocked."""
-    backend, mock_client = _make_backend()
-    for path in ("/agents.md", "/Agents.md", "/AGENTS.MD", "/subagents/x/Agents.Md"):
-        result = backend.write(path, "# attempt")
-        assert result.error is not None, f"expected rejection for {path}"
-        assert "read-only" in result.error
-    mock_client.push_agent.assert_not_called()
-
-
-def test_write_agents_md_like_filename_allowed() -> None:
-    """Files whose names merely *contain* 'AGENTS.md' are not blocked — basename must match exactly."""
-    backend, mock_client = _make_backend()
-    result = backend.write("/MY_AGENTS.md.bak", "not agent config")
-    assert result.error is None
-    result2 = backend.write("/agents.txt", "different extension")
-    assert result2.error is None
-    assert mock_client.push_agent.call_count == 2
 
 
 def test_commit_failure_invalidates_cache() -> None:
@@ -282,18 +185,6 @@ def test_edit_replace_all() -> None:
     result = backend.edit("/a.md", "x", "y", replace_all=True)
     assert result.error is None
     assert result.occurrences == 3
-
-
-def test_edit_under_linked_entry_rejected() -> None:
-    backend, _ = _make_backend(
-        **{
-            "skills/s": SkillEntry(type="skill", repo_handle="s"),
-            "skills/s/f.md": FileEntry(type="file", content="hello"),
-        }
-    )
-    result = backend.edit("/skills/s/f.md", "hello", "bye")
-    assert result.error is not None
-    assert "Cannot write to a linked entry" in result.error
 
 
 def test_ls_flat_repo() -> None:

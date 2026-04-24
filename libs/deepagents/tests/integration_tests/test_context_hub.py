@@ -62,18 +62,6 @@ def test_lazy_create_on_first_write(backend) -> None:
     assert read.file_data["content"] == "# hi"
 
 
-def test_agents_md_is_read_only_at_any_depth(backend) -> None:
-    """AGENTS.md (root or sub-agent) is not runtime-editable via ContextHubBackend."""
-    for path in ("/AGENTS.md", "/subagents/reviewer/AGENTS.md"):
-        write = backend.write(path, "# attempt to overwrite config")
-        assert write.error is not None
-        assert "read-only" in write.error
-
-        edit = backend.edit(path, "foo", "bar")
-        assert edit.error is not None
-        assert "read-only" in edit.error
-
-
 def test_round_trip_with_ls_grep_glob_edit(backend) -> None:
     assert backend.write("/a.md", "hello\nworld").error is None
     assert backend.write("/b.md", "hello again").error is None

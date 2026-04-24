@@ -96,6 +96,14 @@ class MCPServerInfo:
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""
 
+_TRANSPORT_ALIASES = {"streamable_http": "http", "streamable-http": "http"}
+"""Aliases that normalize to canonical transport names.
+
+The MCP spec and `langchain_mcp_adapters` use `streamable_http` for what the
+CLI calls `http`. Accept both so users copy-pasting from upstream docs don't
+hit a validation error.
+"""
+
 
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 """Server names become token-file basenames and must remain path-safe."""
@@ -380,12 +388,9 @@ def _resolve_server_type(server_config: dict[str, Any]) -> str:
     Returns:
         Transport type string (`stdio`, `sse`, or `http`).
     """
-    transport = server_config.get("type")
+    transport = server_config.get("type") or server_config.get("transport")
     if transport is not None:
-        return transport
-    transport = server_config.get("transport")
-    if transport is not None:
-        return transport
+        return _TRANSPORT_ALIASES.get(transport, transport)
     if "url" in server_config:
         return "http"
     return "stdio"

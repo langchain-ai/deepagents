@@ -770,7 +770,11 @@ async def login(
         )
         raise ValueError(msg)
 
-    transport = server_config.get("type") or server_config.get("transport", "stdio")
+    from typing import cast
+
+    from deepagents_cli.mcp_tools import _resolve_server_type
+
+    transport = _resolve_server_type(cast("dict[str, object]", server_config))
     if transport not in {"http", "sse"}:
         msg = (
             f"Server '{server_name}' uses {transport!r} transport; "

@@ -406,6 +406,33 @@ class TestLoadMCPConfig:
         assert _resolve_server_type({"transport": "http"}) == "http"
         assert _resolve_server_type({}) == "stdio"
 
+    def test_streamable_http_alias_accepted(
+        self, write_config: Callable[..., str]
+    ) -> None:
+        """`streamable_http` and `streamable-http` normalize to `http`."""
+        from deepagents_cli.mcp_tools import _resolve_server_type
+
+        assert (
+            _resolve_server_type({"transport": "streamable_http", "url": "https://x"})
+            == "http"
+        )
+        assert (
+            _resolve_server_type({"type": "streamable-http", "url": "https://x"})
+            == "http"
+        )
+        path = write_config(
+            {
+                "mcpServers": {
+                    "slack": {
+                        "transport": "streamable_http",
+                        "url": "https://slack.com/mcp",
+                        "auth": "oauth",
+                    }
+                }
+            }
+        )
+        assert "slack" in load_mcp_config(path)["mcpServers"]
+
     def test_stdio_with_url_rejected(self, write_config: Callable[..., str]) -> None:
         """Stdio + url is contradictory — url would be silently dropped."""
         path = write_config(

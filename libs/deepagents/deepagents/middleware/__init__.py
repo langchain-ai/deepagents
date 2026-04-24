@@ -58,6 +58,7 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.tool_error_handling import ToolErrorHandlingMiddleware
 
 __all__ = [
     "AsyncSubAgent",
@@ -71,5 +72,6 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "ToolErrorHandlingMiddleware",
     "create_summarization_tool_middleware",
 ]

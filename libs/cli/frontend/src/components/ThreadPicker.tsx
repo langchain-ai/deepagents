@@ -1,28 +1,33 @@
-import { useCallback, useEffect, useState, type FC } from "react";
-import { type Thread } from "@langchain/langgraph-sdk";
-import { getErrorMessage } from "../lib/format";
-import { useLangGraphClient, useThreadActions } from "../RuntimeProvider";
+import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { Client } from "@langchain/langgraph-sdk";
+import { getErrorMessage } from "../lib/stream";
+import type { ThreadSummary } from "../types";
 
-type ThreadSummary = Thread<Record<string, unknown>>;
+type ThreadPickerProps = {
+  currentThreadId: string | null;
+  onSelect: (id: string | null) => void;
+  accessToken?: string;
+};
 
-const ThreadPicker: FC = () => {
-  // Call the factory on each use — Clerk rotates JWTs every ~60s, and a
-  // cached Client would hand the SDK a stale token.
-  const createClient = useLangGraphClient();
-  const { currentExternalId, switchToExistingThread, newThread } =
-    useThreadActions();
-
+const ThreadPicker: FC<ThreadPickerProps> = ({
+  currentThreadId,
+  onSelect,
+  accessToken,
+}) => {
   const [open, setOpen] = useState(false);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const handleSelect = useCallback(
-    (id: string | null) => {
-      if (id === null) newThread();
-      else switchToExistingThread(id);
-    },
-    [newThread, switchToExistingThread],
+  const client = useMemo(
+    () =>
+      new Client({
+        apiUrl: window.location.origin,
+        defaultHeaders: accessToken
+          ? { Authorization: `Bearer ${accessToken}` }
+          : undefined,
+      }),
+    [accessToken],
   );
 
   const loadThreads = useCallback(async () => {
@@ -30,7 +35,7 @@ const ThreadPicker: FC = () => {
     setLoadError(null);
 
     try {
-      const result = await createClient().threads.search<ThreadSummary["values"]>({
+      const result = await client.threads.search<ThreadSummary["values"]>({
         limit: 20,
       });
       setThreads(result);
@@ -39,7 +44,12 @@ const ThreadPicker: FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [createClient]);
+  }, [client]);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadThreads();
+  }, [loadThreads, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -50,28 +60,16 @@ const ThreadPicker: FC = () => {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open]);
 
-  const handleToggleOpen = () => {
-    setOpen((prev) => {
-      const next = !prev;
-      if (next) void loadThreads();
-      return next;
-    });
-  };
-
-  const label = currentExternalId
-    ? `${currentExternalId.slice(0, 8)}...`
-    : "Threads";
-
   return (
     <div className="relative">
       <button
-        onClick={handleToggleOpen}
+        onClick={() => setOpen((value) => !value)}
         className="flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
       >
         <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
-        {label}
+        {currentThreadId ? `${currentThreadId.slice(0, 8)}...` : "Threads"}
         <svg
           className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
           viewBox="0 0 24 24"
@@ -90,7 +88,7 @@ const ThreadPicker: FC = () => {
             <div className="border-b border-[var(--border)] px-3 py-2">
               <button
                 onClick={() => {
-                  handleSelect(null);
+                  onSelect(null);
                   setOpen(false);
                 }}
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--foreground)] hover:bg-[var(--muted)]"
@@ -124,19 +122,17 @@ const ThreadPicker: FC = () => {
                   <button
                     key={thread.thread_id}
                     onClick={() => {
-                      handleSelect(thread.thread_id);
+                      onSelect(thread.thread_id);
                       setOpen(false);
                     }}
                     className={`flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-[var(--muted)] ${
-                      thread.thread_id === currentExternalId
+                      thread.thread_id === currentThreadId
                         ? "bg-[var(--muted)] font-medium"
                         : ""
                     }`}
                   >
-                    <span className="truncate">
-                      {(typeof thread.metadata?.title === "string"
-                        ? thread.metadata.title
-                        : "") || `${thread.thread_id.slice(0, 12)}…`}
+                    <span className="truncate font-mono">
+                      {thread.thread_id.slice(0, 12)}...
                     </span>
                     <span className="ml-auto shrink-0 text-[var(--muted-foreground)]">
                       {new Date(thread.created_at).toLocaleDateString()}

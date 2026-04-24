@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { APP_DESCRIPTION, APP_NAME } from "../constants";
 import { useTheme } from "../ThemeProvider";
-import ThreadPicker from "./ThreadPicker";
 
 export default function AppHeader({
   userEmail,
@@ -60,7 +59,7 @@ export default function AppHeader({
         >
           Sign out
         </button>
-        {threadPicker !== undefined ? threadPicker : <ThreadPicker />}
+        {threadPicker}
       </div>
     </header>
   );

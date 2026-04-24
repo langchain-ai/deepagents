@@ -1,0 +1,44 @@
+# Example experiment config for better-harness.
+# Copy and adapt for your own agent + eval setup.
+
+[experiment]
+name = "my-agent"
+harness = "deepagents_harness.py"   # path to your harness file (relative to this config)
+max_iterations = 5                   # how many outer-agent proposals to try
+
+[better_agent]
+model = "claude-sonnet-4-6"         # model for the outer proposer agent
+max_turns = 10000                    # recursion limit for the outer agent
+
+[runner]
+# Harbor command and tasks directory.
+command = ["harbor"]                 # or ["python3", "mock_harbor.py"] for testing
+tasks_root = "tasks/"               # directory containing Harbor task folders
+pass_threshold = 1.0                 # score >= this counts as passed
+# agent_import_path = "deepagents_harness:HarborAgent"  # defaults to <harness_stem>:HarborAgent
+
+# --- Cases ---
+# Each case needs an id (the Harbor task name) and a split (train or holdout).
+# Train cases: visible to the outer agent as traces when they fail.
+# Holdout cases: run and reported but hidden from the outer agent (prevents overfitting).
+# Rule: at least one train + one holdout case required.
+
+[[cases]]
+id = "task-a"
+split = "train"
+
+[[cases]]
+id = "task-b"
+split = "train"
+
+[[cases]]
+id = "task-c"
+split = "train"
+
+[[cases]]
+id = "task-d"
+split = "holdout"
+
+[[cases]]
+id = "task-e"
+split = "holdout"

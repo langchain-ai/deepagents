@@ -1,46 +1,32 @@
-"""Public exports for better-harness."""
-
+"""better-harness: optimize an agent harness with an outer Deep Agent loop."""
 from better_harness.core import (
-    CaseOutcome,
-    EvalCase,
+    Case,
     Experiment,
-    Proposal,
-    RunReport,
+    IterResult,
     SplitResult,
-    Surface,
-    Variant,
+    ToolCall,
+    Trace,
+    Turn,
     load_experiment,
-    main,
-    run_experiment,
-    validate_experiment,
+    slug,
 )
-from better_harness.patching import (
-    build_baseline_variant,
-    build_variant,
-    patch_from_env,
-    patch_module_attrs,
-    workspace_override_context,
-)
-from better_harness.runners import parse_harbor_case, parse_pytest_outcomes
+from better_harness.optimize import run_optimization
+from better_harness.runner import run_split
+from better_harness.traces import TRACE_ENV, load_trace, render_trace_md
 
 __all__ = [
-    "CaseOutcome",
-    "EvalCase",
+    "TRACE_ENV",
+    "Case",
     "Experiment",
-    "Proposal",
-    "RunReport",
+    "IterResult",
     "SplitResult",
-    "Surface",
-    "Variant",
-    "build_baseline_variant",
-    "build_variant",
+    "ToolCall",
+    "Trace",
+    "Turn",
     "load_experiment",
-    "main",
-    "parse_harbor_case",
-    "parse_pytest_outcomes",
-    "patch_from_env",
-    "patch_module_attrs",
-    "run_experiment",
-    "validate_experiment",
-    "workspace_override_context",
+    "load_trace",
+    "render_trace_md",
+    "run_optimization",
+    "run_split",
+    "slug",
 ]

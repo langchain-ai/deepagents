@@ -1,7 +1,7 @@
 [project]
 name = "better-harness"
-version = "0.1.0"
-description = "Small eval-driven harness optimizer for agent systems"
+version = "0.2.0"
+description = "Optimize an agent harness with an outer Deep Agent loop + local trace capture"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
@@ -13,14 +13,11 @@ dev = [
 ]
 
 [project.scripts]
-better-harness = "better_harness:main"
+better-harness = "better_harness.optimize:main"
 
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-py-modules = ["better_harness_plugin"]
 
 [tool.setuptools.packages.find]
 include = ["better_harness*"]
@@ -28,7 +25,7 @@ include = ["better_harness*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = [".runtime/**", "**/_runtime/**", "examples/**", "runs/**"]
+exclude = [".runtime/**", "runs/**", "examples/**"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -36,10 +33,7 @@ ignore = [
     "ANN",
     "C901",
     "COM812",
-    "D203",
-    "D102",
-    "D213",
-    "D107",
+    "D",
     "E501",
     "EM102",
     "ISC001",
@@ -57,15 +51,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = [
-    "ANN001",
-    "ANN201",
-    "D",
-    "S101",
-    "TC002",
-    "TC003",
-]
-"better_harness/core.py" = ["PLC0415", "T201", "S101"]
+"tests/**" = ["S101", "ANN001", "ANN201", "TC002", "TC003", "ARG001"]
+"better_harness/optimize.py" = ["T201"]
+"better_harness/agent.py" = ["PLC0415"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

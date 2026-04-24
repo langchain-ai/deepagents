@@ -716,6 +716,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             sources=[
                 "/path/to/skills/user/",
                 "/path/to/skills/project/",
+                # Pass a (path, label) tuple to disambiguate sources whose
+                # leaf directories would otherwise collide
+                ("/home/me/.claude/skills", "User Claude"),
+                ("/repo/.claude/skills", "Project Claude"),
             ],
         )
         ```

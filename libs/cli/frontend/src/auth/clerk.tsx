@@ -84,6 +84,12 @@ function ClerkAdapterProvider({ children }: { children: ReactNode }) {
     <ClerkProvider
       publishableKey={cfg.clerkPublishableKey}
       appearance={theme === "dark" ? { baseTheme: dark } : undefined}
+      // Our SPA is mounted at /app/. Clerk's default sign-out redirect of
+      // "/" would dump users at the LangGraph root (a 404 or JSON). Pin
+      // every post-auth redirect back into the app.
+      afterSignOutUrl="/app/"
+      signInFallbackRedirectUrl="/app/"
+      signUpFallbackRedirectUrl="/app/"
     >
       <ClerkSessionBridge>{children}</ClerkSessionBridge>
     </ClerkProvider>

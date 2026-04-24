@@ -328,19 +328,21 @@ if command -v tree >/dev/null 2>&1; then
   TREE_EXCL='node_modules|.venv|__pycache__|.pytest_cache'
   TREE_EXCL="${TREE_EXCL}|.git|.mypy_cache|.ruff_cache"
   TREE_EXCL="${TREE_EXCL}|.tox|.coverage|.eggs|dist|build"
-  T_FULL=$(tree -L 3 --noreport --dirsfirst \
-    -I "$TREE_EXCL" 2>/dev/null)
-  if [ -n "$T_FULL" ]; then
-    TOTAL_LINES=$(echo "$T_FULL" | wc -l | tr -d ' ')
-    T=$(echo "$T_FULL" | head -22)
-    SHOWN_LINES=$(echo "$T" | wc -l | tr -d ' ')
-    TOTAL_LINES=${TOTAL_LINES:-0}
-    SHOWN_LINES=${SHOWN_LINES:-0}
+  T_PREVIEW=$(tree -L 3 --noreport --dirsfirst \
+    -I "$TREE_EXCL" 2>/dev/null | sed -n '1,22p;23{p;q;}')
+  if [ -n "$T_PREVIEW" ]; then
+    PREVIEW_LINES=$(echo "$T_PREVIEW" | wc -l | tr -d ' ')
+    PREVIEW_LINES=${PREVIEW_LINES:-0}
+    T="$T_PREVIEW"
+    TREE_TRUNCATED=false
+    if [ "$PREVIEW_LINES" -gt 22 ]; then
+      T=$(echo "$T_PREVIEW" | head -22)
+      TREE_TRUNCATED=true
+    fi
     echo "**Tree** (3 levels):"
     echo '```text'
     echo "$T"
-    [ "$SHOWN_LINES" -lt "$TOTAL_LINES" ] \
-      && echo "... ($((TOTAL_LINES - SHOWN_LINES)) more lines truncated)"
+    $TREE_TRUNCATED && echo "... (more lines truncated)"
     echo '```'
     echo ""
   fi

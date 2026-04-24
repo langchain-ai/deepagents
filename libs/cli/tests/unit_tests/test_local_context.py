@@ -1191,6 +1191,12 @@ class TestSectionTree:
         out = _run_section(_section_tree(), tmp_path)
         assert "truncated" not in out
 
+    def test_uses_early_truncation_instead_of_full_tree_capture(self) -> None:
+        """The shell snippet should stop `tree` after the preview window."""
+        script = _section_tree()
+        assert "T_FULL=$(" not in script
+        assert "sed -n '1,22p;23{p;q;}'" in script
+
 
 class TestSectionMakefile:
     """Tests for _section_makefile."""

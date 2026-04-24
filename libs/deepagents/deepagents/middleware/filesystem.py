@@ -329,10 +329,6 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
-SCRATCHPAD_SYSTEM_PROMPT_TEMPLATE = """## Scratchpad `{scratchpad_prefix}`
-
-Use `{scratchpad_prefix}` for short-lived, per-session notes — plans, working state, and intermediate results you only need while completing the current task. Content under `{scratchpad_prefix}` is ephemeral and is NOT persisted across sessions; for long-term memory, use `/memories/`."""
-
 
 def supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
@@ -615,7 +611,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
-        self._scratchpad_prefix = self.backend.scratchpad_prefix if isinstance(self.backend, CompositeBackend) else None
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -1232,14 +1227,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
 
-            # Advertise the scratchpad prefix when the backend declares one.
-            if self._scratchpad_prefix:
-                prompt_parts.append(
-                    SCRATCHPAD_SYSTEM_PROMPT_TEMPLATE.format(
-                        scratchpad_prefix=self._scratchpad_prefix,
-                    )
-                )
-
             system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
@@ -1304,14 +1291,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-
-            # Advertise the scratchpad prefix when the backend declares one.
-            if self._scratchpad_prefix:
-                prompt_parts.append(
-                    SCRATCHPAD_SYSTEM_PROMPT_TEMPLATE.format(
-                        scratchpad_prefix=self._scratchpad_prefix,
-                    )
-                )
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 

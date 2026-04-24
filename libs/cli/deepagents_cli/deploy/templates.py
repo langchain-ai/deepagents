@@ -558,12 +558,6 @@ MEMORIES_PREFIX = "/memories/"
 SKILLS_PREFIX = "/memories/skills/"
 USER_PREFIX = "/memories/user/"
 
-# `/scratchpad/` is always advertised to the agent as an ephemeral,
-# per-session notes area. Whether we install an explicit
-# `StateBackend` route for it depends on the sandbox configuration
-# (see `_build_backend_factory` below).
-SCRATCHPAD_PREFIX = "/scratchpad/"
-
 HAS_USER_MEMORIES = {has_user_memories!r}
 
 # `/memories/` backing store. "store" routes through the LangGraph runtime
@@ -857,7 +851,6 @@ def _make_user_namespace_factory(assistant_id: str):
 
 
 SANDBOX_SCOPE = {sandbox_scope!r}
-SANDBOX_PROVIDER = {sandbox_provider!r}
 
 
 def _build_backend_factory(assistant_id: str, user_id: str | None = None):
@@ -910,19 +903,9 @@ def _build_backend_factory(assistant_id: str, user_id: str | None = None):
                     ),
                 )
 
-        # Route /scratchpad/ to StateBackend only when the default backend
-        # (sandbox) is shared across threads — i.e., per-agent scope. In
-        # per-thread sandbox mode the default is already thread-local; in
-        # no-sandbox mode the default IS a StateBackend.
-        if SANDBOX_PROVIDER != "none" and SANDBOX_SCOPE == "assistant":
-            from deepagents.backends.state import StateBackend
-
-            routes[SCRATCHPAD_PREFIX] = StateBackend()
-
         return CompositeBackend(
             default=sandbox_backend,
             routes=routes,
-            scratchpad_prefix=SCRATCHPAD_PREFIX,
         )
     return _factory
 

@@ -6,9 +6,8 @@ import { useLangGraphClient, useThreadActions } from "../RuntimeProvider";
 type ThreadSummary = Thread<Record<string, unknown>>;
 
 const ThreadPicker: FC = () => {
-  // Always call the factory fresh to pick up the current access token —
-  // auth providers like Clerk rotate JWTs every ~60s, so a cached Client
-  // would hand the SDK a stale token and we'd 401 after the first minute.
+  // Call the factory on each use — Clerk rotates JWTs every ~60s, and a
+  // cached Client would hand the SDK a stale token.
   const createClient = useLangGraphClient();
   const { currentExternalId, switchToExistingThread, newThread } =
     useThreadActions();
@@ -42,8 +41,6 @@ const ThreadPicker: FC = () => {
     }
   }, [createClient]);
 
-  // Escape key to close the dropdown. This is a DOM subscription — exactly
-  // what useEffect is for.
   useEffect(() => {
     if (!open) return;
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -53,9 +50,6 @@ const ThreadPicker: FC = () => {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [open]);
 
-  // User-triggered fetch lives in the event handler, not an Effect.
-  // React docs: "If you're fetching in response to a user event, do it in
-  // the event handler." — https://react.dev/learn/you-might-not-need-an-effect
   const handleToggleOpen = () => {
     setOpen((prev) => {
       const next = !prev;
@@ -140,8 +134,9 @@ const ThreadPicker: FC = () => {
                     }`}
                   >
                     <span className="truncate">
-                      {(thread.metadata?.title as string | undefined) ||
-                        `${thread.thread_id.slice(0, 12)}…`}
+                      {(typeof thread.metadata?.title === "string"
+                        ? thread.metadata.title
+                        : "") || `${thread.thread_id.slice(0, 12)}…`}
                     </span>
                     <span className="ml-auto shrink-0 text-[var(--muted-foreground)]">
                       {new Date(thread.created_at).toLocaleDateString()}

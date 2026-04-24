@@ -51,8 +51,6 @@ type LangGraphClientFactory = () => Client;
 const LangGraphClientContext = createContext<LangGraphClientFactory>(() => {
   throw new Error("useLangGraphClient must be used inside RuntimeProvider");
 });
-// Returns a factory; consumers call it once (e.g. in a `useMemo`) to get a
-// stable `Client` instance configured with the current auth headers.
 export const useLangGraphClient = () => useContext(LangGraphClientContext);
 
 type Props = {
@@ -62,26 +60,18 @@ type Props = {
 };
 
 export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
-  const ctxRef = useRef<ChatApiContext>({
-    apiUrl: window.location.origin,
-    accessToken,
-    assistantId,
-  });
-  ctxRef.current = {
-    apiUrl: window.location.origin,
-    accessToken,
-    assistantId,
-  };
+  const ctx = useMemo<ChatApiContext>(
+    () => ({
+      apiUrl: window.location.origin,
+      accessToken,
+      assistantId,
+    }),
+    [accessToken, assistantId],
+  );
 
   const [values, setValues] = useState<GraphValues>(EMPTY_VALUES);
   const [currentExternalId, setCurrentExternalId] = useState<string | null>(null);
 
-  // When set, the next `create()` returns this externalId so the runtime picks
-  // up an existing LangGraph thread. UI history hydrates on the next stream.
-  const pendingExternalIdRef = useRef<string | null>(null);
-
-  // Threads we created in this session that still need their title written
-  // from the first user message. See stream() below.
   const untitledThreadsRef = useRef<Set<string>>(new Set());
 
   const runtime = useLangGraphRuntime({
@@ -90,12 +80,10 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
       const { externalId } = await initialize();
       if (!externalId) throw new Error("Thread not found");
 
-      // Write a title from the first user message for threads we created in
-      // this session. Fire-and-forget — don't block streaming on this.
       if (untitledThreadsRef.current.has(externalId)) {
         untitledThreadsRef.current.delete(externalId);
-        // Accept both LangChain (`type: "human"`) and OpenAI-style
-        // (`role: "user"`) shapes — assistant-ui-langgraph may pass either.
+        // assistant-ui-langgraph may pass either LangChain (`type: "human"`)
+        // or OpenAI-style (`role: "user"`) message shapes.
         const firstUser = messages.find((m) => {
           const mm = m as { type?: string; role?: string };
           return mm.type === "human" || mm.role === "user";
@@ -117,30 +105,27 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
         }
         const title = raw.trim().slice(0, 60);
         if (title) {
-          void updateThreadMetadata(ctxRef.current, externalId, { title });
+          updateThreadMetadata(ctx, externalId, { title }).catch((err) => {
+            console.warn("Failed to write thread title", err);
+          });
         }
       }
 
-      yield* sendMessage(ctxRef.current, {
+      yield* sendMessage(ctx, {
         threadId: externalId,
         messages,
         config,
       });
     },
     create: async () => {
-      const pending = pendingExternalIdRef.current;
-      if (pending) {
-        pendingExternalIdRef.current = null;
-        setCurrentExternalId(pending);
-        return { externalId: pending };
-      }
-      const { thread_id } = await createThread(ctxRef.current);
+      const { thread_id } = await createThread(ctx);
       untitledThreadsRef.current.add(thread_id);
       setCurrentExternalId(thread_id);
       return { externalId: thread_id };
     },
     load: async (externalId) => {
-      const state = await getThreadState(ctxRef.current, externalId);
+      setCurrentExternalId(externalId);
+      const state = await getThreadState(ctx, externalId);
       const stateValues = state.values as {
         messages?: LangChainMessage[];
         files?: Record<string, unknown>;
@@ -156,7 +141,7 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
       };
     },
     getCheckpointId: (threadId, parentMessages) =>
-      getCheckpointId(ctxRef.current, threadId, parentMessages),
+      getCheckpointId(ctx, threadId, parentMessages),
     eventHandlers: {
       onValues: (next) => {
         const v = next as { files?: Record<string, unknown>; todos?: TodoItem[] };
@@ -165,21 +150,41 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
     },
   });
 
+  // Patch the default InMemoryThreadListAdapter (which rejects `fetch`) so
+  // `switchToThread(externalId)` can register threads we discovered via our
+  // own picker. The library recreates the adapter on every render, so we
+  // re-patch after every commit.
+  useEffect(() => {
+    const core = (runtime.threads as unknown as { _core?: unknown })._core as
+      | { _options?: { adapter?: Record<string, unknown> } }
+      | undefined;
+    const adapter = core?._options?.adapter;
+    if (!adapter) return;
+    adapter.fetch = async (threadId: string) => ({
+      status: "regular" as const,
+      remoteId: threadId,
+      externalId: threadId,
+      title: undefined,
+    });
+  });
+
   const switchToExistingThread = useCallback(
     (externalId: string) => {
-      pendingExternalIdRef.current = externalId;
       setCurrentExternalId(externalId);
       setValues(EMPTY_VALUES);
-      void runtime.threads.switchToNewThread();
+      runtime.threads.switchToThread(externalId).catch((err) => {
+        console.warn("Failed to switch thread", err);
+      });
     },
     [runtime],
   );
 
   const newThread = useCallback(() => {
-    pendingExternalIdRef.current = null;
     setCurrentExternalId(null);
     setValues(EMPTY_VALUES);
-    void runtime.threads.switchToNewThread();
+    runtime.threads.switchToNewThread().catch((err) => {
+      console.warn("Failed to start new thread", err);
+    });
   }, [runtime]);
 
   const threadActions = useMemo<ThreadActions>(
@@ -190,12 +195,12 @@ export function RuntimeProvider({ accessToken, assistantId, children }: Props) {
   const clientFactory = useCallback<LangGraphClientFactory>(
     () =>
       new Client({
-        apiUrl: ctxRef.current.apiUrl,
-        defaultHeaders: ctxRef.current.accessToken
-          ? { Authorization: `Bearer ${ctxRef.current.accessToken}` }
+        apiUrl: ctx.apiUrl,
+        defaultHeaders: ctx.accessToken
+          ? { Authorization: `Bearer ${ctx.accessToken}` }
           : undefined,
       }),
-    [],
+    [ctx],
   );
 
   // Changing assistant mid-conversation starts a fresh thread — old history

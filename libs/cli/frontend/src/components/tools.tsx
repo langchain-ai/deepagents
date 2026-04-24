@@ -493,7 +493,7 @@ export const SubagentTool: ToolCallMessagePartComponent = ({
   );
 };
 
-// `task` is rendered by SubagentPipeline in Thread.tsx; suppress the inline card.
+// `task` tool calls render in the SubagentPipeline instead of an inline card.
 const NoopTool: ToolCallMessagePartComponent = () => null;
 
 export const TOOL_RENDERERS: Record<string, ToolCallMessagePartComponent> = {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useState, type FC } from "react";
 import { createPortal } from "react-dom";
 import { Streamdown } from "streamdown";
 import { extOf, parseDisplayContent } from "../lib/format";
@@ -8,7 +8,7 @@ const FileViewDialog: FC<{
   content: unknown;
   onClose: () => void;
 }> = ({ fileName, content: rawContent, onClose }) => {
-  const content = parseDisplayContent(rawContent);
+  const content = useMemo(() => parseDisplayContent(rawContent), [rawContent]);
   const extension = extOf(fileName);
   const isMarkdown = ["md", "markdown"].includes(extension);
   const isHtml = ["html", "htm"].includes(extension);
@@ -22,7 +22,9 @@ const FileViewDialog: FC<{
   }, [onClose]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(content);
+    navigator.clipboard.writeText(content).catch((err) => {
+      console.warn("Clipboard write failed", err);
+    });
   }, [content]);
 
   const handleDownload = useCallback(() => {

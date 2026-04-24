@@ -1,9 +1,3 @@
-/**
- * Theme provider — light/dark mode with localStorage persistence.
- *
- * Sets `data-theme="dark"` on the `<html>` element when active, which
- * triggers CSS-variable overrides in `index.css`.
- */
 import {
   createContext,
   useCallback,
@@ -47,7 +41,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem(STORAGE_KEY, theme);
     } catch {
-      // localStorage can fail in private modes — swallow.
+      // localStorage may throw in private-browsing modes.
     }
   }, [theme]);
 

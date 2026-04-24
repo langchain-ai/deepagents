@@ -27,18 +27,23 @@ function ClerkSessionBridge({ children }: { children: ReactNode }) {
   const { user } = useUser();
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
+  const userEmail = user?.primaryEmailAddress?.emailAddress ?? null;
+
   useEffect(() => {
     let active = true;
     if (!isLoaded || !isSignedIn) {
       setAccessToken(null);
       return;
     }
+    // Clerk session JWTs default to a ~60s TTL; refresh well under that so the
+    // LangGraph SDK never gets handed an expired token.
     const refresh = async () => {
-      // Clerk session tokens default to a ~60s TTL. Force a fresh fetch on an
-      // interval well under that so long-idle sessions don't hand the
-      // LangGraph SDK an expired JWT.
-      const t = await getToken({ skipCache: true });
-      if (active && t) setAccessToken(t);
+      try {
+        const t = await getToken({ skipCache: true });
+        if (active && t) setAccessToken(t);
+      } catch (err) {
+        if (active) console.warn("Clerk getToken failed", err);
+      }
     };
     void refresh();
     const interval = window.setInterval(refresh, 45_000);
@@ -48,10 +53,6 @@ function ClerkSessionBridge({ children }: { children: ReactNode }) {
     };
   }, [getToken, isLoaded, isSignedIn, user?.id]);
 
-  // Memoize the whole context value so the provider doesn't force every
-  // consumer to re-render on unrelated parent re-renders. Memoizing `state`
-  // alone wouldn't help — an inline `{{ state }}` literal would still get a
-  // fresh reference each render.
   const value = useMemo<Ctx>(() => {
     let state: SessionState;
     if (!isLoaded) state = { status: "loading" };
@@ -62,14 +63,14 @@ function ClerkSessionBridge({ children }: { children: ReactNode }) {
         status: "signed-in",
         accessToken,
         userIdentity: user?.id ?? "",
-        userEmail: user?.primaryEmailAddress?.emailAddress ?? null,
+        userEmail,
         signOut: async () => {
           await signOut();
         },
       };
     }
     return { state };
-  }, [isLoaded, isSignedIn, accessToken, user?.id, user?.primaryEmailAddress, signOut]);
+  }, [isLoaded, isSignedIn, accessToken, user?.id, userEmail, signOut]);
 
   return <ClerkCtx.Provider value={value}>{children}</ClerkCtx.Provider>;
 }
@@ -84,9 +85,8 @@ function ClerkAdapterProvider({ children }: { children: ReactNode }) {
     <ClerkProvider
       publishableKey={cfg.clerkPublishableKey}
       appearance={theme === "dark" ? { baseTheme: dark } : undefined}
-      // Our SPA is mounted at /app/. Clerk's default sign-out redirect of
-      // "/" would dump users at the LangGraph root (a 404 or JSON). Pin
-      // every post-auth redirect back into the app.
+      // The SPA is mounted at /app/; Clerk's default of "/" lands on the
+      // LangGraph root (404/JSON). Pin post-auth redirects back into the app.
       afterSignOutUrl="/app/"
       signInFallbackRedirectUrl="/app/"
       signUpFallbackRedirectUrl="/app/"
@@ -107,7 +107,7 @@ function useSession(): SessionState {
 function ClerkAuthUI() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   return (
-    <div className="min-h-dvh flex items-center justify-center bg-slate-50 p-4">
+    <div className="min-h-dvh flex items-center justify-center bg-[var(--background)] p-4">
       <div className="flex flex-col items-center gap-4">
         {mode === "signin" ? (
           <SignIn routing="virtual" />
@@ -116,7 +116,7 @@ function ClerkAuthUI() {
         )}
         <button
           type="button"
-          className="text-xs text-slate-600 hover:underline"
+          className="text-xs text-[var(--muted-foreground)] hover:underline"
           onClick={() => setMode(mode === "signin" ? "signup" : "signin")}
         >
           {mode === "signin"

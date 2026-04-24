@@ -16,9 +16,6 @@ export default function App() {
 }
 
 function AppWithAdapter() {
-  // `useAuthAdapter()` suspends until the dynamic-imported adapter module
-  // has loaded. The <Suspense> boundary above shows a splash during the
-  // load.
   const adapter = useAuthAdapter();
   return (
     <adapter.Provider>

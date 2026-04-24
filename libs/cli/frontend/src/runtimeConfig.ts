@@ -1,11 +1,3 @@
-/**
- * Runtime config injected into index.html by `deepagent deploy`.
- *
- * The shipped bundle is built ONCE per CLI release. Per-user values
- * (auth provider, provider-specific keys, app name) are written into a
- * `window.__DEEPAGENTS_CONFIG__` script tag by the Python bundler at
- * deploy time.
- */
 export interface RuntimeConfigSupabase {
   auth: "supabase";
   supabaseUrl: string;

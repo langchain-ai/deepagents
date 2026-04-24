@@ -6,8 +6,8 @@
     {
       "turns": 5,
       "durability": "exit",
-      "elapsed_s": 0.43,
-      "peak_mb": 0.8,
+      "elapsed_s": 0.3,
+      "peak_mb": 0.7,
       "blobs_mb": 0.0,
       "writes_mb": 0.0,
       "storage_mb": 0.01,
@@ -16,8 +16,8 @@
     {
       "turns": 25,
       "durability": "exit",
-      "elapsed_s": 2.03,
-      "peak_mb": 1.0,
+      "elapsed_s": 1.45,
+      "peak_mb": 0.9,
       "blobs_mb": 0.0,
       "writes_mb": 0.0,
       "storage_mb": 0.03,
@@ -26,8 +26,8 @@
     {
       "turns": 50,
       "durability": "exit",
-      "elapsed_s": 4.17,
-      "peak_mb": 1.1,
+      "elapsed_s": 2.91,
+      "peak_mb": 1.0,
       "blobs_mb": 0.0,
       "writes_mb": 0.0,
       "storage_mb": 0.05,
@@ -36,8 +36,8 @@
     {
       "turns": 100,
       "durability": "exit",
-      "elapsed_s": 8.36,
-      "peak_mb": 1.4,
+      "elapsed_s": 5.95,
+      "peak_mb": 1.3,
       "blobs_mb": 0.0,
       "writes_mb": 0.0,
       "storage_mb": 0.11,
@@ -46,8 +46,8 @@
     {
       "turns": 200,
       "durability": "exit",
-      "elapsed_s": 17.05,
-      "peak_mb": 1.9,
+      "elapsed_s": 12.21,
+      "peak_mb": 1.8,
       "blobs_mb": 0.0,
       "writes_mb": 0.0,
       "storage_mb": 0.22,
@@ -56,42 +56,52 @@
     {
       "turns": 5,
       "durability": "async",
-      "elapsed_s": 0.44,
-      "peak_mb": 3.3,
-      "blobs_mb": 0.3,
-      "writes_mb": 1.29,
-      "storage_mb": 0.08,
-      "total_mb": 1.66
+      "elapsed_s": 0.31,
+      "peak_mb": 0.9,
+      "blobs_mb": 0.01,
+      "writes_mb": 0.11,
+      "storage_mb": 0.06,
+      "total_mb": 0.18
     },
     {
       "turns": 25,
       "durability": "async",
-      "elapsed_s": 2.84,
-      "peak_mb": 14.9,
-      "blobs_mb": 1.48,
-      "writes_mb": 6.46,
-      "storage_mb": 0.39,
-      "total_mb": 8.33
+      "elapsed_s": 1.87,
+      "peak_mb": 2.4,
+      "blobs_mb": 0.03,
+      "writes_mb": 0.41,
+      "storage_mb": 0.31,
+      "total_mb": 0.75
     },
     {
       "turns": 50,
       "durability": "async",
-      "elapsed_s": 7.12,
-      "peak_mb": 28.9,
-      "blobs_mb": 2.96,
-      "writes_mb": 12.92,
-      "storage_mb": 0.78,
-      "total_mb": 16.66
+      "elapsed_s": 4.54,
+      "peak_mb": 4.1,
+      "blobs_mb": 0.07,
+      "writes_mb": 0.74,
+      "storage_mb": 0.61,
+      "total_mb": 1.42
     },
     {
       "turns": 100,
       "durability": "async",
-      "elapsed_s": 19.96,
-      "peak_mb": 57.4,
-      "blobs_mb": 5.91,
-      "writes_mb": 25.84,
-      "storage_mb": 1.57,
-      "total_mb": 33.32
+      "elapsed_s": 11.96,
+      "peak_mb": 7.2,
+      "blobs_mb": 0.14,
+      "writes_mb": 1.48,
+      "storage_mb": 1.23,
+      "total_mb": 2.85
+    },
+    {
+      "turns": 200,
+      "durability": "async",
+      "elapsed_s": 33.1,
+      "peak_mb": 14.8,
+      "blobs_mb": 0.28,
+      "writes_mb": 3.4,
+      "storage_mb": 2.5,
+      "total_mb": 6.18
     }
   ]
 }

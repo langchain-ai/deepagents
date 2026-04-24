@@ -26,18 +26,29 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-WRITE_FILE_KB = 30
-WRITE_FILES_PER_TURN = 2
-LARGE_TOOL_KB = 80
+# Realistic-scale workload: small per-turn footprint with occasional large
+# tool results that trigger FilesystemMiddleware eviction. Targets ~500k
+# tokens of accumulated state at N=200 (≈ 4 chars/token heuristic).
+WRITE_FILE_KB = 1             # ~250 tokens each
+WRITE_FILES_PER_TURN = 1      # one write/turn
+SMALL_TOOL_KB = 2             # ~500 tokens — stays in messages
+LARGE_TOOL_KB = 82            # >20k tokens → triggers FilesystemMiddleware eviction into `files`
+BIG_TOOL_EVERY = 10           # every 10th turn returns a large result
 
 _WRITE_CONTENT = "w" * (WRITE_FILE_KB * 1024)
+_SMALL_RESULT = "s" * (SMALL_TOOL_KB * 1024)
 _LARGE_RESULT = "x" * (LARGE_TOOL_KB * 1024)
+_BIG_MARKER = "[BIG]"
 
 _turn_counter = itertools.count()
 
 
 class _MockModel(ChatAnthropic):
-    """Per turn: write WRITE_FILES_PER_TURN files, call external_search, done."""
+    """Per turn: write 1 file, call external_search, done.
+
+    Every BIG_TOOL_EVERY-th turn, the search query is tagged so the tool
+    returns a large payload that FilesystemMiddleware evicts into `files`.
+    """
 
     model_name: str = "claude-haiku-4-5-20251001"
 
@@ -66,10 +77,13 @@ class _MockModel(ChatAnthropic):
                              "args": {"file_path": path, "content": _WRITE_CONTENT}}],
             )
         elif not search_done:
+            # Tag every BIG_TOOL_EVERY-th search so the tool returns a big (eviction-triggering) payload
+            is_big = (turn % BIG_TOOL_EVERY) == 0
+            query = f"topic {turn} {_BIG_MARKER}" if is_big else f"topic {turn}"
             msg = AIMessage(
                 content="",
                 tool_calls=[{"id": f"call_s_{turn}", "name": "external_search",
-                             "args": {"query": f"topic {turn}"}}],
+                             "args": {"query": query}}],
             )
         else:
             msg = AIMessage(content=f"Turn {turn} complete.")
@@ -79,8 +93,10 @@ class _MockModel(ChatAnthropic):
 
 @tool
 def external_search(query: str) -> str:
-    """Search external knowledge base. Returns large results."""
-    return f"Results for '{query}':\n\n" + _LARGE_RESULT
+    """Search external knowledge base. Returns large results when query is tagged [BIG]."""
+    if _BIG_MARKER in query:
+        return f"Results for '{query}':\n\n" + _LARGE_RESULT
+    return f"Results for '{query}':\n\n" + _SMALL_RESULT
 
 
 def _saver_storage_bytes(saver: InMemorySaver, thread_id: str) -> dict[str, int]:
@@ -168,7 +184,7 @@ def run(turns: int, durability: str = "exit") -> dict[str, Any]:
 
 def main() -> None:
     exit_ns = [5, 25, 50, 100, 200]
-    async_ns = [5, 25, 50, 100]  # baseline async OOMs past 100
+    async_ns = [5, 25, 50, 100, 200]
     results = []
     for n in exit_ns:
         print(f"running: N={n} durability=exit", flush=True)

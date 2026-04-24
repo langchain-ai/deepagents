@@ -2,7 +2,6 @@ import {
   createContext,
   useContext,
   useState,
-  useMemo,
   useCallback,
   type ReactNode,
 } from "react";
@@ -33,7 +32,7 @@ type ChatContextValue = {
 const ChatContext = createContext<ChatContextValue | undefined>(undefined);
 
 type ChatProviderProps = {
-  accessToken: string;
+  accessToken?: string;
   children: ReactNode;
 };
 
@@ -57,17 +56,13 @@ export function ChatProvider({ accessToken, children }: ChatProviderProps) {
     setCurrentThreadId(null);
   }, []);
 
-  const value = useMemo<ChatContextValue>(
-    () => ({
-      stream,
-      currentThreadId,
-      switchToThread,
-      newThread,
-    }),
-    [stream, currentThreadId, switchToThread, newThread]
+  return (
+    <ChatContext.Provider
+      value={{ stream, currentThreadId, switchToThread, newThread }}
+    >
+      {children}
+    </ChatContext.Provider>
   );
-
-  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
 
 export function useChat(): ChatContextValue {

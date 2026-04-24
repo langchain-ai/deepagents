@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 vibe-control = "control_server.main:main"
+vibe-players = "control_server.cli:main"
 
 [build-system]
 requires = ["hatchling"]

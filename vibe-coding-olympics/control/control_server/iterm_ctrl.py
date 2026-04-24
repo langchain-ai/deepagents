@@ -1,8 +1,9 @@
 """Async helpers for targeting `play.sh`-launched player sessions.
 
-Mirrors the reusable parts of `../control.py` so the web UI does not
-shell out. The CLI script remains authoritative — keep both in sync if
-session tagging conventions ever change.
+Single source of truth for the iTerm2 session-discovery contract.
+Both the `vibe-players` CLI and the `vibe-control` web server import
+these helpers; `play.sh` is the producer side of the same contract
+(tagging new sessions with `user.vibe_player` + matching name).
 """
 
 from __future__ import annotations
@@ -16,6 +17,24 @@ SESSION_PREFIX = "vibe-player-"
 # `/quit` is a QUEUED slash command; give the CLI a beat to tear down
 # the Textual app before piping `deepagents` back in.
 RESET_QUIT_GRACE_SECS = 1.0
+
+# Gap between typing a slash command and sending Enter. Without it,
+# iTerm2 flushes the whole buffer at once and Textual's `Input` submits
+# before the trailing chars are ingested, truncating the command.
+SUBMIT_GRACE_SECS = 0.05
+
+
+async def _submit_slash(session: iterm2.Session, command: str) -> None:
+    """Type a slash command into a Textual CLI and press Enter.
+
+    Enter in raw terminal mode is CR (`\\r`), not LF (`\\n`); Textual's
+    input widget won't treat `\\n` as submit. Splitting the text and the
+    Enter into two sends also lets the event loop ingest the full
+    command before the submit arrives.
+    """
+    await session.async_send_text(command)
+    await asyncio.sleep(SUBMIT_GRACE_SECS)
+    await session.async_send_text("\r")
 
 
 async def matching_sessions(
@@ -71,7 +90,7 @@ async def clear_players(ports: list[str] | None) -> list[str]:
     """
     cleared: list[str] = []
     for port, session in await matching_sessions(ports):
-        await session.async_send_text("/clear\n")
+        await _submit_slash(session, "/clear")
         cleared.append(port)
     return cleared
 
@@ -91,7 +110,7 @@ async def reset_players(ports: list[str] | None) -> list[str]:
     """
     reset: list[str] = []
     for port, session in await matching_sessions(ports):
-        await session.async_send_text("/quit\n")
+        await _submit_slash(session, "/quit")
         await asyncio.sleep(RESET_QUIT_GRACE_SECS)
         await session.async_send_text("deepagents\n")
         reset.append(port)

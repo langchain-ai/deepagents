@@ -1,14 +1,16 @@
-# `control/` — Vibe Olympics web control panel
+# `control/` — Vibe Olympics control plane
 
-Minimal FastAPI web UI that dispatches two kinds of commands from one page:
+Two entry points backed by the same iTerm2 discovery logic:
 
-- **Game state** — start / end / reset the round. Proxied to the OBS runner's `POST /transition` endpoint.
-- **Players** — list, `/clear`, or full `/quit`-and-relaunch the `play.sh`-spawned CLI sessions via the iTerm2 Python API.
+- `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
+- `vibe-players` — CLI for scripting / SSH: `vibe-players list|clear|reset`.
 
 ```
-browser ──POST /api/…──▶ control_server ──POST /transition──▶ obs runner ──▶ OBS
+browser ──POST /api/…──▶ vibe-control ──POST /transition──▶ obs runner ──▶ OBS
                               │
-                              └──iterm2 API──▶ player CLIs
+                              ├──iterm2 API──▶ player CLIs
+                              │
+shell ──vibe-players ─────────┘   (CLI path reuses the same iterm_ctrl helpers)
 ```
 
 ## Install
@@ -36,6 +38,19 @@ cd control && uv run vibe-control                  # http://localhost:8766
 
 Open `http://localhost:8766` in a browser.
 
+### CLI
+
+Same venv, different entry point. Runs one-shot and exits:
+
+```bash
+cd control
+uv run vibe-players list
+uv run vibe-players clear --port 3001
+uv run vibe-players clear --all
+uv run vibe-players reset --port 3001
+uv run vibe-players reset --all
+```
+
 ## Endpoints
 
 | Path | Method | Body | Does |
@@ -57,6 +72,6 @@ Open `http://localhost:8766` in a browser.
 | `VIBE_CONTROL_HOST` | `127.0.0.1` | Bind host for the control panel |
 | `VIBE_CONTROL_PORT` | `8766` | Bind port for the control panel |
 
-## Relationship to `../control.py`
+## Session-discovery contract
 
-`control.py` is the standalone CLI (`list`/`clear`/`reset`). The web panel reuses the same tagging convention (`user.vibe_player` / `vibe-player-<port>` session name) via `control_server/iterm_ctrl.py`. Both are valid entry points; the CLI is handier over SSH or in scripts, the web UI for a producer driving a live round.
+`play.sh` tags each new iTerm2 session it creates with both a user-variable (`user.vibe_player=<port>`) and a session name (`vibe-player-<port>`). `control_server/iterm_ctrl.py` is the single source of truth that reads those tags; both the web panel and `vibe-players` CLI delegate to it. If you ever change the tagging convention, update `play.sh` and `iterm_ctrl.py` together.

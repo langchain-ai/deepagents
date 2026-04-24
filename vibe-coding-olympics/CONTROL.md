@@ -1,15 +1,21 @@
-# `control.py` — test runbook
+# `vibe-players` — test runbook
 
-End-to-end smoke test for the player-dispatch script. Run from
-`vibe-coding-olympics/`.
+End-to-end smoke test for the player-dispatch CLI. Both `vibe-players`
+(CLI) and `vibe-control` (web UI) delegate to the same iTerm2
+session-discovery helpers in `control/control_server/iterm_ctrl.py`,
+so passing this runbook validates the web panel's Players section too.
+
+Run commands from `vibe-coding-olympics/control/` unless noted.
 
 ## Prereqs
 
 - iTerm2 running; Prefs → General → Magic → **Enable Python API** is **on**.
-- `uv sync` has been run in this directory (installs `iterm2`).
+- `uv sync` has been run in `control/` (installs `iterm2` + `fastapi`).
 - `deepagents` CLI is on your `$PATH`.
 
 ## 1. Launch a player
+
+From `vibe-coding-olympics/`:
 
 ```bash
 ./play.sh "a website for a taco truck" 3001
@@ -23,7 +29,7 @@ every command below will miss.
 ## 2. Confirm discovery
 
 ```bash
-uv run --project . python control.py list
+uv run vibe-players list
 ```
 
 Expect:
@@ -37,7 +43,7 @@ show up:
 
 ```bash
 ./play.sh "a minimalist timer" 3002
-uv run --project . python control.py list
+uv run vibe-players list
 # vibe-player-3001
 # vibe-player-3002
 ```
@@ -47,7 +53,7 @@ uv run --project . python control.py list
 Let the CLI on port 3001 build up a few turns of conversation first, then:
 
 ```bash
-uv run --project . python control.py clear --port 3001
+uv run vibe-players clear --port 3001
 ```
 
 Expect in that iTerm2 tab:
@@ -65,7 +71,7 @@ cleared vibe-player-3001
 Fan-out variant:
 
 ```bash
-uv run --project . python control.py clear --all
+uv run vibe-players clear --all
 # cleared vibe-player-3001
 # cleared vibe-player-3002
 ```
@@ -73,7 +79,7 @@ uv run --project . python control.py clear --all
 ## 4. Test `reset`
 
 ```bash
-uv run --project . python control.py reset --port 3001
+uv run vibe-players reset --port 3001
 ```
 
 Expect:
@@ -98,15 +104,15 @@ Fan-out variant: `reset --all`.
 
 | Scenario | Command | Expected |
 | --- | --- | --- |
-| No players running | `control.py list` | `No active player sessions found.` exit 0 |
-| Target a non-existent port | `control.py clear --port 9999` | `No matching player sessions.` exit 1 |
-| `reset` while the CLI is mid-turn | `control.py reset --port 3001` | `/quit` still works (ALWAYS-bypass tier) |
+| No players running | `vibe-players list` | `No active player sessions found.` exit 0 |
+| Target a non-existent port | `vibe-players clear --port 9999` | `No matching player sessions.` exit 1 |
+| `reset` while the CLI is mid-turn | `vibe-players reset --port 3001` | `/quit` still works (ALWAYS-bypass tier) |
 | Close the player window manually, rerun `list` | — | It disappears from the output |
 
 ## 6. Cleanup
 
 ```bash
-uv run --project . python control.py reset --all   # optional
+uv run vibe-players reset --all   # optional
 # then close the iTerm2 windows by hand
 ```
 
@@ -119,9 +125,9 @@ window doesn't block a rerun.
   enabled; restart iTerm2 if you just toggled it. Double-check the tab
   title reads `vibe-player-<port>`.
 - **`clear` runs but nothing happens in the CLI**: the focused pane in the
-  tagged tab probably isn't the CLI one. `control.py` targets every
+  tagged tab probably isn't the CLI one. `vibe-players` targets every
   session whose tag matches — if you manually split the pane, both get
   the keystrokes.
 - **`reset` sends `deepagents` before the CLI has exited**: bump
-  `RESET_QUIT_GRACE_SECS` in `control.py`.
+  `RESET_QUIT_GRACE_SECS` in `control/control_server/iterm_ctrl.py`.
 - **Stale tag on a dead window**: close the window; the tag goes with it.

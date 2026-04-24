@@ -24,10 +24,11 @@ from deepagents.graph import (
     _tool_name,
     create_deep_agent,
 )
+from deepagents.middleware._tool_aliasing import _ToolAliasingMiddleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import _PermissionMiddleware
+from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
@@ -678,6 +679,128 @@ class TestToolExclusionWiring:
             exclusion_mws = [m for m in mw_stack if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusion_mws) == 1
             assert "my_tool" in exclusion_mws[0]._excluded
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestToolAliasingMiddlewareWiring:
+    """Tests that `tool_aliases` on a profile wires `_ToolAliasingMiddleware` correctly."""
+
+    def test_aliasing_middleware_added_when_profile_has_aliases(self) -> None:
+        """`_ToolAliasingMiddleware` is appended to the main stack with the configured map."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "aliasprov",
+                HarnessProfile(tool_aliases={"execute": "shell_command", "list_dir": "ls"}),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="aliasprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            aliasing_mws = [m for m in mw_stack if isinstance(m, _ToolAliasingMiddleware)]
+            assert len(aliasing_mws) == 1
+            assert aliasing_mws[0]._forward == {"execute": "shell_command", "list_dir": "ls"}
+            assert aliasing_mws[0]._reverse == {"shell_command": "execute", "ls": "list_dir"}
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_no_aliasing_middleware_when_aliases_empty(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "noaliasprov",
+                HarnessProfile(system_prompt_suffix="present"),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="noaliasprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            aliasing_mws = [m for m in mw_stack if isinstance(m, _ToolAliasingMiddleware)]
+            assert len(aliasing_mws) == 0
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_aliasing_is_innermost_after_permissions(self) -> None:
+        """Aliasing must come after `_PermissionMiddleware` so permissions see canonical names.
+
+        The middleware stack runs outermost to innermost on outbound and the
+        reverse on inbound. Aliasing renames at the model boundary; every
+        prior name-aware middleware (tool exclusion, HITL, permissions) must
+        observe canonical tool names. Permissions has the strongest
+        ordering constraint of those (security guarantee), so this test
+        pins down the relative order explicitly.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "aliasprov",
+                HarnessProfile(tool_aliases={"execute": "shell_command"}),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="aliasprov:some-model",
+                    permissions=[FilesystemPermission(operations=["read"], paths=["/**"])],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            classes = [type(m) for m in mw_stack]
+            perm_idx = classes.index(_PermissionMiddleware)
+            alias_idx = classes.index(_ToolAliasingMiddleware)
+            assert alias_idx > perm_idx
+            assert alias_idx == len(classes) - 1, "aliasing must be the last (innermost) middleware"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_aliasing_wired_into_general_purpose_subagent_stack(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "aliasprov",
+                HarnessProfile(tool_aliases={"execute": "shell_command"}),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="aliasprov:some-model")
+
+            subagents = mock_subagents.call_args.kwargs["subagents"]
+            general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+            gp_mw = general_purpose["middleware"]
+            aliasing_mws = [m for m in gp_mw if isinstance(m, _ToolAliasingMiddleware)]
+            assert len(aliasing_mws) == 1
+            assert aliasing_mws[0]._forward == {"execute": "shell_command"}
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -1644,6 +1767,58 @@ class TestSubagentLevelToolExclusionAndOverrides:
             exclusions = [m for m in worker["middleware"] if isinstance(m, _ToolExclusionMiddleware)]
             assert len(exclusions) == 1
             assert exclusions[0]._excluded == frozenset({"child_only"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_subagent_tool_aliases_not_leaked_from_parent(self) -> None:
+        """A subagent's profile `tool_aliases` must reach the subagent's stack, not inherit the parent's."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentalias",
+                HarnessProfile(tool_aliases={"execute": "parent_alias"}),
+            )
+            register_harness_profile(
+                "subalias",
+                HarnessProfile(tool_aliases={"execute": "child_alias"}),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subalias"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentalias:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subalias:worker-model",
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            aliasing = [m for m in worker["middleware"] if isinstance(m, _ToolAliasingMiddleware)]
+            assert len(aliasing) == 1
+            assert aliasing[0]._forward == {"execute": "child_alias"}
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

@@ -29,6 +29,7 @@ from deepagents._models import get_model_identifier, get_model_provider, resolve
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._tool_aliasing import _ToolAliasingMiddleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -584,7 +585,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
-            - `_PermissionMiddleware` (if permission rules are present, always last)
+            - `_PermissionMiddleware` (if permission rules are present, last
+                name-aware middleware so its rules match canonical tool names)
+            - `_ToolAliasingMiddleware` (if profile has `tool_aliases`,
+                innermost so tool name translation happens only at the model
+                boundary)
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -648,8 +653,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
 
-            `_PermissionMiddleware` is appended last in the stack so it sees
-            all tools (including those injected by other middleware).
+            `_PermissionMiddleware` is the last name-aware middleware in the
+            stack so it sees the full tool set with canonical names. If the
+            active harness profile defines `tool_aliases`, the
+            name-translating middleware is appended after it as the
+            innermost transform.
         backend: Optional backend for file storage and execution.
 
             Pass a `Backend` instance (e.g. `StateBackend()`).
@@ -792,6 +800,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
+            # Aliasing is the innermost name-aware middleware: keeps every
+            # other layer on canonical names while the model sees its
+            # trained vocabulary.
+            if _subagent_profile.tool_aliases:
+                subagent_middleware.append(_ToolAliasingMiddleware(aliases=dict(_subagent_profile.tool_aliases)))
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -852,9 +865,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
         gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
-        # Permissions must be last so they see all tools from prior middleware
+        # Permissions is the last name-aware middleware so its rules match
+        # canonical tool names; aliasing is appended after it to translate
+        # names canonical <-> alias only at the model boundary.
         if permissions:
             gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+        if _profile.tool_aliases:
+            gp_middleware.append(_ToolAliasingMiddleware(aliases=dict(_profile.tool_aliases)))
 
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -932,9 +949,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-    # _PermissionMiddleware must be last so it sees all tools from prior middleware
+    # `_PermissionMiddleware` is the last name-aware middleware: it sees the
+    # full tool set with canonical names so user-supplied permission rules
+    # (keyed on canonical names) match. Aliasing is appended after it as the
+    # innermost transform, renaming canonical -> alias on the way out and
+    # alias -> canonical on the way back, so the model sees its trained
+    # vocabulary while every other middleware stays on canonical names.
     if permissions:
         deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
+    if _profile.tool_aliases:
+        deepagent_middleware.append(_ToolAliasingMiddleware(aliases=dict(_profile.tool_aliases)))
 
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

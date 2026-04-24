@@ -27,6 +27,7 @@ from importlib import import_module
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
+from deepagents.middleware._tool_aliasing import _validate_tool_aliases
 from deepagents.profiles._keys import validate_profile_key
 
 if TYPE_CHECKING:
@@ -213,6 +214,23 @@ class HarnessProfileConfig:
     `from_dict`.
     """
 
+    tool_aliases: Mapping[str, str] = field(default_factory=dict)
+    """Canonical -> model-facing tool name aliases.
+
+    Rewrites a tool's name between canonical Deep Agents identifiers and the
+    vocabulary a model was trained on (e.g. `{"execute": "shell_command"}`
+    for OpenAI Codex). The model sees aliased names on its tool catalog and
+    in conversation history; the rest of the Deep Agents stack — routing,
+    tool exclusion, HITL rules, permissions, tests — continues to use
+    canonical names.
+
+    Keys are canonical tool names; values are the names the model should
+    see. The map MUST be injective (unique values) and keys/values MUST be
+    disjoint so the alias table round-trips unambiguously. Violations raise
+    `ValueError` at construction. When two profiles merge (e.g. provider
+    plus exact-model), the combined map is re-validated.
+    """
+
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
     """Edits for the auto-added `general-purpose` subagent."""
 
@@ -224,6 +242,13 @@ class HarnessProfileConfig:
                 "tool_description_overrides",
                 MappingProxyType(dict(self.tool_description_overrides)),
             )
+        if not isinstance(self.tool_aliases, MappingProxyType):
+            object.__setattr__(
+                self,
+                "tool_aliases",
+                MappingProxyType(dict(self.tool_aliases)),
+            )
+        _validate_tool_aliases(self.tool_aliases)
         for entry in self.excluded_middleware:
             _validate_config_middleware_string(entry, "excluded_middleware")
 
@@ -255,6 +280,11 @@ class HarnessProfileConfig:
             out["excluded_tools"] = sorted(self.excluded_tools)
         if self.excluded_middleware:
             out["excluded_middleware"] = sorted(self.excluded_middleware)
+        if self.tool_aliases:
+            out["tool_aliases"] = _coerce_str_mapping(
+                dict(self.tool_aliases),
+                "tool_aliases",
+            )
         if self.general_purpose_subagent is not None:
             # Emit the key even when the sub-profile has no fields set so
             # `from_dict(to_dict(c))` preserves the "explicit empty sub-profile"
@@ -295,6 +325,7 @@ class HarnessProfileConfig:
             tool_description_overrides=_coerce_str_mapping(data.get("tool_description_overrides"), "tool_description_overrides"),
             excluded_tools=_coerce_frozen_strset(data.get("excluded_tools"), "excluded_tools"),
             excluded_middleware=_coerce_frozen_strset(data.get("excluded_middleware"), "excluded_middleware"),
+            tool_aliases=_coerce_str_mapping(data.get("tool_aliases"), "tool_aliases"),
             general_purpose_subagent=_coerce_general_purpose_subagent(data.get("general_purpose_subagent")),
         )
 
@@ -320,6 +351,7 @@ class HarnessProfileConfig:
             tool_description_overrides=self.tool_description_overrides,
             excluded_tools=self.excluded_tools,
             excluded_middleware=frozenset(_resolve_config_excluded_middleware_entry(entry) for entry in self.excluded_middleware),
+            tool_aliases=self.tool_aliases,
             general_purpose_subagent=self.general_purpose_subagent,
         )
 
@@ -342,8 +374,8 @@ class HarnessProfileConfig:
                 non-empty `extra_middleware`, or if a class-form
                 `excluded_middleware` entry cannot be expressed as an import
                 ref.
-            TypeError: If `tool_description_overrides` contains a non-string
-                key or value.
+            TypeError: If `tool_description_overrides` or `tool_aliases`
+                contains a non-string key or value.
         """
         extra = profile.extra_middleware
         if callable(extra) or (isinstance(extra, tuple) and extra):
@@ -363,6 +395,10 @@ class HarnessProfileConfig:
             ),
             excluded_tools=profile.excluded_tools,
             excluded_middleware=frozenset(_serialize_runtime_excluded_middleware_entry(entry) for entry in profile.excluded_middleware),
+            tool_aliases=_coerce_str_mapping(
+                dict(profile.tool_aliases),
+                "tool_aliases",
+            ),
             general_purpose_subagent=profile.general_purpose_subagent,
         )
 
@@ -514,6 +550,29 @@ class HarnessProfile:
             rejected as likely typos or stale profiles.
     """
 
+    tool_aliases: Mapping[str, str] = field(default_factory=dict)
+    """Canonical -> model-facing tool name aliases.
+
+    Rewrites tool names between canonical Deep Agents identifiers and the
+    vocabulary a model was trained on (e.g. `{"execute": "shell_command"}`
+    for OpenAI Codex). Applied by a late-stack middleware positioned after
+    tool exclusion, HITL, and permissions so the model sees aliased names
+    on its tool catalog and in conversation history, while the rest of the
+    Deep Agents stack — routing, tool exclusion, HITL rules, permissions,
+    tests — continues to use canonical names.
+
+    Keys are canonical tool names; values are the names the model should
+    see. The map MUST be injective (unique values) and keys/values MUST be
+    disjoint so the alias table round-trips unambiguously. Violations raise
+    `ValueError` at construction. When two profiles merge (e.g. provider
+    plus exact-model), the combined map is re-validated.
+
+    Tools whose canonical name does not appear as a key pass through
+    unchanged. Tools whose internal shape cannot be copied (neither a dict
+    nor a Pydantic `BaseTool`-like with `model_copy`) are logged and
+    skipped; see `_ToolAliasingMiddleware` for details.
+    """
+
     extra_middleware: _MiddlewareSpec = ()
     """Middleware appended to every runtime middleware stack.
 
@@ -589,6 +648,13 @@ class HarnessProfile:
                 "tool_description_overrides",
                 MappingProxyType(dict(self.tool_description_overrides)),
             )
+        if not isinstance(self.tool_aliases, MappingProxyType):
+            object.__setattr__(
+                self,
+                "tool_aliases",
+                MappingProxyType(dict(self.tool_aliases)),
+            )
+        _validate_tool_aliases(self.tool_aliases)
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
@@ -1132,6 +1198,13 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     example, `{SummarizationMiddleware}` plus `{AnthropicPromptCachingMiddleware}`
     becomes both classes in the merged profile.
 
+    `tool_aliases` maps merge with the override winning per key, then the
+    combined map is re-validated. The injective and disjoint-keys/values
+    invariants hold for each profile individually; merging two
+    individually-valid maps can still produce a conflicting composite (e.g.
+    `{"execute": "shell_command"}` + `{"shell_command": "foo"}`), so the
+    re-check fails fast at resolution time rather than at runtime.
+
     Middleware sequences are merged by type (see `_merge_middleware`). For
     example, if both profiles provide a middleware of the same class, the
     override instance replaces the base instance in the same position, while
@@ -1160,6 +1233,7 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
         },
         excluded_tools=base.excluded_tools | override.excluded_tools,
         excluded_middleware=base.excluded_middleware | override.excluded_middleware,
+        tool_aliases={**base.tool_aliases, **override.tool_aliases},
         extra_middleware=_merge_middleware(base.extra_middleware, override.extra_middleware),
         general_purpose_subagent=_merge_general_purpose_subagent_profiles(
             base.general_purpose_subagent,

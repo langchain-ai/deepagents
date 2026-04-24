@@ -19,6 +19,7 @@ registers one.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
@@ -32,6 +33,18 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
+
+    from deepagents.backends.protocol import BACKEND_TYPES
+
+    # A middleware "spec" is one of three shapes the profile accepts:
+    #   * a static sequence of middleware instances,
+    #   * a zero-arg factory returning a sequence, or
+    #   * a backend-aware factory that takes the resolved `BACKEND_TYPES`
+    #     argument and returns a sequence.
+    # The third form exists so profiles can opt into backend-coupled
+    # middleware (e.g., a V4A `apply_patch` tool) without needing to
+    # thread the backend through ad-hoc plumbing.
+    _MiddlewareSpec = Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] | Callable[[BACKEND_TYPES], Sequence[AgentMiddleware]]
 
 logger = logging.getLogger(__name__)
 
@@ -501,7 +514,7 @@ class HarnessProfile:
             rejected as likely typos or stale profiles.
     """
 
-    extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
+    extra_middleware: _MiddlewareSpec = ()
     """Middleware appended to every runtime middleware stack.
 
     Applied to the main agent, the auto-added `general-purpose` subagent, and
@@ -516,9 +529,22 @@ class HarnessProfile:
     not here. In both cases, injecting local middleware would either fail
     silently or violate the caller's explicit configuration.
 
-    May be a static sequence or a zero-arg factory that returns one. Use a
-    factory when middleware instances should not be shared across stacks. This
-    field is runtime-only and intentionally absent from `HarnessProfileConfig`.
+    Accepts three shapes:
+
+    * A static sequence of middleware instances.
+    * A zero-arg factory returning a sequence — use this when middleware
+      instances should not be shared across stacks (e.g., stateful
+      middleware).
+    * A backend-aware factory that takes the agent's resolved backend as
+      its sole argument and returns a sequence. Use this for middleware
+      that must read/write the same filesystem backend as the agent
+      (e.g., a V4A `apply_patch` tool). `create_deep_agent` passes the
+      same `backend` it gives `FilesystemMiddleware`, so the two see a
+      consistent file view. Arity is detected via `inspect.signature`
+      at merge/resolution time.
+
+    This field is runtime-only and intentionally absent from
+    `HarnessProfileConfig`.
     """
 
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
@@ -909,20 +935,76 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     return None
 
 
-def _resolve_middleware_seq(
-    middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
+def _takes_backend(spec: _MiddlewareSpec) -> bool:
+    """Return `True` if `spec` is a callable that declares any parameter.
+
+    Used to route factories through the arity-dispatch path in
+    `_resolve_middleware_spec` and `_merge_middleware`. A plain
+    sequence or a zero-arg callable returns `False`.
+
+    Args:
+        spec: A middleware spec (sequence, zero-arg factory, or
+            backend-aware factory).
+
+    Returns:
+        `True` when `spec` is callable and its signature declares at
+            least one parameter of any kind. Callables without an
+            introspectable signature (builtins, C-level callables)
+            default to `False`.
+    """
+    if not callable(spec):
+        return False
+    try:
+        params = inspect.signature(spec).parameters
+    except (TypeError, ValueError):
+        # ``inspect.signature`` raises for some builtins/C-level callables.
+        # Fall back to the zero-arg branch — the backend-aware path
+        # cannot be invoked without a signature we can introspect.
+        return False
+    return len(params) > 0
+
+
+def _resolve_middleware_spec(
+    spec: _MiddlewareSpec,
+    backend: BACKEND_TYPES | None = None,
 ) -> Sequence[AgentMiddleware]:
-    """Resolve middleware to a concrete sequence, calling the factory if needed."""
-    if callable(middleware):
-        return middleware()  # ty: ignore[call-top-callable]  # Callable & Sequence union confuses ty
-    return middleware
+    """Materialize a middleware spec into a concrete sequence.
+
+    Sequences are returned as-is. Zero-arg factories are invoked with
+    no arguments; backend-aware factories are invoked with `backend`.
+    The arity is detected via `_takes_backend`.
+
+    Args:
+        spec: The middleware spec to resolve.
+        backend: Backend instance to pass to backend-aware factories.
+            Ignored for sequences and zero-arg factories. Callers who
+            know `spec` is backend-agnostic (e.g. the zero-arg merge
+            branch) may omit it.
+
+    Returns:
+        A concrete sequence of middleware instances.
+
+    Raises:
+        ValueError: If `spec` is a backend-aware factory but `backend`
+            is `None`.
+    """
+    if not callable(spec):
+        return spec
+    if _takes_backend(spec):
+        if backend is None:
+            msg = "Backend-aware middleware factory requires a backend argument."
+            raise ValueError(msg)
+        # Arity was introspected by `_takes_backend`, but ty can't narrow
+        # the union based on a helper's return value.
+        return spec(backend)  # ty: ignore[call-top-callable,too-many-positional-arguments]
+    return spec()  # ty: ignore[call-top-callable,missing-argument]
 
 
 def _merge_middleware(
-    base_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
-    override_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]],
-) -> Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]]:
-    """Merge two middleware sequences by type.
+    base_middleware: _MiddlewareSpec,
+    override_middleware: _MiddlewareSpec,
+) -> _MiddlewareSpec:
+    """Merge two middleware specs by concrete type.
 
     Middleware stacks have at most one instance of each concrete class, so
     the merge treats the class as the identity. When the override has an
@@ -949,19 +1031,32 @@ def _merge_middleware(
         `[A_new, A_new]`. This mirrors the intent of "replace in place"
         rather than "insert once per base match".
 
+    Arity of the merged factory:
+        When either side is a backend-aware factory, the merged spec is
+        itself a backend-aware factory so the downstream resolver can
+        thread the backend through. Otherwise the merged spec is a
+        plain zero-arg factory — this preserves the pre-refactor shape
+        for callers who have not opted into backend-aware factories.
+
     Args:
-        base_middleware: Base middleware sequence with lower priority.
-        override_middleware: Override middleware sequence with higher priority.
+        base_middleware: Base middleware spec with lower priority.
+        override_middleware: Override middleware spec with higher
+            priority.
 
     Returns:
-        A merged middleware sequence or factory.
+        A merged middleware spec.
     """
     if not base_middleware or not override_middleware:
         return override_middleware or base_middleware
 
-    def factory() -> Sequence[AgentMiddleware]:
-        base_seq = _resolve_middleware_seq(base_middleware)
-        override_seq = _resolve_middleware_seq(override_middleware)
+    base = base_middleware
+    override = override_middleware
+
+    def _combine(
+        base_seq: Sequence[AgentMiddleware],
+        override_seq: Sequence[AgentMiddleware],
+    ) -> list[AgentMiddleware]:
+        """Apply the type-slot merge rule to two resolved sequences."""
         override_by_type: dict[type, AgentMiddleware] = {type(m): m for m in override_seq}
         merged: list[AgentMiddleware] = []
         replaced: set[type] = set()
@@ -977,7 +1072,26 @@ def _merge_middleware(
         merged.extend(m for m in override_seq if type(m) not in replaced)
         return merged
 
-    return factory
+    if _takes_backend(base) or _takes_backend(override):
+
+        def backend_aware_factory(backend: BACKEND_TYPES) -> Sequence[AgentMiddleware]:
+            return _combine(
+                _resolve_middleware_spec(base, backend),
+                _resolve_middleware_spec(override, backend),
+            )
+
+        return backend_aware_factory
+
+    def zero_arg_factory() -> Sequence[AgentMiddleware]:
+        # Neither side declares a backend arg, so the backend argument
+        # is omitted — `_resolve_middleware_spec` never reaches the
+        # backend-aware branch for these specs.
+        return _combine(
+            _resolve_middleware_spec(base),
+            _resolve_middleware_spec(override),
+        )
+
+    return zero_arg_factory
 
 
 def _merge_general_purpose_subagent_profiles(

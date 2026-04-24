@@ -10,6 +10,7 @@ from langgraph.config import get_config
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -284,6 +285,27 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return EditResult(path=file_path, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Remove a file from agent state.
+
+        Queues a `None` value on the `files` channel, which the
+        `_file_data_reducer` interprets as a deletion marker. Like `write`
+        and `edit`, the deletion is not visible to reads within the same
+        superstep — it takes effect at the next node boundary.
+
+        Args:
+            file_path: Absolute path of the file to remove.
+
+        Returns:
+            `DeleteResult` with `path` on success, or `error` if the file
+                does not exist.
+        """
+        files = self._read_files()
+        if file_path not in files:
+            return DeleteResult(error=f"File '{file_path}' not found")
+        self._send_files_update({file_path: None})
+        return DeleteResult(path=file_path)
 
     def grep(
         self,

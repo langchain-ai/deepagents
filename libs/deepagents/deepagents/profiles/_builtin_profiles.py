@@ -25,6 +25,7 @@ import logging
 import warnings
 from importlib.metadata import entry_points
 
+from deepagents.profiles.harness import _codex as _codex_harness
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
 from deepagents.profiles.provider import _openai, _openrouter
 
@@ -86,6 +87,7 @@ def _ensure_builtin_profiles_loaded() -> None:
         return
     _openai.register()
     _openrouter.register()
+    _codex_harness.register()
     _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
     _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
     _BOOTSTRAP_HARNESS_KEYS = frozenset(_HARNESS_PROFILES)

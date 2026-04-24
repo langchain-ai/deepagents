@@ -234,6 +234,35 @@ class WriteResult:
 
 
 @dataclass(init=False)
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of the deleted file, None on failure.
+
+    Examples:
+        >>> DeleteResult(path="/f.txt")
+        >>> DeleteResult(error="File not found")
+    """
+
+    error: str | None
+    path: str | None
+    files_update: dict[str, Any] | None
+
+    def __init__(
+        self,
+        error: str | None = None,
+        path: str | None = None,
+        files_update: dict[str, Any] | None | _Unset = Unset,
+    ) -> None:
+        """Initialize `DeleteResult`."""
+        self.error = error
+        self.path = path
+        self.files_update = _normalize_files_update(files_update)
+
+
+@dataclass(init=False)
 class EditResult:
     """Result from backend edit operations.
 
@@ -541,6 +570,26 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> EditResult:
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
+
+    def delete(self, file_path: str) -> "DeleteResult":
+        """Remove a file from the backend.
+
+        Default raises `NotImplementedError` so existing backends remain
+        source-compatible; backends that support deletion override this.
+        Callers that need to surface a model-readable error when a backend
+        cannot delete should catch `NotImplementedError` at the boundary.
+
+        Args:
+            file_path: Absolute path to the file to delete. Must start with `'/'`.
+
+        Returns:
+            `DeleteResult` with `path` on success or `error` on failure.
+        """
+        raise NotImplementedError
+
+    async def adelete(self, file_path: str) -> "DeleteResult":
+        """Async version of `delete`."""
+        return await asyncio.to_thread(self.delete, file_path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.

@@ -13,7 +13,7 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, ReadResult, WriteResult
-from deepagents.middleware.summarization import SummarizationMiddleware
+from deepagents.middleware.summarization import SummarizationMiddleware, _serialize_messages_for_archive
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -582,6 +582,79 @@ class TestOffloadingBasic:
         # Check that the offloaded content doesn't include "Previous summary content"
         # (which is the content of the summary message added by include_previous_summary)
         assert "Previous summary content" not in content, "Previous summary message should be filtered from offload"
+
+    def test_offload_preserves_base64_image(self) -> None:
+        """Regression test: `get_buffer_string` silently dropped image blocks from the archive."""
+        image_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAeImBZsAAAAASUVORK5CYII="
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 1),
+            keep=("messages", 1),
+        )
+
+        multimodal_msg = HumanMessage(
+            content=[
+                {"type": "text", "text": "What is in this diagram?"},
+                {
+                    "type": "image",
+                    "source_type": "base64",
+                    "mime_type": "image/png",
+                    "data": image_b64,
+                },
+            ]
+        )
+        messages = [multimodal_msg, HumanMessage(content="Recent message")]
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config():
+            call_wrap_model_call(middleware, state, runtime)
+
+        assert len(backend.write_calls) == 1
+        _, content = backend.write_calls[0]
+
+        assert image_b64 in content, "Base64 image data must be preserved in the archive"
+        assert "What is in this diagram?" in content
+
+
+class TestSerializeMessagesForArchive:
+    """Unit tests for the `_serialize_messages_for_archive` helper."""
+
+    def test_base64_image_preserved(self) -> None:
+        """Base64 image data and mime type are included verbatim in the output."""
+        image_b64 = "abc123=="
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": "Look at this:"},
+                {
+                    "type": "image",
+                    "source_type": "base64",
+                    "mime_type": "image/jpeg",
+                    "data": image_b64,
+                },
+            ]
+        )
+        result = _serialize_messages_for_archive([msg])
+        assert "Look at this:" in result
+        assert image_b64 in result
+        assert "image/jpeg" in result
+
+    def test_image_url_preserved(self) -> None:
+        """image_url blocks include the URL in the output."""
+        url = "https://cdn.example.com/photo.jpg"
+        msg = HumanMessage(
+            content=[
+                {"type": "text", "text": "What is this?"},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]
+        )
+        result = _serialize_messages_for_archive([msg])
+        assert "What is this?" in result
+        assert url in result
 
 
 class TestSummaryMessageFormat:

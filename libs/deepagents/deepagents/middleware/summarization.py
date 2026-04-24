@@ -67,7 +67,7 @@ from langchain.agents.middleware.summarization import (
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, ChatMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
 from langgraph.types import Command
@@ -89,6 +89,81 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
 
 logger = logging.getLogger(__name__)
+
+_ROLE_MAP = {
+    "human": "Human",
+    "ai": "AI",
+    "system": "System",
+    "tool": "Tool",
+    "function": "Function",
+}
+
+
+def _serialize_content_block(block: dict[str, Any]) -> str:
+    """Serialize a single multimodal content block for archival.
+
+    Args:
+        block: A content block dict from a message's `content` list.
+
+    Returns:
+        String representation of the block with image data preserved.
+    """
+    block_type = block.get("type", "")
+    if block_type == "text":
+        return block.get("text", "")
+    if block_type == "image_url":
+        url = block.get("image_url", {}).get("url", "")
+        return f"[image_url: {url}]"
+    if block_type == "image":
+        source_type = block.get("source_type", "")
+        if source_type == "base64":
+            mime = block.get("mime_type", "image/png")
+            data = block.get("data", "")
+            return f"[image/base64 mime={mime} data={data}]"
+        if source_type == "url":
+            return f"[image_url: {block.get('url', '')}]"
+        return f"[image: {block}]"
+    return str(block)
+
+
+def _serialize_messages_for_archive(messages: list[AnyMessage]) -> str:
+    """Serialize messages for archival, preserving image content blocks.
+
+    A multimodal-aware replacement for `get_buffer_string` used when offloading
+    messages to the backend. Unlike `get_buffer_string`, this function preserves
+    image blocks — both base64-encoded data and URL references — so they are
+    not silently dropped from the archival record.
+
+    Args:
+        messages: Messages to serialize.
+
+    Returns:
+        String representation of all messages with image content preserved.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.role if isinstance(msg, ChatMessage) else _ROLE_MAP.get(msg.type, msg.type.title())
+        content = msg.content
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
+                str(block) if not isinstance(block, dict) else _serialize_content_block(block)
+                for block in content
+            )
+        else:
+            text = str(content)
+
+        message = f"{role}: {text}"
+
+        if isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                message += str(msg.tool_calls)
+            elif "function_call" in msg.additional_kwargs:
+                message += str(msg.additional_kwargs["function_call"])
+
+        parts.append(message)
+    return "\n".join(parts)
 
 
 class CompactConversationSchema(BaseModel):
@@ -761,7 +836,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{_serialize_messages_for_archive(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
@@ -835,7 +910,7 @@ A condensed summary follows:
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{_serialize_messages_for_archive(filtered_messages)}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns

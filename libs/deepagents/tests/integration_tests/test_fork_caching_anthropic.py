@@ -1,14 +1,13 @@
 """End-to-end verification that fork mode preserves Anthropic prompt caching.
 
 Runs against a live Claude Haiku 4.5 endpoint. The test sends two back-to-back
-invocations that route through a forked subagent and asserts the fork's second
-invocation hits the prompt cache. A negative control asserts that a non-fork
-subagent (same structure, `fork=False`) does not hit the cache on the second
-run — the delta confirms fork is what unlocks the reuse.
+parent invocations with a large user message, then verifies the forked
+subagent reads at least as much cached input as the parent. That proves the
+fork reuses the parent's full cached prefix, including inherited messages.
 
-Haiku's minimum cacheable block is 2048 tokens (vs. 1024 for Sonnet/Opus). The
-shared system prompt below is sized well above that floor so the cache
-breakpoint actually fires.
+Haiku's minimum cacheable block is 2048 tokens (vs. 1024 for Sonnet/Opus).
+The shared system prompt and the injected HumanMessage below are both sized
+well above that floor so cache breakpoints can actually fire.
 """
 
 from __future__ import annotations
@@ -40,16 +39,22 @@ _FILLER_SENTENCE = (
 LARGE_SHARED_PREFIX = _FILLER_SENTENCE * 120  # ~3500+ tokens, safely above 2048
 
 
-_FORK_SUFFIX_MARKER = "Reply with exactly one short sentence."
-"""Text unique to the worker subagent's own system_prompt. Used below to
-classify which agent made each LLM call by inspecting the system message
-content — ``ls_agent_type`` is propagated via the LangSmith tracer, not the
-callback's ``metadata``, so we cannot key on it here."""
+_FORK_PREAMBLE_MARKER = "You are running as a forked subagent"
+"""Text present only in the preamble that ``graph.py`` prepends to a forked
+subagent's trailing HumanMessage. Used to classify fork LLM calls by
+inspecting the last user-role message. ``ls_agent_type`` propagates through
+the LangSmith tracer, not the callback's ``metadata``, so we cannot key on
+it here."""
 
 _PARENT_PREFIX_MARKER = "exhaustive research assistant"
-"""Text unique to the main agent's large shared system prompt. Combined
-with ``_FORK_SUFFIX_MARKER``, its presence distinguishes a fork call (both
-markers) from a non-fork subagent call (suffix only)."""
+"""Text unique to the main agent's large shared system prompt. Present on
+both main-agent and forked-subagent calls (fork inherits the parent system
+byte-for-byte), so this alone does not distinguish them — pair it with
+the preamble marker below to classify."""
+
+_NONFORK_SUBAGENT_MARKER = "Reply with exactly one short sentence."
+"""Text that appears only in the non-fork subagent's system_prompt slot.
+Present on non-fork subagent calls, absent on main and fork calls."""
 
 
 class _UsageCapture(BaseCallbackHandler):
@@ -71,6 +76,12 @@ class _UsageCapture(BaseCallbackHandler):
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
         self._run_class: dict[Any, str] = {}
+        # Keep the system text each call saw so a failing assertion can pinpoint
+        # where the parent's and fork's system messages diverge.
+        self.system_texts: list[tuple[str, str]] = []  # (agent_type, system_text)
+        # Same for the full non-system message list, so we can spot divergence
+        # anywhere in the prefix, not just the system portion.
+        self.messages_summaries: list[tuple[str, list[str]]] = []  # (agent_type, [type: content-preview])
 
     def on_chat_model_start(
         self,
@@ -81,18 +92,29 @@ class _UsageCapture(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         system_text = ""
+        last_human_text = ""
+        summary: list[str] = []
         for msg_list in messages:
             for msg in msg_list:
-                if getattr(msg, "type", None) == "system":
-                    system_text += str(getattr(msg, "content", "") or "")
+                mtype = getattr(msg, "type", "?") or "?"
+                content = str(getattr(msg, "content", "") or "")
+                summary.append(f"{mtype}: len={len(content)} preview={content[:60]!r}")
+                if mtype == "system":
+                    system_text += content
+                elif mtype == "human":
+                    last_human_text = content
         has_parent = _PARENT_PREFIX_MARKER in system_text
-        has_fork_suffix = _FORK_SUFFIX_MARKER in system_text
-        if has_parent and has_fork_suffix:
-            self._run_class[run_id] = "fork-subagent"
-        elif has_fork_suffix:
-            self._run_class[run_id] = "subagent"
+        has_fork_preamble = _FORK_PREAMBLE_MARKER in last_human_text
+        has_nonfork_subagent = _NONFORK_SUBAGENT_MARKER in system_text
+        if has_parent and has_fork_preamble:
+            agent_type = "fork-subagent"
+        elif has_nonfork_subagent and not has_parent:
+            agent_type = "subagent"
         else:
-            self._run_class[run_id] = "main"
+            agent_type = "main"
+        self._run_class[run_id] = agent_type
+        self.system_texts.append((agent_type, system_text))
+        self.messages_summaries.append((agent_type, summary))
 
     def on_llm_end(
         self,
@@ -139,84 +161,111 @@ def _build_agent(*, fork: bool) -> object:
     )
 
 
-_DELEGATE_PROMPT = "Call the `task` tool with subagent_type='worker' and description='say hi'. Do this immediately."
+# Large HumanMessage used to prove the parent caches message content and the
+# fork reuses that same cached prefix. Sized well above the 2048-token Haiku
+# floor so a cache breakpoint on the last message can fire.
+_LARGE_USER_MESSAGE_TEXT = (
+    "Background context (do not respond to this, just keep it in mind): "
+    "Organizations accumulate institutional knowledge across many sources. "
+    "Policies, runbooks, design docs, incident reports, and personal notes "
+    "all carry context that agents need to act correctly. "
+) * 400
+_LARGE_USER_MESSAGE_APPROX_TOKENS = 6000  # conservative lower bound
 
 
 class TestForkPromptCachingAnthropic:
-    """Live verification that fork mode reuses the Anthropic prompt cache.
+    """Live verification of the fork implementation's prompt-cache behavior."""
 
-    The whole point of ``fork=True`` is that the subagent's prefix matches
-    the parent's byte-for-byte, so the provider's prompt cache serves the
-    second invocation. These tests verify that directly by capturing every
-    LLM call via a callback and filtering for events tagged
-    ``ls_agent_type="fork-subagent"``.
-    """
+    def test_fork_caches_inherited_messages_not_just_system_prompt(self) -> None:
+        """Fork cache reads should include inherited messages, not just the system prompt.
 
-    def test_fork_subagent_reuses_prompt_cache_across_invocations(self) -> None:
-        """Forked subagent's second call must read a meaningful chunk of tokens from cache.
+        Anthropic's prompt cache is a running prefix of bytes: the cache entry
+        written at any message-block boundary depends on every byte that came
+        before it. This test proves the parent caches a large HumanMessage,
+        then asserts the fork can reuse the same cached prefix before adding
+        its own final HumanMessage.
 
-        Two back-to-back invocations of the agent, each asking it to delegate
-        to a forked subagent. Across the two fork calls, at least one must
-        report ``cache_read_input_tokens > 0``. The exact boundary between
-        creation and read depends on prior cache state, so we only assert
-        the reuse — it's the signal that proves the fork's prefix aligns
-        with a previously-seen prefix.
+        Concretely:
+
+        1. Run the deepagent twice with the same large HumanMessage,
+           delegating to a forked subagent. The fork inherits the parent's
+           message history.
+
+        2. Assert the parent's second call reads the large message from cache,
+           proving normal interaction caches message content.
+
+        3. Assert the fork's cache_read is close to the parent's cache_read.
+           If it is much lower, the fork is only reusing the system-prompt
+           portion and missing inherited messages.
         """
+        # Run the forked deepagent with the same large HumanMessage twice.
+        # Delegation instruction is placed FIRST and LAST so the model can't
+        # miss it when the middle of the message is filled with background
+        # context. The middle chunk is what we actually want the fork to inherit.
         capture = _UsageCapture()
         agent = _build_agent(fork=True)
-
+        large_delegate = (
+            "Your only job right now is to call the `task` tool with "
+            "subagent_type='worker' and description='say hi'. "
+            "Do not produce any other output. Do not summarize the context below.\n\n"
+            "<context>\n" + _LARGE_USER_MESSAGE_TEXT + "\n</context>\n\n"
+            "Now call the `task` tool as instructed above. No other output."
+        )
         agent.invoke(
-            {"messages": [HumanMessage(content=_DELEGATE_PROMPT)]},
+            {"messages": [HumanMessage(content=large_delegate)]},
             config={"callbacks": [capture]},
         )
         agent.invoke(
-            {"messages": [HumanMessage(content=_DELEGATE_PROMPT)]},
+            {"messages": [HumanMessage(content=large_delegate)]},
             config={"callbacks": [capture]},
         )
 
         fork_events = [e for e in capture.events if e["agent_type"] == "fork-subagent"]
-        assert fork_events, (
-            f"No fork-subagent LLM calls were observed. All events: {capture.events}. "
-            "The model may have ignored the `task` tool; update the delegate prompt."
-        )
-        assert any(e["cache_read"] > 0 for e in fork_events), (
-            f"Fork subagent never reused the prompt cache. Fork events: {fork_events}. "
-            "The fork's prefix drifted between invocations — check that "
-            "_compose_fork_system_prompt is byte-stable and that no middleware "
-            "between fork composition and the model mutates the system message."
+        main_events = [e for e in capture.events if e["agent_type"] == "main"]
+        assert fork_events, f"No fork-subagent LLM calls observed. Events: {capture.events}"
+        assert main_events, f"No main-agent LLM calls observed. Events: {capture.events}"
+
+        # If fork preserved caching end-to-end, fork's cache_read would cover
+        # both the parent's system prompt AND the inherited large HumanMessage
+        # — i.e., at least as much as the parent's own cache_read, since fork
+        # sees the same prefix (system + parent messages) plus a tiny tail.
+        max_parent_read = max((e["cache_read"] for e in main_events), default=0)
+        max_fork_read = max(e["cache_read"] for e in fork_events)
+        assert max_parent_read >= _LARGE_USER_MESSAGE_APPROX_TOKENS, (
+            f"Parent did not cache the large HumanMessage. "
+            f"max parent cache_read={max_parent_read}, expected >= {_LARGE_USER_MESSAGE_APPROX_TOKENS}. "
+            f"All events: {capture.events}"
         )
 
-    def test_nonfork_subagent_does_not_reuse_prompt_cache(self) -> None:
-        """Negative control: ``fork=False`` subagent shows zero cache reuse.
-
-        A non-fork subagent is seeded with only ``[HumanMessage(description)]``
-        and its own tiny system prompt (far under Haiku's 2048-token floor),
-        so its prefix does not align with any previous call and no cache
-        breakpoint can fire. If this test ever shows a cache read, either
-        the fork and non-fork paths have converged (a real regression) or
-        ambient cross-call caching is masking the fork-specific behavior.
-        """
-        capture = _UsageCapture()
-        agent = _build_agent(fork=False)
-
-        agent.invoke(
-            {"messages": [HumanMessage(content=_DELEGATE_PROMPT)]},
-            config={"callbacks": [capture]},
-        )
-        agent.invoke(
-            {"messages": [HumanMessage(content=_DELEGATE_PROMPT)]},
-            config={"callbacks": [capture]},
-        )
-
-        subagent_events = [e for e in capture.events if e["agent_type"] == "subagent"]
-        assert subagent_events, (
-            f"No subagent LLM calls were observed. All events: {capture.events}. "
-            "The model may have ignored the `task` tool; update the delegate prompt."
-        )
-        for event in subagent_events:
-            assert event["cache_read"] == 0, (
-                f"Non-fork subagent unexpectedly reused the prompt cache: {event}. "
-                "This defeats the fork-vs-non-fork distinction — either the fork "
-                "path is silently active when it should not be, or ambient caching "
-                "is sharing prefix state in a way the middleware doesn't control."
+        # Floor: the fork should read roughly what the parent read (system +
+        # message), minus a modest allowance for provider-side token-accounting
+        # differences caused by the fork's extra trailing task message. The
+        # previous broken implementation read only the system portion (~10k);
+        # with the inherited message cached, this should stay near the parent
+        # read (~30k+ in this test).
+        expected_floor = max_parent_read - 4_000
+        if max_fork_read < expected_floor:
+            # Pinpoint where the parent's and fork's system messages diverge
+            # so the failure is actionable without re-running under pdb.
+            parent_sys = next((t for a, t in capture.system_texts if a == "main"), "")
+            fork_sys = next((t for a, t in capture.system_texts if a == "fork-subagent"), "")
+            divergence_at = next(
+                (i for i in range(min(len(parent_sys), len(fork_sys))) if parent_sys[i] != fork_sys[i]),
+                min(len(parent_sys), len(fork_sys)),
             )
+            context_slice = slice(max(0, divergence_at - 80), divergence_at + 200)
+            parent_msgs = next((s for a, s in capture.messages_summaries if a == "main"), [])
+            fork_msgs = next((s for a, s in capture.messages_summaries if a == "fork-subagent"), [])
+            msg = (
+                f"Fork cache_read did not cover the inherited large HumanMessage.\n"
+                f"  max parent cache_read = {max_parent_read}  (system + large_msg)\n"
+                f"  max fork   cache_read = {max_fork_read}\n"
+                f"  expected fork_read    >= {expected_floor}\n\n"
+                f"  parent system len = {len(parent_sys)}\n"
+                f"  fork   system len = {len(fork_sys)}\n"
+                f"  system diverge at byte = {divergence_at}\n"
+                f"  parent system near split = {parent_sys[context_slice]!r}\n"
+                f"  fork   system near split = {fork_sys[context_slice]!r}\n\n"
+                f"  parent non-system messages:\n    " + "\n    ".join(parent_msgs) + "\n  fork non-system messages:\n    " + "\n    ".join(fork_msgs)
+            )
+            raise AssertionError(msg)

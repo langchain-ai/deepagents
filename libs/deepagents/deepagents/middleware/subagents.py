@@ -11,7 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRe
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -94,17 +94,19 @@ class SubAgent(TypedDict):
     """Whether to fork the parent agent's context into the subagent.
 
     When ``True``, the subagent inherits the parent agent's system prompt and
-    full message history as its starting context, with the parent's prompt
-    composed as a prefix and the subagent's own ``system_prompt`` appended as
-    a suffix. The description argument passed through the ``task`` tool is
-    seeded as an additional ``HumanMessage`` after the inherited history.
+    full message history **byte-for-byte** so every provider's prompt cache
+    can serve the fork's invocation. To preserve the prefix unchanged, the
+    subagent's own ``system_prompt`` is **not** placed in the system slot —
+    instead it is injected as a preamble into the trailing ``HumanMessage``
+    that carries the task description, yielding a final message list of
+    ``[parent system prompt, ...parent messages..., HumanMessage(preamble +
+    description)]``. The system message and every inherited message block are
+    therefore identical to what the parent already sent, so Anthropic's
+    ``cache_control`` breakpoint (and the equivalent on OpenAI / Gemini 2.5)
+    hits on the full parent prefix — not just the system portion.
 
-    The primary benefit is prompt-cache reuse: because the subagent's prefix
-    matches the parent's exactly, every provider's cache path fires on the
-    second and subsequent invocations — Anthropic via
-    ``cache_control`` markers, OpenAI via its automatic Responses-API cache,
-    and Gemini 2.5 via implicit caching. Isolation semantics are unchanged:
-    only the subagent's final message is surfaced back to the parent.
+    Isolation semantics are unchanged: only the subagent's final message is
+    surfaced back to the parent as a ``ToolMessage``.
 
     The subagent's ``model`` must resolve to the same provider and model id
     as the parent. If omitted, it defaults to the parent's model. A mismatch
@@ -371,6 +373,38 @@ class _SubagentSpec(TypedDict):
     description: str
     runnable: Runnable
     fork: NotRequired[bool]
+    # Fork mode only: the fork's own `system_prompt` (from the user-facing
+    # `SubAgent` spec), routed here instead of into the runnable's actual
+    # system slot. The runnable's system slot carries the parent's prompt
+    # verbatim so the prompt cache aligns; this string is prepended to the
+    # task description inside the trailing HumanMessage.
+    subagent_system_prompt: NotRequired[str]
+
+
+def _messages_before_current_task_call(messages: Sequence[Any], tool_call_id: str | None) -> list[Any]:
+    """Return parent messages before the AI turn that requested this task call.
+
+    Forks need to inherit the prefix the parent model actually consumed, not
+    the tool-call bookkeeping appended while the current `task` tool is being
+    executed. Keeping the current AIMessage(tool_calls=[...]) in the fork would
+    make the fork diverge immediately after the cached user/context messages.
+    """
+    copied = list(messages)
+    if not tool_call_id:
+        return copied
+
+    for idx in range(len(copied) - 1, -1, -1):
+        msg = copied[idx]
+        if isinstance(msg, AIMessage):
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            if any(call.get("id") == tool_call_id for call in tool_calls):
+                return copied[:idx]
+
+    for idx in range(len(copied) - 1, -1, -1):
+        msg = copied[idx]
+        if isinstance(msg, ToolMessage) and msg.tool_call_id == tool_call_id:
+            return copied[:idx]
+    return copied
 
 
 FORKED_SUBAGENT_MARKER = "[forked — inherits full conversation context]"
@@ -413,6 +447,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
     subagent_fork_flags: dict[str, bool] = {spec["name"]: bool(spec.get("fork", False)) for spec in subagents}
+    subagent_system_prompts: dict[str, str] = {spec["name"]: spec.get("subagent_system_prompt", "") or "" for spec in subagents}
 
     def _format_agent_line(s: _SubagentSpec) -> str:
         if s.get("fork"):
@@ -475,8 +510,17 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         if is_fork:
-            parent_messages = list(runtime.state.get("messages", []))
-            subagent_state["messages"] = [*parent_messages, HumanMessage(content=description)]
+            parent_messages = _messages_before_current_task_call(
+                runtime.state.get("messages", []),
+                runtime.tool_call_id,
+            )
+            # The fork's own instructions ride along inside the trailing
+            # HumanMessage so the parent's system prompt and inherited message
+            # history stay byte-for-byte identical, which is what lets the
+            # provider's prompt cache serve the full parent prefix.
+            preamble = subagent_system_prompts.get(subagent_type, "")
+            final_content = f"{preamble}\n\n{description}" if preamble else description
+            subagent_state["messages"] = [*parent_messages, HumanMessage(content=final_content)]
         else:
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state, is_fork
@@ -666,6 +710,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         response_format=spec.get("response_format"),
                     ),
                     "fork": bool(spec.get("fork", False)),
+                    "subagent_system_prompt": spec.get("subagent_system_prompt", "") or "",
                 }
             )
 

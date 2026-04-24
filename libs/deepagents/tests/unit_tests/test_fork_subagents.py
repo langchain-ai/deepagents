@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 
@@ -139,6 +139,41 @@ class TestForkSubagents:
         assert isinstance(seeded_plain[0], HumanMessage)
         assert seeded_plain[0].content == "do thing 2"
 
+    def test_fork_drops_current_task_tool_call_from_seeded_state(self) -> None:
+        fork_runnable = _RecordingRunnable()
+        task_tool = _build_task_tool(
+            [
+                {"name": "forked", "description": "Fork worker.", "runnable": fork_runnable, "fork": True},
+            ]
+        )
+
+        parent_msgs = [
+            HumanMessage(content="cached parent context"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"description": "do thing", "subagent_type": "forked"},
+                        "id": "tc-current",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content="current tool bookkeeping", tool_call_id="tc-current"),
+        ]
+
+        task_tool.func(
+            description="do thing",
+            subagent_type="forked",
+            runtime=_make_tool_runtime(state={"messages": parent_msgs}, tool_call_id="tc-current"),
+        )
+
+        seeded = fork_runnable.state_inputs[0]["messages"]
+        assert [m.content for m in seeded] == ["cached parent context", "do thing"]
+        assert all(not isinstance(m, AIMessage) for m in seeded)
+        assert all(not isinstance(m, ToolMessage) for m in seeded)
+
     def test_fork_sets_ls_agent_type_to_fork_subagent(self) -> None:
         fork_runnable = _RecordingRunnable()
         plain_runnable = _RecordingRunnable()
@@ -214,18 +249,30 @@ class TestForkSubagents:
 
         # First call is the parent's, second is the fork's.
         assert len(model.recorded_calls) >= 2
+        parent_input = model.recorded_calls[0]
         fork_input = model.recorded_calls[1]
 
-        system_messages = [m for m in fork_input if isinstance(m, SystemMessage)]
-        assert system_messages, "Fork did not receive a SystemMessage"
-        system_text = system_messages[0].text if hasattr(system_messages[0], "text") else str(system_messages[0].content)
-        assert "PARENT_PROMPT_PREFIX" in system_text
-        assert "FORK_SUFFIX" in system_text
-        assert system_text.index("PARENT_PROMPT_PREFIX") < system_text.index("FORK_SUFFIX")
+        # Fork's system message must match the parent's byte-for-byte (no
+        # suffix appended) so the cached prefix can be reused.
+        parent_system_text = next(str(m.content) for m in parent_input if isinstance(m, SystemMessage))
+        fork_system_text = next(str(m.content) for m in fork_input if isinstance(m, SystemMessage))
+        assert fork_system_text == parent_system_text, (
+            "Fork's system message diverges from the parent's. That breaks prompt-cache alignment for every downstream message block."
+        )
 
-        human_texts = [getattr(m, "content", "") for m in fork_input if isinstance(m, HumanMessage)]
-        assert "MAIN_USER_MSG" in human_texts, (
-            f"Fork did not inherit parent's HumanMessage — cache prefix cannot align. HumanMessages seen: {human_texts}"
+        # Parent's HumanMessage is inherited by the fork.
+        fork_human_contents = [str(m.content) for m in fork_input if isinstance(m, HumanMessage)]
+        assert any("MAIN_USER_MSG" in c for c in fork_human_contents), (
+            f"Fork did not inherit parent's HumanMessage. HumanMessages seen: {fork_human_contents}"
+        )
+
+        # The fork's own `system_prompt` ("FORK_SUFFIX") rides inside the
+        # trailing HumanMessage as a preamble, not in the system slot.
+        assert "FORK_SUFFIX" not in fork_system_text, "Fork's own system_prompt leaked into the system slot — cache prefix will diverge."
+        last_human = next(m for m in reversed(fork_input) if isinstance(m, HumanMessage))
+        assert "FORK_SUFFIX" in str(last_human.content), (
+            f"Fork's own instructions were not injected as a preamble into the "
+            f"trailing HumanMessage. Last HumanMessage content: {last_human.content!r}"
         )
 
     def test_fork_without_model_inherits_parent_model(self) -> None:

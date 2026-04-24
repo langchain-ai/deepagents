@@ -7,12 +7,12 @@ middleware.
 
 import logging
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse, ResponseT, _InputAgentState, _OutputAgentState
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -38,6 +38,7 @@ from deepagents.middleware.permissions import FilesystemPermission, _PermissionM
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
+    TASK_SYSTEM_PROMPT,
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
@@ -215,34 +216,61 @@ def _apply_tool_description_overrides(
     return copied_tools
 
 
-def _compose_fork_system_prompt(
-    parent_prompt: str | SystemMessage,
-    fork_suffix: str,
-) -> str:
-    """Compose a forked subagent's system prompt as ``parent + fork_suffix``.
+class _ForkSystemPromptPadding(AgentMiddleware[Any, Any, Any]):
+    """Appends a fixed text block to the system message at model-call time.
 
-    Keeping the parent prefix byte-identical maximises prompt-cache alignment
-    across every provider (Anthropic ``cache_control``, OpenAI automatic,
-    Gemini implicit). The fork's own ``system_prompt`` is appended as a
-    suffix so the fork can still add instructions without breaking the shared
-    prefix.
-
-    If the parent supplied a ``SystemMessage`` rather than a bare string, its
-    text content blocks are joined into a string. Non-text blocks (images,
-    attachments) are dropped — they have no meaning in the forked subagent's
-    context and would not participate in prompt-cache alignment anyway.
+    The forked subagent's middleware stack must inject the same system-text
+    content in the same byte-for-byte order as the parent's stack, otherwise
+    the prompt cache's longest-prefix-match breaks early. This middleware
+    stands in for the parent's ``SubAgentMiddleware`` at the same position
+    in the chain, injecting the same ``TASK_SYSTEM_PROMPT + available-agents``
+    block — but without giving the fork the ``task`` tool (so forks cannot
+    recursively spawn more subagents).
     """
-    if isinstance(parent_prompt, SystemMessage):
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._text = text
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any]:
+        from deepagents.middleware._utils import append_to_system_message  # noqa: PLC0415
+
+        new_system_message = append_to_system_message(request.system_message, self._text)
+        return handler(request.override(system_message=new_system_message))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any]:
+        from deepagents.middleware._utils import append_to_system_message  # noqa: PLC0415
+
+        new_system_message = append_to_system_message(request.system_message, self._text)
+        return await handler(request.override(system_message=new_system_message))
+
+
+def _flatten_system_prompt(prompt: str | SystemMessage) -> str:
+    """Return the parent system prompt as a plain string.
+
+    Used to feed the parent's system prompt into the fork's runnable verbatim.
+    If the parent supplied a ``SystemMessage``, its text content blocks are
+    joined into a string; non-text blocks (images, attachments) are dropped
+    since they have no meaning in the forked subagent's context and would
+    not participate in prompt-cache alignment anyway.
+    """
+    if isinstance(prompt, SystemMessage):
         text_parts: list[str] = []
-        for block in parent_prompt.content_blocks:
+        for block in prompt.content_blocks:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
-        parent_text = "".join(text_parts)
-    else:
-        parent_text = parent_prompt
-    return parent_text + "\n\n" + fork_suffix
+        return "".join(text_parts)
+    return prompt
 
 
 def _validate_fork_model_matches_parent(
@@ -580,32 +608,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
-
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-                TodoListMiddleware(),
-                FilesystemMiddleware(
-                    backend=backend,
-                    custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                ),
-                create_summarization_middleware(subagent_model, backend),
-                PatchToolCallsMiddleware(),
-            ]
-            subagent_skills = spec.get("skills")
-            if subagent_skills:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
-
-            # Provider-specific middleware for this subagent's model
-            subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
-            if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-
-            # Prompt caching
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-            if subagent_permissions:
-                subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
-
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
             # Inherit parent tools unless the subagent declares its own.
@@ -616,20 +618,69 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 _subagent_profile.tool_description_overrides,
             )
 
-            processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
-                **spec,
-                "model": subagent_model,
-                "tools": subagent_tools or [],
-                "middleware": subagent_middleware,
-            }
-            if subagent_interrupt_on is not None:
-                processed_spec["interrupt_on"] = subagent_interrupt_on
+            subagent_skills = spec.get("skills")
             if is_fork:
-                # Pin the composed prompt so the subagent's prefix is
-                # byte-identical to the parent's, which is what enables
-                # prompt-cache reuse on every supported provider.
-                processed_spec["system_prompt"] = _compose_fork_system_prompt(final_system_prompt, spec["system_prompt"])
+                # Fork composition is deferred: the middleware list must mirror
+                # the parent's stack ordering (TodoList, Skills, Filesystem,
+                # <SubAgentMiddleware slot>, Summarize, PatchToolCalls, ...)
+                # so system-text additions happen in the same byte order. The
+                # ``<SubAgentMiddleware slot>`` is filled with a padding
+                # middleware that injects the same ``TASK_SYSTEM_PROMPT +
+                # available-agents`` text the parent's SubAgentMiddleware
+                # would — but without giving the fork the ``task`` tool. The
+                # agents list is only complete after the default
+                # general-purpose spec is inserted, so we build the stack
+                # below in a post-loop pass.
+                processed_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
+                    **spec,
+                    "model": subagent_model,
+                    "tools": subagent_tools or [],
+                }
+                if subagent_interrupt_on is not None:
+                    processed_spec["interrupt_on"] = subagent_interrupt_on
                 processed_spec["fork"] = True
+                fork_dict = cast("dict[str, Any]", processed_spec)
+                fork_dict["_fork_user_system_prompt"] = spec["system_prompt"]
+                fork_dict["_fork_profile"] = _subagent_profile
+                fork_dict["_fork_permissions"] = subagent_permissions
+                fork_dict["_fork_skills"] = subagent_skills
+                fork_dict["_fork_user_middleware"] = list(spec.get("middleware", []))
+            else:
+                # Non-fork subagent: build middleware list now (no fork-specific ordering requirements).
+                subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                    TodoListMiddleware(),
+                    FilesystemMiddleware(
+                        backend=backend,
+                        custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    ),
+                    create_summarization_middleware(subagent_model, backend),
+                    PatchToolCallsMiddleware(),
+                ]
+                if subagent_skills:
+                    subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                subagent_middleware.extend(spec.get("middleware", []))
+
+                # Provider-specific middleware for this subagent's model
+                subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
+                if _subagent_profile.excluded_tools:
+                    subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+
+                # Prompt caching
+                subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+                if subagent_permissions:
+                    subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
+
+                processed_spec = cast(
+                    "SubAgent",
+                    {
+                        **spec,
+                        "model": subagent_model,
+                        "tools": subagent_tools or [],
+                        "middleware": subagent_middleware,
+                    },
+                )
+                if subagent_interrupt_on is not None:
+                    processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
 
     # If an agent with general purpose name already exists in subagents, then don't add it
@@ -637,6 +688,88 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         # Add a general purpose subagent if it doesn't exist yet
         inline_subagents.insert(0, general_purpose_spec)
+
+    # Finish fork composition now that the full agents list is known.
+    #
+    # Goal: byte-for-byte match between the parent's runtime system message
+    # and the fork's, so Anthropic's longest-prefix-match serves the fork
+    # from the parent's cache entry — covering not just the system prompt
+    # but the inherited messages that follow it.
+    #
+    # Two things must line up:
+    #   1. The ``system_prompt`` handed to the fork's ``create_agent`` is
+    #      what that agent sends as its initial SystemMessage. We set it to
+    #      the parent's flattened top-level system prompt (same bytes the
+    #      parent's ``create_agent`` sees).
+    #   2. The fork's middleware stack mirrors the parent's stack ordering.
+    #      Each middleware that appends to the system message (TodoList,
+    #      Skills, Filesystem, ...) runs in the same order, so the running
+    #      byte stream matches. The parent's ``SubAgentMiddleware`` slot is
+    #      filled with a padding middleware that appends the same
+    #      ``TASK_SYSTEM_PROMPT + available-agents`` text the parent's
+    #      SubAgentMiddleware would — without giving the fork the ``task``
+    #      tool (so forks cannot recursively spawn subagents).
+    #
+    # The preamble that rides inside the trailing HumanMessage then
+    # corrects any claims from that inherited system text that do not
+    # match the fork's real environment.
+    agents_desc_for_fork = "\n".join(f"- {s['name']}: {s['description']}" for s in inline_subagents)
+    fork_subagent_padding_text = TASK_SYSTEM_PROMPT + "\n\nAvailable subagent types:\n" + agents_desc_for_fork
+    flattened_parent_system = _flatten_system_prompt(final_system_prompt)
+
+    for fork_spec in inline_subagents:
+        if not fork_spec.get("fork"):
+            continue
+        fork_dict = cast("dict[str, Any]", fork_spec)
+        user_role_text: str = fork_dict.pop("_fork_user_system_prompt", "")
+        fork_profile: _HarnessProfile = fork_dict.pop("_fork_profile")
+        fork_permissions = fork_dict.pop("_fork_permissions")
+        fork_skills = fork_dict.pop("_fork_skills")
+        fork_user_middleware = fork_dict.pop("_fork_user_middleware")
+
+        # Build middleware stack in parent order: TodoList, (Skills), Filesystem,
+        # <padding for SubAgentMiddleware>, Summarize, PatchToolCalls, user
+        # middleware, provider, (exclusions), caching, (permissions).
+        fork_middleware: list[AgentMiddleware[Any, Any, Any]] = [TodoListMiddleware()]
+        if fork_skills:
+            fork_middleware.append(SkillsMiddleware(backend=backend, sources=fork_skills))
+        fork_middleware.append(
+            FilesystemMiddleware(
+                backend=backend,
+                custom_tool_descriptions=fork_profile.tool_description_overrides,
+            )
+        )
+        fork_middleware.append(_ForkSystemPromptPadding(text=fork_subagent_padding_text))
+        fork_middleware.extend(
+            [
+                create_summarization_middleware(fork_dict["model"], backend),
+                PatchToolCallsMiddleware(),
+            ]
+        )
+        fork_middleware.extend(fork_user_middleware)
+        fork_middleware.extend(_resolve_extra_middleware(fork_profile))
+        if fork_profile.excluded_tools:
+            fork_middleware.append(_ToolExclusionMiddleware(excluded=fork_profile.excluded_tools))
+        fork_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        if fork_permissions:
+            fork_middleware.append(_PermissionMiddleware(rules=fork_permissions, backend=backend))
+
+        fork_dict["middleware"] = fork_middleware
+        fork_dict["system_prompt"] = flattened_parent_system
+
+        fork_tool_names = [n for n in (_tool_name(t) for t in fork_spec.get("tools", []) or []) if n]
+        tools_line = ", ".join(f"`{n}`" for n in fork_tool_names) if fork_tool_names else "(none — rely on built-in filesystem/todo tools)"
+        preamble = (
+            f"You are running as a forked subagent named `{fork_spec['name']}`. "
+            "The system prompt above was inherited verbatim from the parent agent to "
+            "preserve prompt-cache reuse; it may mention capabilities that do not apply "
+            "to you. Your actual environment:\n"
+            f"\n- Your declared tools: {tools_line}"
+            "\n- You do NOT have the `task` tool. You cannot spawn further subagents."
+            "\n\nYour role as this subagent:\n"
+            f"{user_role_text}"
+        )
+        fork_dict["subagent_system_prompt"] = preamble
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [

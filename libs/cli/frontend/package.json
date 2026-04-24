@@ -15,6 +15,7 @@
     "@clerk/clerk-react": "^5.0.0",
     "@clerk/themes": "^2.4.57",
     "@langchain/langgraph-sdk": "^1.7.2",
+    "@langchain/react": "^0.3.3",
     "@supabase/auth-ui-react": "^0.4.7",
     "@supabase/auth-ui-shared": "^0.1.8",
     "@supabase/supabase-js": "^2.99.3",

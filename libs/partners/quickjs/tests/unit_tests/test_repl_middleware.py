@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain_core.messages import SystemMessage
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
@@ -314,22 +318,36 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
     assert outcome.error_type == "Deadlock"
 
 
-async def test_async_concurrent_calls_serialize(repl: _ThreadREPL) -> None:
-    """Two concurrent eval_async on the same thread should queue, not raise.
+async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
+    """Overlapping async evals on the same context surface as
+    ``ConcurrentEvalError`` rather than silently serialising.
 
-    If the internal lock is removed this test will flakily raise
-    ``ConcurrentEvalError`` rather than returning two clean outcomes.
+    A model issuing overlapping evals against shared state is almost
+    always a prompting bug; a loud failure is a better signal than
+    silent queueing. The slow tool forces a yield so the two evals
+    actually overlap (pure sync code takes the non-promise fast path).
     """
-    import asyncio as _asyncio
 
-    a, b = await _asyncio.gather(
-        repl.eval_async("1 + 1"),
-        repl.eval_async("2 + 2"),
+    class _NoArgs(BaseModel):
+        pass
+
+    async def _slow(**_: Any) -> str:
+        await asyncio.sleep(0.05)
+        return "ok"
+
+    slow_tool = StructuredTool.from_function(
+        name="slow",
+        description="Sleeps briefly.",
+        coroutine=_slow,
+        args_schema=_NoArgs,
     )
-    assert a.result == "2"
-    assert b.result == "4"
-    assert a.error_type is None
-    assert b.error_type is None
+    repl.install_tools([slow_tool])
+
+    a, b = await asyncio.gather(
+        repl.eval_async("await tools.slow({})"),
+        repl.eval_async("await tools.slow({})"),
+    )
+    assert "ConcurrentEval" in {a.error_type, b.error_type}, (a, b)
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:

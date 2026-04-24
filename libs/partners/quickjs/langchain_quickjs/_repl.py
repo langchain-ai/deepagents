@@ -329,12 +329,6 @@ class _ThreadREPL:
         self._capture_console = capture_console
         self._console = _ConsoleBuffer()
         self._ctx: Context | None = None
-        # Single asyncio.Lock serialises ctx access on the worker loop —
-        # both sync and async entry points funnel through the worker, so
-        # we no longer need a separate threading.Lock. QuickJS raises
-        # ``ConcurrentEvalError`` on overlapping evals; this lock queues
-        # them instead.
-        self._async_lock = asyncio.Lock()
         # PTC state. ``_registered_tools`` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
@@ -501,21 +495,13 @@ class _ThreadREPL:
         self._runtime.install(scope)
 
     async def _aeval_async(self, code: str) -> EvalOutcome:
-        # Hold the lock around the whole eval_async call so concurrent
-        # tool calls queue rather than racing into ConcurrentEvalError.
-        async with self._async_lock:
-            return await self._eval_async_locked(code)
+        """Uses ``ctx.eval_async`` directly.
 
-    async def _eval_async_locked(self, code: str) -> EvalOutcome:
-        """v0.2 async path. Uses ``ctx.eval_async`` directly.
-
-        Differences from the sync path the model should know about:
-        - Top-level ``await`` works; Promises settle before returning.
-        - ``timeout=`` is per-call (fresh budget each invocation) instead
-          of cumulative across a Context's lifetime.
-        - ``asyncio.CancelledError`` propagates out if JS doesn't absorb
-          the ``HostCancellationError``. We let it through untouched so
-          LangGraph's cancellation semantics work end-to-end.
+        Overlapping evals on the same context surface as
+        ``ConcurrentEvalError`` (recorded in ``EvalOutcome.error_type``).
+        We intentionally do not queue: a model dispatching overlapping
+        evals against shared state is almost always a prompting bug,
+        and a loud failure is a better signal than silent serialisation.
         """
         outcome = EvalOutcome()
         try:

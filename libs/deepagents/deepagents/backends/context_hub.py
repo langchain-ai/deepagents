@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 _LINKED_ENTRY_WRITE_ERROR = "Cannot write to a linked entry. Linked entries are read-only from this backend."
 
+# Root-level files that configure the agent itself. Not runtime-editable via
+# this backend — bootstrap them out-of-band (hub UI or explicit push_agent).
+_IMMUTABLE_ROOT_FILES = frozenset({"AGENTS.md"})
+_IMMUTABLE_WRITE_ERROR = "'/{}' is read-only. Agent configuration files are not runtime-editable."
+
 # Matches the ":<hash>" suffix appended by langsmith's _build_context_url.
 _URL_COMMIT_SUFFIX_RE = re.compile(r":([0-9a-f]{8,64})$")
 
@@ -120,6 +125,11 @@ class ContextHubBackend(BackendProtocol):
     def _strip_prefix(path: str) -> str:
         return path.lstrip("/")
 
+    @staticmethod
+    def _is_immutable_path(hub_path: str) -> bool:
+        """Return True if ``hub_path`` is a protected root-level config file."""
+        return hub_path in _IMMUTABLE_ROOT_FILES
+
     def _is_under_linked_entry(self, hub_path: str) -> bool:
         """Return True if ``hub_path`` is at or under a linked entry root."""
         self._ensure_cache()
@@ -166,6 +176,8 @@ class ContextHubBackend(BackendProtocol):
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit ``content`` to ``file_path``. Rejects writes under linked entries."""
         hub_path = self._strip_prefix(file_path)
+        if self._is_immutable_path(hub_path):
+            return WriteResult(error=_IMMUTABLE_WRITE_ERROR.format(hub_path))
         try:
             self._ensure_cache()
             if self._is_under_linked_entry(hub_path):
@@ -186,6 +198,8 @@ class ContextHubBackend(BackendProtocol):
     ) -> EditResult:
         """Replace ``old_string`` with ``new_string``. Fails on multiple matches unless ``replace_all=True``."""
         hub_path = self._strip_prefix(file_path)
+        if self._is_immutable_path(hub_path):
+            return EditResult(error=_IMMUTABLE_WRITE_ERROR.format(hub_path))
         try:
             cache = self._ensure_cache()
             if self._is_under_linked_entry(hub_path):

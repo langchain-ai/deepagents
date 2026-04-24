@@ -95,17 +95,17 @@ def test_pull_non_404_failure_surfaces_as_error() -> None:
 
 def test_write_commits_file() -> None:
     backend, mock_client = _make_backend()
-    result = backend.write("/AGENTS.md", "# hi")
+    result = backend.write("/notes.md", "# hi")
 
     assert result.error is None
-    assert result.path == "/AGENTS.md"
+    assert result.path == "/notes.md"
     mock_client.push_agent.assert_called_once()
     call = mock_client.push_agent.call_args
     assert call.args[0] == "-/test-agent"
     files_arg = call.kwargs["files"]
-    assert "AGENTS.md" in files_arg
-    assert files_arg["AGENTS.md"].content == "# hi"
-    assert files_arg["AGENTS.md"].type == "file"
+    assert "notes.md" in files_arg
+    assert files_arg["notes.md"].content == "# hi"
+    assert files_arg["notes.md"].type == "file"
 
 
 def test_write_sends_parent_commit_from_pull() -> None:
@@ -164,6 +164,41 @@ def test_write_under_linked_agent_rejected() -> None:
     result = backend.write("/subagents/reviewer/config.json", "x")
     assert result.error is not None
     assert "Cannot write to a linked entry" in result.error
+
+
+def test_write_root_agents_md_rejected() -> None:
+    backend, mock_client = _make_backend()
+    result = backend.write("/AGENTS.md", "# attempt to overwrite agent config")
+    assert result.error is not None
+    assert "read-only" in result.error
+    assert "AGENTS.md" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_edit_root_agents_md_rejected() -> None:
+    backend, mock_client = _make_backend(**{"AGENTS.md": FileEntry(type="file", content="# hello")})
+    result = backend.edit("/AGENTS.md", "hello", "world")
+    assert result.error is not None
+    assert "read-only" in result.error
+    mock_client.push_agent.assert_not_called()
+
+
+def test_upload_root_agents_md_rejected() -> None:
+    backend, mock_client = _make_backend()
+    responses = backend.upload_files([("/notes.md", b"ok"), ("/AGENTS.md", b"nope")])
+    assert responses[0].error is None
+    assert responses[1].error is not None
+    assert "read-only" in responses[1].error
+    # Only the notes.md write should have hit the hub.
+    assert mock_client.push_agent.call_count == 1
+
+
+def test_write_agents_md_in_subdirectory_allowed() -> None:
+    """Only *root* AGENTS.md is the agent config; a nested AGENTS.md is just a file."""
+    backend, mock_client = _make_backend()
+    result = backend.write("/docs/AGENTS.md", "not the agent config")
+    assert result.error is None
+    mock_client.push_agent.assert_called_once()
 
 
 def test_commit_failure_invalidates_cache() -> None:

@@ -49,17 +49,28 @@ def backend(identifier: str) -> Iterator:
 
 def test_lazy_create_on_first_write(backend) -> None:
     """Pulling a non-existent repo returns empty; first write lazily creates it."""
-    missing = backend.read("/AGENTS.md")
-    assert missing.error == "File '/AGENTS.md' not found"
+    missing = backend.read("/notes.md")
+    assert missing.error == "File '/notes.md' not found"
 
-    write = backend.write("/AGENTS.md", "# hi")
+    write = backend.write("/notes.md", "# hi")
     assert write.error is None
-    assert write.path == "/AGENTS.md"
+    assert write.path == "/notes.md"
 
-    read = backend.read("/AGENTS.md")
+    read = backend.read("/notes.md")
     assert read.error is None
     assert read.file_data is not None
     assert read.file_data["content"] == "# hi"
+
+
+def test_root_agents_md_is_read_only(backend) -> None:
+    """The root /AGENTS.md file is not runtime-editable via ContextHubBackend."""
+    write = backend.write("/AGENTS.md", "# attempt to overwrite config")
+    assert write.error is not None
+    assert "read-only" in write.error
+
+    edit = backend.edit("/AGENTS.md", "foo", "bar")
+    assert edit.error is not None
+    assert "read-only" in edit.error
 
 
 def test_round_trip_with_ls_grep_glob_edit(backend) -> None:

@@ -161,16 +161,25 @@ def test_bundle_escapes_angle_bracket_in_app_name(
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
-def test_bundle_raises_when_frontend_enabled_but_auth_missing(
+def test_bundle_succeeds_when_frontend_enabled_without_auth(
     project: Path,
     build_dir: Path,
 ) -> None:
+    """[frontend].enabled without [auth] bundles in anonymous mode."""
     cfg = DeployConfig(
         agent=AgentConfig(name="my-agent"),
         frontend=FrontendConfig(enabled=True),
     )
-    with pytest.raises(ValueError, match=r"requires \[auth\]"):
-        bundle(cfg, project, build_dir)
+    bundle(cfg, project, build_dir)
+
+    # No auth.py written.
+    assert not (build_dir / "auth.py").exists()
+
+    # Frontend bundle copied with anonymous runtime config injected.
+    html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")
+    assert '"auth":"none"' in html
+    assert "supabaseUrl" not in html
+    assert "clerkPublishableKey" not in html
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")

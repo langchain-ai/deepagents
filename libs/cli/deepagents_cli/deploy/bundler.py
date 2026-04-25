@@ -115,10 +115,6 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
 
 def _copy_frontend_dist(config: DeployConfig, build_dir: Path) -> None:
     """Copy the pre-built bundle into build_dir and rewrite the config placeholder."""
-    if config.auth is None:
-        msg = "frontend requires [auth] to be set"
-        raise ValueError(msg)
-
     if not _FRONTEND_DIST_SRC.is_dir():
         msg = (
             f"Shipped frontend bundle not found at {_FRONTEND_DIST_SRC}. "
@@ -220,22 +216,14 @@ def bundle(
         )
         logger.info("Generated auth.py (%s)", config.auth.provider)
 
-    # 6b. Copy frontend bundle when enabled.
+    # 6b. Copy frontend bundle when enabled. [auth] is optional — when
+    # absent, the frontend ships in anonymous mode (see runtime config).
     frontend_enabled = config.frontend is not None and config.frontend.enabled
     if frontend_enabled:
-        if config.auth is None:
-            msg = (
-                "bundle() requires [auth] when [frontend].enabled is true. "
-                "Call DeployConfig.validate(project_root) before bundle() to "
-                "surface this as a user-facing error."
-            )
-            raise ValueError(msg)
         _copy_frontend_dist(config, build_dir)
         (build_dir / "app.py").write_text(APP_PY_TEMPLATE, encoding="utf-8")
-        logger.info(
-            "Copied frontend bundle and wrote app.py (%s)",
-            config.auth.provider,
-        )
+        provider = config.auth.provider if config.auth is not None else "none"
+        logger.info("Copied frontend bundle and wrote app.py (%s)", provider)
 
     # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
@@ -505,6 +493,8 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     print(f"  Model: {config.agent.model}")
     if config.auth is not None:
         print(f"  Auth: {config.auth.provider}")
+    elif config.frontend is not None and config.frontend.enabled:
+        print("  Auth: none (anonymous frontend)")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

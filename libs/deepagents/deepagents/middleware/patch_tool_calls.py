@@ -1,4 +1,27 @@
-"""Middleware to patch dangling tool calls in the messages history."""
+"""Middleware to patch dangling tool calls in the messages history.
+
+This middleware serves two purposes:
+
+1. **Dangling call patching**: When a tool call is in the message history with no
+   corresponding ``ToolMessage`` (because the agent loop was interrupted mid-flight),
+   it injects a synthetic cancellation ``ToolMessage`` so the LLM receives a coherent
+   conversation history on the next turn.
+
+2. **MCP transport protection**: As noted by m13v on issue #2471, slow tools like
+   ``playwright_browser_navigate`` (cold Chromium start, 5-15 s) are vulnerable to
+   ``ClosedResourceError`` when the MCP stdio transport is torn down before the
+   subprocess finishes its response. Two mitigations are applied here:
+
+   - **Sequential execution** (via a per-instance semaphore): prevents concurrent MCP
+     calls over the same stdio pipe from multiplexing badly, which is the root cause of
+     transport teardowns under load.
+
+   - **Configurable tool timeout** (via ``asyncio.wait_for``): gives the agent-level
+     tool executor a wall-clock timeout that is independent of ``PLAYWRIGHT_TIMEOUT``
+     (which only covers the Playwright side, not the MCP client read timeout). When the
+     timeout fires the ``asyncio.CancelledError`` is re-raised so the ``finally`` block
+     cleans up ``_in_flight`` correctly before the next ``before_agent`` hook runs.
+"""
 
 import asyncio
 import logging
@@ -14,14 +37,50 @@ from langgraph.types import Command, Overwrite
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_TOOL_TIMEOUT: float = 120.0
+"""Default agent-level tool execution timeout in seconds.
+
+Set to 120 s (2 min) to accommodate slow tools like ``playwright_browser_navigate``
+(cold Chromium spawn + network) which can take 5-15 s on first call, leaving plenty
+of headroom while still preventing indefinite hangs.
+
+Override via ``PatchToolCallsMiddleware(tool_timeout=...)``.
+"""
+
 
 class PatchToolCallsMiddleware(AgentMiddleware):
-    """Middleware to patch dangling tool calls in the messages history."""
+    """Middleware to patch dangling tool calls and protect MCP stdio transports.
 
-    def __init__(self) -> None:
-        """Initialize the middleware."""
+    Args:
+        sequential: If ``True`` (default), a per-instance semaphore serialises async
+            tool calls so that concurrent MCP calls over the same stdio pipe do not
+            multiplex. Pass ``False`` only if your tools are known to be safe to run
+            concurrently (e.g. pure-HTTP tools with no shared transport).
+        tool_timeout: Wall-clock timeout in seconds for each individual async tool
+            call. Defaults to ``120.0``. Set to ``None`` to disable. This timeout
+            covers the full MCP round-trip, unlike ``PLAYWRIGHT_TIMEOUT`` which only
+            covers the Playwright side.
+    """
+
+    def __init__(
+        self,
+        *,
+        sequential: bool = True,
+        tool_timeout: float | None = _DEFAULT_TOOL_TIMEOUT,
+    ) -> None:
+        """Initialize the middleware.
+
+        Args:
+            sequential: Serialise async tool calls via a semaphore to prevent
+                concurrent MCP stdio multiplexing issues.
+            tool_timeout: Per-tool wall-clock timeout (seconds). ``None`` disables.
+        """
         super().__init__()
         self._in_flight: set[tuple[str | None, str]] = set()
+        self._sequential = sequential
+        self._tool_timeout = tool_timeout
+        # Semaphore(1) gives us a mutex for sequential execution.
+        self._semaphore: asyncio.Semaphore | None = asyncio.Semaphore(1) if sequential else None
 
     def _get_thread_id(self) -> str | None:
         """Get the current thread ID from langgraph config.
@@ -39,7 +98,15 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        """Wrap the tool call to track its in-flight execution."""
+        """Wrap the tool call to track its in-flight execution (sync path).
+
+        Args:
+            request: The tool call request to process.
+            handler: The next handler in the middleware chain.
+
+        Returns:
+            The ``ToolMessage`` or ``Command`` produced by the handler.
+        """
         tool_call_id = request.tool_call.get("id")
         thread_id = self._get_thread_id()
         if tool_call_id:
@@ -56,24 +123,103 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        """Wrap the tool call to track its in-flight execution."""
+        """Wrap the tool call to track in-flight execution (async path).
+
+        Applies two MCP transport protections when enabled:
+
+        - **Sequential execution**: acquires a semaphore before calling the handler so
+          that concurrent calls over the same stdio pipe are serialised.
+        - **Tool timeout**: wraps the handler in ``asyncio.wait_for`` so a wall-clock
+          deadline is enforced independently of ``PLAYWRIGHT_TIMEOUT``.
+
+        Args:
+            request: The tool call request to process.
+            handler: The async next handler in the middleware chain.
+
+        Returns:
+            The ``ToolMessage`` or ``Command`` produced by the handler.
+
+        Raises:
+            asyncio.CancelledError: If the tool is cancelled (e.g. timeout or upstream
+                task cancellation). The ``_in_flight`` entry is always cleaned up in the
+                ``finally`` block before re-raising so ``abefore_agent`` sees a
+                consistent state.
+        """
         tool_call_id = request.tool_call.get("id")
         thread_id = self._get_thread_id()
+        tool_name = request.tool_call.get("name", "<unknown>")
         if tool_call_id:
             self._in_flight.add((thread_id, tool_call_id))
 
         try:
-            return await handler(request)
+            if self._semaphore is not None:
+                async with self._semaphore:
+                    logger.debug(
+                        "PatchToolCallsMiddleware: acquired semaphore for tool %s (thread=%s)",
+                        tool_name,
+                        thread_id,
+                    )
+                    return await self._invoke_with_timeout(handler, request, tool_name)
+            return await self._invoke_with_timeout(handler, request, tool_name)
         finally:
             if tool_call_id:
                 self._in_flight.discard((thread_id, tool_call_id))
 
+    async def _invoke_with_timeout(
+        self,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+        request: ToolCallRequest,
+        tool_name: str,
+    ) -> ToolMessage | Command[Any]:
+        """Invoke the handler with an optional wall-clock timeout.
+
+        Args:
+            handler: The async handler to call.
+            request: The tool call request.
+            tool_name: Name of the tool (for logging only).
+
+        Returns:
+            The ``ToolMessage`` or ``Command`` from the handler.
+
+        Raises:
+            asyncio.CancelledError: If the timeout fires or the task is cancelled.
+        """
+        if self._tool_timeout is None:
+            return await handler(request)
+
+        try:
+            return await asyncio.wait_for(handler(request), timeout=self._tool_timeout)
+        except TimeoutError:
+            msg = f"tool {tool_name!r} exceeded timeout of {self._tool_timeout:.1f} s"
+            logger.warning(
+                "PatchToolCallsMiddleware: tool %s timed out after %.1f s — cancelling",
+                tool_name,
+                self._tool_timeout,
+            )
+            raise asyncio.CancelledError(msg) from None
+
     def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Before the agent runs, handle dangling tool calls from any AIMessage."""
+        """Before the agent runs, handle dangling tool calls from any AIMessage.
+
+        Args:
+            state: The current agent state.
+            runtime: The agent runtime.
+
+        Returns:
+            A state update dictionary with patched messages, or None if no patching needed.
+        """
         return self._process_state(state)
 
     async def abefore_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Async hook before agent runs. Waits for in-flight tools to complete cancellation."""
+        """Async hook before agent runs. Waits for in-flight tools to complete cancellation.
+
+        Args:
+            state: The current agent state.
+            runtime: The agent runtime.
+
+        Returns:
+            A state update dictionary with patched messages, or None if no patching needed.
+        """
         thread_id = self._get_thread_id()
         in_flight_for_thread = {tid_tcid[1] for tid_tcid in self._in_flight if tid_tcid[0] == thread_id}
 
@@ -125,7 +271,11 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         if not dangling_found:
             return None
 
-        logger.info("PatchToolCallsMiddleware: Found dangling tool calls for thread %s. Injecting cancellation ToolMessage.", thread_id)
+        logger.info(
+            "PatchToolCallsMiddleware: Found dangling tool calls for thread %s. "
+            "Injecting cancellation ToolMessage.",
+            thread_id,
+        )
 
         patched_messages = []
         for msg in messages:

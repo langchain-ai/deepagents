@@ -113,56 +113,56 @@ class TestInFlightProtection:
     def test_in_flight_cleared_after_sync_wrap(self) -> None:
         mw = PatchToolCallsMiddleware()
         request = MagicMock()
-        request.tool_call = {"id": "tc-1"}
+        request.tool_call = {"id": "tc-1", "name": "my_tool"}
         handler = MagicMock(return_value=_tool_message("tc-1"))
 
         mw.wrap_tool_call(request, handler)
 
-        assert "tc-1" not in mw._in_flight
+        assert not any(tcid == "tc-1" for _, tcid in mw._in_flight)
 
     def test_in_flight_cleared_on_sync_exception(self) -> None:
         mw = PatchToolCallsMiddleware()
         request = MagicMock()
-        request.tool_call = {"id": "tc-1"}
+        request.tool_call = {"id": "tc-1", "name": "my_tool"}
         handler = MagicMock(side_effect=RuntimeError("tool failed"))
 
         with pytest.raises(RuntimeError):
             mw.wrap_tool_call(request, handler)
 
-        assert "tc-1" not in mw._in_flight
+        assert not any(tcid == "tc-1" for _, tcid in mw._in_flight)
 
     async def test_in_flight_cleared_after_async_wrap(self) -> None:
         mw = PatchToolCallsMiddleware()
         request = MagicMock()
-        request.tool_call = {"id": "tc-1"}
+        request.tool_call = {"id": "tc-1", "name": "my_tool"}
         handler = AsyncMock(return_value=_tool_message("tc-1"))
 
         await mw.awrap_tool_call(request, handler)
 
-        assert "tc-1" not in mw._in_flight
+        assert not any(tcid == "tc-1" for _, tcid in mw._in_flight)
 
     async def test_in_flight_cleared_on_async_exception(self) -> None:
         mw = PatchToolCallsMiddleware()
         request = MagicMock()
-        request.tool_call = {"id": "tc-1"}
+        request.tool_call = {"id": "tc-1", "name": "my_tool"}
         handler = AsyncMock(side_effect=RuntimeError("async tool failed"))
 
         with pytest.raises(RuntimeError):
             await mw.awrap_tool_call(request, handler)
 
-        assert "tc-1" not in mw._in_flight
+        assert not any(tcid == "tc-1" for _, tcid in mw._in_flight)
 
     async def test_in_flight_cleared_on_cancellation(self) -> None:
         """Simulates asyncio.CancelledError (e.g. Playwright timeout)."""
         mw = PatchToolCallsMiddleware()
         request = MagicMock()
-        request.tool_call = {"id": "tc-playwright"}
+        request.tool_call = {"id": "tc-playwright", "name": "playwright_browser_navigate"}
         handler = AsyncMock(side_effect=asyncio.CancelledError())
 
         with pytest.raises(asyncio.CancelledError):
             await mw.awrap_tool_call(request, handler)
 
-        assert "tc-playwright" not in mw._in_flight
+        assert not any(tcid == "tc-playwright" for _, tcid in mw._in_flight)
 
 
 class TestAbforeAgentWaiting:
@@ -216,12 +216,10 @@ class TestAbforeAgentWaiting:
 class TestThreadIsolation:
     """Tools in one thread should not affect or block another thread."""
 
-    @pytest.mark.asyncio
     async def test_isolation_between_threads(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mw = PatchToolCallsMiddleware()
 
-        # Mock thread 1
-        monkeypatch.setattr(_mod, "get_config", lambda: {"configurable": {"thread_id": "thread-1"}})
+        # Mock thread 1 has tc-1 in flight
         mw._in_flight.add(("thread-1", "tc-1"))
 
         # In thread 2, tc-1 should NOT be seen as in-flight
@@ -233,3 +231,88 @@ class TestThreadIsolation:
         assert result is not None
         messages = result["messages"].value
         assert any(isinstance(m, ToolMessage) and m.tool_call_id == "tc-1" for m in messages)
+
+
+class TestSequentialExecution:
+    """Sequential semaphore must serialise async tool calls."""
+
+    async def test_sequential_tools_run_one_at_a_time(self) -> None:
+        """Two concurrent async tool calls must not overlap when sequential=True."""
+        mw = PatchToolCallsMiddleware(sequential=True)
+        order: list[str] = []
+
+        async def slow_handler(request: MagicMock) -> ToolMessage:
+            order.append("start-" + request.tool_call["id"])
+            await asyncio.sleep(0.05)
+            order.append("end-" + request.tool_call["id"])
+            return _tool_message(request.tool_call["id"])
+
+        req1 = MagicMock()
+        req1.tool_call = {"id": "tc-1", "name": "tool_a"}
+        req2 = MagicMock()
+        req2.tool_call = {"id": "tc-2", "name": "tool_a"}
+
+        await asyncio.gather(
+            mw.awrap_tool_call(req1, slow_handler),
+            mw.awrap_tool_call(req2, slow_handler),
+        )
+
+        # If sequential, we expect: start-1, end-1, start-2, end-2 (no overlap)
+        assert order.index("end-tc-1") < order.index("start-tc-2") or order.index("end-tc-2") < order.index("start-tc-1")
+
+    async def test_concurrent_tools_can_overlap_when_disabled(self) -> None:
+        """When sequential=False, two async calls can overlap."""
+        mw = PatchToolCallsMiddleware(sequential=False)
+        started: list[str] = []
+
+        async def slow_handler(request: MagicMock) -> ToolMessage:
+            started.append(request.tool_call["id"])
+            await asyncio.sleep(0.05)
+            return _tool_message(request.tool_call["id"])
+
+        req1 = MagicMock()
+        req1.tool_call = {"id": "tc-1", "name": "tool_a"}
+        req2 = MagicMock()
+        req2.tool_call = {"id": "tc-2", "name": "tool_a"}
+
+        await asyncio.gather(
+            mw.awrap_tool_call(req1, slow_handler),
+            mw.awrap_tool_call(req2, slow_handler),
+        )
+
+        # Both should have started (concurrently)
+        assert set(started) == {"tc-1", "tc-2"}
+
+
+class TestToolTimeout:
+    """Tool timeout must fire a CancelledError and clean up in-flight state."""
+
+    async def test_timeout_raises_cancelled_error(self) -> None:
+        """A tool that exceeds the timeout should raise CancelledError."""
+        mw = PatchToolCallsMiddleware(sequential=False, tool_timeout=0.05)
+
+        async def slow_handler(request: MagicMock) -> ToolMessage:
+            await asyncio.sleep(10)  # longer than timeout
+            return _tool_message(request.tool_call["id"])
+
+        req = MagicMock()
+        req.tool_call = {"id": "tc-timeout", "name": "playwright_browser_navigate"}
+
+        with pytest.raises(asyncio.CancelledError):
+            await mw.awrap_tool_call(req, slow_handler)
+
+        # _in_flight must be clean after timeout
+        assert not any(tcid == "tc-timeout" for _, tcid in mw._in_flight)
+
+    async def test_no_timeout_when_disabled(self) -> None:
+        """When tool_timeout=None, slow tools complete without interruption."""
+        mw = PatchToolCallsMiddleware(sequential=False, tool_timeout=None)
+
+        async def slow_handler(request: MagicMock) -> ToolMessage:
+            await asyncio.sleep(0.01)
+            return _tool_message(request.tool_call["id"])
+
+        req = MagicMock()
+        req.tool_call = {"id": "tc-1", "name": "my_tool"}
+        result = await mw.awrap_tool_call(req, slow_handler)
+        assert isinstance(result, ToolMessage)

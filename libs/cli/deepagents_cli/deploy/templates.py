@@ -756,46 +756,72 @@ async def _seed_user_memories_if_needed(
     )
 
 
-async def _write_if_missing(backend, path: str, content: str) -> None:
-    """Write ``content`` to ``path`` only when the file does not exist yet."""
-    existing = await backend.aread(path)
-    if existing.error is None:
-        return
-    result = await backend.awrite(path, content)
-    if result.error is not None:
-        logger.warning("Hub seed write failed for %s: %s", path, result.error)
+def _hub_route_or_none(backend, prefix: str):
+    """Return the ContextHubBackend behind ``prefix`` on the composite, or None."""
+    routes = getattr(backend, "routes", None)
+    if routes is None:
+        return None
+    return routes.get(prefix)
+
+
+def _log_seed_errors(responses, scope: str) -> None:
+    """Surface upload errors at warn level; the deploy continues either way."""
+    failures = [r for r in responses if r.error is not None]
+    if failures:
+        logger.warning(
+            "Hub seed had %d failed file(s) in %s: %s",
+            len(failures),
+            scope,
+            [(r.path, r.error) for r in failures],
+        )
 
 
 async def _seed_hub_if_needed(backend, assistant_id: str) -> None:
-    """Seed AGENTS.md, skills, and subagent content into the hub repo."""
+    """Seed the agent hub repo on first deploy as a single multi-file commit.
+
+    Skips entirely once the repo has any prior commits, so user edits/deletes
+    in the LangSmith UI are never silently undone on redeploy or restart.
+    """
     if assistant_id in _SEEDED_HUB_ASSISTANTS:
         return
     _SEEDED_HUB_ASSISTANTS.add(assistant_id)
 
-    seed = _load_seed()
+    hub = _hub_route_or_none(backend, MEMORIES_PREFIX)
+    if hub is not None and hub.has_prior_commits():
+        return
 
+    seed = _load_seed()
+    batch: list[tuple[str, bytes]] = []
     for path, content in seed.get("memories", {{}}).items():
         full_path = f"{{MEMORIES_PREFIX}}{{path.lstrip('/')}}"
-        await _write_if_missing(backend, full_path, content)
+        batch.append((full_path, content.encode("utf-8")))
     for path, content in seed.get("skills", {{}}).items():
         full_path = f"{{SKILLS_PREFIX}}{{path.lstrip('/')}}"
-        await _write_if_missing(backend, full_path, content)
-
+        batch.append((full_path, content.encode("utf-8")))
     for sa_name, sa_data in seed.get("subagents", {{}}).items():
         sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
         for path, content in sa_data.get("memories", {{}}).items():
             full_path = f"{{sa_prefix}}{{path.lstrip('/')}}"
-            await _write_if_missing(backend, full_path, content)
+            batch.append((full_path, content.encode("utf-8")))
         for path, content in sa_data.get("skills", {{}}).items():
-            await _write_if_missing(
-                backend, f"{{sa_prefix}}skills/{{path.lstrip('/')}}", content
-            )
+            full_path = f"{{sa_prefix}}skills/{{path.lstrip('/')}}"
+            batch.append((full_path, content.encode("utf-8")))
+
+    if not batch:
+        return
+    responses = await backend.aupload_files(batch)
+    _log_seed_errors(responses, scope=f"agent={{assistant_id}}")
 
 
 async def _seed_user_hub_if_needed(
     backend, assistant_id: str, user_id: str,
 ) -> None:
-    """Seed user memory templates into the per-user hub repo."""
+    """Seed user memory templates into the per-user hub repo on first use.
+
+    Same first-deploy gate as :func:`_seed_hub_if_needed`: once the user's
+    repo has any commits, subsequent invocations skip seeding so the user's
+    own changes (including deletes) survive across runs.
+    """
     key = (assistant_id, user_id)
     if key in _SEEDED_HUB_USERS:
         return
@@ -806,10 +832,16 @@ async def _seed_user_hub_if_needed(
     if not user_memories:
         return
 
-    for path, content in user_memories.items():
-        await _write_if_missing(
-            backend, f"{{USER_PREFIX}}{{path.lstrip('/')}}", content
-        )
+    user_hub = _hub_route_or_none(backend, USER_PREFIX)
+    if user_hub is not None and user_hub.has_prior_commits():
+        return
+
+    batch = [
+        (f"{{USER_PREFIX}}{{path.lstrip('/')}}", content.encode("utf-8"))
+        for path, content in user_memories.items()
+    ]
+    responses = await backend.aupload_files(batch)
+    _log_seed_errors(responses, scope=f"user={{user_id}}")
     logger.info(
         "Seeded %d user memory template(s) into hub for user %s",
         len(user_memories),

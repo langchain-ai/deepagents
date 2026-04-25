@@ -231,7 +231,7 @@ class TestForkSubagents:
         assert isinstance(seeded_plain[0], HumanMessage)
         assert seeded_plain[0].content == "do thing 2"
 
-    def test_subagent_state_excludes_parent_private_context(self) -> None:
+    def test_fork_subagent_uses_include_list_for_parent_state(self) -> None:
         fork_runnable = _RecordingRunnable()
         task_tool = _build_task_tool(
             [
@@ -260,7 +260,7 @@ class TestForkSubagents:
         assert "custom_state" not in seeded
         assert [m.content for m in seeded["messages"]] == ["parent Q", "do thing"]
 
-    def test_nonfork_subagent_keeps_parent_custom_state(self) -> None:
+    def test_nonfork_subagent_state_seeding_is_unchanged(self) -> None:
         plain_runnable = _RecordingRunnable()
         task_tool = _build_task_tool(
             [
@@ -282,7 +282,7 @@ class TestForkSubagents:
 
         seeded = plain_runnable.state_inputs[0]
         assert seeded["custom_state"] == "kept"
-        assert "local_context" not in seeded
+        assert seeded["local_context"] == "cli local context"
         assert [m.content for m in seeded["messages"]] == ["do thing"]
 
     def test_fork_drops_current_task_tool_call_from_seeded_state(self) -> None:

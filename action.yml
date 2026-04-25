@@ -1,6 +1,6 @@
-name: "Deep Agents"
+name: "AgentNext DeepAgents"
 description: "Run Deep Agents CLI coding assistant in GitHub workflows"
-author: "LangChain AI"
+author: "AgentNext"
 branding:
   icon: "cpu"
   color: "blue"

@@ -39,6 +39,7 @@ function Gate({ adapter }: { adapter: AuthAdapter }) {
     <AuthenticatedApp
       accessToken={session.accessToken}
       userEmail={session.userEmail}
+      userIdentity={session.userIdentity}
       onSignOut={session.signOut}
     />
   );
@@ -51,16 +52,19 @@ function SplashScreen() {
 function AuthenticatedApp({
   accessToken,
   userEmail,
+  userIdentity,
   onSignOut,
 }: {
   accessToken: string;
   userEmail: string | null;
+  userIdentity: string;
   onSignOut: () => Promise<void>;
 }) {
   return (
     <NewChatApp
       accessToken={accessToken}
       userEmail={userEmail}
+      userIdentity={userIdentity}
       onSignOut={onSignOut}
     />
   );
@@ -69,10 +73,12 @@ function AuthenticatedApp({
 function NewChatApp({
   accessToken,
   userEmail,
+  userIdentity,
   onSignOut,
 }: {
   accessToken: string;
   userEmail: string | null;
+  userIdentity: string;
   onSignOut: () => Promise<void>;
 }) {
   const [input, setInput] = useState("");
@@ -186,6 +192,7 @@ function NewChatApp({
     <div className="flex h-dvh flex-col bg-[var(--background)]">
       <AppHeader
         userEmail={userEmail}
+        userIdentity={userIdentity}
         onSignOut={onSignOut}
         threadPicker={threadPicker}
       />

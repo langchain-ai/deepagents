@@ -4,10 +4,12 @@ import { useTheme } from "../ThemeProvider";
 
 export default function AppHeader({
   userEmail,
+  userIdentity,
   onSignOut,
   threadPicker,
 }: {
   userEmail: string | null;
+  userIdentity: string;
   onSignOut: () => Promise<void>;
   threadPicker: ReactNode;
 }) {
@@ -53,12 +55,14 @@ export default function AppHeader({
             </svg>
           )}
         </button>
-        <button
-          onClick={() => { void onSignOut(); }}
-          className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent-bg)]"
-        >
-          Sign out
-        </button>
+        {userIdentity !== "anonymous" && (
+          <button
+            onClick={() => { void onSignOut(); }}
+            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent-bg)]"
+          >
+            Sign out
+          </button>
+        )}
         {threadPicker}
       </div>
     </header>

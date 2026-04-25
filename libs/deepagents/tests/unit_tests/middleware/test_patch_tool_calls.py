@@ -103,7 +103,7 @@ class TestInFlightProtection:
 
     def test_in_flight_call_is_not_cancelled(self) -> None:
         mw = PatchToolCallsMiddleware()
-        mw._in_flight.add("tc-1")
+        mw._in_flight.add((None, "tc-1"))
         ai_msg = _ai_with_tool_call("tc-1")
         state = _state([ai_msg])
 
@@ -178,11 +178,11 @@ class TestAbforeAgentWaiting:
     async def test_abefore_agent_waits_for_in_flight_to_clear(self) -> None:
         """If in-flight clears asynchronously, abefore_agent should not cancel it."""
         mw = PatchToolCallsMiddleware()
-        mw._in_flight.add("tc-1")
+        mw._in_flight.add((None, "tc-1"))
 
         async def _clear_after_delay() -> None:
             await asyncio.sleep(0.02)
-            mw._in_flight.discard("tc-1")
+            mw._in_flight.discard((None, "tc-1"))
 
         _background_tasks = set()
         task = asyncio.create_task(_clear_after_delay())
@@ -202,7 +202,7 @@ class TestAbforeAgentWaiting:
         The in-flight ID is not cancelled because we cannot verify the tool truly abandoned.
         """
         mw = PatchToolCallsMiddleware()
-        mw._in_flight.add("tc-stuck")
+        mw._in_flight.add((None, "tc-stuck"))
 
         ai_msg = _ai_with_tool_call("tc-stuck")
         # No corresponding ToolMessage → dangling, but still in-flight
@@ -211,3 +211,25 @@ class TestAbforeAgentWaiting:
         result = await mw.abefore_agent(state, _make_runtime())
         # tc-stuck is still in _in_flight, so it is NOT cancelled (protected)
         assert result is None
+
+
+class TestThreadIsolation:
+    """Tools in one thread should not affect or block another thread."""
+
+    @pytest.mark.asyncio
+    async def test_isolation_between_threads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mw = PatchToolCallsMiddleware()
+
+        # Mock thread 1
+        monkeypatch.setattr(_mod, "get_config", lambda: {"configurable": {"thread_id": "thread-1"}})
+        mw._in_flight.add(("thread-1", "tc-1"))
+
+        # In thread 2, tc-1 should NOT be seen as in-flight
+        monkeypatch.setattr(_mod, "get_config", lambda: {"configurable": {"thread_id": "thread-2"}})
+        state = _state([_ai_with_tool_call("tc-1")])
+
+        # It should be cancelled because thread-2 doesn't own tc-1
+        result = await mw.abefore_agent(state, _make_runtime())
+        assert result is not None
+        messages = result["messages"].value
+        assert any(isinstance(m, ToolMessage) and m.tool_call_id == "tc-1" for m in messages)

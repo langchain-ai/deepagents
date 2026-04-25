@@ -13,7 +13,9 @@ export function loadAuth(): Promise<AuthAdapter> {
     const mod =
       cfg.auth === "supabase"
         ? await import("./supabase")
-        : await import("./clerk");
+        : cfg.auth === "clerk"
+          ? await import("./clerk")
+          : await import("./none");
     return mod.default;
   })();
   return _cache;

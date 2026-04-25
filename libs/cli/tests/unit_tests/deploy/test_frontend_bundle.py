@@ -246,6 +246,34 @@ app_name = "My App"
     assert '"auth":"supabase"' in html
 
 
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_dry_run_anonymous_prints_warning(tmp_path, monkeypatch, capsys):
+    """`_deploy` with frontend enabled and no [auth] prints a warning."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
+    (project / "deepagents.toml").write_text(
+        """
+[agent]
+name = "my-agent"
+model = "anthropic:claude-sonnet-4-6"
+
+[frontend]
+enabled = true
+""",
+        encoding="utf-8",
+    )
+
+    _deploy(config_path=str(project / "deepagents.toml"), dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "Frontend is enabled without [auth]" in captured.out
+    assert "anyone with the deploy url" in captured.out.lower()
+
+
 def test_build_runtime_config_json_anonymous_mode():
     """When config.auth is None, the runtime config has auth:'none'."""
     import json

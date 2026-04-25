@@ -265,6 +265,23 @@ def _deploy(
             print(f"  - {err}")
         raise SystemExit(1)
 
+    # Warn if shipping the frontend without [auth] — anonymous deploys
+    # are reachable by anyone with the URL.
+    if (
+        config.frontend is not None
+        and config.frontend.enabled
+        and config.auth is None
+    ):
+        # ANSI yellow; falls back gracefully on terminals without color.
+        print(
+            "\033[33m⚠ Frontend is enabled without [auth]. "
+            "Anyone with the deploy URL can use this agent.\033[0m"
+        )
+        print(
+            "  Add an [auth] section "
+            '(provider = "supabase" or "clerk") to require sign-in.'
+        )
+
     # Bundle
     build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))
 

@@ -67,7 +67,8 @@ def _write_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_frontend_enabled_without_auth_errors(tmp_path, monkeypatch):
+def test_frontend_enabled_without_auth_validates_clean(tmp_path, monkeypatch):
+    """[frontend].enabled with no [auth] is valid (anonymous mode)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _write_project(tmp_path)
     cfg = DeployConfig(
@@ -75,7 +76,7 @@ def test_frontend_enabled_without_auth_errors(tmp_path, monkeypatch):
         frontend=FrontendConfig(enabled=True),
     )
     errors = cfg.validate(tmp_path)
-    assert any("[frontend].enabled requires [auth]" in e for e in errors)
+    assert errors == [], f"unexpected errors: {errors}"
 
 
 def test_frontend_disabled_no_auth_is_fine(tmp_path, monkeypatch):

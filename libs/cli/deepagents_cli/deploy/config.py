@@ -208,15 +208,12 @@ class DeployConfig:
         if self.auth is not None:
             errors.extend(_validate_auth_credentials(self.auth.provider))
 
-        if self.frontend is not None and self.frontend.enabled:
-            if self.auth is None:
-                errors.append(
-                    "[frontend].enabled requires [auth] to be configured. "
-                    'Add an [auth] section with provider = "supabase" or '
-                    '"clerk".'
-                )
-            else:
-                errors.extend(_validate_frontend_credentials(self.auth.provider))
+        if (
+            self.frontend is not None
+            and self.frontend.enabled
+            and self.auth is not None
+        ):
+            errors.extend(_validate_frontend_credentials(self.auth.provider))
 
         return errors
 
@@ -629,10 +626,14 @@ model = "anthropic:claude-sonnet-4-6"
 # provider = "supabase"   # supabase | clerk
 
 # [frontend] is optional. Add to ship a bundled chat UI on the same
-# deployment as the agent. Requires [auth].
+# deployment as the agent. Pair with [auth] for authenticated deploys; see below.
 # [frontend]
 # enabled = true
 # app_name = "My Agent"
+
+# [frontend] without [auth] runs the UI in anonymous mode — anyone
+# with the deploy URL can use the agent. Use only for private/dev
+# deploys; add [auth] for any user-facing deployment.
 """
 
 

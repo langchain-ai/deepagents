@@ -187,3 +187,55 @@ class TestMCPViewerScreen:
             await pilot.click(MCPToolItem)
             await pilot.pause()
             assert widget._expanded
+
+    async def test_toggle_all_expands_then_collapses(self) -> None:
+        """Pressing `a` expands every tool, pressing again collapses all."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert all(not w._expanded for w in screen._tool_widgets)
+
+            # First press expands every tool
+            await pilot.press("a")
+            await pilot.pause()
+            assert all(w._expanded for w in screen._tool_widgets)
+
+            # Second press collapses every tool
+            await pilot.press("a")
+            await pilot.pause()
+            assert all(not w._expanded for w in screen._tool_widgets)
+
+    async def test_toggle_all_with_partial_state(self) -> None:
+        """If any tool is collapsed, `a` expands all; otherwise collapses all."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Expand only the first tool
+            screen._tool_widgets[0].set_expanded(True)
+            await pilot.pause()
+            assert screen._tool_widgets[0]._expanded
+            assert not screen._tool_widgets[1]._expanded
+
+            # `a` should expand the rest (because some are still collapsed)
+            await pilot.press("a")
+            await pilot.pause()
+            assert all(w._expanded for w in screen._tool_widgets)
+
+    async def test_toggle_all_no_op_when_empty(self) -> None:
+        """Pressing `a` with no tools is a no-op."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[])
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Should not raise
+            await pilot.press("a")
+            await pilot.pause()
+            assert screen._tool_widgets == []

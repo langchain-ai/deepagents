@@ -101,8 +101,18 @@ class MCPToolItem(Static):
 
     def toggle_expand(self) -> None:
         """Toggle between collapsed and expanded view."""
-        self._expanded = not self._expanded
-        if self._expanded:
+        self.set_expanded(not self._expanded)
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Set expansion state explicitly.
+
+        Args:
+            expanded: True for expanded (multi-line), False for collapsed.
+        """
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        if expanded:
             label = self._format_expanded(self.tool_name, self.tool_description)
             self.styles.height = "auto"
         else:
@@ -147,6 +157,7 @@ class MCPViewerScreen(ModalScreen[None]):
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("j", "move_down", "Down", show=False, priority=True),
         Binding("enter", "toggle_expand", "Expand", show=False, priority=True),
+        Binding("a", "toggle_all", "Toggle all", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
@@ -295,6 +306,7 @@ class MCPViewerScreen(ModalScreen[None]):
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
                 f" {glyphs.bullet} Enter expand/collapse"
+                f" {glyphs.bullet} a expand/collapse all"
                 f" {glyphs.bullet} Esc close"
             )
             yield Static(help_text, classes="mcp-viewer-help")
@@ -346,6 +358,20 @@ class MCPViewerScreen(ModalScreen[None]):
         """Toggle expand/collapse on the selected tool."""
         if self._tool_widgets:
             self._tool_widgets[self._selected_index].toggle_expand()
+
+    def action_toggle_all(self) -> None:
+        """Expand or collapse every tool at once.
+
+        If any tool is collapsed, expand all; otherwise collapse all.
+        Useful when scanning a long list of tools and quickly toggling
+        between overview and detailed views.
+        """
+        if not self._tool_widgets:
+            return
+        any_collapsed = any(not w._expanded for w in self._tool_widgets)
+        target = any_collapsed
+        for widget in self._tool_widgets:
+            widget.set_expanded(target)
 
     def action_page_up(self) -> None:
         """Scroll up by one page."""

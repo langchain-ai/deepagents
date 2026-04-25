@@ -94,13 +94,19 @@ class ContextHubBackend(BackendProtocol):
         self._ensure_cache()
         return dict(self._linked_entries)
 
-    def _commit(self, path: str, content: str) -> None:
-        """Push a single-file change and update the cache on success."""
+    def _commit(self, files: dict[str, str]) -> None:
+        """Push ``files`` as one commit; update the cache on success."""
+        if not files:
+            return
         from langsmith.schemas import FileEntry
 
+        payload = {
+            path: FileEntry(type="file", content=content)
+            for path, content in files.items()
+        }
         url = self._client.push_agent(
             self._identifier,
-            files={path: FileEntry(type="file", content=content)},
+            files=payload,
             parent_commit=self._commit_hash,
         )
         match = _URL_COMMIT_SUFFIX_RE.search(url)
@@ -108,7 +114,8 @@ class ContextHubBackend(BackendProtocol):
             self._commit_hash = match.group(1)
 
         if self._cache is not None:
-            self._cache[path] = content
+            for path, content in files.items():
+                self._cache[path] = content
 
     @staticmethod
     def _strip_prefix(path: str) -> str:
@@ -153,7 +160,7 @@ class ContextHubBackend(BackendProtocol):
         hub_path = self._strip_prefix(file_path)
         try:
             self._ensure_cache()  # populates _commit_hash for parent_commit on push
-            self._commit(hub_path, content)
+            self._commit({hub_path: content})
         except Exception as exc:
             logger.exception("Hub write failed for %r", self._identifier)
             self._cache = None
@@ -182,7 +189,7 @@ class ContextHubBackend(BackendProtocol):
                 return EditResult(error=result)
 
             new_content, occurrences = result
-            self._commit(hub_path, new_content)
+            self._commit({hub_path: new_content})
         except Exception as exc:
             logger.exception("Hub edit failed for %r", self._identifier)
             self._cache = None
@@ -269,19 +276,37 @@ class ContextHubBackend(BackendProtocol):
         return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        """Upload text files. Non-utf-8 bytes are rejected with ``invalid_path``."""
-        results: list[FileUploadResponse] = []
+        """Upload text files in one commit; non-UTF-8 inputs rejected per file."""
+        # Decode each input; ``None`` text means we'll reject this entry as invalid.
+        decoded: list[tuple[str, str | None]] = []
+        valid_files: dict[str, str] = {}
         for path, content in files:
             try:
                 text = content.decode("utf-8")
             except UnicodeDecodeError:
-                results.append(FileUploadResponse(path=path, error="invalid_path"))
+                decoded.append((path, None))
                 continue
-            res = self.write(path, text)
-            if res.error:
-                # Backend-specific error string passed through per protocol docs
+            decoded.append((path, text))
+            valid_files[self._strip_prefix(path)] = text  # last write wins
+
+        commit_error: str | None = None
+        if valid_files:
+            try:
+                self._ensure_cache()
+                self._commit(valid_files)
+            except Exception as exc:
+                logger.exception("Hub batch upload failed for %r", self._identifier)
+                self._cache = None
+                commit_error = f"Hub unavailable: {exc}"
+
+        results: list[FileUploadResponse] = []
+        for path, text in decoded:
+            if text is None:
+                results.append(FileUploadResponse(path=path, error="invalid_path"))
+            elif commit_error is not None:
+                # Backend-specific error string per protocol docs
                 # (FileOperationError literal union doesn't cover hub failures).
-                results.append(FileUploadResponse(path=path, error=res.error))  # type: ignore[arg-type]
+                results.append(FileUploadResponse(path=path, error=commit_error))  # type: ignore[arg-type]
             else:
                 results.append(FileUploadResponse(path=path))
         return results

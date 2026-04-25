@@ -327,6 +327,81 @@ def test_upload_partial_success() -> None:
     assert responses[1].error == "invalid_path"
 
 
+def test_upload_multiple_files_uses_single_commit() -> None:
+    """Batch upload of N text files must produce one push_agent call, not N."""
+    backend, mock_client = _make_backend()
+    responses = backend.upload_files(
+        [
+            ("/a.md", b"alpha"),
+            ("/b.md", b"beta"),
+            ("/nested/c.md", b"gamma"),
+        ]
+    )
+    assert all(r.error is None for r in responses)
+
+    mock_client.push_agent.assert_called_once()
+    call = mock_client.push_agent.call_args
+    files_payload = call.kwargs["files"]
+    assert set(files_payload.keys()) == {"a.md", "b.md", "nested/c.md"}
+    assert files_payload["a.md"].content == "alpha"
+    assert files_payload["b.md"].content == "beta"
+    assert files_payload["nested/c.md"].content == "gamma"
+
+
+def test_upload_partial_success_only_commits_valid_files() -> None:
+    """Mixed valid/invalid input still flushes valid files in a single commit."""
+    backend, mock_client = _make_backend()
+    responses = backend.upload_files(
+        [
+            ("/ok.md", b"hello"),
+            ("/bad.bin", b"\x80"),
+            ("/also-ok.md", b"world"),
+        ]
+    )
+    assert responses[0].error is None
+    assert responses[1].error == "invalid_path"
+    assert responses[2].error is None
+
+    mock_client.push_agent.assert_called_once()
+    files_payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert set(files_payload.keys()) == {"ok.md", "also-ok.md"}
+
+
+def test_upload_failure_propagates_to_all_pending_paths() -> None:
+    """If the batch commit fails, every otherwise-valid file gets the hub error."""
+    backend, mock_client = _make_backend()
+    mock_client.push_agent.side_effect = RuntimeError("503")
+
+    responses = backend.upload_files(
+        [("/a.md", b"alpha"), ("/b.md", b"beta"), ("/bad.bin", b"\x80")]
+    )
+    assert "Hub unavailable" in (responses[0].error or "")
+    assert "Hub unavailable" in (responses[1].error or "")
+    assert responses[2].error == "invalid_path"
+    # Single batch call attempted, not three.
+    mock_client.push_agent.assert_called_once()
+
+
+def test_upload_duplicate_path_keeps_last_write() -> None:
+    """If the same path appears twice in a batch, the later content wins."""
+    backend, mock_client = _make_backend()
+    responses = backend.upload_files([("/dup.md", b"first"), ("/dup.md", b"second")])
+    assert all(r.error is None for r in responses)
+
+    mock_client.push_agent.assert_called_once()
+    files_payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert files_payload["dup.md"].content == "second"
+
+
+def test_single_file_write_still_uses_one_commit() -> None:
+    """Refactor regression: per-file write() must still issue exactly one commit."""
+    backend, mock_client = _make_backend()
+    backend.write("/note.md", "hi")
+    mock_client.push_agent.assert_called_once()
+    files_payload = mock_client.push_agent.call_args.kwargs["files"]
+    assert set(files_payload.keys()) == {"note.md"}
+
+
 def test_download_existing_file() -> None:
     backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="hi")})
     responses = backend.download_files(["/a.md"])

@@ -10,9 +10,11 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+from deepagents_cli.deploy.context_hub import ContextHubBackend
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -149,3 +151,56 @@ def test_upload_files_round_trip(backend) -> None:
 
     assert backend.read("/u1.md").file_data["content"] == "one"
     assert backend.read("/u2.md").file_data["content"] == "two"
+
+
+def test_upload_files_produces_single_commit(identifier) -> None:
+    """Batch upload of N files should make exactly one ``push_agent`` call.
+
+    Unit tests assert this with a fully-mocked client; this test wraps a
+    real ``langsmith.Client`` so we get the same guarantee against the
+    actual Hub API surface, and additionally confirms the resulting commit
+    persists every file in one shot.
+    """
+    from unittest.mock import patch
+
+    from langsmith import Client
+
+    real_client = Client()
+    push_calls: list[dict[str, Any]] = []
+    original_push = type(real_client).push_agent
+
+    def spy_push(self, identifier: str, **kwargs: Any) -> str:
+        push_calls.append({"identifier": identifier, **kwargs})
+        return original_push(self, identifier, **kwargs)
+
+    backend = ContextHubBackend(identifier, client=real_client)
+    try:
+        with patch.object(type(real_client), "push_agent", spy_push):
+            responses = backend.upload_files(
+                [
+                    ("/batch/a.md", b"alpha"),
+                    ("/batch/b.md", b"beta"),
+                    ("/batch/c.md", b"gamma"),
+                    ("/batch/d.md", b"delta"),
+                ]
+            )
+        assert all(r.error is None for r in responses), responses
+        assert len(push_calls) == 1, (
+            f"expected one push_agent call, got {len(push_calls)}"
+        )
+        assert set(push_calls[0]["files"].keys()) == {
+            "batch/a.md",
+            "batch/b.md",
+            "batch/c.md",
+            "batch/d.md",
+        }
+
+        # Confirm the commit actually landed and contains all four files.
+        pulled = Client().pull_agent(identifier)
+        pulled_paths = set(pulled.files.keys())
+        assert {"batch/a.md", "batch/b.md", "batch/c.md", "batch/d.md"} <= pulled_paths
+    finally:
+        try:
+            Client().delete_agent(identifier)
+        except Exception:
+            logger.warning("Failed to delete test repo %r", identifier, exc_info=True)

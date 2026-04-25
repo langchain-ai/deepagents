@@ -28,7 +28,7 @@ def _video_block(data: bytes = b"fake", mime: str = "video/mp4", filename: str =
         "type": "video",
         "source_type": "base64",
         "mime_type": mime,
-        "data": base64.b64encode(data).decode(),
+        "base64": base64.b64encode(data).decode(),
         "source_metadata": {"filename": filename},
     }
 
@@ -62,9 +62,9 @@ def _model_with_provider(provider: str, model_name: str) -> MagicMock:
 class TestInit:
     def test_defaults(self) -> None:
         mw = VideoFrameExtractionMiddleware()
-        assert mw.max_frames == 95
+        assert mw.max_frames == 200
         assert mw.scene_threshold == 0.30
-        assert mw.max_width == 1024
+        assert mw.max_width == 512
         assert mw.jpeg_quality == 5
         assert mw.video_capable_override is None
         assert mw.cache_size == 256
@@ -200,6 +200,76 @@ class TestWrapModelCallHappyPath:
         assert isinstance(first_block, dict)
         assert first_block["type"] == "video"
 
+    @pytest.mark.asyncio
+    async def test_awrap_model_call_offloads_to_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """awrap_model_call must not call _transform_messages on the event-loop thread."""
+        import threading
+
+        fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.0)]
+        event_loop_thread = threading.current_thread()
+        extraction_threads: list[threading.Thread] = []
+
+        def fake_extraction(*_a: object, **_kw: object) -> tuple[list[ExtractedFrame], float]:
+            extraction_threads.append(threading.current_thread())
+            return fake_frames, 5.0
+
+        monkeypatch.setattr(video_frames, "_run_extraction", fake_extraction)
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        messages = [HumanMessage(content=[_video_block(filename="async.mp4")])]
+        request = _make_request(model, messages)
+
+        async def handler(req: Any) -> str:  # noqa: ANN401
+            return "OK"
+
+        result = await mw.awrap_model_call(request, handler)  # type: ignore[arg-type]
+        assert result == "OK"
+        assert len(extraction_threads) == 1
+        assert extraction_threads[0] is not event_loop_thread
+
+    def test_stringified_tool_message_content_is_expanded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """LangGraph's ToolNode JSON-stringifies tool output when a block type isn't
+        whitelisted (video isn't). The middleware must recover the list and extract frames
+        so raw video bytes don't ship to the model.
+        """
+        import json as _json
+
+        from langchain_core.messages import ToolMessage
+
+        fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0a", timestamp_s=0.0)]
+        monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
+        monkeypatch.setattr(_ffmpeg, "check_ffmpeg_available", lambda: True)
+
+        stringified = _json.dumps(
+            [
+                {
+                    "type": "video",
+                    "base64": base64.b64encode(b"fakevideo").decode(),
+                    "mime_type": "video/mp4",
+                    "source_metadata": {"filename": "tool.mp4"},
+                }
+            ]
+        )
+        tool_msg = ToolMessage(content=stringified, tool_call_id="call_1", name="read_file")
+
+        mw = VideoFrameExtractionMiddleware()
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        request = _make_request(model, [tool_msg])
+
+        captured: dict[str, Any] = {}
+
+        def handler(req: Any) -> str:  # noqa: ANN401
+            captured["messages"] = req.messages
+            return "OK"
+
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
+        content = captured["messages"][0].content
+        # The raw base64 string must be gone; only extracted frames remain.
+        assert isinstance(content, list)
+        assert not any(isinstance(b, str) and "base64" in b and "video" in b for b in content)
+        assert any(isinstance(b, dict) and b.get("type") == "image" for b in content)
+
     def test_ordering_preserved_with_interleaved_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_frames = [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)]
         monkeypatch.setattr(video_frames, "_run_extraction", lambda *_a, **_kw: (fake_frames, 5.0))
@@ -240,6 +310,39 @@ class TestWrapModelCallHappyPath:
         assert content[6] == {"type": "text", "text": "Frame 1 at t=0.0s"}
         assert content[7]["type"] == "image"
         assert content[8] == _text_block("after")
+
+
+class TestProviderFrameCap:
+    """`max_frames` is clamped per-provider so configs that exceed a provider's
+    image cap (Anthropic 100, OpenAI 1500) don't trigger API errors."""
+
+    def test_anthropic_clamps_max_frames_to_100(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured_params: dict[str, Any] = {}
+
+        def fake(_video_bytes: bytes, _mime: str | None, params: Any) -> tuple[list[ExtractedFrame], float]:
+            captured_params["params"] = params
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
+
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+        mw = VideoFrameExtractionMiddleware(max_frames=200)
+        model = _model_with_provider("anthropic", "claude-sonnet-4-6")
+        request = _make_request(model, [HumanMessage(content=[_video_block()])])
+        mw.wrap_model_call(request, lambda _r: "OK")  # type: ignore[arg-type]
+        assert captured_params["params"].max_frames == 100
+
+    def test_openai_uses_full_max_frames(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured_params: dict[str, Any] = {}
+
+        def fake(_video_bytes: bytes, _mime: str | None, params: Any) -> tuple[list[ExtractedFrame], float]:
+            captured_params["params"] = params
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
+
+        monkeypatch.setattr(video_frames, "_run_extraction", fake)
+        mw = VideoFrameExtractionMiddleware(max_frames=200)
+        model = _model_with_provider("openai", "gpt-4o")
+        request = _make_request(model, [HumanMessage(content=[_video_block()])])
+        mw.wrap_model_call(request, lambda _r: "OK")  # type: ignore[arg-type]
+        assert captured_params["params"].max_frames == 200
 
 
 class TestErrorPaths:

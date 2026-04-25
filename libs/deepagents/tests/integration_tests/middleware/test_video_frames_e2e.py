@@ -56,7 +56,7 @@ def test_e2e_video_replaced_with_images_for_claude(sample_video_bytes: bytes) ->
         "type": "video",
         "source_type": "base64",
         "mime_type": "video/mp4",
-        "data": base64.b64encode(sample_video_bytes).decode(),
+        "base64": base64.b64encode(sample_video_bytes).decode(),
         "source_metadata": {"filename": "e2e.mp4"},
     }
 

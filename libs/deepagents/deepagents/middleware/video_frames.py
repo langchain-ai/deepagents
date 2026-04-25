@@ -15,10 +15,12 @@ at most once per process.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import copy
 import hashlib
+import json
 import logging
 from collections import OrderedDict
 from pathlib import Path
@@ -63,6 +65,19 @@ _CACHE_SIZE_MAX = 10000
 # Minimum frame count that enables duration/interval estimation.
 _MIN_FRAMES_FOR_DURATION = 2
 
+# Per-provider images-per-request hard caps, sourced from docs as of 2026-04:
+# - Anthropic (200K-context models like Claude Sonnet): 100/request.
+#   https://platform.claude.com/docs/en/docs/build-with-claude/vision
+# - OpenAI: 1500/request.
+#   https://developers.openai.com/api/docs/guides/images-vision
+# Effective `max_frames` is clamped to the provider's cap at request time.
+_PROVIDER_FRAME_CAPS: dict[str, int] = {
+    "anthropic": 100,
+    "openai": 1500,
+}
+# Conservative fallback when the provider is unknown.
+_DEFAULT_PROVIDER_FRAME_CAP = 100
+
 _MIME_TO_EXT: dict[str, str] = {
     "video/mp4": "mp4",
     "video/quicktime": "mov",
@@ -101,15 +116,38 @@ def _is_video_block(block: object) -> bool:
     return block.get("type") == "video"  # type: ignore[arg-type]
 
 
+def _maybe_parse_stringified_blocks(content: str) -> list[Any] | str:
+    """Recover a content-block list that was JSON-stringified by LangGraph's ToolNode.
+
+    Why: `langgraph.prebuilt.tool_node.msg_content_output` routes tool output
+    through `json.dumps` when any block's `type` isn't in
+    `TOOL_MESSAGE_BLOCK_TYPES` (notably `"video"` and `"audio"`). That turns
+    `read_file` video output into a giant string that silently ships the raw
+    base64 to the model. We parse it back so the normal transformation runs.
+
+    Returns the parsed list on success; otherwise the original string.
+    """
+    # Cheap prefilter so we don't JSON-parse unrelated strings.
+    if not content.startswith("[") or '"type": "video"' not in content:
+        return content
+    try:
+        parsed = json.loads(content)
+    except ValueError:
+        return content
+    if isinstance(parsed, list) and all(isinstance(b, dict) for b in parsed):
+        return parsed
+    return content
+
+
 def _decode_video_bytes(block: dict[str, Any]) -> bytes:
-    data = block.get("data")
+    data = block.get("base64")
     if not isinstance(data, str):
-        msg = "video block missing 'data'"
+        msg = "video block missing 'base64'"
         raise ExtractionFailedError(msg)
     try:
         return base64.b64decode(data, validate=True)
     except binascii.Error as exc:
-        msg = "video block 'data' is not valid base64"
+        msg = "video block 'base64' is not valid base64"
         raise ExtractionFailedError(msg) from exc
 
 
@@ -192,9 +230,13 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
     def __init__(
         self,
         *,
-        max_frames: int = 95,
+        # User-facing upper bound. Effective value is clamped per-provider at
+        # request time using `_PROVIDER_FRAME_CAPS` (Anthropic 100, OpenAI 1500
+        # as of 2026-04), so 200 gives more frames on OpenAI while still being
+        # safe on Anthropic (where it clamps to 100).
+        max_frames: int = 200,
         scene_threshold: float = 0.30,
-        max_width: int = 1024,
+        max_width: int = 512,
         jpeg_quality: int = 5,
         video_capable_override: bool | None = None,
         cache_size: int = 256,
@@ -243,8 +285,19 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
 
     @property
     def _params(self) -> ExtractionParams:
+        """Configured params (no provider clamp). Use `_params_for_provider` for live calls."""
         return ExtractionParams(
             max_frames=self.max_frames,
+            scene_threshold=self.scene_threshold,
+            max_width=self.max_width,
+            jpeg_quality=self.jpeg_quality,
+        )
+
+    def _params_for_provider(self, provider: str | None) -> ExtractionParams:
+        """Return params with `max_frames` clamped to the provider's documented cap."""
+        cap = _PROVIDER_FRAME_CAPS.get((provider or "").lower(), _DEFAULT_PROVIDER_FRAME_CAP)
+        return ExtractionParams(
+            max_frames=min(self.max_frames, cap),
             scene_threshold=self.scene_threshold,
             max_width=self.max_width,
             jpeg_quality=self.jpeg_quality,
@@ -261,7 +314,8 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         if is_video_capable(provider, model_name, override=self.video_capable_override):
             return handler(request)
 
-        transformed, mutated = self._transform_messages(request.messages)
+        params = self._params_for_provider(provider)
+        transformed, mutated = self._transform_messages(request.messages, params)
         if not mutated:
             return handler(request)
         return handler(request.override(messages=transformed))
@@ -277,35 +331,59 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
         if is_video_capable(provider, model_name, override=self.video_capable_override):
             return await handler(request)
 
-        transformed, mutated = self._transform_messages(request.messages)
+        params = self._params_for_provider(provider)
+        transformed, mutated = await asyncio.to_thread(self._transform_messages, request.messages, params)
         if not mutated:
             return await handler(request)
         return await handler(request.override(messages=transformed))
 
-    def _transform_messages(self, messages: list[AnyMessage]) -> tuple[list[AnyMessage], bool]:
-        """Return (new_messages, whether_any_video_was_found)."""
+    def _transform_messages(
+        self,
+        messages: list[AnyMessage],
+        params: ExtractionParams | None = None,
+    ) -> tuple[list[AnyMessage], bool]:
+        """Return (new_messages, whether_any_video_was_found).
+
+        `params` lets callers override `self._params` per request (used to
+        clamp `max_frames` to the active provider's cap). When `None`, the
+        configured params are used; this preserves the legacy call signature
+        for tests and external callers.
+        """
+        effective_params = params if params is not None else self._params
         mutated = False
         new_messages = copy.deepcopy(list(messages))
         for message in new_messages:
             content = getattr(message, "content", None)
+            # LangGraph's ToolNode JSON-stringifies tool output when any content
+            # block type isn't in `TOOL_MESSAGE_BLOCK_TYPES` ("video" isn't).
+            # Recover the original list so we can still find and expand videos.
+            if isinstance(content, str):
+                content = _maybe_parse_stringified_blocks(content)
             if not isinstance(content, list):
                 continue
+            message_mutated = False
             new_content: list[Any] = []
             for block in content:
                 if _is_video_block(block):
                     mutated = True
-                    new_content.extend(self._expand_video_block(block))
+                    message_mutated = True
+                    new_content.extend(self._expand_video_block(block, effective_params))
                 else:
                     new_content.append(block)
-            message.content = new_content
+            if message_mutated:
+                message.content = new_content
         return new_messages, mutated
 
-    def _expand_video_block(self, block: dict[str, Any]) -> list[dict[str, Any]]:
+    def _expand_video_block(
+        self,
+        block: dict[str, Any],
+        params: ExtractionParams,
+    ) -> list[dict[str, Any]]:
         filename = _filename_for_video_block(block)
         try:
             video_bytes = _decode_video_bytes(block)
-            frames, duration_s = self._extract_with_cache(video_bytes, block.get("mime_type"))
-            baseline_interval = max(1.0, duration_s / self._params.max_frames)
+            frames, duration_s = self._extract_with_cache(video_bytes, block.get("mime_type"), params)
+            baseline_interval = max(1.0, duration_s / params.max_frames)
             return _frames_to_blocks(frames, filename, duration_s, baseline_interval)
         except FFmpegMissingError as exc:
             logger.warning("ffmpeg missing; replacing video %r: %s", filename, exc)
@@ -324,18 +402,24 @@ class VideoFrameExtractionMiddleware(AgentMiddleware):
             logger.warning("unexpected extraction error for %r: %s", filename, exc)
             return [_error_block(filename, ErrorReason.EXTRACTION_FAILED)]
 
-    def _extract_with_cache(self, video_bytes: bytes, mime: str | None) -> tuple[list[ExtractedFrame], float]:
+    def _extract_with_cache(
+        self,
+        video_bytes: bytes,
+        mime: str | None,
+        params: ExtractionParams | None = None,
+    ) -> tuple[list[ExtractedFrame], float]:
+        effective_params = params if params is not None else self._params
         if self.cache_size == 0:
-            return _run_extraction(video_bytes, mime, self._params)
+            return _run_extraction(video_bytes, mime, effective_params)
 
-        key = _cache_key(video_bytes, self._params)
+        key = _cache_key(video_bytes, effective_params)
         cached = self._cache.get(key)
         if cached is not None:
             # LRU: move to MRU end.
             self._cache.move_to_end(key)
             return cached
 
-        result = _run_extraction(video_bytes, mime, self._params)
+        result = _run_extraction(video_bytes, mime, effective_params)
         self._cache[key] = result
         while len(self._cache) > self.cache_size:
             self._cache.popitem(last=False)  # Evict LRU.

@@ -267,11 +267,7 @@ def _deploy(
 
     # Warn if shipping the frontend without [auth] — anonymous deploys
     # are reachable by anyone with the URL.
-    if (
-        config.frontend is not None
-        and config.frontend.enabled
-        and config.auth is None
-    ):
+    if config.frontend is not None and config.frontend.enabled and config.auth is None:
         # ANSI yellow; falls back gracefully on terminals without color.
         print(
             "\033[33m⚠ Frontend is enabled without [auth]. "

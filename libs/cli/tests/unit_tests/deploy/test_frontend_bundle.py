@@ -277,6 +277,7 @@ enabled = true
 def test_build_runtime_config_json_anonymous_mode():
     """When config.auth is None, the runtime config has auth:'none'."""
     import json
+
     from deepagents_cli.deploy.bundler import _build_runtime_config_json
 
     cfg = DeployConfig(

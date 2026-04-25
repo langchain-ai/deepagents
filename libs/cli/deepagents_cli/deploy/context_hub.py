@@ -94,6 +94,11 @@ class ContextHubBackend(BackendProtocol):
         self._ensure_cache()
         return dict(self._linked_entries)
 
+    def has_prior_commits(self) -> bool:
+        """Return True if the hub repo already exists with at least one commit."""
+        self._ensure_cache()
+        return self._commit_hash is not None
+
     def _commit(self, files: dict[str, str]) -> None:
         """Push ``files`` as one commit; update the cache on success."""
         if not files:

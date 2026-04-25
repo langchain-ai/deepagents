@@ -96,6 +96,33 @@ def test_pull_non_404_failure_surfaces_as_error() -> None:
     assert "hub 5xx" in result.error
 
 
+def test_has_prior_commits_false_for_missing_repo() -> None:
+    """A repo that 404s on pull has never been committed to."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    backend = ContextHubBackend("-/fresh", client=mock_client)
+
+    assert backend.has_prior_commits() is False
+
+
+def test_has_prior_commits_true_for_existing_repo() -> None:
+    """An existing repo with a commit hash should report prior commits."""
+    backend, _ = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
+    assert backend.has_prior_commits() is True
+
+
+def test_has_prior_commits_flips_after_first_write() -> None:
+    """A fresh repo flips from no-prior-commits to has-prior-commits after a write."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.push_agent.return_value = _COMMIT_URL
+    backend = ContextHubBackend("-/fresh", client=mock_client)
+
+    assert backend.has_prior_commits() is False
+    backend.write("/seed.md", "hello")
+    assert backend.has_prior_commits() is True
+
+
 def test_write_commits_file() -> None:
     backend, mock_client = _make_backend()
     result = backend.write("/notes.md", "# hi")

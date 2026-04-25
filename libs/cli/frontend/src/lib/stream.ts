@@ -1,13 +1,9 @@
 import { useStream, type UseDeepAgentStreamOptions, type UseStream } from "@langchain/react";
-import type { DefaultToolCall } from "@langchain/langgraph-sdk";
+import type { DefaultToolCall } from "@langchain/react";
 import type { AgentState } from "../types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function isTextBlock(block: unknown): block is { type: "text"; text: string } {
-  return isRecord(block) && block.type === "text" && typeof block.text === "string";
 }
 
 function isImageContentBlock(
@@ -46,16 +42,6 @@ export function useAgentStream(
   // UseDeepAgentStreamOptions extends UseStreamOptions with subagent support,
   // but the return type is the same UseStream shape at runtime.
   return useStream<AgentState>(options) as unknown as UseStream<AgentState>;
-}
-
-export function getTextContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .filter(isTextBlock)
-    .map((block) => block.text)
-    .join("");
 }
 
 export function getImageBlocks(content: unknown): { url: string }[] {

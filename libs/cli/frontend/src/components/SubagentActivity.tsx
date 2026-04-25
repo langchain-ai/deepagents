@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FC } from "react";
 import { Streamdown } from "streamdown";
 import type { SubagentStatus } from "@langchain/react";
 import type { AgentSubagent } from "../types";
-import { getElapsedTime, getTextContent } from "../lib/stream";
+import { getElapsedTime } from "../lib/stream";
 
 // ---------------------------------------------------------------------------
 // Legacy display types — used by the AUI-based Thread.tsx (deleted in T5).
@@ -287,12 +287,20 @@ const SubagentCard: FC<{
   const elapsed = getElapsedTime(subagent.startedAt, subagent.completedAt);
   const lastAIMessage = subagent.messages.filter((m) => m.type === "ai").at(-1);
   const isStreaming = subagent.status === "running";
-  const displayContent =
-    subagent.status === "complete"
-      ? subagent.result ?? ""
-      : lastAIMessage
-        ? getTextContent(lastAIMessage.content)
+  const lastAIContent = lastAIMessage?.content;
+  const lastAIText =
+    typeof lastAIContent === "string"
+      ? lastAIContent
+      : Array.isArray(lastAIContent)
+        ? lastAIContent
+            .filter((b): b is { type: "text"; text: string } =>
+              typeof b === "object" && b !== null && "type" in b && b.type === "text" && "text" in b,
+            )
+            .map((b) => b.text)
+            .join("")
         : "";
+  const displayContent =
+    subagent.status === "complete" ? subagent.result ?? "" : lastAIText;
 
   useEffect(() => {
     if (!isStreaming || !scrollRef.current) return;

@@ -4,7 +4,6 @@ import { APP_NAME } from "../constants";
 import {
   getErrorMessage,
   getImageBlocks,
-  getTextContent,
 } from "../lib/stream";
 import type { AgentStream } from "../types";
 import type { AIMessage } from "@langchain/langgraph-sdk";
@@ -76,7 +75,7 @@ const MessageList: FC<MessageListProps> = ({
         {messages.map((message, index) => {
           if (message.type === "tool") return null;
 
-          const content = getTextContent(message.content);
+          const content = message.text;
           const isLastMessage = index === messages.length - 1;
 
           if (message.getType() === "human") {
@@ -107,7 +106,11 @@ const MessageList: FC<MessageListProps> = ({
                 {content ? (
                   <div className="ai-bubble max-w-[90%] rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 text-sm leading-relaxed shadow-sm">
                     <div className="markdown-body">
-                      <Streamdown animated isAnimating={isStreaming} parseIncompleteMarkdown>
+                      <Streamdown
+                        animated={{ animation: "fadeIn", sep: "word", duration: 300 }}
+                        isAnimating={isStreaming}
+                        parseIncompleteMarkdown
+                      >
                         {content}
                       </Streamdown>
                     </div>

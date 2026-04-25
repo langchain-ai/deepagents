@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langgraph.runtime import Runtime
 
+from deepagents_cli._env_vars import FORK_SUBAGENT
 from deepagents_cli.agent import (
     DEFAULT_AGENT_NAME,
     _format_edit_file_description,
@@ -2171,6 +2172,61 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert not any(
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
+
+    def test_fork_subagent_env_marks_cli_subagents_as_fork(
+        self, tmp_path: Path
+    ) -> None:
+        """`DEEPAGENTS_CLI_FORK_SUBAGENT=1` forks CLI-loaded subagents."""
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "anthropic:claude-haiku-4-5-20251001",
+        }
+
+        with (
+            patch.dict("os.environ", {FORK_SUBAGENT: "1"}, clear=False),
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        assert subagents is not None
+        researcher = next(
+            subagent for subagent in subagents if subagent["name"] == "researcher"
+        )
+        general_purpose = next(
+            subagent for subagent in subagents if subagent["name"] == "general-purpose"
+        )
+        assert researcher["fork"] is True
+        assert "model" not in researcher
+        assert general_purpose["fork"] is True
 
 
 def _mock_agents_dir(agents_dir: Path) -> Mock:

@@ -21,6 +21,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.subagents import (
+    ALL_FORKED_USAGE_GUIDANCE,
     FORK_USAGE_GUIDANCE,
     FORKED_SUBAGENT_MARKER,
     CompiledSubAgent,
@@ -148,6 +149,17 @@ def _tool_names(tools: list[Any]) -> set[str]:
     return names
 
 
+def _tool_description(tools: list[Any], name: str) -> str:
+    for tool in tools:
+        tool_name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        if tool_name != name:
+            continue
+        description = tool.get("description") if isinstance(tool, dict) else getattr(tool, "description", "")
+        return str(description)
+    msg = f"Tool {name!r} not found"
+    raise AssertionError(msg)
+
+
 def _make_fork_agent(model: _RecordingChatModel, **kwargs: Any) -> Runnable:
     return create_deep_agent(
         model=model,
@@ -218,6 +230,60 @@ class TestForkSubagents:
         assert len(seeded_plain) == 1
         assert isinstance(seeded_plain[0], HumanMessage)
         assert seeded_plain[0].content == "do thing 2"
+
+    def test_subagent_state_excludes_parent_private_context(self) -> None:
+        fork_runnable = _RecordingRunnable()
+        task_tool = _build_task_tool(
+            [
+                {"name": "forked", "description": "Fork worker.", "runnable": fork_runnable, "fork": True},
+            ]
+        )
+
+        task_tool.func(
+            description="do thing",
+            subagent_type="forked",
+            runtime=_make_tool_runtime(
+                state={
+                    "messages": [HumanMessage(content="parent Q")],
+                    "local_context": "cli local context",
+                    "skills_metadata": [{"name": "skill"}],
+                    "memory_contents": "memory",
+                    "custom_state": "should not leak",
+                }
+            ),
+        )
+
+        seeded = fork_runnable.state_inputs[0]
+        assert "local_context" not in seeded
+        assert "skills_metadata" not in seeded
+        assert "memory_contents" not in seeded
+        assert "custom_state" not in seeded
+        assert [m.content for m in seeded["messages"]] == ["parent Q", "do thing"]
+
+    def test_nonfork_subagent_keeps_parent_custom_state(self) -> None:
+        plain_runnable = _RecordingRunnable()
+        task_tool = _build_task_tool(
+            [
+                {"name": "plain", "description": "Plain worker.", "runnable": plain_runnable, "fork": False},
+            ]
+        )
+
+        task_tool.func(
+            description="do thing",
+            subagent_type="plain",
+            runtime=_make_tool_runtime(
+                state={
+                    "messages": [HumanMessage(content="parent Q")],
+                    "local_context": "cli local context",
+                    "custom_state": "kept",
+                }
+            ),
+        )
+
+        seeded = plain_runnable.state_inputs[0]
+        assert seeded["custom_state"] == "kept"
+        assert "local_context" not in seeded
+        assert [m.content for m in seeded["messages"]] == ["do thing"]
 
     def test_fork_drops_current_task_tool_call_from_seeded_state(self) -> None:
         fork_runnable = _RecordingRunnable()
@@ -393,6 +459,21 @@ class TestForkSubagents:
         )
         assert FORKED_SUBAGENT_MARKER not in task_tool.description
         assert FORK_USAGE_GUIDANCE not in task_tool.description
+        assert ALL_FORKED_USAGE_GUIDANCE not in task_tool.description
+
+    def test_all_forked_subagents_use_default_context_guidance(self) -> None:
+        task_tool = _build_task_tool(
+            [
+                {"name": "alpha", "description": "First fork.", "runnable": _RecordingRunnable(), "fork": True},
+                {"name": "beta", "description": "Second fork.", "runnable": _RecordingRunnable(), "fork": True},
+            ]
+        )
+
+        assert "- alpha: First fork." in task_tool.description
+        assert "- beta: Second fork." in task_tool.description
+        assert FORKED_SUBAGENT_MARKER not in task_tool.description
+        assert FORK_USAGE_GUIDANCE not in task_tool.description
+        assert ALL_FORKED_USAGE_GUIDANCE in task_tool.description
 
     def test_fork_composes_parent_prefix_and_inherits_message_history(self) -> None:
         """End-to-end: fork's model call receives parent's composed system prompt and messages.

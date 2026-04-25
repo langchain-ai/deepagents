@@ -289,10 +289,7 @@ def _prepare_pending_fork_spec(
 ) -> _PendingForkSpec:
     """Prepare the fork pieces that do not depend on the final subagent list."""
     if "model" in spec:
-        msg = (
-            f"Forked subagent '{spec['name']}' cannot declare a model. "
-            "Forked subagents always inherit the parent agent's model."
-        )
+        msg = f"Forked subagent '{spec['name']}' cannot declare a model. Forked subagents always inherit the parent agent's model."
         raise ValueError(msg)
 
     processed: SubAgent = {  # ty: ignore[missing-typed-dict-key]

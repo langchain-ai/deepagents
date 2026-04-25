@@ -108,9 +108,9 @@ class SubAgent(TypedDict):
     Isolation semantics are unchanged: only the subagent's final message is
     surfaced back to the parent as a ``ToolMessage``.
 
-    The subagent's ``model`` must resolve to the same provider and model id
-    as the parent. If omitted, it defaults to the parent's model. A mismatch
-    raises ``ValueError`` at build time — cache is per-model on every provider.
+    The subagent cannot declare ``model`` when ``fork`` is true. Forked
+    subagents always inherit the parent's model because cache is per-model on
+    every provider.
 
     Not supported on ``CompiledSubAgent`` (raises at build time): a compiled
     subagent owns its own system prompt and graph, so there is no clean way
@@ -197,12 +197,23 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
-# 3. The skills_metadata and memory_contents keys are automatically excluded from subagent output
-#    via PrivateStateAttr annotations on their respective state schemas. However, they must ALSO
-#    be explicitly filtered from runtime.state when invoking a subagent to prevent parent state
-#    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
-#    SkillsMiddleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+# 3. The skills_metadata, memory_contents, and local_context keys are automatically excluded
+#    from subagent output via PrivateStateAttr annotations on their respective state schemas.
+#    However, they must ALSO be explicitly filtered from runtime.state when invoking a subagent
+#    to prevent parent state from leaking to child agents (e.g., the general-purpose subagent
+#    loads its own skills via SkillsMiddleware).
+_EXCLUDED_STATE_KEYS = {
+    "messages",
+    "todos",
+    "structured_response",
+    "skills_metadata",
+    "memory_contents",
+    "local_context",
+}
+
+# Forks intentionally inherit only state keys listed here; `messages` are
+# handled explicitly below to preserve the cache-aligned conversation prefix.
+_FORK_INHERITED_STATE_KEYS: frozenset[str] = frozenset()
 
 
 class TaskToolSchema(BaseModel):
@@ -537,6 +548,14 @@ forked subagent is registered. Teaches the main agent to pass only the task
 delta instead of re-stating context the fork already has."""
 
 
+ALL_FORKED_USAGE_GUIDANCE = (
+    "\n\n### Subagent context\n"
+    "Subagents inherit the full conversation context, so only a minimal "
+    "task-specific instruction is needed in `description`."
+)
+"""Guidance block appended when every subagent is forked."""
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
@@ -555,9 +574,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
     subagent_fork_flags: dict[str, bool] = {spec["name"]: bool(spec.get("fork", False)) for spec in subagents}
     subagent_system_prompts: dict[str, str] = {spec["name"]: spec.get("subagent_system_prompt", "") or "" for spec in subagents}
+    all_forked = bool(subagents) and all(subagent_fork_flags.values())
 
     def _format_agent_line(s: _SubagentSpec) -> str:
-        if s.get("fork"):
+        if s.get("fork") and not all_forked:
             return f"- {s['name']} {FORKED_SUBAGENT_MARKER}: {s['description']}"
         return f"- {s['name']}: {s['description']}"
 
@@ -572,7 +592,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
     else:
         description = task_description
 
-    if any_forked:
+    if all_forked:
+        description = description + ALL_FORKED_USAGE_GUIDANCE
+    elif any_forked:
         description = description + FORK_USAGE_GUIDANCE
 
     def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
@@ -615,8 +637,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent = subagent_graphs[subagent_type]
         is_fork = subagent_fork_flags.get(subagent_type, False)
         # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         if is_fork:
+            subagent_state = {k: runtime.state[k] for k in _FORK_INHERITED_STATE_KEYS if k in runtime.state}
             parent_messages = _messages_before_current_task_call(
                 runtime.state.get("messages", []),
                 runtime.tool_call_id,
@@ -627,6 +649,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             final_content = f"{preamble}\n\n{description}" if preamble else description
             subagent_state["messages"] = [*parent_messages, HumanMessage(content=final_content)]
         else:
+            subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state, is_fork
 

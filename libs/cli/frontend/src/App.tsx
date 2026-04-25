@@ -1,18 +1,15 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Client } from "@langchain/langgraph-sdk";
 
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
 import { ASSISTANT_ID } from "./constants";
-import RuntimeProvider from "./RuntimeProvider";
-import Thread from "./components/Thread";
 import AppHeader from "./components/AppHeader";
 import ThreadPicker from "./components/ThreadPicker";
 import MessageList from "./components/MessageList";
 import FilesPanel from "./components/FilePanels";
 import TodosPanel from "./components/TodosPanel";
 import { useAgentStream } from "./lib/stream";
-
-const USE_NEW_CHAT = import.meta.env.VITE_NEW_CHAT === "1";
 
 export default function App() {
   return (
@@ -60,23 +57,12 @@ function AuthenticatedApp({
   userEmail: string | null;
   onSignOut: () => Promise<void>;
 }) {
-  if (USE_NEW_CHAT) {
-    return (
-      <NewChatApp
-        accessToken={accessToken}
-        userEmail={userEmail}
-        onSignOut={onSignOut}
-      />
-    );
-  }
-
   return (
-    <RuntimeProvider accessToken={accessToken} assistantId={ASSISTANT_ID}>
-      <div className="flex h-dvh flex-col bg-[var(--background)]">
-        <AppHeader userEmail={userEmail} onSignOut={onSignOut} threadPicker={null} />
-        <Thread />
-      </div>
-    </RuntimeProvider>
+    <NewChatApp
+      accessToken={accessToken}
+      userEmail={userEmail}
+      onSignOut={onSignOut}
+    />
   );
 }
 
@@ -97,10 +83,38 @@ function NewChatApp({
   const mainRef = useRef<HTMLDivElement | null>(null);
   const isNearBottom = useRef(true);
   const rafId = useRef(0);
+  // When the user submits to a not-yet-created thread, stash the first
+  // message's text here. The SDK assigns a thread_id asynchronously via
+  // onThreadId — once we have it, we write the title as thread metadata so
+  // the picker shows "What can you help..." instead of "b6cde91f...".
+  const pendingTitleRef = useRef<string | null>(null);
 
   const defaultHeaders = useMemo(
     () => ({ Authorization: `Bearer ${accessToken}` }),
     [accessToken],
+  );
+
+  const client = useMemo(
+    () =>
+      new Client({
+        apiUrl: window.location.origin,
+        defaultHeaders,
+      }),
+    [defaultHeaders],
+  );
+
+  const handleThreadId = useCallback(
+    (id: string | null) => {
+      setThreadId(id);
+      if (id != null && pendingTitleRef.current) {
+        const title = pendingTitleRef.current;
+        pendingTitleRef.current = null;
+        client.threads.update(id, { metadata: { title } }).catch((err) => {
+          console.warn("Failed to write thread title", err);
+        });
+      }
+    },
+    [client],
   );
 
   const stream = useAgentStream({
@@ -108,8 +122,12 @@ function NewChatApp({
     assistantId: ASSISTANT_ID,
     messagesKey: "messages",
     threadId,
-    onThreadId: setThreadId,
+    onThreadId: handleThreadId,
     filterSubagentMessages: true,
+    // Coalesce token deltas so Streamdown's word-level fade animation has
+    // time to play between updates. Dropping this to 0/false re-renders
+    // per token (jumpy); pushing above ~150 makes the stream feel laggy.
+    throttle: 100,
     defaultHeaders,
   });
 
@@ -142,12 +160,19 @@ function NewChatApp({
     const text = input.trim();
     if (!text || isLoading) return;
 
+    // Capture the first-message text before we submit. If the thread is
+    // brand new (threadId is null), handleThreadId will write this as the
+    // title once the SDK assigns the id.
+    if (threadId == null) {
+      pendingTitleRef.current = text.slice(0, 60);
+    }
+
     setInput("");
     await stream.submit(
       { messages: [{ type: "human", content: text }] },
       { streamSubgraphs: true },
     );
-  }, [input, isLoading, stream]);
+  }, [input, isLoading, stream, threadId]);
 
   const threadPicker = (
     <ThreadPicker

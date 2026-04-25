@@ -9,7 +9,7 @@ export default function AppHeader({
 }: {
   userEmail: string | null;
   onSignOut: () => Promise<void>;
-  threadPicker?: ReactNode;
+  threadPicker: ReactNode;
 }) {
   const { theme, toggleTheme } = useTheme();
   const logoSrc = theme === "dark" ? "/app/logo-dark.svg" : "/app/logo-light.svg";

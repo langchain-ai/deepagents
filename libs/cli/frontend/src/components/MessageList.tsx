@@ -7,7 +7,7 @@ import {
 } from "../lib/stream";
 import type { AgentStream } from "../types";
 import type { AIMessage } from "@langchain/langgraph-sdk";
-import { AgentSubagentPipeline, AgentSynthesisIndicator } from "./SubagentActivity";
+import { SubagentPipeline, SynthesisIndicator } from "./SubagentActivity";
 import ToolCallCard from "./ToolCallCard";
 
 type MessageListProps = {
@@ -142,7 +142,7 @@ const MessageList: FC<MessageListProps> = ({
                   </div>
                 ))}
 
-                <AgentSubagentPipeline subagents={messageSubagents} />
+                <SubagentPipeline subagents={messageSubagents} />
 
                 {nonSubagentToolCalls.map((toolCall) => (
                   <ToolCallCard key={toolCall.id} toolCall={toolCall} />
@@ -163,7 +163,7 @@ const MessageList: FC<MessageListProps> = ({
           );
         })}
 
-        <AgentSynthesisIndicator subagents={allSubagents} isLoading={isLoading} />
+        <SynthesisIndicator subagents={allSubagents} isLoading={isLoading} />
 
         {error != null && (
           <div className="anim-fade-in rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">

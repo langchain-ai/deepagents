@@ -131,8 +131,14 @@ const ThreadPicker: FC<ThreadPickerProps> = ({
                         : ""
                     }`}
                   >
-                    <span className="truncate font-mono">
-                      {thread.thread_id.slice(0, 12)}...
+                    <span className="truncate">
+                      {(typeof thread.metadata?.title === "string"
+                        ? thread.metadata.title
+                        : "") || (
+                        <span className="font-mono">
+                          {thread.thread_id.slice(0, 12)}...
+                        </span>
+                      )}
                     </span>
                     <span className="ml-auto shrink-0 text-[var(--muted-foreground)]">
                       {new Date(thread.created_at).toLocaleDateString()}

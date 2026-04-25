@@ -9,9 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.12.25",
-    "@assistant-ui/react-langgraph": "^0.13.10",
-    "@assistant-ui/react-streamdown": "^0.1.10",
     "@clerk/clerk-react": "^5.0.0",
     "@clerk/themes": "^2.4.57",
     "@langchain/langgraph-sdk": "^1.7.2",

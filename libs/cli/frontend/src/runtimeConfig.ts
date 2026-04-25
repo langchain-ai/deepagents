@@ -13,7 +13,16 @@ export interface RuntimeConfigClerk {
   assistantId: string;
 }
 
-export type RuntimeConfig = RuntimeConfigSupabase | RuntimeConfigClerk;
+export interface RuntimeConfigNone {
+  auth: "none";
+  appName: string;
+  assistantId: string;
+}
+
+export type RuntimeConfig =
+  | RuntimeConfigSupabase
+  | RuntimeConfigClerk
+  | RuntimeConfigNone;
 
 declare global {
   interface Window {
@@ -47,6 +56,13 @@ export function getRuntimeConfig(): RuntimeConfig {
     return {
       auth: "clerk",
       clerkPublishableKey: cfg.clerkPublishableKey,
+      appName: cfg.appName ?? "Deep Agent",
+      assistantId: cfg.assistantId ?? "agent",
+    };
+  }
+  if (cfg.auth === "none") {
+    return {
+      auth: "none",
       appName: cfg.appName ?? "Deep Agent",
       assistantId: cfg.assistantId ?? "agent",
     };

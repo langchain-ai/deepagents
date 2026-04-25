@@ -65,7 +65,11 @@ const SubagentCard: FC<{
   const [expanded, setExpanded] = useState(
     !autoCollapse || subagent.status === "running",
   );
+  const [taskExpanded, setTaskExpanded] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Only pin the stream to the bottom when the user is already there; lets
+  // them scroll up and read earlier content mid-stream without being yanked.
+  const isNearBottomRef = useRef(true);
   const typeName =
     typeof subagent.toolCall.args.subagent_type === "string"
       ? subagent.toolCall.args.subagent_type
@@ -93,8 +97,16 @@ const SubagentCard: FC<{
   const displayContent =
     subagent.status === "complete" ? subagent.result ?? "" : lastAIText;
 
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  };
+
   useEffect(() => {
     if (!isStreaming || !scrollRef.current) return;
+    if (!isNearBottomRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [displayContent, isStreaming]);
 
@@ -135,15 +147,53 @@ const SubagentCard: FC<{
           </svg>
         </div>
       </button>
-      {expanded && displayContent && (
-        <div className="border-t border-[var(--border)] px-3 py-2.5">
-          <div ref={scrollRef} className="max-h-64 overflow-y-auto">
-            <div className="markdown-body prose prose-sm max-w-none text-xs leading-relaxed">
-              <Streamdown animated isAnimating={isStreaming} parseIncompleteMarkdown>
-                {displayContent}
-              </Streamdown>
+      {expanded && (description || displayContent) && (
+        <div className="space-y-3 border-t border-[var(--border)] px-3 py-2.5">
+          {description && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setTaskExpanded((v) => !v)}
+                className="flex w-full items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              >
+                <span>Task</span>
+                <svg
+                  className={`h-2.5 w-2.5 transition-transform ${taskExpanded ? "rotate-180" : ""}`}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
+              {taskExpanded && (
+                <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-[var(--foreground)]">
+                  {description}
+                </p>
+              )}
             </div>
-          </div>
+          )}
+          {displayContent && (
+            <div>
+              {description && (
+                <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+                  {subagent.status === "complete" ? "Result" : "Output"}
+                </p>
+              )}
+              <div
+                ref={scrollRef}
+                onScroll={handleScroll}
+                className="h-64 min-h-32 max-h-[80vh] resize-y overflow-y-auto"
+              >
+                <div className="markdown-body prose prose-sm max-w-none text-xs leading-relaxed">
+                  <Streamdown animated isAnimating={isStreaming} parseIncompleteMarkdown>
+                    {displayContent}
+                  </Streamdown>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

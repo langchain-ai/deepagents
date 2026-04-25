@@ -123,8 +123,16 @@ class LoadingWidget(Static):
             yield self._hint_widget
 
     def on_mount(self) -> None:
-        """Start animation on mount."""
-        self._start_time = time()
+        """Start animation on mount.
+
+        Preserves `_start_time` when the widget is remounted (e.g., after
+        being removed and re-added for repositioning) so the elapsed-time
+        counter doesn't reset. Repositioning via `move_child` avoids the
+        remount path entirely, but this guard keeps the behavior correct
+        if any caller ever falls back to remove + mount.
+        """
+        if self._start_time is None:
+            self._start_time = time()
         self._animation_timer = self.set_interval(0.1, self._update_animation)
 
     def on_unmount(self) -> None:

@@ -129,6 +129,10 @@ REGISTRY: tuple[Model, ...] = (
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
     Model(
+        "baseten:moonshotai/Kimi-K2.6",
+        frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
+    ),
+    Model(
         "baseten:nvidia/Nemotron-120B-A12B",
         frozenset(
             {
@@ -394,6 +398,19 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "openai:gpt-5.3-codex",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
         "openai:gpt-5.4",
         frozenset(
             {
@@ -405,6 +422,30 @@ REGISTRY: tuple[Model, ...] = (
                 "harbor:set1",
                 "harbor:frontier",
                 "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5-pro",
+        frozenset(
+            {
+                "eval:mega",
+                "harbor:mega",
             }
         ),
     ),
@@ -424,6 +465,24 @@ REGISTRY: tuple[Model, ...] = (
     # -- OpenRouter --
     Model(
         "openrouter:minimax/minimax-m2.7",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.5",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.6",
         frozenset(
             {
                 "eval:openrouter",
@@ -480,6 +539,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("set1", "set1"),
             ("set2", "set2"),
             ("frontier", "frontier"),
+            ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
         ],

@@ -83,7 +83,10 @@ def _format_markdown(results: list[dict[str, str]]) -> str:
         Markdown-formatted string.
     """
     lines = [
-        f"## Failure analysis ({len(results)} failure{'s' if len(results) != 1 else ''})\n"
+        f"## Failure analysis ({len(results)} failure{'s' if len(results) != 1 else ''})\n",
+        "<details>",
+        "<summary>(click to expand)</summary>",
+        "",
     ]
     for result in results:
         lines.append(f"### `{result.get('test_name', 'unknown')}`")
@@ -92,6 +95,7 @@ def _format_markdown(results: list[dict[str, str]]) -> str:
             lines.append(f"**Category:** {category}\n")
         lines.append(result.get("analysis", ""))
         lines.append("\n---\n")
+    lines.append("</details>")
     return "\n".join(lines)
 
 

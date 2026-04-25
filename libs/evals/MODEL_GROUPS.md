@@ -7,7 +7,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (32 models)
+### `set0` (35 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -18,6 +18,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:moonshotai/Kimi-K2.5`
+- `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 - `fireworks:fireworks/deepseek-v3p2`
@@ -39,10 +40,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
-### `set1` (12 models)
+### `set1` (14 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-6`
@@ -55,7 +58,9 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:qwen3.5:397b-cloud`
 - `openai:gpt-4.1`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 
 ### `set2` (17 models)
 
@@ -77,11 +82,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-### `frontier` (3 models)
+### `frontier` (4 models)
 
 - `anthropic:claude-opus-4-6`
 - `google_genai:gemini-3.1-pro-preview`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
+
+### `mega` (1 model)
+
+- `openai:gpt-5.5-pro`
 
 ### `fast` (3 models)
 
@@ -107,11 +117,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-5-20251101`
 - `anthropic:claude-opus-4-6`
 
-### `baseten` (5 models)
+### `baseten` (6 models)
 
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:moonshotai/Kimi-K2.5`
+- `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 
@@ -158,7 +169,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:qwen3-coder:480b-cloud`
 - `ollama:deepseek-v3.2:cloud`
 
-### `openai` (9 models)
+### `openai` (11 models)
 
 - `openai:gpt-4o`
 - `openai:gpt-4o-mini`
@@ -167,12 +178,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
-### `openrouter` (3 models)
+### `openrouter` (5 models)
 
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:moonshotai/kimi-k2.5`
+- `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 
@@ -181,7 +196,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (53 models)
+## `all` (59 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -192,6 +207,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:moonshotai/Kimi-K2.5`
+- `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 - `fireworks:fireworks/deepseek-v3p2`
@@ -229,9 +245,14 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:o4-mini`
 - `openai:gpt-5.1-codex`
 - `openai:gpt-5.2-codex`
+- `openai:gpt-5.3-codex`
 - `openai:gpt-5.4`
+- `openai:gpt-5.5`
+- `openai:gpt-5.5-pro`
 - `openai:gpt-5.4-mini`
 - `openrouter:minimax/minimax-m2.7`
+- `openrouter:moonshotai/kimi-k2.5`
+- `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 - `xai:grok-4`

@@ -404,7 +404,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.2"
+version = "0.5.3"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -421,7 +421,7 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
-    { name = "langsmith", specifier = ">=0.3.0" },
+    { name = "langsmith", specifier = ">=0.7.35" },
     { name = "wcmatch" },
 ]
 
@@ -851,6 +851,7 @@ test = [
     { name = "build" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-benchmark" },
     { name = "pytest-cov" },
     { name = "pytest-socket" },
     { name = "pytest-timeout" },
@@ -867,8 +868,9 @@ requires-dist = [{ name = "deepagents", editable = "../deepagents" }]
 [package.metadata.requires-dev]
 test = [
     { name = "build" },
-    { name = "pytest", specifier = ">=7.3.0,<9.0.0" },
+    { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-benchmark" },
     { name = "pytest-cov" },
     { name = "pytest-socket" },
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
@@ -937,7 +939,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.7.26"
+version = "0.7.35"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -950,9 +952,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/76/86/6de4f6f0451a9658f26f633e0bb090552a4dafd7df3f1ae7f0d40558e67e/langsmith-0.7.26.tar.gz", hash = "sha256:a3e06f3d689ce7195717aa6b8f91082319819ec7ea9b9a62cdcd3d9dc25bfc7b", size = 1146118, upload-time = "2026-04-06T15:01:03.336Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/c2/94611791544b9a74f4d322ac9727343b93aa3f4167e6f5addf80e64a5b67/langsmith-0.7.35.tar.gz", hash = "sha256:78ce99a79e7ec4d3b6e3b324fe4378158b5980a64a819aea96a5b11a9af1468e", size = 4400038, upload-time = "2026-04-24T01:25:43.965Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/8e/7eb7d65ce62e98e74b9f18f193ea7ac3996d4fbd71fffcc67d0f7ba3103e/langsmith-0.7.26-py3-none-any.whl", hash = "sha256:fe5c877972cea450c1c48251c8fae0f18543c8d19dfdb9ff9a9c4263763dde4e", size = 360160, upload-time = "2026-04-06T15:01:01.516Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/f5/2741f443fd0400a2383df6a0b5c129442b7864c3504f8641bff109ffefd3/langsmith-0.7.35-py3-none-any.whl", hash = "sha256:335738789f324a1854a38c88432696ca97cae6f2f07dadd8db1383b3a6141c19", size = 380830, upload-time = "2026-04-24T01:25:42.243Z" },
 ]
 
 [[package]]
@@ -1154,6 +1156,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py-cpuinfo"
+version = "9.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/a8/d832f7293ebb21690860d2e01d8115e5ff6f2ae8bbdc953f0eb0fa4bd2c7/py-cpuinfo-9.0.0.tar.gz", hash = "sha256:3cdbbf3fac90dc6f118bfd64384f309edeadd902d7c8fb17f02ffa1fc3f49690", size = 104716, upload-time = "2022-10-25T20:38:06.303Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/a9/023730ba63db1e494a271cb018dcd361bd2c917ba7004c3e49d5daf795a2/py_cpuinfo-9.0.0-py3-none-any.whl", hash = "sha256:859625bc251f64e21f077d099d4162689c762b5d6a4c3c97553d56241c9674d5", size = 22335, upload-time = "2022-10-25T20:38:27.636Z" },
+]
+
+[[package]]
 name = "pyasn1"
 version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1315,7 +1326,7 @@ wheels = [
 
 [[package]]
 name = "pytest"
-version = "8.4.2"
+version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
@@ -1324,9 +1335,9 @@ dependencies = [
     { name = "pluggy" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a3/5c/00a0e072241553e1a7496d638deababa67c5058571567b92a7eaa258397c/pytest-8.4.2.tar.gz", hash = "sha256:86c0d0b93306b961d58d62a4db4879f27fe25513d4b969df351abdddb3c30e01", size = 1519618, upload-time = "2025-09-04T14:34:22.711Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a8/a4/20da314d277121d6534b3a980b29035dcd51e6744bd79075a6ce8fa4eb8d/pytest-8.4.2-py3-none-any.whl", hash = "sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79", size = 365750, upload-time = "2025-09-04T14:34:20.226Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/24/a372aaf5c9b7208e7112038812994107bc65a84cd00e0354a88c2c77a617/pytest-9.0.3-py3-none-any.whl", hash = "sha256:2c5efc453d45394fdd706ade797c0a81091eccd1d6e4bccfcd476e2b8e0ab5d9", size = 375249, upload-time = "2026-04-07T17:16:16.13Z" },
 ]
 
 [[package]]
@@ -1340,6 +1351,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/35/f8b19922b6a25bc0880171a2f1a003eaeb93657475193ab516fd87cac9da/pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5", size = 15075, upload-time = "2025-11-10T16:07:45.537Z" },
+]
+
+[[package]]
+name = "pytest-benchmark"
+version = "5.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "py-cpuinfo" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/24/34/9f732b76456d64faffbef6232f1f9dbec7a7c4999ff46282fa418bd1af66/pytest_benchmark-5.2.3.tar.gz", hash = "sha256:deb7317998a23c650fd4ff76e1230066a76cb45dcece0aca5607143c619e7779", size = 341340, upload-time = "2025-11-09T18:48:43.215Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/29/e756e715a48959f1c0045342088d7ca9762a2f509b945f362a316e9412b7/pytest_benchmark-5.2.3-py3-none-any.whl", hash = "sha256:bc839726ad20e99aaa0d11a127445457b4219bdb9e80a1afc4b51da7f96b0803", size = 45255, upload-time = "2025-11-09T18:48:39.765Z" },
 ]
 
 [[package]]

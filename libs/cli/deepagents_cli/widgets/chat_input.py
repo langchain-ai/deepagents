@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from rich.cells import cell_len
+from rich.segment import Segment
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -16,10 +18,11 @@ from textual.css.query import NoMatches
 from textual.geometry import Offset
 from textual.message import Message
 from textual.reactive import reactive
+from textual.strip import Strip
 from textual.widgets import Static, TextArea
 
 from deepagents_cli import theme
-from deepagents_cli.command_registry import SLASH_COMMANDS
+from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -323,7 +326,7 @@ class ChatTextArea(TextArea):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding(
-            "shift+enter,alt+enter,ctrl+enter",
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
             "insert_newline",
             "New Line",
             show=False,
@@ -396,6 +399,9 @@ class ChatTextArea(TextArea):
         typing activity.
         """
 
+    argument_hint: reactive[str] = reactive("")
+    """Inline slash-command argument hint rendered at the end of the line."""
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize the chat text area."""
         # Remove placeholder if passed, TextArea doesn't support it the same way
@@ -412,6 +418,124 @@ class ChatTextArea(TextArea):
         self._paste_burst_timer: Timer | None = None
         # See _BACKSLASH_ENTER_GAP_SECONDS for context.
         self._backslash_pending_time: float | None = None
+
+    def render_line(self, y: int) -> Strip:
+        """Render a single line, appending any argument hint at line end.
+
+        The built-in `TextArea.suggestion` renders at the cursor position,
+        but slash-command argument hints should stay attached to the end of the
+        command text regardless of cursor movement.
+
+        Args:
+            y: Y Coordinate of line relative to the widget region.
+
+        Returns:
+            A rendered line.
+        """
+        strip = super().render_line(y)
+        if not self._should_render_argument_hint():
+            return strip
+
+        line_info = self._get_visual_line_info(y)
+        if line_info is None:
+            return strip
+
+        line_index, section_offset = line_info
+        if not self._is_argument_hint_section(line_index, section_offset):
+            return strip
+
+        content_cells = self._get_section_cell_length(line_index, section_offset)
+        if content_cells >= strip.cell_length:
+            return strip
+
+        prefix = strip.crop(0, content_cells)
+        suffix = strip.crop(content_cells, strip.cell_length)
+        suffix_width = suffix.cell_length
+        cursor_on_hint = self._cursor_at_argument_hint_anchor(line_index)
+        if cursor_on_hint and suffix_width > 0:
+            suffix = suffix.crop(1, suffix.cell_length)
+
+        hint_strip = self._build_argument_hint_strip(cursor_on_hint=cursor_on_hint)
+        tail = Strip.join([hint_strip, suffix]).crop(0, suffix_width)
+        return Strip.join([prefix, tail])
+
+    def _should_render_argument_hint(self) -> bool:
+        """Return whether the inline argument hint should be rendered."""
+        return bool(
+            self.argument_hint and (self.has_focus or not self.hide_suggestion_on_blur)
+        )
+
+    def _get_visual_line_info(self, y: int) -> tuple[int, int] | None:
+        """Map a widget-relative y coordinate to wrapped line metadata.
+
+        Returns:
+            Tuple of `(line_index, section_offset)` for the wrapped line at `y`,
+            otherwise `None` when `y` is outside the wrapped document.
+        """
+        _scroll_x, scroll_y = self.scroll_offset
+        absolute_y = scroll_y + y
+        # Private Textual API (verified against textual 3.x); revisit on
+        # major Textual upgrades.
+        try:
+            offset_map = self.wrapped_document._offset_to_line_info
+        except AttributeError:
+            logger.warning(
+                "WrappedDocument._offset_to_line_info not found; "
+                "argument hint rendering disabled (Textual API change?)"
+            )
+            return None
+        if absolute_y < 0 or absolute_y >= len(offset_map):
+            return None
+        entry = offset_map[absolute_y]
+        expected_length = 2  # (line_index, section_offset)
+        if not isinstance(entry, tuple) or len(entry) != expected_length:
+            logger.warning("Unexpected offset_map entry: %r", entry)
+            return None
+        return entry
+
+    def _is_argument_hint_section(self, line_index: int, section_offset: int) -> bool:
+        """Return whether a wrapped section owns the end-of-line hint."""
+        if line_index != self.document.line_count - 1:
+            return False
+        return section_offset == len(self.wrapped_document.get_offsets(line_index))
+
+    def _get_section_cell_length(self, line_index: int, section_offset: int) -> int:
+        """Return the rendered cell width of a wrapped text section."""
+        wrapped_sections = self.wrapped_document.get_sections(line_index)
+        if section_offset < 0 or section_offset >= len(wrapped_sections):
+            return 0
+        section_text = wrapped_sections[section_offset].expandtabs(self.indent_width)
+        return cell_len(section_text)
+
+    def _cursor_at_argument_hint_anchor(self, line_index: int) -> bool:
+        """Return whether the cursor currently sits on the hint anchor."""
+        if not self._draw_cursor or not self.show_cursor or not self.has_focus:
+            return False
+        cursor_row, cursor_column = self.selection.end
+        if cursor_row != line_index:
+            return False
+        return cursor_column == len(self.document.get_line(line_index))
+
+    def _build_argument_hint_strip(self, *, cursor_on_hint: bool) -> Strip:
+        """Build a strip for the current argument hint text.
+
+        Returns:
+            A `Strip` containing the current argument hint, with cursor styling
+            applied to the first hint character when the cursor sits on the
+            hint anchor.
+        """
+        hint = self.argument_hint
+        hint_style = self.get_component_rich_style("text-area--suggestion")
+        if not cursor_on_hint or not hint:
+            return Strip([Segment(hint, hint_style)], cell_length=cell_len(hint))
+
+        ta_theme = self._theme
+        cursor_style = ta_theme.cursor_style if ta_theme else None
+        first_style = hint_style if cursor_style is None else hint_style + cursor_style
+        segments = [Segment(hint[0], first_style)]
+        if len(hint) > 1:
+            segments.append(Segment(hint[1:], hint_style))
+        return Strip(segments, cell_length=cell_len(hint))
 
     def scroll_cursor_visible(
         self, center: bool = False, animate: bool = False
@@ -649,8 +773,19 @@ class ChatTextArea(TextArea):
             event.stop()
             return
 
-        # If completion is active, let parent handle navigation keys
-        if self._completion_active and event.key in {"up", "down", "tab", "enter"}:
+        # If completion is active, let parent handle navigation keys.
+        # Space is included so that slash-command completion can accept the
+        # selected suggestion via the same code path as Tab (avoiding a
+        # frame-lag between the popup hiding and the argument hint appearing).
+        # When the active controller ignores the space (e.g. file completion),
+        # ChatInput.on_key inserts it manually.
+        if self._completion_active and event.key in {
+            "up",
+            "down",
+            "tab",
+            "enter",
+            "space",
+        }:
             # Prevent TextArea's default behavior (e.g., Enter inserting newline)
             # but let event bubble to ChatInput for completion handling
             event.prevent_default()
@@ -818,6 +953,13 @@ class _CompletionViewAdapter:
 
     def replace_completion_range(self, start: int, end: int, replacement: str) -> None:
         """Map completion indices to text-area indices before replacing text."""
+        # The completion controller returns the full command name (e.g.
+        # "/remember") in completion space, but the TextArea only contains
+        # text after the virtual mode prefix (e.g. "/" in command mode).
+        # Strip the prefix to avoid double-insertion.
+        prefix = MODE_PREFIXES.get(self._chat_input.mode, "")
+        if prefix and replacement.startswith(prefix):
+            replacement = replacement[len(prefix) :]
         self._chat_input.replace_completion_range(
             self._chat_input._completion_index_to_text_index(start),
             self._chat_input._completion_index_to_text_index(end),
@@ -967,6 +1109,9 @@ class ChatInput(Vertical):
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
 
+        # Command name (without /) → argument hint for inline ghost text
+        self._argument_hints: dict[str, str] = {}
+
         # Set up history manager
         if history_file is None:
             history_file = _default_history_path()
@@ -1009,6 +1154,8 @@ class ChatInput(Vertical):
             ]  # type: ignore[list-item]  # Controller types are compatible at runtime
         )
 
+        self._rebuild_argument_hints(SLASH_COMMANDS)
+
         self.run_worker(
             self._file_controller.warm_cache(),
             exclusive=False,
@@ -1016,22 +1163,56 @@ class ChatInput(Vertical):
         )
         self._text_area.focus()
 
-    def update_slash_commands(self, commands: list[tuple[str, str, str]]) -> None:
+    def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.
 
         Called by the app after discovering skills to merge static
         commands with dynamic `/skill:` entries.
 
         Args:
-            commands: Full list of `(command, description, hidden_keywords)` tuples.
+            commands: Full list of `CommandEntry` instances.
         """
         if self._slash_controller:
             self._slash_controller.update_commands(commands)
+            self._rebuild_argument_hints(commands)
         else:
             logger.warning(
                 "Cannot update slash commands: controller not initialized "
                 "(widget not yet mounted)"
             )
+
+    def _rebuild_argument_hints(self, commands: list[CommandEntry]) -> None:
+        """Rebuild the command-name -> argument-hint lookup.
+
+        Args:
+            commands: Current list of `CommandEntry` instances.
+        """
+        self._argument_hints = {
+            entry.name.removeprefix("/"): entry.argument_hint
+            for entry in commands
+            if entry.argument_hint
+        }
+
+    def _update_argument_hint(self) -> None:
+        """Show or clear inline ghost text for slash-command argument hints.
+
+        Sets `ChatTextArea.argument_hint` when the input is a known slash
+        command followed by a trailing space with no args typed yet. Both
+        spacebar and Tab completion produce this state (Tab goes through
+        `replace_completion_range` which appends a trailing space).
+        """
+        if not self._text_area:
+            return
+
+        if self.mode == "command":
+            text = self._text_area.text
+            if text.endswith(" ") and text.count(" ") == 1:
+                hint = self._argument_hints.get(text[:-1], "")
+                if hint:
+                    self._text_area.argument_hint = hint
+                    return
+
+        self._text_area.argument_hint = ""
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
@@ -1089,6 +1270,10 @@ class ChatInput(Vertical):
                 # Note: the strip's text-change event will also call
                 # on_text_changed (idempotently) since _stripping_prefix only
                 # skips mode detection, not the completion block below.
+        # Set inline argument hint before the completion manager runs so
+        # the suggestion is ready in the same render pass that hides the popup.
+        self._update_argument_hint()
+
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
             if is_path_payload:
@@ -1255,6 +1440,9 @@ class ChatInput(Vertical):
             Clamped index in text-area space.
         """
         if not self._text_area:
+            return 0
+
+        if 0 <= index <= self._completion_prefix_len:
             return 0
 
         mapped = index - self._completion_prefix_len
@@ -1629,6 +1817,12 @@ class ChatInput(Vertical):
                 event.prevent_default()
                 event.stop()
                 self._submit_value(self._text_area.text.strip())
+            case CompletionResult.IGNORED if event.key == "space":
+                # Space was intercepted (prevent_default) so the active
+                # controller could attempt completion. The controller
+                # declined (e.g. file completion), so insert the space that
+                # TextArea would have inserted normally.
+                self._text_area.insert(" ")
             case CompletionResult.IGNORED if event.key == "enter":
                 # Handle Enter when completion is not active (shell/normal modes)
                 value = self._text_area.text.strip()
@@ -1666,6 +1860,10 @@ class ChatInput(Vertical):
         callers which also schedule deferred work (e.g. the completion popup)
         can coalesce both visual changes into a single refresh.
         """
+        # Keep inline argument hints in sync for mode-only transitions
+        # (for example, exiting command mode via Escape or backspace).
+        self._update_argument_hint()
+
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
         if not glyph and mode != "normal":
             logger.warning(
@@ -1870,3 +2068,7 @@ class ChatInput(Vertical):
                 self._text_area.move_cursor((row, remaining))
                 break
             remaining -= len(line) + 1
+
+        # Completion selections should render their final inline hint
+        # immediately, without waiting for the subsequent Changed event.
+        self._update_argument_hint()

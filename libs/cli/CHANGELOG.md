@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.0.41](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.40...deepagents-cli==0.0.41) (2026-04-21)
+
+### Features
+
+* `--startup-cmd` flag ([#2841](https://github.com/langchain-ai/deepagents/issues/2841)) ([8adcc2c](https://github.com/langchain-ai/deepagents/commit/8adcc2c2e612346c263d02d1ec5c33e0d63da5a3))
+* Actionable notifications, update modal ([#2855](https://github.com/langchain-ai/deepagents/issues/2855)) ([5fcd368](https://github.com/langchain-ai/deepagents/commit/5fcd368088079a84f151e0a3f5e4b9ac29c360c1))
+* Custom auth via `[auth]` in `deepagents deploy` ([#2734](https://github.com/langchain-ai/deepagents/issues/2734)) ([417ddaa](https://github.com/langchain-ai/deepagents/commit/417ddaab4804a54a8f83721bb8577d65cfa3659f))
+* Refresh footer git branch after shell commands ([#2851](https://github.com/langchain-ai/deepagents/issues/2851)) ([ee4fddd](https://github.com/langchain-ai/deepagents/commit/ee4fddde9454ee8f7ede98ee9a346da6c5ccd3d9))
+* Rework `/version`, add release-age and editable-install guard ([#2854](https://github.com/langchain-ai/deepagents/issues/2854)) ([1ae053f](https://github.com/langchain-ai/deepagents/commit/1ae053f347679e58562d2b81eb6d6e6e9bbf0b07))
+
+### Bug Fixes
+
+* Gate agent-swap resume hint on server checkpoint ([#2862](https://github.com/langchain-ai/deepagents/issues/2862)) ([f14b9cd](https://github.com/langchain-ai/deepagents/commit/f14b9cd3cc41f92ddb089d4294cba8496d517807))
+* Keep thinking spinner visible during text streaming ([#2849](https://github.com/langchain-ai/deepagents/issues/2849)) ([2cb2244](https://github.com/langchain-ai/deepagents/commit/2cb22446bc1351d20e8bbfa9f23b5d668947351f))
+* Re-show thinking spinner on hitl/`ask_user` resume ([#2847](https://github.com/langchain-ai/deepagents/issues/2847)) ([34a6167](https://github.com/langchain-ai/deepagents/commit/34a6167b0c275c7e4da067ef276a837f60da2f8a))
+* Restore `ctrl+j` newline keybinding ([#2827](https://github.com/langchain-ai/deepagents/issues/2827)) ([2e1a3f4](https://github.com/langchain-ai/deepagents/commit/2e1a3f45a9ff56390e294ea5b0f6a837200874ec))
+
+## [0.0.40](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.39...deepagents-cli==0.0.40) (2026-04-20)
+
+### Features
+
+* `--max-turns` flag on non-interactive mode ([#2832](https://github.com/langchain-ai/deepagents/issues/2832)) ([567bcd8](https://github.com/langchain-ai/deepagents/commit/567bcd8f2065e089f4905a901efe7154add23121))
+* `/agents` switcher ([#2558](https://github.com/langchain-ai/deepagents/issues/2558)) ([3a2b777](https://github.com/langchain-ai/deepagents/commit/3a2b77773a19dd48f9c51dfb35cdfc5c33126d77))
+
+### Bug Fixes
+
+* Normalize serialized message dicts in `/offload` ([#2808](https://github.com/langchain-ai/deepagents/issues/2808)) ([0d11bd4](https://github.com/langchain-ai/deepagents/commit/0d11bd46fd682c7aa3f008918771e9759dca7352))
+
+## [0.0.39](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.38...deepagents-cli==0.0.39) (2026-04-17)
+
+### Features
+
+* Inline argument hints for slash commands ([#2181](https://github.com/langchain-ai/deepagents/issues/2181)) ([6b58e06](https://github.com/langchain-ai/deepagents/commit/6b58e06b06f6fb360d85c54eac31953d1e47dd7a))
+* Subagents for `deepagents deploy` ([#2786](https://github.com/langchain-ai/deepagents/issues/2786)) ([7dd5565](https://github.com/langchain-ai/deepagents/commit/7dd5565e30ab91a2cd2ca10fcd227e590451f13c))
+
+### Bug Fixes
+
+* Throttle update notification to once per day and fix teardown banner ([#2764](https://github.com/langchain-ai/deepagents/issues/2764)) ([ba31294](https://github.com/langchain-ai/deepagents/commit/ba31294b733d4ef542d18830eec6df30cfa0d23f))
+
+## [0.0.38](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.37...deepagents-cli==0.0.38) (2026-04-15)
+
+### Features
+
+* User scoped memory for `deepagents deploy` ([#2708](https://github.com/langchain-ai/deepagents/issues/2708)) ([23bfca6](https://github.com/langchain-ai/deepagents/commit/23bfca6e46e6f3e4fba6657d858ddd5a0b06626f))
+
+### Performance Improvements
+
+* `O(1)` message lookups in `MessageStore` ([#2350](https://github.com/langchain-ai/deepagents/issues/2350)) ([d39fd5d](https://github.com/langchain-ai/deepagents/commit/d39fd5d3651fd87d1eea8c02cbef2c2f62449e67))
+
 ## [0.0.37](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.36...deepagents-cli==0.0.37) (2026-04-10)
 
 ### Features

@@ -235,3 +235,21 @@ app_name = "My App"
     html = (build_path / "frontend_dist" / "index.html").read_text(encoding="utf-8")
     assert "__PLACEHOLDER__" not in html
     assert '"auth":"supabase"' in html
+
+
+def test_build_runtime_config_json_anonymous_mode():
+    """When config.auth is None, the runtime config has auth:'none'."""
+    import json
+    from deepagents_cli.deploy.bundler import _build_runtime_config_json
+
+    cfg = DeployConfig(
+        agent=AgentConfig(name="my-agent"),
+        frontend=FrontendConfig(enabled=True, app_name="My App"),
+    )
+    payload_str = _build_runtime_config_json(cfg)
+    payload = json.loads(payload_str)
+    assert payload == {
+        "auth": "none",
+        "appName": "My App",
+        "assistantId": "agent",
+    }

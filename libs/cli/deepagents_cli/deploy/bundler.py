@@ -84,25 +84,29 @@ _FRONTEND_PLACEHOLDER_RE = re.compile(
 
 def _build_runtime_config_json(config: DeployConfig) -> str:
     """Build the JSON value injected into `window.__DEEPAGENTS_CONFIG__`."""
-    if config.auth is None or config.frontend is None:
-        msg = "runtime config requires [auth] and [frontend] to be configured"
+    if config.frontend is None:
+        msg = "runtime config requires [frontend] to be configured"
         raise ValueError(msg)
 
-    provider = config.auth.provider
     app_name = config.frontend.app_name or config.agent.name
     payload: dict[str, Any] = {
-        "auth": provider,
         "appName": app_name,
         "assistantId": "agent",
     }
-    if provider == "supabase":
-        payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
-        payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
-    elif provider == "clerk":
-        payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
+
+    if config.auth is None:
+        payload["auth"] = "none"
     else:
-        msg = f"Unknown auth provider for frontend: {provider}"
-        raise ValueError(msg)
+        provider = config.auth.provider
+        payload["auth"] = provider
+        if provider == "supabase":
+            payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
+            payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
+        elif provider == "clerk":
+            payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
+        else:
+            msg = f"Unknown auth provider for frontend: {provider}"
+            raise ValueError(msg)
 
     # Escape `<` so a hostile or accidental `</script>` inside a string value
     # can't break out of the inline <script> tag.

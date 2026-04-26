@@ -33,7 +33,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
-        "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs|langchain",
+        "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs|langchain|monty",
     )
 
     tracing_enabled = any(
@@ -84,7 +84,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--repl",
         action="store",
-        choices=("quickjs", "langchain"),
+        choices=("quickjs", "langchain", "monty"),
         default=None,
         help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests run without a REPL.",
     )
@@ -152,7 +152,7 @@ def model_name(request: pytest.FixtureRequest) -> str:
     return str(request.param)
 
 
-ReplName = Literal["quickjs", "langchain"]
+ReplName = Literal["quickjs", "langchain", "monty"]
 
 
 @pytest.fixture

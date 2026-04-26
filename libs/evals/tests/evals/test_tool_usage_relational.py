@@ -17,6 +17,7 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
+from langchain_monty import MontyMiddleware
 from langchain_quickjs.middleware import QuickJSMiddleware
 from langchain_repl.middleware import ReplMiddleware
 
@@ -28,7 +29,7 @@ from tests.evals.utils import (
     tool_call,
 )
 
-pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.repl("quickjs", "langchain")]
+pytestmark = [pytest.mark.eval_category("tool_use"), pytest.mark.repl("quickjs", "langchain", "monty")]
 """Apply tool_use category to all tests in this module. Tier is set per-test."""
 
 # ---------------------------------------------------------------------------
@@ -442,6 +443,8 @@ def _create_agent(model: BaseChatModel, repl_name: str | None):
         middleware = [ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
     elif repl_name == "quickjs":
         middleware = [QuickJSMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
+    elif repl_name == "monty":
+        middleware = [MontyMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
     return create_deep_agent(model=model, middleware=middleware)
 
 

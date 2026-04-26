@@ -36,6 +36,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     ReadResult,
@@ -145,6 +146,12 @@ class WriteFileSchema(BaseModel):
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
+class DeleteFileSchema(BaseModel):
+    """Input schema for the `delete_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
+
+
 class EditFileSchema(BaseModel):
     """Input schema for the `edit_file` tool."""
 
@@ -231,6 +238,13 @@ Usage:
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+
+Usage:
+- The file must exist and must not be a directory.
+- This operation is irreversible — the file will be permanently removed.
+- Use ls to verify the file exists before deleting."""
+
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
@@ -302,7 +316,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`,{delete_file_tool_list} `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -310,7 +324,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - ls: list files in a directory (requires absolute path)
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
-- edit_file: edit a file in the filesystem
+- edit_file: edit a file in the filesystem{delete_file_tool_desc}
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -320,6 +334,8 @@ When a tool result is too large, it may be offloaded into the filesystem instead
 
 FILESYSTEM_SYSTEM_PROMPT = _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
     large_tool_results_prefix="/large_tool_results",
+    delete_file_tool_list=" `delete_file`,",
+    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem",
 )
 
 EXECUTION_SYSTEM_PROMPT = """## Execute Tool `execute`
@@ -378,6 +394,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
+    "delete_file",
 )
 
 
@@ -572,6 +589,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     state_schema = FilesystemState
 
+    OPT_IN_TOOLS: frozenset[str] = frozenset({"delete_file"})
+    """Tool names that are not registered by default.
+
+    Pass these names via the ``additional_tools`` parameter to enable them.
+    """
+
     def __init__(
         self,
         *,
@@ -581,6 +604,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        additional_tools: frozenset[str] | set[str] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -597,6 +621,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            additional_tools: Opt-in tool names to register beyond the default set.
+
+                Tools listed in `OPT_IN_TOOLS` (currently ``{"delete_file"}``)
+                are not registered by default. Pass their names here to enable
+                them. Unrecognized names are silently ignored.
 
         Raises:
             ValueError: If `max_execute_timeout` is not positive.
@@ -618,6 +647,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._additional_tools: frozenset[str] = frozenset(additional_tools or ())
 
         self.tools = [
             self._create_ls_tool(),
@@ -628,6 +658,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_grep_tool(),
             self._create_execute_tool(),
         ]
+
+        if "delete_file" in self._additional_tools:
+            self.tools.append(self._create_delete_file_tool())
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -853,6 +886,57 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             coroutine=async_write_file,
             infer_schema=False,
             args_schema=WriteFileSchema,
+        )
+
+    def _create_delete_file_tool(self) -> BaseTool:
+        """Create the delete_file tool."""
+        tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
+
+        def sync_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Synchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            try:
+                res: DeleteResult = resolved_backend.delete(validated_path)
+            except NotImplementedError:
+                return "Error: This backend does not support file deletion."
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        async def async_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> str:
+            """Asynchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            try:
+                res: DeleteResult = await resolved_backend.adelete(validated_path)
+            except NotImplementedError:
+                return "Error: This backend does not support file deletion."
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        return StructuredTool.from_function(
+            name="delete_file",
+            description=tool_description,
+            func=sync_delete_file,
+            coroutine=async_delete_file,
+            infer_schema=False,
+            args_schema=DeleteFileSchema,
         )
 
     def _create_edit_file_tool(self) -> BaseTool:
@@ -1212,6 +1296,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
+        has_delete_file_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "delete_file" for tool in request.tools
+        )
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
@@ -1220,6 +1308,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
+                    delete_file_tool_list=" `delete_file`," if has_delete_file_tool else "",
+                    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem" if has_delete_file_tool else "",
                 )
             ]
 
@@ -1277,6 +1367,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 request = request.override(tools=filtered_tools)
                 has_execute_tool = False
 
+        has_delete_file_tool = any(
+            (tool.name if hasattr(tool, "name") else tool.get("name")) == "delete_file" for tool in request.tools
+        )
+
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
             system_prompt = self._custom_system_prompt
@@ -1285,6 +1379,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             prompt_parts = [
                 _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
                     large_tool_results_prefix=self._large_tool_results_prefix,
+                    delete_file_tool_list=" `delete_file`," if has_delete_file_tool else "",
+                    delete_file_tool_desc="\n- delete_file: delete a file from the filesystem" if has_delete_file_tool else "",
                 )
             ]
 

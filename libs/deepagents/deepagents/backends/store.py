@@ -14,6 +14,7 @@ from langgraph.typing import ContextT, StateT
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -647,6 +648,30 @@ class StoreBackend(BackendProtocol):
         store_value = self._convert_file_data_to_store_value(new_file_data)
         await store.aput(namespace, file_path, store_value)
         return EditResult(path=file_path, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the store."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        existing = store.get(namespace, file_path)
+        if existing is None:
+            return DeleteResult(error=f"File '{file_path}' not found")
+
+        store.delete(namespace, file_path)
+        return DeleteResult(path=file_path)
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of delete."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        existing = await store.aget(namespace, file_path)
+        if existing is None:
+            return DeleteResult(error=f"File '{file_path}' not found")
+
+        await store.adelete(namespace, file_path)
+        return DeleteResult(path=file_path)
 
     # Removed legacy grep() convenience to keep lean surface
 

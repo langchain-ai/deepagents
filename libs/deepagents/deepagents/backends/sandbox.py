@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from typing import Final
 
 from deepagents.backends.protocol import (
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -668,6 +669,58 @@ except PermissionError:
                 error=f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences.",
             )
         return EditResult(error=f"Error editing file '{file_path}': {error}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from the sandbox.
+
+        Args:
+            file_path: Absolute path to the file to delete.
+
+        Returns:
+            `DeleteResult` with `path` on success or `error` on failure.
+        """
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        cmd = f"""python3 -c "
+import os, sys, json, base64
+
+path = base64.b64decode('{path_b64}').decode('utf-8')
+
+if not os.path.exists(path):
+    print(json.dumps({{'error': 'file_not_found'}}))
+    sys.exit(0)
+
+if os.path.isdir(path):
+    print(json.dumps({{'error': 'is_directory'}}))
+    sys.exit(0)
+
+try:
+    os.remove(path)
+    print(json.dumps({{'success': True}}))
+except OSError as e:
+    print(json.dumps({{'error': str(e)}}))
+" 2>&1"""
+        result = self.execute(cmd)
+        output = result.output.rstrip()
+
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            detail = output[:200] if output else "(empty)"
+            return DeleteResult(error=f"Error deleting file '{file_path}': unexpected server response: {detail}")
+
+        if not isinstance(data, dict):
+            detail = output[:200] if output else "(empty)"
+            return DeleteResult(error=f"Error deleting file '{file_path}': unexpected server response: {detail}")
+
+        if "error" in data:
+            error_code = data["error"]
+            if error_code == "file_not_found":
+                return DeleteResult(error=f"File '{file_path}' not found")
+            if error_code == "is_directory":
+                return DeleteResult(error=f"'{file_path}' is a directory, not a file")
+            return DeleteResult(error=f"Error deleting file '{file_path}': {error_code}")
+
+        return DeleteResult(path=file_path)
 
     def grep(
         self,

@@ -10,6 +10,7 @@ from langgraph.config import get_config
 
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -284,6 +285,16 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return EditResult(path=file_path, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file from state."""
+        files = self._read_files()
+
+        if file_path not in files:
+            return DeleteResult(error=f"File '{file_path}' not found")
+
+        self._send_files_update({file_path: None})
+        return DeleteResult(path=file_path)
 
     def grep(
         self,

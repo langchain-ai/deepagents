@@ -1400,3 +1400,33 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_delete_routes_to_correct_backend():
+    """CompositeBackend.delete should route to the correct backend and return the full path."""
+    mem_store = InMemoryStore()
+    comp = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
+    )
+    comp.write("/memories/notes.md", "hello world")
+
+    res = comp.delete("/memories/notes.md")
+
+    assert res.error is None
+    assert res.path == "/memories/notes.md"
+
+    read_res = comp.read("/memories/notes.md")
+    assert read_res.error is not None
+
+
+def test_composite_delete_nonexistent():
+    """CompositeBackend.delete should return error for nonexistent file."""
+    mem_store = InMemoryStore()
+    comp = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={},
+    )
+
+    res = comp.delete("/nonexistent.txt")
+    assert res.error is not None

@@ -5,7 +5,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -681,3 +681,52 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+def test_filesystem_backend_delete_normal_mode(tmp_path: Path):
+    root = tmp_path
+    f1 = root / "to_delete.txt"
+    write_file(f1, "delete me")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    result = be.delete(str(f1))
+    assert isinstance(result, DeleteResult)
+    assert result.error is None
+    assert result.path == str(f1)
+    assert not f1.exists()
+
+
+def test_filesystem_backend_delete_virtual_mode(tmp_path: Path):
+    root = tmp_path
+    f1 = root / "to_delete.txt"
+    write_file(f1, "delete me")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    result = be.delete("/to_delete.txt")
+    assert isinstance(result, DeleteResult)
+    assert result.error is None
+    assert result.path == "/to_delete.txt"
+    assert not f1.exists()
+
+
+def test_filesystem_backend_delete_nonexistent(tmp_path: Path):
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.delete(str(tmp_path / "nonexistent.txt"))
+    assert isinstance(result, DeleteResult)
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+def test_filesystem_backend_delete_directory(tmp_path: Path):
+    d = tmp_path / "mydir"
+    d.mkdir()
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.delete(str(d))
+    assert isinstance(result, DeleteResult)
+    assert result.error is not None
+    assert "directory" in result.error.lower()

@@ -94,6 +94,7 @@ function SupabaseProvider({ children }: { children: ReactNode }) {
           accessToken: session.access_token,
           userIdentity: session.user.id,
           userEmail: session.user.email ?? null,
+          isAnonymous: false,
           signOut: async () => {
             await supabase.auth.signOut();
           },

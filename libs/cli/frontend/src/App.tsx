@@ -40,6 +40,7 @@ function Gate({ adapter }: { adapter: AuthAdapter }) {
       accessToken={session.accessToken}
       userEmail={session.userEmail}
       userIdentity={session.userIdentity}
+      isAnonymous={session.isAnonymous}
       onSignOut={session.signOut}
     />
   );
@@ -53,11 +54,13 @@ function AuthenticatedApp({
   accessToken,
   userEmail,
   userIdentity,
+  isAnonymous,
   onSignOut,
 }: {
   accessToken: string;
   userEmail: string | null;
   userIdentity: string;
+  isAnonymous: boolean;
   onSignOut: () => Promise<void>;
 }) {
   return (
@@ -65,6 +68,7 @@ function AuthenticatedApp({
       accessToken={accessToken}
       userEmail={userEmail}
       userIdentity={userIdentity}
+      isAnonymous={isAnonymous}
       onSignOut={onSignOut}
     />
   );
@@ -74,11 +78,13 @@ function NewChatApp({
   accessToken,
   userEmail,
   userIdentity,
+  isAnonymous,
   onSignOut,
 }: {
   accessToken: string;
   userEmail: string | null;
   userIdentity: string;
+  isAnonymous: boolean;
   onSignOut: () => Promise<void>;
 }) {
   const [input, setInput] = useState("");
@@ -192,7 +198,7 @@ function NewChatApp({
     <div className="flex h-dvh flex-col bg-[var(--background)]">
       <AppHeader
         userEmail={userEmail}
-        userIdentity={userIdentity}
+        isAnonymous={isAnonymous}
         onSignOut={onSignOut}
         threadPicker={threadPicker}
       />

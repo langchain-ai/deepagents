@@ -4,12 +4,12 @@ import { useTheme } from "../ThemeProvider";
 
 export default function AppHeader({
   userEmail,
-  userIdentity,
+  isAnonymous,
   onSignOut,
   threadPicker,
 }: {
   userEmail: string | null;
-  userIdentity: string;
+  isAnonymous: boolean;
   onSignOut: () => Promise<void>;
   threadPicker: ReactNode;
 }) {
@@ -55,7 +55,7 @@ export default function AppHeader({
             </svg>
           )}
         </button>
-        {userIdentity !== "anonymous" && (
+        {!isAnonymous && (
           <button
             onClick={() => { void onSignOut(); }}
             className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent-bg)]"

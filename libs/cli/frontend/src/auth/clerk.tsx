@@ -64,6 +64,7 @@ function ClerkSessionBridge({ children }: { children: ReactNode }) {
         accessToken,
         userIdentity: user?.id ?? "",
         userEmail,
+        isAnonymous: false,
         signOut: async () => {
           await signOut();
         },

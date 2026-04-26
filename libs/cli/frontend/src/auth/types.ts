@@ -8,6 +8,7 @@ export type SessionState =
       accessToken: string;
       userIdentity: string;
       userEmail: string | null;
+      isAnonymous: boolean;
       signOut: () => Promise<void>;
     };
 

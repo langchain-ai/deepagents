@@ -15,7 +15,7 @@
 | Example | Description |
 |---------|-------------|
 | [deep_research](deep_research/) | Multi-step web research agent using Tavily for URL discovery, parallel sub-agents, and strategic reflection |
-| [langchain-browserbase](langchain-browserbase/) | Browserbase-backed LangChain Deep Agent with Search, Fetch, rendered extraction, and human-reviewed interactive actions |
+| [browserbase_deep_agent](browserbase_deep_agent/) | Browserbase-backed LangChain Deep Agent with Search, Fetch, rendered extraction, and human-reviewed interactive actions |
 | [content-builder-agent](content-builder-agent/) | Content writing agent that demonstrates memory (`AGENTS.md`), skills, and subagents for blog posts, LinkedIn posts, and tweets with generated images |
 | [text-to-sql-agent](text-to-sql-agent/) | Natural language to SQL agent with planning, skill-based workflows, and the Chinook demo database |
 | [deploy-coding-agent](deploy-coding-agent/) | `deepagents deploy` example: autonomous coding agent with a LangSmith sandbox for code execution |

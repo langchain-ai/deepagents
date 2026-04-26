@@ -4,13 +4,15 @@ import asyncio
 import json
 import os
 import re
-from collections.abc import Awaitable
 from typing import Any
 
 from browserbase import Browserbase
 from bs4 import BeautifulSoup
 from langchain_core.tools import tool
-from stagehand import Stagehand, StagehandConfig
+from stagehand import AsyncStagehand
+
+# Using the Browserbase Model Gateway, you only need to pass your Browserbase API key to use frontier models
+# Docs: https://docs.browserbase.com/platform/model-gateway/overview
 
 DEFAULT_STAGEHAND_MODEL = os.getenv(
     "STAGEHAND_MODEL",
@@ -25,8 +27,7 @@ DEFAULT_STAGEHAND_AGENT_MODEL = os.getenv(
 def _require_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        msg = f"Missing required environment variable: {name}"
-        raise ValueError(msg)
+        raise ValueError(f"Missing required environment variable: {name}")
     return value
 
 
@@ -68,62 +69,22 @@ def _html_to_text(html: str, max_chars: int) -> tuple[str, str]:
     body = soup.body or soup
     text = body.get_text("\n", strip=True)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return title, text[: max(1, max_chars)]
+    return title, text[:max_chars]
 
 
-def _stagehand_client() -> Stagehand:
-    _require_env("BROWSERBASE_API_KEY")
-    return Stagehand()
-
-
-def _stagehand_config(model_name: str) -> StagehandConfig:
-    return StagehandConfig(
-        env="BROWSERBASE",
-        api_key=_require_env("BROWSERBASE_API_KEY"),
-        project_id=os.getenv("BROWSERBASE_PROJECT_ID"),
-        model_name=model_name,
+def _stagehand_client() -> AsyncStagehand:
+    return AsyncStagehand(
+        browserbase_api_key=_require_env("BROWSERBASE_API_KEY"),
     )
 
 
-def _session_id(response: Any) -> str:
-    data = getattr(response, "data", None)
-    session_id = getattr(data, "session_id", None) or getattr(response, "session_id", None)
-    if not session_id:
-        msg = f"Could not extract session id from Stagehand response: {_json(response)}"
-        raise RuntimeError(msg)
-    return session_id
-
-
-def _extract_result_payload(result: Any) -> Any:
-    data = getattr(result, "data", None)
-    extracted = getattr(data, "result", None)
-    if extracted is not None:
-        return _normalize(extracted)
-    return _normalize(result)
-
-
-def _close_stagehand(client: Any) -> None:
-    closer = getattr(client, "close", None)
-    if callable(closer):
-        closer()
-
-
-def _run_async(coro: Awaitable[Any]) -> Any:
+def _run_async(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
 @tool
 def browserbase_search(query: str, num_results: int = 5) -> str:
-    """Search the web with Browserbase.
-
-    Args:
-        query: Search query.
-        num_results: Number of search results to return.
-
-    Returns:
-        JSON string with search results and request metadata.
-
-    """
+    """Search the web with Browserbase. Use this first for discovery before opening pages."""
     bb = _browserbase_client()
     response = bb.search.web(query=query, num_results=max(1, min(num_results, 10)))
     results = []
@@ -151,26 +112,18 @@ def browserbase_search(query: str, num_results: int = 5) -> str:
 
 @tool
 def browserbase_fetch(url: str, use_proxy: bool = False, max_chars: int = 12000) -> str:
-    """Fetch page content without a browser session.
-
-    Args:
-        url: Page URL to fetch.
-        use_proxy: Whether to fetch through Browserbase proxies.
-        max_chars: Maximum number of text characters to return.
-
-    Returns:
-        JSON string with status metadata and extracted text.
-
-    """
+    """Fetch page content without a browser session. Best for static pages and quick reads."""
     bb = _browserbase_client()
     response = bb.fetch_api.create(url=url, proxies=use_proxy)
     content = getattr(response, "content", "")
     content_type = (
-        getattr(response, "content_type", None) or getattr(response, "contentType", "") or ""
+        getattr(response, "content_type", None)
+        or getattr(response, "contentType", "")
+        or ""
     ).lower()
 
     title = ""
-    text = str(content)[: max(1, max_chars)]
+    text = str(content)[:max_chars]
     if "html" in content_type:
         title, text = _html_to_text(str(content), max_chars=max_chars)
 
@@ -190,67 +143,76 @@ def browserbase_fetch(url: str, use_proxy: bool = False, max_chars: int = 12000)
 
 @tool
 def browserbase_rendered_extract(start_url: str, instruction: str) -> str:
-    """Extract rendered content from a page with Stagehand.
+    """Open a full Browserbase browser session and extract rendered content from a page with Stagehand."""
+    return _run_async(_browserbase_rendered_extract_async(start_url=start_url, instruction=instruction))
 
-    Args:
-        start_url: Initial URL for the hosted browser session.
-        instruction: Natural language extraction instruction.
 
-    Returns:
-        JSON string with extraction results and Browserbase session metadata.
-
-    """
+async def _browserbase_rendered_extract_async(start_url: str, instruction: str) -> str:
     client = _stagehand_client()
-    response = client.sessions.start(model_name=DEFAULT_STAGEHAND_MODEL)
-    session_id = _session_id(response)
+    start_resp = await client.sessions.start(
+        model_name=DEFAULT_STAGEHAND_MODEL,
+    )
+    session_id = start_resp.data.session_id
 
     try:
-        client.sessions.navigate(id=session_id, url=start_url)
-        result = client.sessions.extract(id=session_id, instruction=instruction)
+        await client.sessions.navigate(
+            id=session_id,
+            url=start_url,
+            frame_id="",
+        )
+        result = await client.sessions.extract(
+            id=session_id,
+            instruction=instruction,
+        )
+        extracted = getattr(getattr(result, "data", None), "result", None)
         return _json(
             {
                 "start_url": start_url,
                 "session_id": session_id,
                 "session_url": f"https://browserbase.com/sessions/{session_id}",
                 "instruction": instruction,
-                "result": _extract_result_payload(result),
+                "result": _normalize(extracted),
             }
         )
     finally:
-        try:
-            client.sessions.end(id=session_id)
-        finally:
-            _close_stagehand(client)
+        await client.sessions.end(id=session_id)
 
 
 @tool
 def browserbase_interactive_task(start_url: str, task: str) -> str:
-    """Run a multi-step browser task in a Browserbase-hosted Stagehand session.
-
-    Args:
-        start_url: Initial URL for the hosted browser session.
-        task: Natural language instruction for the Stagehand agent.
-
-    Returns:
-        JSON string with the Stagehand agent result.
-
-    """
+    """Open a Browserbase-hosted Stagehand session and let a Stagehand agent execute a multi-step browser task."""
     return _run_async(_browserbase_interactive_task_async(start_url=start_url, task=task))
 
 
 async def _browserbase_interactive_task_async(start_url: str, task: str) -> str:
-    config = _stagehand_config(model_name=DEFAULT_STAGEHAND_AGENT_MODEL)
-    async with Stagehand(config) as stagehand:
-        page = stagehand.page
-        await page.goto(start_url)
+    client = _stagehand_client()
+    start_resp = await client.sessions.start(
+        model_name=DEFAULT_STAGEHAND_AGENT_MODEL,
+    )
+    session_id = start_resp.data.session_id
 
-        agent = stagehand.agent(
-            model=DEFAULT_STAGEHAND_AGENT_MODEL,
-            instructions=(
-                "You are executing a browser task on behalf of a LangChain tool. "
-                "Be precise, avoid unnecessary actions, and stop once the requested "
-                "task is complete."
-            ),
+    try:
+        await client.sessions.navigate(
+            id=session_id,
+            url=start_url,
+            frame_id="",
         )
-        agent_result = await agent.execute(task)
-        return _json(_normalize(agent_result))
+        result = await client.sessions.execute(
+            id=session_id,
+            execute_options={
+                "instruction": task,
+                "max_steps": 20,
+            },
+            agent_config={
+                "model": DEFAULT_STAGEHAND_AGENT_MODEL,
+                "instructions": (
+                    "You are executing a browser task on behalf of a LangChain tool. "
+                    "Be precise, avoid unnecessary actions, and stop once the requested task is complete."
+                ),
+            },
+            timeout=300.0,
+        )
+        return _json(_normalize(result))
+    finally:
+        await client.sessions.end(id=session_id)
+   

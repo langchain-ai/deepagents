@@ -1,1 +1,0 @@
-import{j as s}from"./index-B19Fcxvu.js";const e={status:"signed-in",accessToken:"",userIdentity:"anonymous",userEmail:null,signOut:async()=>{}},o={Provider:({children:n})=>s.jsx(s.Fragment,{children:n}),useSession:()=>e,AuthUI:()=>null};export{o as default};

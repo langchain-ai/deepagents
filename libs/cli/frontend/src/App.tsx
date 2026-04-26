@@ -118,15 +118,22 @@ function NewChatApp({
   const handleThreadId = useCallback(
     (id: string | null) => {
       setThreadId(id);
-      if (id != null && pendingTitleRef.current) {
-        const title = pendingTitleRef.current;
+      if (id == null) return;
+      const metadata: Record<string, string> = {};
+      if (pendingTitleRef.current) {
+        metadata.title = pendingTitleRef.current;
         pendingTitleRef.current = null;
-        client.threads.update(id, { metadata: { title } }).catch((err) => {
-          console.warn("Failed to write thread title", err);
+      }
+      if (isAnonymous) {
+        metadata.dap_anon_id = userIdentity;
+      }
+      if (Object.keys(metadata).length > 0) {
+        client.threads.update(id, { metadata }).catch((err) => {
+          console.warn("Failed to write thread metadata", err);
         });
       }
     },
-    [client],
+    [client, isAnonymous, userIdentity],
   );
 
   const stream = useAgentStream({
@@ -191,6 +198,8 @@ function NewChatApp({
       currentThreadId={threadId}
       onSelect={setThreadId}
       accessToken={accessToken}
+      userIdentity={userIdentity}
+      isAnonymous={isAnonymous}
     />
   );
 

@@ -7,12 +7,16 @@ type ThreadPickerProps = {
   currentThreadId: string | null;
   onSelect: (id: string | null) => void;
   accessToken?: string;
+  userIdentity: string;
+  isAnonymous: boolean;
 };
 
 const ThreadPicker: FC<ThreadPickerProps> = ({
   currentThreadId,
   onSelect,
   accessToken,
+  userIdentity,
+  isAnonymous,
 }) => {
   const [open, setOpen] = useState(false);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -35,16 +39,18 @@ const ThreadPicker: FC<ThreadPickerProps> = ({
     setLoadError(null);
 
     try {
-      const result = await client.threads.search<ThreadSummary["values"]>({
-        limit: 20,
-      });
+      const query: { limit: number; metadata?: Record<string, unknown> } = { limit: 20 };
+      if (isAnonymous) {
+        query.metadata = { dap_anon_id: userIdentity };
+      }
+      const result = await client.threads.search<ThreadSummary["values"]>(query);
       setThreads(result);
     } catch (error) {
       setLoadError(getErrorMessage(error, "Failed to load threads."));
     } finally {
       setIsLoading(false);
     }
-  }, [client]);
+  }, [client, isAnonymous, userIdentity]);
 
   useEffect(() => {
     if (!open) return;

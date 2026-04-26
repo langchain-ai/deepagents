@@ -234,6 +234,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    prompt_caching: bool = True,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     """Create a deep agent.
 
@@ -405,6 +406,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        prompt_caching: Whether to enable Anthropic prompt caching.
+
+            Set to `False` when routing `ChatAnthropic` through a proxy (e.g.
+            LiteLLM / Databricks) that does not support the `cache_control`
+            field. When `False`, `AnthropicPromptCachingMiddleware` is omitted
+            and `MemoryMiddleware` will not inject `cache_control` breakpoints.
 
     Returns:
         A configured deep agent.
@@ -458,8 +465,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Strip excluded tools after all tool-injecting middleware has run
     if _profile.excluded_tools:
         gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
-    gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if prompt_caching:
+        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
     # Permissions must be last so they see all tools from prior middleware
     if permissions:
@@ -516,8 +523,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
-            # Prompt caching
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            if prompt_caching:
+                subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
             if subagent_permissions:
                 subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
@@ -587,8 +594,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(_resolve_extra_middleware(_profile))
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Unconditional prompt caching (see general-purpose subagent comment).
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if prompt_caching:
+        deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.
@@ -596,7 +603,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             MemoryMiddleware(
                 backend=backend,
                 sources=memory,
-                add_cache_control=True,
+                add_cache_control=prompt_caching,
             )
         )
     if interrupt_on is not None:

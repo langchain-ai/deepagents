@@ -6,6 +6,7 @@ import warnings
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -20,6 +21,7 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
+from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.profiles import _HARNESS_PROFILES, _get_harness_profile, _HarnessProfile, _register_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -588,3 +590,74 @@ class TestModelNoneDeprecationWarning:
 
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 0
+
+
+_PATCH_COMMON = [
+    ("deepagents.graph.FilesystemMiddleware", {"side_effect": [MagicMock(), MagicMock()]}),
+    ("deepagents.graph.SubAgentMiddleware", {"return_value": MagicMock()}),
+    ("deepagents.graph.TodoListMiddleware", {"return_value": MagicMock()}),
+    ("deepagents.graph.PatchToolCallsMiddleware", {"return_value": MagicMock()}),
+    ("deepagents.graph.create_summarization_middleware", {"return_value": MagicMock()}),
+]
+
+
+def _run_create_deep_agent(**kwargs: Any) -> list[Any]:
+    """Call create_deep_agent with common patches and return the main middleware stack."""
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "compiled-agent"
+
+    patches = [patch(target, **kw) for target, kw in _PATCH_COMMON]
+    patches.append(patch("deepagents.graph.create_agent", return_value=fake_agent))
+
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5] as mock_create:
+        create_deep_agent(model=fake_model, **kwargs)
+
+    return mock_create.call_args.kwargs["middleware"]
+
+
+class TestPromptCaching:
+    """Tests for the prompt_caching parameter on create_deep_agent (issue #2881)."""
+
+    def _build_middleware(self, **kwargs: Any) -> list[Any]:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model=fake_model, **kwargs)
+
+        return mock_create.call_args.kwargs["middleware"]
+
+    def test_prompt_caching_true_by_default_includes_caching_middleware(self) -> None:
+        """AnthropicPromptCachingMiddleware is in the stack when prompt_caching=True (default)."""
+        stack = self._build_middleware()
+        caching_mws = [m for m in stack if isinstance(m, AnthropicPromptCachingMiddleware)]
+        assert len(caching_mws) == 1
+
+    def test_prompt_caching_false_excludes_caching_middleware(self) -> None:
+        """AnthropicPromptCachingMiddleware is absent when prompt_caching=False (fix for #2881)."""
+        stack = self._build_middleware(prompt_caching=False)
+        caching_mws = [m for m in stack if isinstance(m, AnthropicPromptCachingMiddleware)]
+        assert len(caching_mws) == 0
+
+    def test_prompt_caching_true_memory_middleware_has_add_cache_control_true(self) -> None:
+        """MemoryMiddleware._add_cache_control is True when prompt_caching=True."""
+        stack = self._build_middleware(memory=["some/path"])
+        memory_mws = [m for m in stack if isinstance(m, MemoryMiddleware)]
+        assert len(memory_mws) == 1
+        assert memory_mws[0]._add_cache_control is True
+
+    def test_prompt_caching_false_memory_middleware_has_add_cache_control_false(self) -> None:
+        """MemoryMiddleware._add_cache_control is False when prompt_caching=False (fix for #2881)."""
+        stack = self._build_middleware(memory=["some/path"], prompt_caching=False)
+        memory_mws = [m for m in stack if isinstance(m, MemoryMiddleware)]
+        assert len(memory_mws) == 1
+        assert memory_mws[0]._add_cache_control is False

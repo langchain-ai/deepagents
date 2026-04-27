@@ -358,6 +358,8 @@ async def test_command_buffer_is_scoped_to_one_eval(repl: _ThreadREPL) -> None:
     assert len(first.commands) == 1
     second = await repl.eval_async("1 + 1")
     assert second.commands == []
+
+
 async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> None:
     repl.install_tools([_tool_message_list_tool()])
     outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
@@ -375,6 +377,8 @@ async def test_mixed_list_collects_commands_and_uses_tail_message(
     assert outcome.result == "from-list-tail=11"
     assert len(outcome.commands) == 1
     assert outcome.commands[0].update.get("ptc_values") == [11]
+
+
 async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"

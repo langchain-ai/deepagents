@@ -301,24 +301,17 @@ def _inject_tool_args_for_ptc(
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. ``type(outer_runtime)`` rather than a literal import
     # so the shape stays in lockstep with whatever langgraph ships.
-    runtime_kwargs: dict[str, Any] = {
-        "state": outer_runtime.state,
-        "tool_call_id": tool_call_id,
-        "config": outer_runtime.config,
-        "context": outer_runtime.context,
-        "store": outer_runtime.store,
-        "stream_writer": outer_runtime.stream_writer,
-        "execution_info": getattr(outer_runtime, "execution_info", None),
-        "server_info": getattr(outer_runtime, "server_info", None),
-    }
-    if hasattr(outer_runtime, "tools"):
-        runtime_kwargs["tools"] = outer_runtime.tools
-    try:
-        derived = type(outer_runtime)(**runtime_kwargs)
-    except TypeError:
-        # Older ToolRuntime signatures don't include ``tools``.
-        runtime_kwargs.pop("tools", None)
-        derived = type(outer_runtime)(**runtime_kwargs)
+    derived = type(outer_runtime)(
+        state=outer_runtime.state,
+        tool_call_id=tool_call_id,
+        config=outer_runtime.config,
+        context=outer_runtime.context,
+        store=outer_runtime.store,
+        stream_writer=outer_runtime.stream_writer,
+        tools=outer_runtime.tools,
+        execution_info=getattr(outer_runtime, "execution_info", None),
+        server_info=getattr(outer_runtime, "server_info", None),
+    )
 
     enriched = dict(payload)
     if injected.runtime:

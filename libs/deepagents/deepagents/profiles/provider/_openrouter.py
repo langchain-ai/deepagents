@@ -5,10 +5,10 @@ app-attribution headers when the corresponding environment variables are not
 set. Users may layer additional kwargs on top via
 `register_provider_profile("openrouter", ...)`.
 
-Registered directly by `_ensure_builtin_profiles_loaded` at
-`deepagents.profiles` import time. Not exposed as an `importlib.metadata`
-entry point — built-ins ship with the SDK and should not depend on
-install-time metadata to activate.
+Registered directly by `_ensure_builtin_profiles_loaded` during the
+first profile-registry access. Not exposed as an
+`importlib.metadata` entry point — built-ins ship with the SDK and
+should not depend on install-time metadata to activate.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from deepagents.profiles.provider.provider_profiles import ProviderProfile, register_provider_profile
+from deepagents.profiles.provider.provider_profiles import ProviderProfile, _register_provider_profile_impl
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def check_openrouter_version() -> None:
 
 def register() -> None:
     """Register the built-in OpenRouter provider profile."""
-    register_provider_profile(
+    _register_provider_profile_impl(
         "openrouter",
         ProviderProfile(
             pre_init=lambda _spec: check_openrouter_version(),

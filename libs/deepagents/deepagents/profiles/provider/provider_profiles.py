@@ -12,10 +12,11 @@ given provider or specific model spec. The registry is consumed by
 kwargs, running pre-initialization side effects, and deriving kwargs from
 runtime state (e.g. environment variables).
 """
-# Built-in profiles are registered at import time for `"openai"` (enables the
-# Responses API by default) and `"openrouter"` (enforces a minimum version and
-# injects app-attribution headers). Additional providers or per-model overrides
-# can be registered with `register_provider_profile`.
+# Built-in profiles are registered lazily on first registry access for
+# `"openai"` (enables the Responses API by default) and `"openrouter"`
+# (enforces a minimum version and injects app-attribution headers).
+# Additional providers or per-model overrides can be registered with
+# `register_provider_profile`.
 
 from __future__ import annotations
 
@@ -165,6 +166,31 @@ _PROVIDER_PROFILES: dict[str, ProviderProfile] = {}
 """Internal registry mapping provider-profile keys to `ProviderProfile` instances."""
 
 
+def _ensure_provider_profiles_loaded() -> None:
+    """Ensure the lazy built-in/profile-plugin bootstrap has completed."""
+    from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded  # noqa: PLC0415
+
+    _ensure_builtin_profiles_loaded()
+
+
+def _register_provider_profile_impl(key: str, profile: ProviderProfile) -> None:
+    """Core implementation behind `register_provider_profile`.
+
+    Callers are responsible for any lazy-bootstrap coordination.
+    """
+    validate_profile_key(key)
+    existing = _PROVIDER_PROFILES.get(key)
+    if existing is not None:
+        logger.info(
+            "Merging ProviderProfile under %r on top of existing registration; "
+            "init_kwargs and factory outputs merge with the new profile winning "
+            "on shared keys, and pre_init callables chain.",
+            key,
+        )
+        profile = _merge_provider_profiles(existing, profile)
+    _PROVIDER_PROFILES[key] = profile
+
+
 def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     """Register a `ProviderProfile` for a provider or specific model.
 
@@ -175,9 +201,10 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         for more details.
 
     Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded at import time), the new profile
-    is merged on top rather than replacing it. The incoming profile's fields
-    win on conflicts; unspecified fields inherit from the existing profile.
+    `key` (including a built-in profile loaded during lazy bootstrap), the new
+    profile is merged on top rather than replacing it. The incoming profile's
+    fields win on conflicts; unspecified fields inherit from the existing
+    profile.
     `pre_init` callables chain (existing runs first), and `init_kwargs_factory`
     callables chain — both factories are invoked at every resolution (base
     first, then override) and their outputs merge with the override's values
@@ -215,17 +242,8 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         ValueError: If `key` is empty, contains more than one `:`, or has an
             empty provider/model half.
     """
-    validate_profile_key(key)
-    existing = _PROVIDER_PROFILES.get(key)
-    if existing is not None:
-        logger.info(
-            "Merging ProviderProfile under %r on top of existing registration; "
-            "init_kwargs and factory outputs merge with the new profile winning "
-            "on shared keys, and pre_init callables chain.",
-            key,
-        )
-        profile = _merge_provider_profiles(existing, profile)
-    _PROVIDER_PROFILES[key] = profile
+    _ensure_provider_profiles_loaded()
+    _register_provider_profile_impl(key, profile)
 
 
 def get_provider_profile(spec: str) -> ProviderProfile | None:
@@ -276,6 +294,7 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
     if sep and (not provider or not model):
         return None
 
+    _ensure_provider_profiles_loaded()
     exact = _PROVIDER_PROFILES.get(spec)
     base = _PROVIDER_PROFILES.get(provider) if sep else None
 

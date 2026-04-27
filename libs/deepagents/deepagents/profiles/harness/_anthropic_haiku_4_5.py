@@ -26,7 +26,7 @@ Source: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering
 
 from deepagents.profiles.harness_profiles import (
     HarnessProfile,
-    register_harness_profile,
+    _register_harness_profile_impl,
 )
 
 _SYSTEM_PROMPT_SUFFIX = """\
@@ -46,7 +46,7 @@ After receiving tool results, carefully reflect on their quality and determine o
 
 def register() -> None:
     """Register the built-in Claude Haiku 4.5 harness profile."""
-    register_harness_profile(
+    _register_harness_profile_impl(
         "anthropic:claude-haiku-4-5",
         HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
     )

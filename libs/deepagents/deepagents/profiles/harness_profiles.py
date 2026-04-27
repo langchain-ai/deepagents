@@ -710,11 +710,35 @@ then provider prefix, then no match (returns `None`).
 """
 
 
+def _ensure_harness_profiles_loaded() -> None:
+    """Ensure the lazy built-in/profile-plugin bootstrap has completed."""
+    from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded  # noqa: PLC0415
+
+    _ensure_builtin_profiles_loaded()
+
+
 def _coerce_runtime_harness_profile(profile: HarnessProfile | HarnessProfileConfig) -> HarnessProfile:
     """Convert declarative config objects to runtime `HarnessProfile` objects."""
     if isinstance(profile, HarnessProfileConfig):
         return profile.to_harness_profile()
     return profile
+
+
+def _register_harness_profile_impl(key: str, profile: HarnessProfile | HarnessProfileConfig) -> None:
+    """Core implementation behind `register_harness_profile`.
+
+    Callers are responsible for any lazy-bootstrap coordination.
+    """
+    validate_profile_key(key)
+    profile = _coerce_runtime_harness_profile(profile)
+    existing = _HARNESS_PROFILES.get(key)
+    if existing is not None:
+        logger.info(
+            "Merging HarnessProfile under %r on top of existing registration; set and middleware fields union, scalar fields prefer the new value.",
+            key,
+        )
+        profile = _merge_profiles(existing, profile)
+    _HARNESS_PROFILES[key] = profile
 
 
 def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileConfig) -> None:
@@ -731,13 +755,12 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
     at registration time so YAML/JSON-backed callers do not need a separate
     manual conversion step.
 
-    Deep Agents ships no built-in harness profiles, so the first call under
-    `key` acts as a fresh registration. Subsequent calls are **additive**: the
-    new profile is merged on top of the existing registration rather than
-    replacing it. The incoming profile's fields win on conflicts; unspecified
-    fields inherit from the existing profile. Excluded-tool sets union,
-    middleware sequences merge by type, and `general_purpose_subagent`
-    settings merge field-wise.
+    Registrations are **additive**: if a profile is already registered under
+    `key` (including a built-in profile loaded during lazy bootstrap), the new
+    profile is merged on top rather than replacing it. The incoming profile's
+    fields win on conflicts; unspecified fields inherit from the existing
+    profile. Excluded-tool sets union, middleware sequences merge by type, and
+    `general_purpose_subagent` settings merge field-wise.
 
     To extend an existing registration, call `register_harness_profile` again
     under the same key:
@@ -765,16 +788,8 @@ def register_harness_profile(key: str, profile: HarnessProfile | HarnessProfileC
         ValueError: If `key` is empty, contains more than one `:`, or has an
             empty provider/model half.
     """
-    validate_profile_key(key)
-    profile = _coerce_runtime_harness_profile(profile)
-    existing = _HARNESS_PROFILES.get(key)
-    if existing is not None:
-        logger.info(
-            "Merging HarnessProfile under %r on top of existing registration; set and middleware fields union, scalar fields prefer the new value.",
-            key,
-        )
-        profile = _merge_profiles(existing, profile)
-    _HARNESS_PROFILES[key] = profile
+    _ensure_harness_profiles_loaded()
+    _register_harness_profile_impl(key, profile)
 
 
 def _has_any_harness_profile() -> bool:
@@ -790,9 +805,10 @@ def _has_any_harness_profile() -> bool:
     Exists so callers do not have to import the private `_HARNESS_PROFILES`
     registry directly.
     """
-    from deepagents.profiles._builtin_profiles import _BOOTSTRAP_HARNESS_KEYS  # noqa: PLC0415
+    from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
 
-    return bool(_HARNESS_PROFILES.keys() - _BOOTSTRAP_HARNESS_KEYS)
+    _ensure_harness_profiles_loaded()
+    return bool(_HARNESS_PROFILES.keys() - _builtin_profiles._BOOTSTRAP_HARNESS_KEYS)
 
 
 def _get_harness_profile(spec: str) -> HarnessProfile | None:
@@ -833,6 +849,7 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     if sep and (not provider or not model):
         return None
 
+    _ensure_harness_profiles_loaded()
     exact = _HARNESS_PROFILES.get(spec)
     base = _HARNESS_PROFILES.get(provider) if sep else None
 

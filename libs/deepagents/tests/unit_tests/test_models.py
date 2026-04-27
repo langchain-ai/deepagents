@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
@@ -1052,31 +1053,35 @@ class TestProfilePluginLoader:
     def _isolate_loader_state(self) -> Iterator[None]:
         """Snapshot and restore loader globals plus both registries around every test.
 
-        The real bootstrap runs once at `deepagents.profiles` import, so by
-        the time this class executes, `_loaded` is `True` and the registries
-        hold built-in entries. Tests here reset `_loaded` to re-exercise the
-        loader with patched entry points; without this fixture they would
-        leak frozen snapshots and mutated registry state into sibling tests
-        — including `test_graph.TestHasAnyHarnessProfile`, which asserts
+        The real bootstrap runs once per process on first profile-registry
+        access. Tests here reset loader state to re-exercise bootstrap with
+        patched entry points; without this fixture they would leak frozen
+        snapshots and mutated registry state into sibling tests — including
+        `test_graph.TestHasAnyHarnessProfile`, which asserts
         `_has_any_harness_profile() is False` at start.
         """
         from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
 
         saved_loaded = _builtin_profiles._loaded
+        saved_loading_thread_id = _builtin_profiles._loading_thread_id
         saved_snapshot = _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
         saved_harness = dict(_HARNESS_PROFILES)
         saved_provider = dict(_PROVIDER_PROFILES)
         try:
             _builtin_profiles._loaded = False
+            _builtin_profiles._loading_thread_id = None
             _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = frozenset()
             yield
         finally:
             _builtin_profiles._loaded = saved_loaded
+            _builtin_profiles._loading_thread_id = saved_loading_thread_id
             _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = saved_snapshot
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(saved_harness)
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(saved_provider)
+            with _builtin_profiles._BOOTSTRAP_CONDITION:
+                _builtin_profiles._BOOTSTRAP_CONDITION.notify_all()
 
     def test_iterates_both_entry_point_groups(self) -> None:
         """Loader must query both provider and harness entry-point groups."""
@@ -1290,6 +1295,251 @@ class TestProfilePluginLoader:
         # user-registered profiles apart from bootstrap defaults.
         register_harness_profile("postbootstrap:model", HarnessProfile())
         assert "postbootstrap:model" not in _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+
+    def test_bootstrap_failure_rolls_back_and_waiter_retries(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failing bootstrap must restore registry state before a retry."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.provider import _openrouter  # noqa: PLC0415
+
+        bootstrap_started = threading.Event()
+        waiter_waiting = threading.Event()
+        allow_failure = threading.Event()
+        results: dict[str, ProviderProfile | None | RuntimeError] = {}
+        original_register = _openrouter.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+        call_count = 0
+
+        def flaky_register() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                bootstrap_started.set()
+                assert allow_failure.wait(timeout=5)
+                msg = "boom"
+                raise RuntimeError(msg)
+            original_register()
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            waiter_waiting.set()
+            return original_wait(timeout)
+
+        def first_reader() -> None:
+            try:
+                get_provider_profile("openai:gpt-5")
+            except RuntimeError as exc:
+                results["first_exc"] = exc
+
+        def second_reader() -> None:
+            results["second"] = get_provider_profile("openai:gpt-5")
+
+        with (
+            caplog.at_level(logging.INFO, logger="deepagents.profiles.provider.provider_profiles"),
+            caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_openrouter, "register", side_effect=flaky_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            first = threading.Thread(target=first_reader)
+            second = threading.Thread(target=second_reader)
+            try:
+                first.start()
+                assert bootstrap_started.wait(timeout=5)
+                second.start()
+                assert waiter_waiting.wait(timeout=5)
+            finally:
+                allow_failure.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert isinstance(results["first_exc"], RuntimeError)
+        assert results["second"] is not None
+        assert dict(results["second"].init_kwargs) == {"use_responses_api": True}
+        assert _builtin_profiles._loaded is True
+        assert not any("Merging ProviderProfile under 'openai'" in rec.message for rec in caplog.records)
+        assert any("Built-in profile bootstrap failed" in rec.message for rec in caplog.records)
+
+    def test_concurrent_first_read_waits_for_bootstrap(self) -> None:
+        """Concurrent first reads must all wait for bootstrap completion."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.provider import _openai  # noqa: PLC0415
+
+        started = threading.Event()
+        release = threading.Event()
+        waiters_waiting = threading.Event()
+        waiters_waiting_lock = threading.Lock()
+        waiter_count = 0
+        results: dict[str, ProviderProfile | None] = {}
+        original_register = _openai.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+
+        def slow_register() -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            original_register()
+
+        def first_reader() -> None:
+            results["first"] = get_provider_profile("openai:gpt-5")
+
+        def waiter_reader(key: str) -> None:
+            results[key] = get_provider_profile("openai:gpt-5")
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            nonlocal waiter_count
+            with waiters_waiting_lock:
+                waiter_count += 1
+                if waiter_count == 2:
+                    waiters_waiting.set()
+            return original_wait(timeout)
+
+        with (
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_openai, "register", side_effect=slow_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            first = threading.Thread(target=first_reader)
+            second = threading.Thread(target=waiter_reader, args=("second",))
+            third = threading.Thread(target=waiter_reader, args=("third",))
+            first.start()
+            assert started.wait(timeout=5)
+            second.start()
+            third.start()
+            assert waiters_waiting.wait(timeout=5)
+            release.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+            third.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not third.is_alive()
+        assert _builtin_profiles._loaded is True
+        assert results["first"] is not None
+        assert results["second"] is not None
+        assert results["third"] is not None
+        assert dict(results["second"].init_kwargs) == {"use_responses_api": True}
+        assert dict(results["third"].init_kwargs) == {"use_responses_api": True}
+
+    def test_concurrent_user_registration_waits_until_snapshot_taken(self) -> None:
+        """Concurrent user registration must not leak into bootstrap snapshots."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.harness import _anthropic_opus_4_7  # noqa: PLC0415
+        from deepagents.profiles.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+
+        started = threading.Event()
+        release = threading.Event()
+        waiter_waiting = threading.Event()
+        original_register = _anthropic_opus_4_7.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+
+        def slow_register() -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            original_register()
+
+        def user_register() -> None:
+            register_harness_profile("custom:model", HarnessProfile(system_prompt_suffix="x"))
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            waiter_waiting.set()
+            return original_wait(timeout)
+
+        with (
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_anthropic_opus_4_7, "register", side_effect=slow_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            bootstrap = threading.Thread(target=_builtin_profiles._ensure_builtin_profiles_loaded)
+            second = threading.Thread(target=user_register)
+            bootstrap.start()
+            assert started.wait(timeout=5)
+            second.start()
+            assert waiter_waiting.wait(timeout=5)
+            assert "custom:model" not in _HARNESS_PROFILES
+            release.set()
+            bootstrap.join(timeout=5)
+            second.join(timeout=5)
+
+        assert not bootstrap.is_alive()
+        assert not second.is_alive()
+        assert "custom:model" in _HARNESS_PROFILES
+        assert "custom:model" not in _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+        assert _has_any_harness_profile() is True
+
+
+class TestLazyBootstrap:
+    """Tests for lazy `_ensure_builtin_profiles_loaded` invocation.
+
+    The bootstrap runs on first registry access rather than at
+    `deepagents.profiles` import to keep cold-importing
+    `deepagents._models` (and therefore `deepagents_cli` startup) cheap
+    when the caller never reads the registry. Each test here spawns a
+    subprocess to get a clean interpreter — once the in-process bootstrap
+    has run for any earlier test, `_loaded` cannot be observed as `False`
+    in this process.
+    """
+
+    def _run(self, body: str) -> str:
+        """Run `body` in a fresh subprocess and return its stdout."""
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        result = subprocess.run(  # noqa: S603  # body is a hardcoded test literal
+            [sys.executable, "-c", body],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def test_importing_models_does_not_bootstrap(self) -> None:
+        """Cold-importing `deepagents._models` must not trigger bootstrap."""
+        out = self._run(
+            "import deepagents._models\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
+            "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
+        )
+        assert out == "False 0 0"
+
+    def test_model_matches_spec_does_not_bootstrap(self) -> None:
+        """`model_matches_spec` is the symbol the CLI imports; it must stay cheap."""
+        out = self._run(
+            "from deepagents._models import model_matches_spec\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
+            "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
+        )
+        assert out == "False 0 0"
+
+    def test_get_provider_profile_triggers_bootstrap(self) -> None:
+        """First registry read flips `_loaded` to `True`."""
+        out = self._run(
+            "from deepagents.profiles.provider.provider_profiles import get_provider_profile\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "before = _builtin_profiles._loaded\n"
+            "get_provider_profile('openai:gpt-5')\n"
+            "print(before, _builtin_profiles._loaded)\n"
+        )
+        assert out == "False True"
+
+    def test_register_harness_profile_triggers_bootstrap(self) -> None:
+        """First registration call flips `_loaded` to `True` before registering."""
+        out = self._run(
+            "from deepagents.profiles.harness_profiles import register_harness_profile\n"
+            "from deepagents import HarnessProfile\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "before = _builtin_profiles._loaded\n"
+            "register_harness_profile('custom:model', HarnessProfile())\n"
+            "print(before, _builtin_profiles._loaded)\n"
+        )
+        assert out == "False True"
 
 
 class TestResolveModelWithProviderProfiles:

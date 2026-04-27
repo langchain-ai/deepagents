@@ -20,7 +20,7 @@ Source: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering
 
 from deepagents.profiles.harness_profiles import (
     HarnessProfile,
-    register_harness_profile,
+    _register_harness_profile_impl,
 )
 
 _SYSTEM_PROMPT_SUFFIX = """\
@@ -50,7 +50,7 @@ Spawn multiple subagents in the same turn when fanning out across items or readi
 
 def register() -> None:
     """Register the built-in Claude Opus 4.7 harness profile."""
-    register_harness_profile(
+    _register_harness_profile_impl(
         "anthropic:claude-opus-4-7",
         HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
     )

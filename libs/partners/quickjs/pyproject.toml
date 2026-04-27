@@ -53,16 +53,8 @@ test = [
     "build",
 ]
 
-# TODO(packaging): before publishing to PyPI, remove the [tool.uv.sources] block
-# below and replace it with version pins. The local path assumption only holds
-# in the monorepo-style sibling layout used during development.
-#
-# Note: the upstream repo directory is still named ``quickjs-wasm`` even
-# though the package was renamed ``quickjs-rs`` in 0.3 (the path is the
-# repo on disk, the package name is what pip/uv installs).
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
-quickjs-rs = { path = "../../../../quickjs-wasm", editable = true }
 
 [tool.uv]
 constraint-dependencies = ["urllib3>=2.6.3"]

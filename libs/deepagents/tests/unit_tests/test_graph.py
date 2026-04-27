@@ -247,11 +247,11 @@ class TestToolDescriptionOverrides:
 
 
 class TestDefaultModelProfile:
-    """Tests for default model=None getting the default profile."""
+    """Tests for harness-profile lookup on Anthropic model keys."""
 
-    def test_default_model_has_no_registered_profile(self) -> None:
-        """No anthropic-specific registration means lookup returns None."""
-        assert _get_harness_profile("anthropic:claude-sonnet-4-6") is None
+    def test_unregistered_anthropic_model_returns_none(self) -> None:
+        """An Anthropic model without a built-in registration falls through."""
+        assert _get_harness_profile("anthropic:claude-sonnet-4-5") is None
 
 
 class TestToolDescriptionOverrideWiring:

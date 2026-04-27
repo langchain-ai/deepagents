@@ -982,6 +982,68 @@ class TestBuiltInProfiles:
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
 
+    def test_anthropic_provider_has_no_built_in_profile(self) -> None:
+        """Anthropic registers per-model harness profiles, not a provider-level one."""
+        assert _get_harness_profile("anthropic:claude-2.1") is None
+
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "anthropic:claude-opus-4-7",
+            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-haiku-4-5",
+        ],
+    )
+    def test_anthropic_latest_models_have_harness_profile(self, model_key: str) -> None:
+        """Each latest Anthropic model registers a non-empty harness profile."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "<use_parallel_tool_calls>" in profile.system_prompt_suffix
+        assert "<investigate_before_answering>" in profile.system_prompt_suffix
+        assert "<tool_result_reflection>" in profile.system_prompt_suffix
+
+    def test_opus_4_7_suffix_contains_model_specific_overlays(self) -> None:
+        """Only Opus 4.7 carries the tool-usage and subagent-usage overlays."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        assert profile is not None
+        assert "<tool_usage>" in profile.system_prompt_suffix
+        assert "<subagent_usage>" in profile.system_prompt_suffix
+
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-haiku-4-5",
+        ],
+    )
+    def test_sonnet_and_haiku_have_no_model_specific_overlays(
+        self,
+        model_key: str,
+    ) -> None:
+        """Sonnet 4.6 and Haiku 4.5 carry only the universal Claude sections."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert "<tool_usage>" not in profile.system_prompt_suffix
+        assert "<subagent_usage>" not in profile.system_prompt_suffix
+
+    def test_anthropic_universal_sections_are_identical_across_models(self) -> None:
+        """Guard against drift in the duplicated universal prompt sections.
+
+        Each Anthropic harness module duplicates the three universal
+        sections verbatim (accepted cost of per-model self-containment);
+        this test asserts they stay in lock-step. If one module updates
+        the text, the others must follow or this test will flag it.
+        """
+        opus = _get_harness_profile("anthropic:claude-opus-4-7")
+        sonnet = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        haiku = _get_harness_profile("anthropic:claude-haiku-4-5")
+        assert opus is not None
+        assert sonnet is not None
+        assert haiku is not None
+        assert opus.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
+        assert sonnet.system_prompt_suffix == haiku.system_prompt_suffix
+
 
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""

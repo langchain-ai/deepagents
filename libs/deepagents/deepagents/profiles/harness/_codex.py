@@ -2,15 +2,15 @@
 
 Registers a `HarnessProfile` for each OpenAI Codex model spec with:
 
-* a behavior-shaping `system_prompt_suffix` that aligns Deep Agents'
-  runtime defaults with how Codex was trained to operate — autonomous
-  senior engineer demeanor, bias to action, parallel tool use, and TODO
-  hygiene; and
-* a backend-aware `extra_middleware` factory that contributes an
-  `_ApplyPatchMiddleware` so the agent can apply V4A diffs through the
-  same filesystem backend `FilesystemMiddleware` uses. Codex models are
-  trained to emit V4A `apply_patch` invocations; without the middleware
-  they underperform on file-editing tasks.
+* A behavior-shaping `system_prompt_suffix` that aligns Deep Agents'
+    runtime defaults with how Codex was trained to operate — autonomous
+    senior engineer demeanor, bias to action, parallel tool use, and TODO
+    hygiene; and
+* A backend-aware `extra_middleware` factory that contributes an
+    `_ApplyPatchMiddleware` so the agent can apply V4A diffs through the
+    same filesystem backend `FilesystemMiddleware` uses. Codex models are
+    trained to emit V4A `apply_patch` invocations; without the middleware
+    they underperform on file-editing tasks.
 
 The suffix is appended to whatever `base_system_prompt` is ultimately
 assembled for the agent, so it layers cleanly on top of user- or
@@ -18,11 +18,6 @@ SDK-provided base prompts without fighting them.
 
 Per-model keys (not the `"openai"` prefix) keep the default behavior of
 non-Codex OpenAI models unchanged.
-
-Registered directly by `_ensure_builtin_profiles_loaded` at
-`deepagents.profiles` import time. Not exposed as an `importlib.metadata`
-entry point — built-ins ship with the SDK and should not depend on
-install-time metadata to activate.
 """
 
 from __future__ import annotations
@@ -93,6 +88,7 @@ action, parallel tool use, and plan hygiene. Tool-specific guidance
 aliasing) lives with its corresponding capability and is added in
 follow-up work that introduces those capabilities to the harness.
 """
+"""Text appended to the assembled base system prompt."""
 
 
 def _apply_patch_factory(backend: BACKEND_TYPES) -> Sequence[AgentMiddleware[Any, Any, Any]]:

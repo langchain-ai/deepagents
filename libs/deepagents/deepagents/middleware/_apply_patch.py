@@ -9,10 +9,10 @@ and underperform when forced into our native `edit_file` flow.
 This middleware is deliberately packaged outside `FilesystemMiddleware`:
 
 * `apply_patch` is a model-fit detail, not a core filesystem primitive,
-  so core `FilesystemMiddleware` callers shouldn't pay the surface-area
-  cost (extra constructor flag, extra tool).
+    so core `FilesystemMiddleware` callers shouldn't pay the surface-area
+    cost (extra constructor flag, extra tool).
 * Hosting it as a standalone middleware lets a `HarnessProfile` opt in
-  via `extra_middleware` without touching the filesystem stack itself.
+    via `extra_middleware` without touching the filesystem stack itself.
 
 Usage — attach the middleware to a harness profile that targets a
 V4A-preferring model, threading the agent's backend through so

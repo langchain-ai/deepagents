@@ -237,17 +237,17 @@ class WriteResult:
 class DeleteResult:
     """Result from backend delete operations.
 
-    Attributes:
-        error: Error message on failure, None on success.
-        path: Absolute path of the deleted file, None on failure.
-
     Examples:
         >>> DeleteResult(path="/f.txt")
         >>> DeleteResult(error="File not found")
     """
 
     error: str | None
+    """Error message on failure, None on success."""
+
     path: str | None
+    """Absolute path of the deleted file, None on failure."""
+
     files_update: dict[str, Any] | None
 
     def __init__(

@@ -30,7 +30,7 @@ from deepagents.profiles.harness import (
     _anthropic_haiku_4_5,
     _anthropic_opus_4_7,
     _anthropic_sonnet_4_6,
-    _codex as _codex_harness,
+    _codex,
 )
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
 from deepagents.profiles.provider import _openai, _openrouter
@@ -135,7 +135,7 @@ def _ensure_builtin_profiles_loaded() -> None:
         _anthropic_opus_4_7.register()
         _anthropic_sonnet_4_6.register()
         _anthropic_haiku_4_5.register()
-        _codex_harness.register()
+        _codex.register()
         _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
         _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
         bootstrap_harness_keys = frozenset(_HARNESS_PROFILES)

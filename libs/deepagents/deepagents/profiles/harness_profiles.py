@@ -527,15 +527,15 @@ class HarnessProfile:
 
     * A static sequence of middleware instances.
     * A zero-arg factory returning a sequence — use this when middleware
-      instances should not be shared across stacks (e.g., stateful
-      middleware).
+        instances should not be shared across stacks (e.g., stateful
+        middleware).
     * A backend-aware factory that takes the agent's resolved backend as
-      its sole argument and returns a sequence. Use this for middleware
-      that must read/write the same filesystem backend as the agent
-      (e.g., a V4A `apply_patch` tool). `create_deep_agent` passes the
-      same `backend` it gives `FilesystemMiddleware`, so the two see a
-      consistent file view. Arity is detected via `inspect.signature`
-      at merge/resolution time.
+        its sole argument and returns a sequence. Use this for middleware
+        that must read/write the same filesystem backend as the agent
+        (e.g., a V4A `apply_patch` tool). `create_deep_agent` passes the
+        same `backend` it gives `FilesystemMiddleware`, so the two see a
+        consistent file view. Arity is detected via `inspect.signature`
+        at merge/resolution time.
 
     This field is runtime-only and intentionally absent from
     `HarnessProfileConfig`.

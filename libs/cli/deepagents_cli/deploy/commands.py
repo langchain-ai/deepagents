@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents_cli.deploy.config import DeployConfig
+
 
 def setup_deploy_parsers(
     subparsers: Any,  # noqa: ANN401
@@ -277,6 +279,8 @@ def _deploy(
             print(f"Inspect the build directory: {build_dir}")
             return
 
+        _seed_hub_repo(config, build_dir)
+
         # Deploy via langgraph CLI.
         _run_langgraph_deploy(build_dir, name=config.agent.name)
     finally:
@@ -347,6 +351,8 @@ def _dev(
         bundle(config, project_root, build_dir)
         print_bundle_summary(config, build_dir)
 
+        _seed_hub_repo(config, build_dir)
+
         if shutil.which("langgraph") is None:
             print(
                 "Error: `langgraph` CLI not found. Install it with:\n"
@@ -380,6 +386,94 @@ def _dev(
             raise SystemExit(result.returncode)
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def _seed_hub_repo(config: DeployConfig, build_dir: Path) -> None:
+    """Eagerly create the LangSmith Hub agent repo at bundle time.
+
+    Mirrors the per-(process, assistant_id) seeding that the generated
+    `deploy_graph.py` performs on first invocation, but runs it from the
+    CLI so the repo exists in LangSmith Hub the moment `deepagents deploy`
+    (or `deepagents dev`) returns from bundling. The runtime seed path
+    stays in place as a defensive no-op: it short-circuits via
+    `has_prior_commits()` once this seed has run.
+
+    Per-user hub repos (`{identifier}-user-{slug}`) are intentionally
+    *not* seeded here — user identities aren't known until authenticated
+    requests arrive at runtime.
+
+    Args:
+        config: Loaded `DeployConfig`. Only invoked for hub-backed deploys;
+            no-op otherwise.
+        build_dir: Directory containing `_seed.json` written by `bundle()`.
+
+    Raises:
+        SystemExit: If the hub commit fails or returns per-file errors —
+            fail fast at bundle time rather than at first invocation.
+    """
+    import json
+
+    from deepagents_cli.deploy.context_hub import ContextHubBackend
+
+    if config.memories.backend != "hub":
+        return
+
+    seed_path = build_dir / "_seed.json"
+    try:
+        seed = json.loads(seed_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error: failed to read {seed_path.name} for hub seed: {exc}")
+        raise SystemExit(1) from None
+
+    # Hub-repo layout matches what the runtime ends up writing: when the
+    # generated graph calls `CompositeBackend.aupload_files` with paths
+    # like `/memories/AGENTS.md`, the composite strips the `/memories/`
+    # route prefix before delegating to `ContextHubBackend`. We call the
+    # hub backend directly here, so emit the post-strip paths directly.
+    batch: list[tuple[str, bytes]] = []
+    for path, content in seed.get("memories", {}).items():
+        batch.append((path.lstrip("/"), content.encode("utf-8")))
+    for path, content in seed.get("skills", {}).items():
+        batch.append((f"skills/{path.lstrip('/')}", content.encode("utf-8")))
+    for sa_name, sa_data in seed.get("subagents", {}).items():
+        sa_prefix = f"subagents/{sa_name}/"
+        for path, content in sa_data.get("memories", {}).items():
+            batch.append((f"{sa_prefix}{path.lstrip('/')}", content.encode("utf-8")))
+        for path, content in sa_data.get("skills", {}).items():
+            batch.append(
+                (f"{sa_prefix}skills/{path.lstrip('/')}", content.encode("utf-8"))
+            )
+
+    identifier = config.memories.identifier or f"-/{config.agent.name}"
+    backend = ContextHubBackend(identifier=identifier)
+
+    try:
+        if backend.has_prior_commits():
+            print(f"Hub repo {identifier} already exists — skipping seed.")
+            return
+    except Exception as exc:
+        print(f"Error: failed to inspect hub repo {identifier}: {exc}")
+        raise SystemExit(1) from None
+
+    if not batch:
+        print(f"Hub repo {identifier}: nothing to seed.")
+        return
+
+    print(f"Creating hub repo {identifier} with {len(batch)} file(s)...")
+    try:
+        responses = backend.upload_files(batch)
+    except Exception as exc:
+        print(f"Error: hub seed failed for {identifier}: {exc}")
+        raise SystemExit(1) from None
+
+    failures = [r for r in responses if r.error is not None]
+    if failures:
+        print(f"Error: hub seed had {len(failures)} failed file(s):")
+        for resp in failures:
+            print(f"  - {resp.path}: {resp.error}")
+        raise SystemExit(1)
+
+    print(f"Hub repo {identifier} created.")
 
 
 def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:

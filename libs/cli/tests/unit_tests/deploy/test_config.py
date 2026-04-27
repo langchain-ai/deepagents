@@ -138,7 +138,6 @@ class TestMemoriesConfig:
         cfg = MemoriesConfig(backend="store")
         assert cfg.backend == "store"
 
-
     def test_hub_backend(self) -> None:
         cfg = MemoriesConfig(backend="hub", identifier="-/my-agent")
         assert cfg.backend == "hub"
@@ -355,7 +354,6 @@ class TestParseConfig:
         )
         assert cfg.memories.backend == "hub"
         assert cfg.memories.identifier == "-/my-agent"
-
 
     def test_memories_invalid_backend_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown memories backend"):

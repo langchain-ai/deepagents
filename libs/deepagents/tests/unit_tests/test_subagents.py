@@ -1657,8 +1657,79 @@ class TestSubAgents:
             "test_fork_task_context:subagent:call_fork_b",
         }
 
-    def test_task_fork_context_applies_summarization_event_before_copying_messages(self) -> None:
-        """Forked message history should use the same effective view as summarization middleware."""
+    def test_subagent_can_default_to_fork_context_and_tool_call_can_override(self) -> None:
+        """Developers can configure a fork default while the agent keeps per-call control."""
+        captured: list[tuple[dict[str, Any], RunnableConfig]] = []
+
+        def lambda_subagent(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+            captured.append((state, config))
+            return {"messages": [AIMessage(content=f"Response for {state['messages'][-1].content}")]}
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Use default fork",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_default_fork",
+                                "type": "tool_call",
+                            },
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Override to fresh",
+                                    "subagent_type": "worker",
+                                    "fork_context": False,
+                                },
+                                "id": "call_override_fresh",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="Does work.",
+                    runnable=RunnableLambda(lambda_subagent),
+                    fork_context=True,
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="Parent context.")]},
+            config={"configurable": {"thread_id": "test_configured_fork_context"}},
+        )
+
+        assert len(captured) == 2
+        by_instruction = {state["messages"][-1].content: (state, config) for state, config in captured}
+
+        default_state, default_config = by_instruction["Use default fork"]
+        assert [message.content for message in default_state["messages"]] == [
+            "Parent context.",
+            "Use default fork",
+        ]
+        assert default_config["configurable"]["thread_id"] == "test_configured_fork_context:subagent:call_default_fork"
+
+        override_state, override_config = by_instruction["Override to fresh"]
+        assert [message.content for message in override_state["messages"]] == ["Override to fresh"]
+        assert override_config["configurable"]["thread_id"] == "test_configured_fork_context"
+
+    def test_task_fork_context_copies_exact_messages_without_summarizing(self) -> None:
+        """Forked message history should copy concrete parent messages, not summary views."""
         messages: list[AnyMessage] = [
             HumanMessage(content="Old human context."),
             AIMessage(content="Old assistant context."),
@@ -1685,18 +1756,19 @@ class TestSubAgents:
             "file_path": "/conversation_history/test.md",
         }
 
-        effective = subagents_middleware._apply_summarization_event(messages, event)
         forked = [
-            *subagents_middleware._messages_before_current_task_call(effective, "call_fork"),
+            *subagents_middleware._messages_before_current_task_call(messages, "call_fork"),
             HumanMessage(content="Do forked work"),
         ]
 
         assert [message.content for message in forked] == [
-            "Summary of old context.",
+            "Old human context.",
+            "Old assistant context.",
             "Recent human context.",
             "Do forked work",
         ]
         assert all(not (isinstance(message, AIMessage) and message.tool_calls) for message in forked)
+        assert event["summary_message"] not in forked
 
     def test_task_fork_context_preserves_prior_tool_history_when_trimming_current_task(self) -> None:
         """Only the current parent task turn should be removed from forked history."""

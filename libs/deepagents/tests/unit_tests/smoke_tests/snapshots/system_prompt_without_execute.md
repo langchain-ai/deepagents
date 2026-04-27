@@ -97,8 +97,9 @@ Subagent lifecycle:
 4. **Reconcile** → Incorporate or synthesize the result into the main thread
 
 Context modes:
-- By default, the subagent receives a fresh message context containing only your task description.
-- Set `fork_context=true` when the subagent needs the current conversation context as its starting point. This costs more tokens, so use it only when the existing context materially helps the subtask.
+- By default, the subagent uses its configured context mode. Most subagents start fresh, while some may default to forked context.
+- Set `fork_context=true` when the subagent needs the current conversation context as its starting point.
+- Set `fork_context=false` when you need to force a fresh isolated context for a subagent that defaults to forked context.
 
 When NOT to use the task tool:
 - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)

@@ -20,6 +20,7 @@ from collections.abc import (
 )
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -53,6 +54,12 @@ class _FakeChatModel(GenericFakeChatModel):
 def list_user_ids() -> list[int]:
     """List user IDs."""
     return [1, 21, 35, 41, 42, 43]
+
+
+@tool
+def echo_foo(foo: str) -> str:
+    """Echo the value of `foo`."""
+    return f"got {foo}"
 
 
 def _script() -> Iterator[AIMessage]:
@@ -104,3 +111,34 @@ async def test_async_ptc_eval_through_repl() -> None:
     """``ainvoke`` path: same guard on the async handler."""
     result = await _make_agent().ainvoke({"messages": [HumanMessage(content="go")]})
     _assert_no_error(_eval_tool_message(result).content)
+
+
+@pytest.mark.xfail
+def test_wrong_arg_name_surfaces_to_model() -> None:
+    """Document what the model sees when JS calls a tool with a misspelled arg."""
+    agent = create_deep_agent(
+        model=_FakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "eval",
+                                "args": {
+                                    "code": 'await tools.echoFoo({not_foo: "x"})',
+                                },
+                                "id": "call_1",
+                                "type": "tool_call",
+                            },
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        ),
+        middleware=[REPLMiddleware(ptc=[echo_foo])],
+    )
+    result = agent.invoke({"messages": [HumanMessage(content="go")]})
+    content = _eval_tool_message(result).content
+    assert "Host function failed" not in content

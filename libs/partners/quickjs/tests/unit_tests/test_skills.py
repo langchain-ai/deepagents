@@ -8,20 +8,22 @@ REPL wiring are covered in test_repl_middleware.py.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillMetadata
 from quickjs_rs import ModuleScope
 
 from langchain_quickjs._skills import (
+    InvalidSkillScopeError,
     SkillInstallError,
-    SkillScopeInvalid,
     aload_skill,
     load_skill,
     scan_skill_references,
 )
+
+if TYPE_CHECKING:
+    from deepagents.middleware.skills import SkillMetadata
 
 
 def _metadata(
@@ -158,7 +160,7 @@ def test_load_skill_missing_module_raises(tmp_path: Path) -> None:
     )
     meta = _metadata("prose", path=f"{skill_dir}/SKILL.md")  # no module
 
-    with pytest.raises(SkillScopeInvalid, match="no `module` frontmatter"):
+    with pytest.raises(InvalidSkillScopeError, match="no `module` frontmatter"):
         load_skill(meta, backend)
 
 
@@ -175,7 +177,7 @@ def test_load_skill_module_path_not_in_dir_raises(tmp_path: Path) -> None:
     )
     meta = _metadata("typo", path=f"{skill_dir}/SKILL.md", module="entry.ts")
 
-    with pytest.raises(SkillScopeInvalid, match="did not match any file"):
+    with pytest.raises(InvalidSkillScopeError, match="did not match any file"):
         load_skill(meta, backend)
 
 
@@ -190,7 +192,7 @@ def test_load_skill_empty_dir_raises(tmp_path: Path) -> None:
     )
     meta = _metadata("empty", path=f"{skill_dir}/SKILL.md", module="index.js")
 
-    with pytest.raises(SkillScopeInvalid, match="no JS/TS files"):
+    with pytest.raises(InvalidSkillScopeError, match="no JS/TS files"):
         load_skill(meta, backend)
 
 
@@ -206,7 +208,7 @@ def test_load_skill_invalid_name_rejected(tmp_path: Path) -> None:
     )
     meta = _metadata("bad name", path=f"{skill_dir}/SKILL.md", module="index.ts")
 
-    with pytest.raises(SkillScopeInvalid, match="kebab-case"):
+    with pytest.raises(InvalidSkillScopeError, match="kebab-case"):
         load_skill(meta, backend)
 
 

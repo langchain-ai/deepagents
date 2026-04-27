@@ -62,7 +62,7 @@ class SkillLoadError(Exception):
     """Base class for skill-load failures surfaced at install time."""
 
 
-class SkillScopeInvalid(SkillLoadError):
+class InvalidSkillScopeError(SkillLoadError):
     """Skill directory contains nothing installable.
 
     Either no module-extension files were found, or the frontmatter
@@ -96,13 +96,13 @@ def _skill_specifier(name: str) -> str:
     """Return the bare specifier a skill installs under.
 
     Raises:
-        SkillScopeInvalid: If the skill name is not a spec-valid
+        InvalidSkillScopeError: If the skill name is not a spec-valid
             kebab-case identifier. Guards against a malformed name
             silently becoming a weird install key.
     """
     if not _SKILL_NAME_RE.match(name):
         msg = f"skill name {name!r} is not a valid kebab-case identifier"
-        raise SkillScopeInvalid(msg)
+        raise InvalidSkillScopeError(msg)
     return f"@/skills/{name}"
 
 
@@ -203,7 +203,10 @@ def _validate_bundle_size(
 ) -> None:
     total = sum(len(c) for _, c in paths_and_contents)
     if total > _MAX_BUNDLE_BYTES:
-        msg = f"skill {skill_name!r} bundle exceeds {_MAX_BUNDLE_BYTES} bytes (total {total})"
+        msg = (
+            f"skill {skill_name!r} bundle exceeds {_MAX_BUNDLE_BYTES} bytes "
+            f"(total {total})"
+        )
         raise SkillInstallError(msg)
 
 
@@ -255,7 +258,7 @@ def _build_scope_modules(
             f"skill {skill_name!r}: module path {entry_rel!r} "
             "did not match any file in the skill directory"
         )
-        raise SkillScopeInvalid(msg)
+        raise InvalidSkillScopeError(msg)
     return files
 
 
@@ -266,7 +269,7 @@ def _require_module_path(metadata: SkillMetadata) -> str:
             f"skill {metadata['name']!r} has no `module` frontmatter key; "
             "only skills with a declared entrypoint are installable"
         )
-        raise SkillScopeInvalid(msg)
+        raise InvalidSkillScopeError(msg)
     return entry_rel
 
 
@@ -277,7 +280,7 @@ def load_skill(
     """Load one skill into a ``LoadedSkill``.
 
     Raises:
-        SkillScopeInvalid: Metadata has no `module` key, or the
+        InvalidSkillScopeError: Metadata has no `module` key, or the
             entrypoint doesn't match any file in the skill directory.
         SkillInstallError: Backend fetch failed, content was
             non-UTF-8, or the bundle exceeded the size cap.
@@ -290,7 +293,7 @@ def load_skill(
     code_files = _enumerate_code_files(backend, skill_dir)
     if not code_files:
         msg = f"skill {name!r}: no JS/TS files under {skill_dir!r}"
-        raise SkillScopeInvalid(msg)
+        raise InvalidSkillScopeError(msg)
 
     responses = backend.download_files(code_files)
     file_pairs: list[tuple[str, bytes]] = []
@@ -318,7 +321,7 @@ async def aload_skill(
     code_files = await _aenumerate_code_files(backend, skill_dir)
     if not code_files:
         msg = f"skill {name!r}: no JS/TS files under {skill_dir!r}"
-        raise SkillScopeInvalid(msg)
+        raise InvalidSkillScopeError(msg)
 
     responses = await backend.adownload_files(code_files)
     file_pairs: list[tuple[str, bytes]] = []
@@ -363,10 +366,10 @@ def scan_skill_references(source: str) -> frozenset[str]:
 
 __all__ = [
     "SKILL_MODULE_EXTENSIONS",
+    "InvalidSkillScopeError",
     "LoadedSkill",
     "SkillInstallError",
     "SkillLoadError",
-    "SkillScopeInvalid",
     "aload_skill",
     "load_skill",
     "scan_skill_references",

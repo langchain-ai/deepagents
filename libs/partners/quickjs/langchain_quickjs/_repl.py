@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import threading
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -110,9 +111,9 @@ def _format_handle(handle: Any) -> str:
                 arity = arity_h.to_python()
             finally:
                 arity_h.dispose()
-            return f"[Function] arity={arity}"
         except Exception:  # noqa: BLE001 — best-effort
             return "[Function]"
+        return f"[Function] arity={arity}"
     return f"[{kind}]"
 
 
@@ -241,8 +242,6 @@ def _synth_tool_call_id(tool_name: str) -> str:
     state (checkpointer, tracing) can correlate the PTC sub-call back
     to the REPL cell that issued it.
     """
-    import uuid
-
     return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
 
 
@@ -262,7 +261,9 @@ def _inject_tool_args_for_ptc(
     ``tool_call_id`` is freshly minted per sub-call.
     """
     try:
-        from langgraph.prebuilt.tool_node import _get_all_injected_args
+        from langgraph.prebuilt.tool_node import (  # noqa: PLC0415 — optional dep, imported here so ImportError is catchable
+            _get_all_injected_args,
+        )
     except ImportError:  # pragma: no cover — langgraph always present
         return payload
 
@@ -728,9 +729,8 @@ def format_outcome(
     else:
         body = outcome.result if outcome.result is not None else "undefined"
         kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
-        parts.append(
-            f"<result{kind_attr}>{_xml_escape(_truncate(body, max_result_chars))}</result>"
-        )
+        body_xml = _xml_escape(_truncate(body, max_result_chars))
+        parts.append(f"<result{kind_attr}>{body_xml}</result>")
     return "\n".join(parts)
 
 

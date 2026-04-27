@@ -67,7 +67,11 @@ def filter_tools_for_ptc(
     """
     if config is False:
         return []
-    if isinstance(config, list) and config and any(isinstance(t, BaseTool) for t in config):
+    if (
+        isinstance(config, list)
+        and config
+        and any(isinstance(t, BaseTool) for t in config)
+    ):
         if any(not isinstance(t, BaseTool) for t in config):
             msg = "ptc list must be all str or all BaseTool, not mixed"
             raise TypeError(msg)
@@ -188,7 +192,7 @@ def _json_schema_to_ts(prop: dict[str, Any]) -> str:
     t = prop.get("type")
     if t == "string":
         return "string"
-    if t == "integer" or t == "number":
+    if t in {"integer", "number"}:
         return "number"
     if t == "boolean":
         return "boolean"

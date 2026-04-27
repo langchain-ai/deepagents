@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from langchain_core.tools import BaseTool
 
@@ -75,7 +75,8 @@ def filter_tools_for_ptc(
         if any(not isinstance(t, BaseTool) for t in config):
             msg = "ptc list must be all str or all BaseTool, not mixed"
             raise TypeError(msg)
-        return [t for t in config if t.name != self_tool_name]
+        config_cast = cast("list[BaseTool]", config)
+        return [t for t in config_cast if t.name != self_tool_name]
     candidates = [t for t in tools if t.name != self_tool_name]
     if config is True:
         return candidates

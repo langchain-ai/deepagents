@@ -1,5 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Client } from "@langchain/langgraph-sdk";
+import { HumanMessage } from "@langchain/core/messages";
 
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
@@ -151,7 +152,7 @@ function NewChatApp({
   });
 
   const { messages, isLoading, error, values } = stream;
-  const files = (values.files ?? {}) as Record<string, unknown>;
+  const files = values.files ?? {};
   const todos = values.todos ?? [];
   const todoCount = todos.length;
   const fileCount = Object.keys(files).length;
@@ -188,7 +189,7 @@ function NewChatApp({
 
     setInput("");
     await stream.submit(
-      { messages: [{ type: "human", content: text }] },
+      { messages: [new HumanMessage(text)] },
       { streamSubgraphs: true },
     );
   }, [input, isLoading, stream, threadId]);

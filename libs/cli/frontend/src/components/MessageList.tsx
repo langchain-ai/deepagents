@@ -6,7 +6,8 @@ import {
   getImageBlocks,
 } from "../lib/stream";
 import type { AgentStream } from "../types";
-import type { AIMessage } from "@langchain/langgraph-sdk";
+import { AIMessage } from "@langchain/core/messages";
+import type { AIMessage as SdkAIMessage } from "@langchain/langgraph-sdk";
 import { SubagentPipeline, SynthesisIndicator } from "./SubagentActivity";
 import ToolCallCard from "./ToolCallCard";
 
@@ -88,8 +89,10 @@ const MessageList: FC<MessageListProps> = ({
             );
           }
 
-          if (message.getType() === "ai") {
-            const toolCalls = stream.getToolCalls(message as AIMessage);
+          if (AIMessage.isInstance(message)) {
+            // SDK's getToolCalls is parameterized over its own AIMessage<ToolCall>;
+            // structurally identical to core's AIMessage but TS sees them as distinct.
+            const toolCalls = stream.getToolCalls(message as unknown as SdkAIMessage);
             const messageSubagents = message.id
               ? stream.getSubagentsByMessage(message.id)
               : [];

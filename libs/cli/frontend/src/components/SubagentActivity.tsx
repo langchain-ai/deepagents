@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FC } from "react";
 import { Streamdown } from "streamdown";
 import type { SubagentStatus } from "@langchain/react";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { AgentSubagent } from "../types";
 import { getElapsedTime } from "../lib/stream";
 
@@ -80,20 +81,12 @@ const SubagentCard: FC<{
       : "";
   const title = typeName ?? `Agent ${subagent.id.slice(0, 8)}`;
   const elapsed = getElapsedTime(subagent.startedAt, subagent.completedAt);
-  const lastAIMessage = subagent.messages.filter((m) => m.type === "ai").at(-1);
+  // SubagentStreamInterface still types `messages` as the SDK's Message[]; at runtime they're
+  // BaseMessage instances (the react package normalizes), so the cast is safe.
+  const subagentMessages = subagent.messages as unknown as BaseMessage[];
+  const lastAIMessage = subagentMessages.filter(AIMessage.isInstance).at(-1);
   const isStreaming = subagent.status === "running";
-  const lastAIContent = lastAIMessage?.content;
-  const lastAIText =
-    typeof lastAIContent === "string"
-      ? lastAIContent
-      : Array.isArray(lastAIContent)
-        ? lastAIContent
-            .filter((b): b is { type: "text"; text: string } =>
-              typeof b === "object" && b !== null && "type" in b && b.type === "text" && "text" in b,
-            )
-            .map((b) => b.text)
-            .join("")
-        : "";
+  const lastAIText = lastAIMessage?.text ?? "";
   const displayContent =
     subagent.status === "complete" ? subagent.result ?? "" : lastAIText;
 

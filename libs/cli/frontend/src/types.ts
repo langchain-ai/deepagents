@@ -1,5 +1,6 @@
 import type { UseStream, DefaultToolCall, SubagentStreamInterface } from "@langchain/react";
-import type { Message, Thread, ToolCallWithResult as SdkToolCallWithResult } from "@langchain/langgraph-sdk";
+import type { BaseMessage } from "@langchain/core/messages";
+import type { Thread, ToolCallWithResult as SdkToolCallWithResult } from "@langchain/langgraph-sdk";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | string;
 
@@ -10,7 +11,7 @@ export interface TodoItem {
 }
 
 export interface AgentState extends Record<string, unknown> {
-  messages: Message<DefaultToolCall>[];
+  messages: BaseMessage[];
   files?: Record<string, unknown>;
   todos?: TodoItem[];
 }

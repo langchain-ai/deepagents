@@ -12,10 +12,11 @@ given provider or specific model spec. The registry is consumed by
 kwargs, running pre-initialization side effects, and deriving kwargs from
 runtime state (e.g. environment variables).
 """
-# Built-in profiles are registered at import time for `"openai"` (enables the
-# Responses API by default) and `"openrouter"` (enforces a minimum version and
-# injects app-attribution headers). Additional providers or per-model overrides
-# can be registered with `register_provider_profile`.
+# Built-in profiles are registered lazily on first registry access for
+# `"openai"` (enables the Responses API by default) and `"openrouter"`
+# (enforces a minimum version and injects app-attribution headers).
+# Additional providers or per-model overrides can be registered with
+# `register_provider_profile`.
 
 from __future__ import annotations
 
@@ -165,6 +166,31 @@ _PROVIDER_PROFILES: dict[str, ProviderProfile] = {}
 """Internal registry mapping provider-profile keys to `ProviderProfile` instances."""
 
 
+def _ensure_provider_profiles_loaded() -> None:
+    """Ensure the lazy built-in/profile-plugin bootstrap has completed."""
+    from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded  # noqa: PLC0415
+
+    _ensure_builtin_profiles_loaded()
+
+
+def _register_provider_profile_impl(key: str, profile: ProviderProfile) -> None:
+    """Core implementation behind `register_provider_profile`.
+
+    Callers are responsible for any lazy-bootstrap coordination.
+    """
+    validate_profile_key(key)
+    existing = _PROVIDER_PROFILES.get(key)
+    if existing is not None:
+        logger.info(
+            "Merging ProviderProfile under %r on top of existing registration; "
+            "init_kwargs and factory outputs merge with the new profile winning "
+            "on shared keys, and pre_init callables chain.",
+            key,
+        )
+        profile = _merge_provider_profiles(existing, profile)
+    _PROVIDER_PROFILES[key] = profile
+
+
 def register_provider_profile(key: str, profile: ProviderProfile) -> None:
     """Register a `ProviderProfile` for a provider or specific model.
 
@@ -175,9 +201,10 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         for more details.
 
     Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded at import time), the new profile
-    is merged on top rather than replacing it. The incoming profile's fields
-    win on conflicts; unspecified fields inherit from the existing profile.
+    `key` (including a built-in profile loaded during lazy bootstrap), the new
+    profile is merged on top rather than replacing it. The incoming profile's
+    fields win on conflicts; unspecified fields inherit from the existing
+    profile.
     `pre_init` callables chain (existing runs first), and `init_kwargs_factory`
     callables chain — both factories are invoked at every resolution (base
     first, then override) and their outputs merge with the override's values
@@ -215,21 +242,18 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         ValueError: If `key` is empty, contains more than one `:`, or has an
             empty provider/model half.
     """
-    validate_profile_key(key)
-    existing = _PROVIDER_PROFILES.get(key)
-    if existing is not None:
-        logger.info(
-            "Merging ProviderProfile under %r on top of existing registration; "
-            "init_kwargs and factory outputs merge with the new profile winning "
-            "on shared keys, and pre_init callables chain.",
-            key,
-        )
-        profile = _merge_provider_profiles(existing, profile)
-    _PROVIDER_PROFILES[key] = profile
+    _ensure_provider_profiles_loaded()
+    _register_provider_profile_impl(key, profile)
 
 
-def _get_provider_profile(spec: str) -> ProviderProfile | None:
+def get_provider_profile(spec: str) -> ProviderProfile | None:
     """Look up the `ProviderProfile` for a model spec.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
 
     Resolution order:
 
@@ -251,6 +275,11 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
     prevents a spec like `"openai:"` from silently matching the provider-wide
     `"openai"` registration.
 
+    Most callers should reach for `apply_provider_profile` instead — it
+    composes lookup, `pre_init`, and kwargs merging into one call. Use
+    `get_provider_profile` when you need to inspect what is registered without
+    side effects (e.g. tooling, conditional logic on `pre_init` presence).
+
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
             identifier.
@@ -265,6 +294,7 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
     if sep and (not provider or not model):
         return None
 
+    _ensure_provider_profiles_loaded()
     exact = _PROVIDER_PROFILES.get(spec)
     base = _PROVIDER_PROFILES.get(provider) if sep else None
 
@@ -280,6 +310,67 @@ def _get_provider_profile(spec: str) -> ProviderProfile | None:
         )
         return base
     return None
+
+
+def apply_provider_profile(
+    spec: str,
+    kwargs: Mapping[str, Any] | None = None,
+    *,
+    run_pre_init: bool = True,
+) -> dict[str, Any]:
+    """Compose `init_chat_model` kwargs from the registered profile for `spec`.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
+
+    Looks up the profile via `get_provider_profile`, runs its `pre_init` hook
+    (unless suppressed), and returns a fresh dict combining `init_kwargs`,
+    `init_kwargs_factory()` output, and `kwargs`. Caller-supplied `kwargs`
+    take highest precedence — profile defaults sit beneath them — so
+    user-provided values from config files or explicit overrides are never
+    silently replaced.
+
+    When no profile is registered for `spec`, returns a copy of `kwargs`
+    unchanged. This keeps the helper safe to call unconditionally.
+
+    Used by `resolve_model` and intended for any harness that needs to honor
+    `ProviderProfile` registrations while building chat models through its own
+    pipeline (e.g. a CLI that layers config-file values on top of SDK defaults).
+
+    Args:
+        spec: Model spec in `provider:model` format, or a bare provider/model
+            identifier.
+
+            Same shape accepted by `get_provider_profile`.
+        kwargs: Caller-supplied kwargs that override profile defaults on
+            shared keys.
+
+            Defaults to an empty mapping.
+        run_pre_init: When `True` (default), invokes the profile's `pre_init`
+            hook before composing kwargs.
+
+            Set `False` to inspect the merged kwargs without firing
+            side effects (e.g. dry-run, validation).
+
+    Returns:
+        A fresh `dict` ready to spread into `init_chat_model`.
+    """
+    base: dict[str, Any] = dict(kwargs) if kwargs else {}
+    profile = get_provider_profile(spec)
+    if profile is None:
+        return base
+
+    if run_pre_init and profile.pre_init is not None:
+        profile.pre_init(spec)
+
+    merged: dict[str, Any] = dict(profile.init_kwargs)
+    if profile.init_kwargs_factory is not None:
+        merged.update(profile.init_kwargs_factory())
+    merged.update(base)
+    return merged
 
 
 def _merge_provider_profiles(base: ProviderProfile, override: ProviderProfile) -> ProviderProfile:

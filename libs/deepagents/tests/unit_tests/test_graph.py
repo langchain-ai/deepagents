@@ -265,11 +265,11 @@ class TestToolDescriptionOverrides:
 
 
 class TestDefaultModelProfile:
-    """Tests for default model=None getting the default profile."""
+    """Tests for harness-profile lookup on Anthropic model keys."""
 
-    def test_default_model_has_no_registered_profile(self) -> None:
-        """No anthropic-specific registration means lookup returns None."""
-        assert _get_harness_profile("anthropic:claude-sonnet-4-6") is None
+    def test_unregistered_anthropic_model_returns_none(self) -> None:
+        """An Anthropic model without a built-in registration falls through."""
+        assert _get_harness_profile("anthropic:claude-sonnet-4-5") is None
 
 
 class TestToolDescriptionOverrideWiring:
@@ -1282,9 +1282,9 @@ class TestStringFormExcludedMiddleware:
         """Underscore-prefixed string entries raise `ValueError` at construction.
 
         The grammar guard on `HarnessProfile.__post_init__` rejects private
-        plain names up front. This catches typos eagerly and forces callers
-        who genuinely need to exclude a private middleware to use the
-        `module:Class` import-ref form instead.
+        plain names up front. This catches typos eagerly; callers who
+        genuinely need to exclude a private middleware can pass the class
+        directly via the runtime `HarnessProfile`.
         """
         with pytest.raises(ValueError, match="cannot start with '_'"):
             HarnessProfile(excluded_middleware=frozenset({entry}))

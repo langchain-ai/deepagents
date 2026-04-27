@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
@@ -16,7 +17,6 @@ from deepagents._models import (
     model_matches_spec,
     resolve_model,
 )
-from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -41,8 +41,9 @@ from deepagents.profiles.provider._openrouter import (
 )
 from deepagents.profiles.provider.provider_profiles import (
     _PROVIDER_PROFILES,
-    _get_provider_profile,
     _merge_provider_profiles,
+    apply_provider_profile,
+    get_provider_profile,
 )
 
 
@@ -332,7 +333,7 @@ class TestProviderProfileRegistry:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("test_provider", profile)
-            assert _get_provider_profile("test_provider:some-model") is profile
+            assert get_provider_profile("test_provider:some-model") is profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -344,22 +345,22 @@ class TestProviderProfileRegistry:
         try:
             register_provider_profile("test_prov", base_profile)
             register_provider_profile("test_prov:special-model", model_profile)
-            merged = _get_provider_profile("test_prov:special-model")
+            merged = get_provider_profile("test_prov:special-model")
             assert merged.init_kwargs == {"a": 1, "b": 2}
-            assert _get_provider_profile("test_prov:other-model") is base_profile
+            assert get_provider_profile("test_prov:other-model") is base_profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
     def test_returns_none_for_unknown(self) -> None:
-        assert _get_provider_profile("nonexistent:model") is None
+        assert get_provider_profile("nonexistent:model") is None
 
     def test_bare_model_name_without_colon_returns_none(self) -> None:
-        assert _get_provider_profile("claude-sonnet-4-6") is None
+        assert get_provider_profile("claude-sonnet-4-6") is None
 
     def test_empty_spec_returns_none(self) -> None:
         """Empty spec has no colon and no exact match."""
-        assert _get_provider_profile("") is None
+        assert get_provider_profile("") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
         """A typo'd model spec should fall back to the provider profile, not None."""
@@ -367,7 +368,123 @@ class TestProviderProfileRegistry:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("fbprov", base)
-            assert _get_provider_profile("fbprov:missing-model") is base
+            assert get_provider_profile("fbprov:missing-model") is base
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestApplyProviderProfile:
+    """Tests for the `apply_provider_profile` convenience helper.
+
+    Verifies the merge contract used by `resolve_model` and any external
+    harness building chat models through its own pipeline: caller kwargs win
+    on conflict, profile defaults sit beneath them, `pre_init` fires for side
+    effects unless suppressed, and unregistered specs no-op cleanly.
+    """
+
+    def test_unregistered_spec_returns_kwargs_copy(self) -> None:
+        """No registered profile means kwargs flow through unchanged."""
+        kwargs = {"temperature": 0.5}
+        result = apply_provider_profile("nonexistent:model", kwargs)
+        assert result == kwargs
+        assert result is not kwargs  # fresh dict
+
+    def test_unregistered_spec_with_no_kwargs_returns_empty_dict(self) -> None:
+        """Calling without kwargs on an unregistered spec yields empty dict."""
+        assert apply_provider_profile("nonexistent:model") == {}
+
+    def test_profile_defaults_applied_when_no_kwargs(self) -> None:
+        """Profile `init_kwargs` flow through when no caller kwargs are given."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "appprov",
+                ProviderProfile(init_kwargs={"temperature": 0.7, "stream": True}),
+            )
+            result = apply_provider_profile("appprov")
+            assert result == {"temperature": 0.7, "stream": True}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_caller_kwargs_win_on_conflict(self) -> None:
+        """Caller-supplied kwargs override profile defaults on shared keys."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "winprov",
+                ProviderProfile(init_kwargs={"temperature": 0, "shared": "profile"}),
+            )
+            result = apply_provider_profile("winprov", {"shared": "caller"})
+            assert result == {"temperature": 0, "shared": "caller"}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_factory_output_layered_under_caller(self) -> None:
+        """`init_kwargs_factory` runs and merges beneath caller kwargs."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "factprov",
+                ProviderProfile(
+                    init_kwargs={"a": 1},
+                    init_kwargs_factory=lambda: {"b": 2, "shared": "factory"},
+                ),
+            )
+            result = apply_provider_profile("factprov", {"shared": "caller", "c": 3})
+            assert result == {"a": 1, "b": 2, "shared": "caller", "c": 3}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_pre_init_runs_with_spec_by_default(self) -> None:
+        """`pre_init` is invoked with the resolved spec by default."""
+        seen: list[str] = []
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "preinitprov",
+                ProviderProfile(pre_init=seen.append),
+            )
+            apply_provider_profile("preinitprov:m")
+            assert seen == ["preinitprov:m"]
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_pre_init_suppressed_with_run_pre_init_false(self) -> None:
+        """`run_pre_init=False` skips the side-effectful hook."""
+        seen: list[str] = []
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "noinitprov",
+                ProviderProfile(
+                    init_kwargs={"k": "v"},
+                    pre_init=seen.append,
+                ),
+            )
+            result = apply_provider_profile("noinitprov", run_pre_init=False)
+            assert seen == []
+            assert result == {"k": "v"}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_caller_kwargs_dict_not_mutated(self) -> None:
+        """The caller's `kwargs` mapping is never mutated in place."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "immprov",
+                ProviderProfile(init_kwargs={"profile_only": "x"}),
+            )
+            caller_kwargs = {"caller_only": "y"}
+            result = apply_provider_profile("immprov", caller_kwargs)
+            assert caller_kwargs == {"caller_only": "y"}  # untouched
+            assert result == {"profile_only": "x", "caller_only": "y"}
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -387,7 +504,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             register_provider_profile("layered_prov", ProviderProfile(init_kwargs={"a": 1}))
             register_provider_profile("layered_prov", ProviderProfile(init_kwargs={"b": 2}))
-            profile = _get_provider_profile("layered_prov")
+            profile = get_provider_profile("layered_prov")
             assert profile.init_kwargs == {"a": 1, "b": 2}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -399,7 +516,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             register_provider_profile("coll_prov", ProviderProfile(init_kwargs={"shared": "first"}))
             register_provider_profile("coll_prov", ProviderProfile(init_kwargs={"shared": "second"}))
-            profile = _get_provider_profile("coll_prov")
+            profile = get_provider_profile("coll_prov")
             assert profile.init_kwargs == {"shared": "second"}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -410,7 +527,7 @@ class TestRegisterProviderProfileAdditive:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("openai", ProviderProfile(init_kwargs={"temperature": 0}))
-            profile = _get_provider_profile("openai:gpt-5")
+            profile = get_provider_profile("openai:gpt-5")
             assert profile.init_kwargs == {"use_responses_api": True, "temperature": 0}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -424,7 +541,7 @@ class TestRegisterProviderProfileAdditive:
                 "openai",
                 ProviderProfile(init_kwargs={"use_responses_api": False}),
             )
-            profile = _get_provider_profile("openai:gpt-5")
+            profile = get_provider_profile("openai:gpt-5")
             assert profile.init_kwargs == {"use_responses_api": False}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -443,7 +560,7 @@ class TestRegisterProviderProfileAdditive:
                 "chain_prov",
                 ProviderProfile(pre_init=lambda spec: calls.append(f"second:{spec}")),
             )
-            profile = _get_provider_profile("chain_prov")
+            profile = get_provider_profile("chain_prov")
             assert profile.pre_init is not None
             profile.pre_init("spec")
             assert calls == ["first:spec", "second:spec"]
@@ -457,7 +574,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             profile = ProviderProfile(init_kwargs={"unique_key": True})
             register_provider_profile("novelprov", profile)
-            assert _get_provider_profile("novelprov") is profile
+            assert get_provider_profile("novelprov") is profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -699,18 +816,10 @@ class TestRegisterHarnessProfileAdditive:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_config_import_refs_convert_to_exact_class_exclusions(self) -> None:
-        """Config-file import refs resolve to class-form runtime exclusions."""
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile(
-                "import_ref_harness",
-                HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"})),
-            )
-            assert _get_harness_profile("import_ref_harness") == HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware}))
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+    def test_config_class_path_entries_are_rejected(self) -> None:
+        """Class-path (`module:Class`) entries are reserved for a future revision."""
+        with pytest.raises(ValueError, match="not currently supported"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"}))
 
 
 class TestMergeHarnessProfiles:
@@ -887,7 +996,7 @@ class TestProfileMergingEndToEnd:
                 "openai:o3-pro",
                 ProviderProfile(init_kwargs={"reasoning_effort": "high"}),
             )
-            profile = _get_provider_profile("openai:o3-pro")
+            profile = get_provider_profile("openai:o3-pro")
             assert profile.init_kwargs == {
                 "use_responses_api": True,
                 "reasoning_effort": "high",
@@ -929,16 +1038,78 @@ class TestBuiltInProfiles:
     """Tests for built-in provider and harness registrations."""
 
     def test_openai_provider_profile_sets_responses_api(self) -> None:
-        profile = _get_provider_profile("openai:gpt-5")
+        profile = get_provider_profile("openai:gpt-5")
         assert profile.init_kwargs == {"use_responses_api": True}
 
     def test_openrouter_provider_profile_has_pre_init_and_factory(self) -> None:
-        profile = _get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
+        profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None
+
+    def test_anthropic_provider_has_no_built_in_profile(self) -> None:
+        """Anthropic registers per-model harness profiles, not a provider-level one."""
+        assert _get_harness_profile("anthropic:claude-2.1") is None
+
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "anthropic:claude-opus-4-7",
+            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-haiku-4-5",
+        ],
+    )
+    def test_anthropic_latest_models_have_harness_profile(self, model_key: str) -> None:
+        """Each latest Anthropic model registers a non-empty harness profile."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "<use_parallel_tool_calls>" in profile.system_prompt_suffix
+        assert "<investigate_before_answering>" in profile.system_prompt_suffix
+        assert "<tool_result_reflection>" in profile.system_prompt_suffix
+
+    def test_opus_4_7_suffix_contains_model_specific_overlays(self) -> None:
+        """Only Opus 4.7 carries the tool-usage and subagent-usage overlays."""
+        profile = _get_harness_profile("anthropic:claude-opus-4-7")
+        assert profile is not None
+        assert "<tool_usage>" in profile.system_prompt_suffix
+        assert "<subagent_usage>" in profile.system_prompt_suffix
+
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "anthropic:claude-sonnet-4-6",
+            "anthropic:claude-haiku-4-5",
+        ],
+    )
+    def test_sonnet_and_haiku_have_no_model_specific_overlays(
+        self,
+        model_key: str,
+    ) -> None:
+        """Sonnet 4.6 and Haiku 4.5 carry only the universal Claude sections."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert "<tool_usage>" not in profile.system_prompt_suffix
+        assert "<subagent_usage>" not in profile.system_prompt_suffix
+
+    def test_anthropic_universal_sections_are_identical_across_models(self) -> None:
+        """Guard against drift in the duplicated universal prompt sections.
+
+        Each Anthropic harness module duplicates the three universal
+        sections verbatim (accepted cost of per-model self-containment);
+        this test asserts they stay in lock-step. If one module updates
+        the text, the others must follow or this test will flag it.
+        """
+        opus = _get_harness_profile("anthropic:claude-opus-4-7")
+        sonnet = _get_harness_profile("anthropic:claude-sonnet-4-6")
+        haiku = _get_harness_profile("anthropic:claude-haiku-4-5")
+        assert opus is not None
+        assert sonnet is not None
+        assert haiku is not None
+        assert opus.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
+        assert sonnet.system_prompt_suffix == haiku.system_prompt_suffix
 
 
 class TestBuiltInCodexProfile:
@@ -991,13 +1162,13 @@ class TestBuiltInCodexProfile:
         without updating this test — ensures the pure-harness scope of
         PR C stays explicit rather than drifting silently.
         """
-        profile = _get_provider_profile(spec)
+        profile = get_provider_profile(spec)
         assert profile is not None
         assert profile.init_kwargs == {"use_responses_api": True}
 
     def test_non_codex_openai_unaffected_by_codex_registrations(self) -> None:
         """Codex per-model registrations must not leak into plain OpenAI models."""
-        provider = _get_provider_profile("openai:gpt-5")
+        provider = get_provider_profile("openai:gpt-5")
         assert provider is not None
         assert provider.init_kwargs == {"use_responses_api": True}
         assert _get_harness_profile("openai:gpt-5") is None
@@ -1042,31 +1213,35 @@ class TestProfilePluginLoader:
     def _isolate_loader_state(self) -> Iterator[None]:
         """Snapshot and restore loader globals plus both registries around every test.
 
-        The real bootstrap runs once at `deepagents.profiles` import, so by
-        the time this class executes, `_loaded` is `True` and the registries
-        hold built-in entries. Tests here reset `_loaded` to re-exercise the
-        loader with patched entry points; without this fixture they would
-        leak frozen snapshots and mutated registry state into sibling tests
-        — including `test_graph.TestHasAnyHarnessProfile`, which asserts
+        The real bootstrap runs once per process on first profile-registry
+        access. Tests here reset loader state to re-exercise bootstrap with
+        patched entry points; without this fixture they would leak frozen
+        snapshots and mutated registry state into sibling tests — including
+        `test_graph.TestHasAnyHarnessProfile`, which asserts
         `_has_any_harness_profile() is False` at start.
         """
         from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
 
         saved_loaded = _builtin_profiles._loaded
+        saved_loading_thread_id = _builtin_profiles._loading_thread_id
         saved_snapshot = _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
         saved_harness = dict(_HARNESS_PROFILES)
         saved_provider = dict(_PROVIDER_PROFILES)
         try:
             _builtin_profiles._loaded = False
+            _builtin_profiles._loading_thread_id = None
             _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = frozenset()
             yield
         finally:
             _builtin_profiles._loaded = saved_loaded
+            _builtin_profiles._loading_thread_id = saved_loading_thread_id
             _builtin_profiles._BOOTSTRAP_HARNESS_KEYS = saved_snapshot
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(saved_harness)
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(saved_provider)
+            with _builtin_profiles._BOOTSTRAP_CONDITION:
+                _builtin_profiles._BOOTSTRAP_CONDITION.notify_all()
 
     def test_iterates_both_entry_point_groups(self) -> None:
         """Loader must query both provider and harness entry-point groups."""
@@ -1280,6 +1455,251 @@ class TestProfilePluginLoader:
         # user-registered profiles apart from bootstrap defaults.
         register_harness_profile("postbootstrap:model", HarnessProfile())
         assert "postbootstrap:model" not in _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+
+    def test_bootstrap_failure_rolls_back_and_waiter_retries(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A failing bootstrap must restore registry state before a retry."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.provider import _openrouter  # noqa: PLC0415
+
+        bootstrap_started = threading.Event()
+        waiter_waiting = threading.Event()
+        allow_failure = threading.Event()
+        results: dict[str, ProviderProfile | None | RuntimeError] = {}
+        original_register = _openrouter.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+        call_count = 0
+
+        def flaky_register() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                bootstrap_started.set()
+                assert allow_failure.wait(timeout=5)
+                msg = "boom"
+                raise RuntimeError(msg)
+            original_register()
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            waiter_waiting.set()
+            return original_wait(timeout)
+
+        def first_reader() -> None:
+            try:
+                get_provider_profile("openai:gpt-5")
+            except RuntimeError as exc:
+                results["first_exc"] = exc
+
+        def second_reader() -> None:
+            results["second"] = get_provider_profile("openai:gpt-5")
+
+        with (
+            caplog.at_level(logging.INFO, logger="deepagents.profiles.provider.provider_profiles"),
+            caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_openrouter, "register", side_effect=flaky_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            first = threading.Thread(target=first_reader)
+            second = threading.Thread(target=second_reader)
+            try:
+                first.start()
+                assert bootstrap_started.wait(timeout=5)
+                second.start()
+                assert waiter_waiting.wait(timeout=5)
+            finally:
+                allow_failure.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert isinstance(results["first_exc"], RuntimeError)
+        assert results["second"] is not None
+        assert dict(results["second"].init_kwargs) == {"use_responses_api": True}
+        assert _builtin_profiles._loaded is True
+        assert not any("Merging ProviderProfile under 'openai'" in rec.message for rec in caplog.records)
+        assert any("Built-in profile bootstrap failed" in rec.message for rec in caplog.records)
+
+    def test_concurrent_first_read_waits_for_bootstrap(self) -> None:
+        """Concurrent first reads must all wait for bootstrap completion."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.provider import _openai  # noqa: PLC0415
+
+        started = threading.Event()
+        release = threading.Event()
+        waiters_waiting = threading.Event()
+        waiters_waiting_lock = threading.Lock()
+        waiter_count = 0
+        results: dict[str, ProviderProfile | None] = {}
+        original_register = _openai.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+
+        def slow_register() -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            original_register()
+
+        def first_reader() -> None:
+            results["first"] = get_provider_profile("openai:gpt-5")
+
+        def waiter_reader(key: str) -> None:
+            results[key] = get_provider_profile("openai:gpt-5")
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            nonlocal waiter_count
+            with waiters_waiting_lock:
+                waiter_count += 1
+                if waiter_count == 2:
+                    waiters_waiting.set()
+            return original_wait(timeout)
+
+        with (
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_openai, "register", side_effect=slow_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            first = threading.Thread(target=first_reader)
+            second = threading.Thread(target=waiter_reader, args=("second",))
+            third = threading.Thread(target=waiter_reader, args=("third",))
+            first.start()
+            assert started.wait(timeout=5)
+            second.start()
+            third.start()
+            assert waiters_waiting.wait(timeout=5)
+            release.set()
+            first.join(timeout=5)
+            second.join(timeout=5)
+            third.join(timeout=5)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not third.is_alive()
+        assert _builtin_profiles._loaded is True
+        assert results["first"] is not None
+        assert results["second"] is not None
+        assert results["third"] is not None
+        assert dict(results["second"].init_kwargs) == {"use_responses_api": True}
+        assert dict(results["third"].init_kwargs) == {"use_responses_api": True}
+
+    def test_concurrent_user_registration_waits_until_snapshot_taken(self) -> None:
+        """Concurrent user registration must not leak into bootstrap snapshots."""
+        from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
+        from deepagents.profiles.harness import _anthropic_opus_4_7  # noqa: PLC0415
+        from deepagents.profiles.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+
+        started = threading.Event()
+        release = threading.Event()
+        waiter_waiting = threading.Event()
+        original_register = _anthropic_opus_4_7.register
+        original_wait = _builtin_profiles._BOOTSTRAP_CONDITION.wait
+
+        def slow_register() -> None:
+            started.set()
+            assert release.wait(timeout=5)
+            original_register()
+
+        def user_register() -> None:
+            register_harness_profile("custom:model", HarnessProfile(system_prompt_suffix="x"))
+
+        def wait_wrapper(timeout: float | None = None) -> bool:
+            waiter_waiting.set()
+            return original_wait(timeout)
+
+        with (
+            patch("deepagents.profiles._builtin_profiles.entry_points", return_value=[]),
+            patch.object(_anthropic_opus_4_7, "register", side_effect=slow_register),
+            patch.object(_builtin_profiles._BOOTSTRAP_CONDITION, "wait", side_effect=wait_wrapper),
+        ):
+            bootstrap = threading.Thread(target=_builtin_profiles._ensure_builtin_profiles_loaded)
+            second = threading.Thread(target=user_register)
+            bootstrap.start()
+            assert started.wait(timeout=5)
+            second.start()
+            assert waiter_waiting.wait(timeout=5)
+            assert "custom:model" not in _HARNESS_PROFILES
+            release.set()
+            bootstrap.join(timeout=5)
+            second.join(timeout=5)
+
+        assert not bootstrap.is_alive()
+        assert not second.is_alive()
+        assert "custom:model" in _HARNESS_PROFILES
+        assert "custom:model" not in _builtin_profiles._BOOTSTRAP_HARNESS_KEYS
+        assert _has_any_harness_profile() is True
+
+
+class TestLazyBootstrap:
+    """Tests for lazy `_ensure_builtin_profiles_loaded` invocation.
+
+    The bootstrap runs on first registry access rather than at
+    `deepagents.profiles` import to keep cold-importing
+    `deepagents._models` (and therefore `deepagents_cli` startup) cheap
+    when the caller never reads the registry. Each test here spawns a
+    subprocess to get a clean interpreter — once the in-process bootstrap
+    has run for any earlier test, `_loaded` cannot be observed as `False`
+    in this process.
+    """
+
+    def _run(self, body: str) -> str:
+        """Run `body` in a fresh subprocess and return its stdout."""
+        import subprocess  # noqa: PLC0415
+        import sys  # noqa: PLC0415
+
+        result = subprocess.run(  # noqa: S603  # body is a hardcoded test literal
+            [sys.executable, "-c", body],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    def test_importing_models_does_not_bootstrap(self) -> None:
+        """Cold-importing `deepagents._models` must not trigger bootstrap."""
+        out = self._run(
+            "import deepagents._models\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
+            "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
+        )
+        assert out == "False 0 0"
+
+    def test_model_matches_spec_does_not_bootstrap(self) -> None:
+        """`model_matches_spec` is the symbol the CLI imports; it must stay cheap."""
+        out = self._run(
+            "from deepagents._models import model_matches_spec\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
+            "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
+        )
+        assert out == "False 0 0"
+
+    def test_get_provider_profile_triggers_bootstrap(self) -> None:
+        """First registry read flips `_loaded` to `True`."""
+        out = self._run(
+            "from deepagents.profiles.provider.provider_profiles import get_provider_profile\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "before = _builtin_profiles._loaded\n"
+            "get_provider_profile('openai:gpt-5')\n"
+            "print(before, _builtin_profiles._loaded)\n"
+        )
+        assert out == "False True"
+
+    def test_register_harness_profile_triggers_bootstrap(self) -> None:
+        """First registration call flips `_loaded` to `True` before registering."""
+        out = self._run(
+            "from deepagents.profiles.harness_profiles import register_harness_profile\n"
+            "from deepagents import HarnessProfile\n"
+            "from deepagents.profiles import _builtin_profiles\n"
+            "before = _builtin_profiles._loaded\n"
+            "register_harness_profile('custom:model', HarnessProfile())\n"
+            "print(before, _builtin_profiles._loaded)\n"
+        )
+        assert out == "False True"
 
 
 class TestResolveModelWithProviderProfiles:
@@ -1530,7 +1950,7 @@ class TestProfileLookupBreadcrumb:
         try:
             register_provider_profile("crumbprov", ProviderProfile(init_kwargs={"a": 1}))
             with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
-                _get_provider_profile("crumbprov:typo-model")
+                get_provider_profile("crumbprov:typo-model")
             messages = [r.getMessage() for r in caplog.records]
             assert any("No exact ProviderProfile" in m and "crumbprov" in m for m in messages)
         finally:
@@ -1581,7 +2001,7 @@ class TestProfileLookupKeyValidation:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
-            assert _get_provider_profile("partprov:") is None
+            assert get_provider_profile("partprov:") is None
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -1590,13 +2010,13 @@ class TestProfileLookupKeyValidation:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
-            assert _get_provider_profile(":some-model") is None
+            assert get_provider_profile(":some-model") is None
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
     def test_provider_lookup_rejects_double_colon(self) -> None:
-        assert _get_provider_profile("a:b:c") is None
+        assert get_provider_profile("a:b:c") is None
 
 
 class TestOpenRouterEmptyEnvVar:
@@ -1632,7 +2052,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("chainprov", ProviderProfile(pre_init=base_pre))
             register_provider_profile("chainprov", ProviderProfile(pre_init=over_pre))
-            merged = _get_provider_profile("chainprov")
+            merged = get_provider_profile("chainprov")
             assert merged is not None
             assert merged.pre_init is not None
             with (
@@ -1661,7 +2081,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("chainprov2", ProviderProfile(pre_init=base_pre))
             register_provider_profile("chainprov2", ProviderProfile(pre_init=over_pre))
-            merged = _get_provider_profile("chainprov2")
+            merged = get_provider_profile("chainprov2")
             assert merged is not None
             assert merged.pre_init is not None
             with (
@@ -1691,7 +2111,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=base_factory))
             register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=override_factory))
-            merged = _get_provider_profile("factprov")
+            merged = get_provider_profile("factprov")
             assert merged is not None
             assert merged.init_kwargs_factory is not None
             with (

@@ -8,7 +8,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 
-from deepagents.profiles.provider.provider_profiles import _get_provider_profile
+from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +34,7 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     if isinstance(model, BaseChatModel):
         return model
 
-    profile = _get_provider_profile(model)
-    if profile is None:
-        return init_chat_model(model)
-
-    if profile.pre_init is not None:
-        profile.pre_init(model)
-
-    kwargs: dict[str, Any] = {**profile.init_kwargs}
-    if profile.init_kwargs_factory is not None:
-        kwargs.update(profile.init_kwargs_factory())
-
-    return init_chat_model(model, **kwargs)
+    return init_chat_model(model, **apply_provider_profile(model))
 
 
 def get_model_identifier(model: BaseChatModel) -> str | None:

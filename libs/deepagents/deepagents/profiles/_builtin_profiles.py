@@ -22,12 +22,19 @@ semantics of `register_*_profile`.
 from __future__ import annotations
 
 import logging
+import threading
 import warnings
 from importlib.metadata import entry_points
 
-from deepagents.profiles.harness import _codex as _codex_harness
+from deepagents.profiles.harness import (
+    _anthropic_haiku_4_5,
+    _anthropic_opus_4_7,
+    _anthropic_sonnet_4_6,
+    _codex as _codex_harness,
+)
 from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
 from deepagents.profiles.provider import _openai, _openrouter
+from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,23 @@ interpreter, even if the function is called directly from tests or a
 reload scenario.
 """
 
+_BOOTSTRAP_CONDITION = threading.Condition()
+"""Coordinates first-time lazy bootstrap across threads.
+
+One thread performs the bootstrap while concurrent threads wait for it
+to finish. The condition is also used to permit same-thread re-entry:
+plugin registration callables invoked *during* bootstrap often call the
+public `register_*_profile` helpers, which must short-circuit rather
+than deadlock or recurse.
+"""
+
+_loading_thread_id: int | None = None
+"""Thread currently performing `_ensure_builtin_profiles_loaded`, if any.
+
+Used to distinguish same-thread re-entry (short-circuit) from
+cross-thread first access (wait for bootstrap completion).
+"""
+
 
 def _ensure_builtin_profiles_loaded() -> None:
     """Register built-in profiles and discover third-party plugins.
@@ -81,17 +105,58 @@ def _ensure_builtin_profiles_loaded() -> None:
     After both phases complete, snapshots the harness registry so
     downstream callers can distinguish bootstrap-registered profiles
     from profiles registered later via user code.
+
+    The function is invoked lazily from `register_*_profile` and
+    `get_*_profile` entry points; importing `deepagents.profiles` itself
+    does not trigger bootstrap. Same-thread re-entrant calls that occur
+    *during* bootstrap (for example, plugin registration helpers calling
+    the public `register_*_profile` APIs) short-circuit, while other
+    threads block until bootstrap completes so they never observe a
+    partially populated registry.
     """
-    global _loaded, _BOOTSTRAP_HARNESS_KEYS  # noqa: PLW0603
-    if _loaded:
-        return
-    _openai.register()
-    _openrouter.register()
-    _codex_harness.register()
-    _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
-    _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
-    _BOOTSTRAP_HARNESS_KEYS = frozenset(_HARNESS_PROFILES)
-    _loaded = True
+    global _loaded, _BOOTSTRAP_HARNESS_KEYS, _loading_thread_id  # noqa: PLW0603
+    thread_id = threading.get_ident()
+    with _BOOTSTRAP_CONDITION:
+        if _loaded:
+            return
+        if _loading_thread_id == thread_id:
+            return
+        while _loading_thread_id is not None:
+            _BOOTSTRAP_CONDITION.wait()
+            if _loaded:
+                return
+        _loading_thread_id = thread_id
+    saved_provider_profiles = dict(_PROVIDER_PROFILES)
+    saved_harness_profiles = dict(_HARNESS_PROFILES)
+    saved_bootstrap_harness_keys = _BOOTSTRAP_HARNESS_KEYS
+    try:
+        _openai.register()
+        _openrouter.register()
+        _anthropic_opus_4_7.register()
+        _anthropic_sonnet_4_6.register()
+        _anthropic_haiku_4_5.register()
+        _codex_harness.register()
+        _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
+        _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)
+        bootstrap_harness_keys = frozenset(_HARNESS_PROFILES)
+    except Exception:
+        logger.exception("Built-in profile bootstrap failed; restoring pre-bootstrap registry state.")
+        # Restore in place so modules holding registry references keep seeing
+        # the same dict objects after rollback.
+        _PROVIDER_PROFILES.clear()
+        _PROVIDER_PROFILES.update(saved_provider_profiles)
+        _HARNESS_PROFILES.clear()
+        _HARNESS_PROFILES.update(saved_harness_profiles)
+        with _BOOTSTRAP_CONDITION:
+            _BOOTSTRAP_HARNESS_KEYS = saved_bootstrap_harness_keys
+            _loading_thread_id = None
+            _BOOTSTRAP_CONDITION.notify_all()
+        raise
+    with _BOOTSTRAP_CONDITION:
+        _BOOTSTRAP_HARNESS_KEYS = bootstrap_harness_keys
+        _loaded = True
+        _loading_thread_id = None
+        _BOOTSTRAP_CONDITION.notify_all()
 
 
 def _invoke_profile_plugins(group: str) -> None:

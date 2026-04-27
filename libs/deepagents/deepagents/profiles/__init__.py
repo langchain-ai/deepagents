@@ -13,7 +13,6 @@ Registration helpers are additive: re-registering under an existing key merges
 on top of the prior registration.
 """
 
-from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded
 from deepagents.profiles.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -25,8 +24,8 @@ from deepagents.profiles.provider.provider_profiles import (
     register_provider_profile,
 )
 
-# Load built-in provider registrations as a one-time package bootstrap step.
-_ensure_builtin_profiles_loaded()
+# Built-in provider/harness profiles are registered lazily on first
+# profile-registry access so importing `deepagents.profiles` stays cheap.
 
 __all__ = [
     "GeneralPurposeSubagentProfile",

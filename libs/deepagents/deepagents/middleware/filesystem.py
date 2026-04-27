@@ -68,12 +68,11 @@ from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
-# Defaults for video frame extraction via read_file. The agent specifies
-# these per-call via the read_file tool; max_width and jpeg_quality are
-# fixed at sensible values.
-DEFAULT_VIDEO_SAMPLING_RATE = 0.5  # frames per second
-DEFAULT_VIDEO_TIME_OFFSET = 0.0  # seconds into source
-DEFAULT_VIDEO_DURATION = 30.0  # seconds of source to sample
+# Sampling rate (frames-per-second) used when read_file extracts frames
+# from a video file. Configured at deploy/code time via the
+# `video_sampling_rate` argument on `FilesystemMiddleware`; not exposed
+# to the agent. max_width and jpeg_quality are fixed.
+DEFAULT_VIDEO_SAMPLING_RATE = 0.5  # one frame every 2 seconds
 _VIDEO_MAX_WIDTH = 512
 _VIDEO_JPEG_QUALITY = 5
 
@@ -121,16 +120,19 @@ def _read_video_as_frames(  # noqa: PLR0911 - early returns for distinct error c
     mime_type: str,
     tool_call_id: str | None,
     sampling_rate: float,
-    time_offset: float,
-    duration: float,
+    time_offset: int,
+    duration: int,
 ) -> ToolMessage | str:
-    """Decode the video bytes, run ffmpeg, and return frames as image content blocks."""
-    if sampling_rate <= 0:
-        return f"Error: sampling_rate must be > 0; got {sampling_rate}"
+    """Decode video bytes, run ffmpeg, and return frames as image content blocks.
+
+    `time_offset` and `duration` come from `read_file`'s `offset` and `limit`
+    arguments, reinterpreted as seconds when the file is a video. `sampling_rate`
+    is configured on `FilesystemMiddleware`.
+    """
     if time_offset < 0:
-        return f"Error: time_offset must be >= 0; got {time_offset}"
+        return f"Error: offset (seconds into video) must be >= 0; got {time_offset}"
     if duration <= 0:
-        return f"Error: duration must be > 0; got {duration}"
+        return f"Error: limit (seconds of video to sample) must be > 0; got {duration}"
 
     try:
         video_bytes = _b64.b64decode(base64_content, validate=True)
@@ -140,8 +142,8 @@ def _read_video_as_frames(  # noqa: PLR0911 - early returns for distinct error c
     ext = _VIDEO_MIME_TO_EXT.get(mime_type, "mp4")
     params = ExtractionParams(
         sampling_rate=sampling_rate,
-        time_offset=time_offset,
-        duration=duration,
+        time_offset=float(time_offset),
+        duration=float(duration),
         max_width=_VIDEO_MAX_WIDTH,
         jpeg_quality=_VIDEO_JPEG_QUALITY,
     )
@@ -164,7 +166,7 @@ def _read_video_as_frames(  # noqa: PLR0911 - early returns for distinct error c
     if not frames:
         return (
             f"Error: no frames produced for '{file_path}' at "
-            f"time_offset={time_offset}s, duration={duration}s "
+            f"offset={time_offset}s, limit={duration}s "
             f"(source duration {source_duration_s:.1f}s). The window may be past the end of the video."
         )
 
@@ -172,8 +174,8 @@ def _read_video_as_frames(  # noqa: PLR0911 - early returns for distinct error c
         frames,
         file_path,
         sampling_rate,
-        time_offset,
-        duration,
+        float(time_offset),
+        float(duration),
         source_duration_s,
     )
     return ToolMessage(
@@ -267,23 +269,11 @@ class ReadFileSchema(BaseModel):
     file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+        description="For text files: line number to start reading from (0-indexed). For video files: seconds into the source to start sampling. Default 0.",
     )
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
-        description="Maximum number of lines to read. Use for pagination of large files.",
-    )
-    sampling_rate: float = Field(
-        default=DEFAULT_VIDEO_SAMPLING_RATE,
-        description="Video files only: frames-per-second to sample from the source. Default 0.5 (one frame every 2 seconds). Ignored for non-video files.",
-    )
-    time_offset: float = Field(
-        default=DEFAULT_VIDEO_TIME_OFFSET,
-        description="Video files only: seconds into the source to start sampling from. Default 0. Ignored for non-video files.",
-    )
-    duration: float = Field(
-        default=DEFAULT_VIDEO_DURATION,
-        description="Video files only: seconds of source material to sample. Default 30. Ignored for non-video files.",
+        description="For text files: maximum number of lines to read. For video files: seconds of source to sample. Default 100.",
     )
 
 
@@ -364,9 +354,10 @@ For multimodal reads (image, audio, video, PDF, etc.):
 
 For video files specifically:
 - `read_file` extracts JPEG frames from the video and returns them inline as image blocks. The raw video bytes are never sent to the model.
-- Pick frames with `sampling_rate` (frames per second, default 0.5), `time_offset` (seconds into the source to start, default 0), and `duration` (seconds of source to sample, default 30).
-- Number of frames returned is approximately `sampling_rate * duration`. At defaults that's ~15 frames.
-- To inspect a different segment, call `read_file` again with a different `time_offset` / `duration`. To get a denser look at fast action, raise `sampling_rate`. Each call re-runs ffmpeg, so don't sample more than you need.
+- `offset` is reinterpreted as **seconds into the source** to start sampling from (default 0).
+- `limit` is reinterpreted as **seconds of source to sample** from that offset (default 100).
+- The frames-per-second sampling rate is fixed at deploy time and is not agent-controlled.
+- To inspect a different segment, call `read_file` again with a different `offset` / `limit`. Each call re-runs ffmpeg, so don't sample more than you need - start with a small `limit` (e.g. 10-30 seconds) and only widen if you need more context.
 
 - You should ALWAYS make sure a file has been read before editing it."""
 
@@ -736,6 +727,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        video_sampling_rate: float = DEFAULT_VIDEO_SAMPLING_RATE,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -752,12 +744,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            video_sampling_rate: Frames-per-second used when `read_file` extracts
+                frames from a video file. Configured at deploy/code time; not
+                exposed to the agent. Defaults to 0.5 (one frame every 2 seconds).
 
         Raises:
-            ValueError: If `max_execute_timeout` is not positive.
+            ValueError: If `max_execute_timeout` is not positive, or
+                `video_sampling_rate` is not positive.
         """
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
+            raise ValueError(msg)
+        if video_sampling_rate <= 0:
+            msg = f"video_sampling_rate must be positive, got {video_sampling_rate}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
@@ -773,6 +772,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._video_sampling_rate = video_sampling_rate
 
         self.tools = [
             self._create_ls_tool(),
@@ -879,15 +879,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
+        video_sampling_rate = self._video_sampling_rate
+
         def _handle_read_result(  # noqa: PLR0911 - early returns for distinct branches
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
             limit: int,
-            sampling_rate: float,
-            time_offset: float,
-            duration: float,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
                 warnings.warn(
@@ -911,14 +910,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
 
             if file_type == "video":
+                # For video, `offset` and `limit` are reinterpreted as
+                # seconds-into-source and seconds-of-source-to-sample.
                 return _read_video_as_frames(
                     content,
                     validated_path,
                     mime_type,
                     tool_call_id,
-                    sampling_rate,
-                    time_offset,
-                    duration,
+                    video_sampling_rate,
+                    offset,
+                    limit,
                 )
 
             if file_type != "text":
@@ -941,11 +942,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-            sampling_rate: Annotated[float, "Video files only: frames-per-second to sample. Default 0.5."] = DEFAULT_VIDEO_SAMPLING_RATE,
-            time_offset: Annotated[float, "Video files only: seconds into the source to start sampling. Default 0."] = DEFAULT_VIDEO_TIME_OFFSET,
-            duration: Annotated[float, "Video files only: seconds of source to sample. Default 30."] = DEFAULT_VIDEO_DURATION,
+            offset: Annotated[
+                int, "For text: line number to start reading from (0-indexed). For video: seconds into the source. Default 0."
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "For text: max number of lines to read. For video: seconds of source to sample. Default 100."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -960,19 +960,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 runtime.tool_call_id,
                 offset,
                 limit,
-                sampling_rate,
-                time_offset,
-                duration,
             )
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-            sampling_rate: Annotated[float, "Video files only: frames-per-second to sample. Default 0.5."] = DEFAULT_VIDEO_SAMPLING_RATE,
-            time_offset: Annotated[float, "Video files only: seconds into the source to start sampling. Default 0."] = DEFAULT_VIDEO_TIME_OFFSET,
-            duration: Annotated[float, "Video files only: seconds of source to sample. Default 30."] = DEFAULT_VIDEO_DURATION,
+            offset: Annotated[
+                int, "For text: line number to start reading from (0-indexed). For video: seconds into the source. Default 0."
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "For text: max number of lines to read. For video: seconds of source to sample. Default 100."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -987,9 +983,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 runtime.tool_call_id,
                 offset,
                 limit,
-                sampling_rate,
-                time_offset,
-                duration,
             )
 
         return StructuredTool.from_function(

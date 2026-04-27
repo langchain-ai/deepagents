@@ -59,38 +59,23 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n  - First scan: read_file(path, limit=100) to see file structure\n  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines\n  - Only omit limit (read full file) when necessary for editing\n- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines\n- Results are returned using cat -n format, with line numbers starting at 1\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- Do NOT use `offset`/`limit` for images (pagination is text-only)\n- If file details were compacted from history, call `read_file` again on the same path\n\nFor video files specifically:\n- `read_file` extracts JPEG frames from the video and returns them inline as image blocks. The raw video bytes are never sent to the model.\n- Pick frames with `sampling_rate` (frames per second, default 0.5), `time_offset` (seconds into the source to start, default 0), and `duration` (seconds of source to sample, default 30).\n- Number of frames returned is approximately `sampling_rate * duration`. At defaults that's ~15 frames.\n- To inspect a different segment, call `read_file` again with a different `time_offset` / `duration`. To get a denser look at fast action, raise `sampling_rate`. Each call re-runs ffmpeg, so don't sample more than you need.\n\n- You should ALWAYS make sure a file has been read before editing it.",
+      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n  - First scan: read_file(path, limit=100) to see file structure\n  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines\n  - Only omit limit (read full file) when necessary for editing\n- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines\n- Results are returned using cat -n format, with line numbers starting at 1\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- Do NOT use `offset`/`limit` for images (pagination is text-only)\n- If file details were compacted from history, call `read_file` again on the same path\n\nFor video files specifically:\n- `read_file` extracts JPEG frames from the video and returns them inline as image blocks. The raw video bytes are never sent to the model.\n- `offset` is reinterpreted as **seconds into the source** to start sampling from (default 0).\n- `limit` is reinterpreted as **seconds of source to sample** from that offset (default 100).\n- The frames-per-second sampling rate is fixed at deploy time and is not agent-controlled.\n- To inspect a different segment, call `read_file` again with a different `offset` / `limit`. Each call re-runs ffmpeg, so don't sample more than you need - start with a small `limit` (e.g. 10-30 seconds) and only widen if you need more context.\n\n- You should ALWAYS make sure a file has been read before editing it.",
       "name": "read_file",
       "parameters": {
         "properties": {
-          "duration": {
-            "default": 30.0,
-            "description": "Video files only: seconds of source material to sample. Default 30. Ignored for non-video files.",
-            "type": "number"
-          },
           "file_path": {
             "description": "Absolute path to the file to read. Must be absolute, not relative.",
             "type": "string"
           },
           "limit": {
             "default": 100,
-            "description": "Maximum number of lines to read. Use for pagination of large files.",
+            "description": "For text files: maximum number of lines to read. For video files: seconds of source to sample. Default 100.",
             "type": "integer"
           },
           "offset": {
             "default": 0,
-            "description": "Line number to start reading from (0-indexed). Use for pagination of large files.",
+            "description": "For text files: line number to start reading from (0-indexed). For video files: seconds into the source to start sampling. Default 0.",
             "type": "integer"
-          },
-          "sampling_rate": {
-            "default": 0.5,
-            "description": "Video files only: frames-per-second to sample from the source. Default 0.5 (one frame every 2 seconds). Ignored for non-video files.",
-            "type": "number"
-          },
-          "time_offset": {
-            "default": 0.0,
-            "description": "Video files only: seconds into the source to start sampling from. Default 0. Ignored for non-video files.",
-            "type": "number"
           }
         },
         "required": [

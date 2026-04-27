@@ -1335,7 +1335,12 @@ class TestFilesystemMiddleware:
         assert result == EMPTY_CONTENT_WARNING
 
     def test_read_file_video_returns_extracted_frames(self, monkeypatch):
-        """Reading a video file should run ffmpeg and return frame image blocks."""
+        """Reading a video file should run ffmpeg and return frame image blocks.
+
+        `offset` and `limit` are reinterpreted as seconds-into-source and
+        seconds-of-source-to-sample for video files. `sampling_rate` is taken
+        from the FilesystemMiddleware constructor.
+        """
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
@@ -1358,7 +1363,7 @@ class TestFilesystemMiddleware:
 
         monkeypatch.setattr(_ffmpeg_module, "extract_frames", fake_extract)
 
-        middleware = FilesystemMiddleware(backend=VideoBackend())
+        middleware = FilesystemMiddleware(backend=VideoBackend(), video_sampling_rate=0.5)
         runtime = ToolRuntime(
             state=FilesystemState(messages=[], files={}),
             context=None,
@@ -1373,9 +1378,8 @@ class TestFilesystemMiddleware:
             {
                 "file_path": "/app/clip.mp4",
                 "runtime": runtime,
-                "sampling_rate": 0.5,
-                "time_offset": 10.0,
-                "duration": 20.0,
+                "offset": 10,
+                "limit": 20,
             }
         )
 
@@ -1388,6 +1392,8 @@ class TestFilesystemMiddleware:
         assert result.tool_call_id == "vid-1"
         assert result.additional_kwargs["video_frame_count"] == 2
         assert result.additional_kwargs["video_sampling_rate"] == 0.5
+        assert result.additional_kwargs["video_time_offset"] == 10
+        assert result.additional_kwargs["video_duration"] == 20
         # Expected layout: [preamble] + 2 * [timestamp_text, image]
         assert isinstance(result.content, list)
         assert len(result.content) == 5
@@ -1400,6 +1406,41 @@ class TestFilesystemMiddleware:
         # base64 round-trip
         assert base64.b64decode(result.content[2]["base64"]) == b"\xff\xd8\xff\xe0jpg1"
         assert result.content[3]["text"] == "Frame 2 at t=12.0s"
+
+    def test_read_file_video_uses_default_sampling_rate(self, monkeypatch):
+        """When the constructor doesn't override, video_sampling_rate defaults to 0.5 (one frame every 2 seconds)."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": base64.b64encode(b"x").decode("ascii"),
+                        "encoding": "base64",
+                    }
+                )
+
+        captured: dict = {}
+
+        def fake_extract(_path, params):
+            captured["params"] = params
+            return [ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0", timestamp_s=0.0)], 5.0
+
+        monkeypatch.setattr(_ffmpeg_module, "extract_frames", fake_extract)
+
+        middleware = FilesystemMiddleware(backend=VideoBackend())  # no override
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="vid-default",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        read_file_tool.invoke({"file_path": "/app/clip.mp4", "runtime": runtime})
+
+        assert captured["params"].sampling_rate == 0.5
 
     def test_read_file_video_returns_error_when_ffmpeg_missing(self, monkeypatch):
         """If ffmpeg is unavailable, read_file should return a clear error string."""
@@ -1435,8 +1476,8 @@ class TestFilesystemMiddleware:
         assert isinstance(result, str)
         assert "ffmpeg is not available" in result
 
-    def test_read_file_video_rejects_invalid_params(self):
-        """Bad sampling_rate/time_offset/duration should return validation errors."""
+    def test_read_file_video_rejects_invalid_offset_or_limit(self):
+        """Negative offset or non-positive limit should return validation errors."""
 
         class VideoBackend(StateBackend):
             def read(self, path, *, offset=0, limit=100):
@@ -1458,25 +1499,21 @@ class TestFilesystemMiddleware:
         )
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
 
-        result = read_file_tool.invoke(
-            {
-                "file_path": "/app/clip.mp4",
-                "runtime": runtime,
-                "sampling_rate": 0.0,
-            }
-        )
+        result = read_file_tool.invoke({"file_path": "/app/clip.mp4", "runtime": runtime, "offset": -1})
         assert isinstance(result, str)
-        assert "sampling_rate" in result
+        assert "offset" in result
 
-        result = read_file_tool.invoke(
-            {
-                "file_path": "/app/clip.mp4",
-                "runtime": runtime,
-                "duration": -1,
-            }
-        )
+        result = read_file_tool.invoke({"file_path": "/app/clip.mp4", "runtime": runtime, "limit": 0})
         assert isinstance(result, str)
-        assert "duration" in result
+        assert "limit" in result
+
+    def test_filesystem_middleware_rejects_non_positive_video_sampling_rate(self):
+        """Non-positive sampling rates raise at construction time."""
+        backend, _ = _make_backend()
+        with pytest.raises(ValueError, match="video_sampling_rate"):
+            FilesystemMiddleware(backend=backend, video_sampling_rate=0)
+        with pytest.raises(ValueError, match="video_sampling_rate"):
+            FilesystemMiddleware(backend=backend, video_sampling_rate=-1.0)
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

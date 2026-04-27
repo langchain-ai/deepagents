@@ -38,11 +38,12 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 
 ### Video input (optional)
 
-When the agent calls `read_file` on a video file (`.mp4`, `.mov`, `.webm`, etc.), `deepagents` extracts JPEG frames using **FFmpeg** and returns them as image content blocks. The agent picks the window with three optional `read_file` parameters:
+When the agent calls `read_file` on a video file (`.mp4`, `.mov`, `.webm`, etc.), `deepagents` extracts JPEG frames using **FFmpeg** and returns them as image content blocks. The agent picks the window by reusing the standard `read_file` paging arguments:
 
-- `sampling_rate` — frames per second (default `0.5`)
-- `time_offset` — seconds into the source to start sampling (default `0`)
-- `duration` — seconds of source to sample (default `30`)
+- `offset` — seconds into the source to start sampling (default `0`)
+- `limit` — seconds of source to sample (default `100`)
+
+The frames-per-second sampling rate is set at deploy/code time, not by the agent — pass `video_sampling_rate` to `FilesystemMiddleware` (default `0.5`, i.e. one frame every two seconds).
 
 This requires `ffmpeg` and `ffprobe` to be on `PATH`:
 

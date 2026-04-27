@@ -8,7 +8,7 @@ from typing import Any
 
 from browserbase import Browserbase
 from bs4 import BeautifulSoup
-from langchain_core.tools import tool
+from langchain.tools import tool
 from stagehand import AsyncStagehand
 
 # Using the Browserbase Model Gateway, you only need to pass your Browserbase API key to use frontier models
@@ -215,4 +215,3 @@ async def _browserbase_interactive_task_async(start_url: str, task: str) -> str:
         return _json(_normalize(result))
     finally:
         await client.sessions.end(id=session_id)
-   

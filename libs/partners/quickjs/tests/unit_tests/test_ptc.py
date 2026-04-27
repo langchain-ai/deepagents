@@ -98,6 +98,69 @@ def _command_tool(name: str = "emit_command") -> BaseTool:
     )
 
 
+def _tool_message_list_tool(name: str = "emit_messages") -> BaseTool:
+    """A tool that returns a list of ``ToolMessage`` values."""
+
+    class _In(BaseModel):
+        value: int = Field(description="Integer marker to emit")
+
+    def _fn(value: int) -> list[ToolMessage]:
+        return [
+            ToolMessage(
+                content=f"first={value}",
+                tool_call_id=f"ptc_call_{value}_first",
+                name=name,
+            ),
+            ToolMessage(
+                content=f"second={value}",
+                tool_call_id=f"ptc_call_{value}_second",
+                name=name,
+            ),
+        ]
+
+    return StructuredTool.from_function(
+        name=name,
+        description="Return a list of ToolMessage values.",
+        func=_fn,
+        args_schema=_In,
+    )
+
+
+def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
+    """A tool that returns a mixed list of ``Command`` and ``ToolMessage``."""
+
+    class _In(BaseModel):
+        value: int = Field(description="Integer marker to emit")
+
+    def _fn(value: int) -> list[Command | ToolMessage]:
+        return [
+            Command(
+                update={
+                    "ptc_values": [value],
+                    "messages": [
+                        ToolMessage(
+                            content=f"from-command={value}",
+                            tool_call_id=f"ptc_call_{value}_command",
+                            name=name,
+                        )
+                    ],
+                }
+            ),
+            ToolMessage(
+                content=f"from-list-tail={value}",
+                tool_call_id=f"ptc_call_{value}_tail",
+                name=name,
+            ),
+        ]
+
+    return StructuredTool.from_function(
+        name=name,
+        description="Return a mixed list of Command and ToolMessage values.",
+        func=_fn,
+        args_schema=_In,
+    )
+
+
 @pytest.fixture
 def worker() -> ThreadWorker:
     w = ThreadWorker()
@@ -295,6 +358,23 @@ async def test_command_buffer_is_scoped_to_one_eval(repl: _ThreadREPL) -> None:
     assert len(first.commands) == 1
     second = await repl.eval_async("1 + 1")
     assert second.commands == []
+async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> None:
+    repl.install_tools([_tool_message_list_tool()])
+    outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "second=9"
+    assert outcome.commands == []
+
+
+async def test_mixed_list_collects_commands_and_uses_tail_message(
+    repl: _ThreadREPL,
+) -> None:
+    repl.install_tools([_mixed_list_tool()])
+    outcome = await repl.eval_async("await tools.emitMixed({value: 11})")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "from-list-tail=11"
+    assert len(outcome.commands) == 1
+    assert outcome.commands[0].update.get("ptc_values") == [11]
 async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"

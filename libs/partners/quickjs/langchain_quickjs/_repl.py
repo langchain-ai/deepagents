@@ -192,7 +192,7 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
 def _coerce_tool_output(value: Any) -> str:
     """Tools return arbitrary Python; JS-side users expect a string.
 
-    Handles three shapes:
+    Handles four shapes:
 
     - ``str`` — pass through unchanged.
     - ``langgraph.types.Command`` — the shape ``task`` / subagent tools
@@ -208,31 +208,47 @@ def _coerce_tool_output(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, Command):
-        update = value.update
-        if isinstance(update, dict):
-            messages = update.get("messages")
-            if messages:
-                last = messages[-1]
-                content = getattr(last, "content", None)
-                if isinstance(content, str):
-                    return content
-        # No extractable message — stringify the update for debuggability.
-        return str(update)
+        return _coerce_command_output(value)
     # When we invoke with a ToolCall-shaped input, BaseTool wraps the
     # return value in a ToolMessage. Unwrap its content so the JS side
     # sees the raw tool output, not a Python repr of the envelope.
     if isinstance(value, ToolMessage):
-        content = value.content
-        if isinstance(content, str):
-            return content
-        try:
-            return json.dumps(content, default=str)
-        except (TypeError, ValueError):
-            return str(content)
+        return _coerce_tool_message_output(value)
+    if isinstance(value, list):
+        # Some tools return a mixed ``list[Command | ToolMessage]``.
+        # Mirror parent-agent behavior by surfacing the last message-like
+        # entry as the JS-visible value.
+        for entry in reversed(value):
+            if isinstance(entry, ToolMessage):
+                return _coerce_tool_message_output(entry)
+            if isinstance(entry, Command):
+                return _coerce_command_output(entry)
+    return _coerce_message_content(value)
+
+
+def _coerce_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
     try:
-        return json.dumps(value, default=str)
+        return json.dumps(content, default=str)
     except (TypeError, ValueError):
-        return str(value)
+        return str(content)
+
+
+def _coerce_tool_message_output(message: ToolMessage) -> str:
+    return _coerce_message_content(message.content)
+
+
+def _coerce_command_output(command: Command) -> str:
+    update = command.update
+    if isinstance(update, dict):
+        messages = update.get("messages")
+        if isinstance(messages, list):
+            for entry in reversed(messages):
+                content = getattr(entry, "content", None)
+                if content is not None:
+                    return _coerce_message_content(content)
+    return str(update)
 
 
 def _extract_commands(value: Any) -> list[Command]:

@@ -1045,6 +1045,35 @@ class TestBuiltInProfiles:
         assert opus.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
         assert sonnet.system_prompt_suffix == haiku.system_prompt_suffix
 
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "openai:gpt-5.1-codex",
+            "openai:gpt-5.2-codex",
+            "openai:gpt-5.3-codex",
+        ],
+    )
+    def test_codex_models_have_harness_profile(self, model_key: str) -> None:
+        """Each Codex model registers a non-empty Codex harness profile."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "## Codex-Specific Behavior" in profile.system_prompt_suffix
+        assert "## Parallel Tool Use" in profile.system_prompt_suffix
+        assert "## Plan Hygiene" in profile.system_prompt_suffix
+
+    def test_codex_suffix_is_identical_across_models(self) -> None:
+        """All Codex variants share the same suffix from a single profile."""
+        suffixes = {
+            _get_harness_profile(spec).system_prompt_suffix  # type: ignore[union-attr]
+            for spec in (
+                "openai:gpt-5.1-codex",
+                "openai:gpt-5.2-codex",
+                "openai:gpt-5.3-codex",
+            )
+        }
+        assert len(suffixes) == 1
+
 
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""

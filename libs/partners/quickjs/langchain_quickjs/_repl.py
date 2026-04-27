@@ -71,6 +71,7 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+    commands: list[Command] = field(default_factory=list)
 
 
 class _ConsoleBuffer:
@@ -191,7 +192,7 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
 def _coerce_tool_output(value: Any) -> str:
     """Tools return arbitrary Python; JS-side users expect a string.
 
-    Handles three shapes:
+    Handles four shapes:
 
     - ``str`` — pass through unchanged.
     - ``langgraph.types.Command`` — the shape ``task`` / subagent tools
@@ -207,31 +208,56 @@ def _coerce_tool_output(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, Command):
-        update = value.update
-        if isinstance(update, dict):
-            messages = update.get("messages")
-            if messages:
-                last = messages[-1]
-                content = getattr(last, "content", None)
-                if isinstance(content, str):
-                    return content
-        # No extractable message — stringify the update for debuggability.
-        return str(update)
+        return _coerce_command_output(value)
     # When we invoke with a ToolCall-shaped input, BaseTool wraps the
     # return value in a ToolMessage. Unwrap its content so the JS side
     # sees the raw tool output, not a Python repr of the envelope.
     if isinstance(value, ToolMessage):
-        content = value.content
-        if isinstance(content, str):
-            return content
-        try:
-            return json.dumps(content, default=str)
-        except (TypeError, ValueError):
-            return str(content)
+        return _coerce_tool_message_output(value)
+    if isinstance(value, list):
+        # Some tools return a mixed ``list[Command | ToolMessage]``.
+        # Mirror parent-agent behavior by surfacing the last message-like
+        # entry as the JS-visible value.
+        for entry in reversed(value):
+            if isinstance(entry, ToolMessage):
+                return _coerce_tool_message_output(entry)
+            if isinstance(entry, Command):
+                return _coerce_command_output(entry)
+    return _coerce_message_content(value)
+
+
+def _coerce_message_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
     try:
-        return json.dumps(value, default=str)
+        return json.dumps(content, default=str)
     except (TypeError, ValueError):
-        return str(value)
+        return str(content)
+
+
+def _coerce_tool_message_output(message: ToolMessage) -> str:
+    return _coerce_message_content(message.content)
+
+
+def _coerce_command_output(command: Command) -> str:
+    update = command.update
+    if isinstance(update, dict):
+        messages = update.get("messages")
+        if isinstance(messages, list):
+            for entry in reversed(messages):
+                content = getattr(entry, "content", None)
+                if content is not None:
+                    return _coerce_message_content(content)
+    return str(update)
+
+
+def _extract_commands(value: Any) -> list[Command]:
+    """Collect LangGraph ``Command`` values from a tool return payload."""
+    if isinstance(value, Command):
+        return [value]
+    if isinstance(value, list):
+        return [entry for entry in value if isinstance(entry, Command)]
+    return []
 
 
 def _synth_tool_call_id(tool_name: str) -> str:
@@ -282,6 +308,7 @@ def _inject_tool_args_for_ptc(
         context=outer_runtime.context,
         store=outer_runtime.store,
         stream_writer=outer_runtime.stream_writer,
+        tools=outer_runtime.tools,
         execution_info=getattr(outer_runtime, "execution_info", None),
         server_info=getattr(outer_runtime, "server_info", None),
     )
@@ -378,6 +405,9 @@ class _ThreadREPL:
         # graph state, store, context, etc. Set via ``set_outer_runtime``
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
+        # ``Command`` values emitted by PTC-invoked tools during the
+        # currently-running eval call. Drained into ``EvalOutcome``.
+        self._ptc_command_buffer: list[Command] = []
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -511,6 +541,7 @@ class _ThreadREPL:
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
+            self._ptc_command_buffer.extend(_extract_commands(result))
             return _coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -545,6 +576,7 @@ class _ThreadREPL:
         """
         ctx = cast("Context", self._ctx)
         outcome = EvalOutcome()
+        self._ptc_command_buffer.clear()
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = _stringify(value)
@@ -575,7 +607,10 @@ class _ThreadREPL:
         except MemoryLimitError as e:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
-        outcome.stdout = self._console.drain()
+        finally:
+            outcome.commands.extend(self._ptc_command_buffer)
+            self._ptc_command_buffer.clear()
+            outcome.stdout = self._console.drain()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:

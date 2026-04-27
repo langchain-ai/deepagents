@@ -438,7 +438,7 @@ def _parse_skill_metadata(  # noqa: C901
 
     module_path = _validate_module_path(frontmatter_data.get("module"), skill_path)
 
-    result = SkillMetadata( 
+    result = SkillMetadata(
         name=str(name),
         description=description_str,
         path=skill_path,

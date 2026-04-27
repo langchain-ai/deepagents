@@ -1264,9 +1264,9 @@ class TestStringFormExcludedMiddleware:
         """Underscore-prefixed string entries raise `ValueError` at construction.
 
         The grammar guard on `HarnessProfile.__post_init__` rejects private
-        plain names up front. This catches typos eagerly and forces callers
-        who genuinely need to exclude a private middleware to use the
-        `module:Class` import-ref form instead.
+        plain names up front. This catches typos eagerly; callers who
+        genuinely need to exclude a private middleware can pass the class
+        directly via the runtime `HarnessProfile`.
         """
         with pytest.raises(ValueError, match="cannot start with '_'"):
             HarnessProfile(excluded_middleware=frozenset({entry}))

@@ -93,18 +93,10 @@ class TestHarnessProfileConfigSerde:
             excluded_middleware=frozenset({"SummarizationMiddleware"}),
         )
 
-    def test_to_harness_profile_resolves_import_ref_entries(self) -> None:
-        config = HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"}))
-        assert config.to_harness_profile() == HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware}))
-
-    def test_to_harness_profile_rejects_invalid_import_ref_target(self) -> None:
-        config = HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.profiles.harness_profiles:HarnessProfileConfig"}))
-        with pytest.raises(TypeError, match="AgentMiddleware"):
-            config.to_harness_profile()
-
-    def test_rejects_malformed_import_ref_at_construction(self) -> None:
-        with pytest.raises(ValueError, match="module:Class"):
-            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents:"}))
+    def test_rejects_class_path_entries_at_construction(self) -> None:
+        """Class-path (`module:Class`) entries are reserved for a future revision."""
+        with pytest.raises(ValueError, match="not currently supported"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"}))
 
     def test_to_dict_omits_unset_fields(self) -> None:
         """Fields at their default are dropped so the output stays minimal."""
@@ -207,11 +199,11 @@ class TestHarnessProfileConfigSerde:
             excluded_middleware=frozenset({"SummarizationMiddleware"}),
         )
 
-    def test_from_harness_profile_serializes_class_entries_as_import_refs(self) -> None:
+    def test_from_harness_profile_rejects_unaliased_class_entries(self) -> None:
+        """Class-form entries without a `serialized_name` alias cannot be serialized."""
         profile = HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware}))
-        assert HarnessProfileConfig.from_harness_profile(profile) == HarnessProfileConfig(
-            excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"})
-        )
+        with pytest.raises(ValueError, match="serialized_name"):
+            HarnessProfileConfig.from_harness_profile(profile)
 
     def test_from_harness_profile_prefers_public_alias_for_summarization(self) -> None:
         profile = HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}))
@@ -225,14 +217,6 @@ class TestHarnessProfileConfigSerde:
         with pytest.raises(ValueError, match="extra_middleware"):
             HarnessProfileConfig.from_harness_profile(profile)
 
-    def test_from_harness_profile_rejects_local_class_entries(self) -> None:
-        class LocalMiddleware(AsyncSubAgentMiddleware):
-            pass
-
-        profile = HarnessProfile(excluded_middleware=frozenset({LocalMiddleware}))
-        with pytest.raises(ValueError, match="module-level"):
-            HarnessProfileConfig.from_harness_profile(profile)
-
 
 class TestExcludedMiddlewareGrammar:
     """Grammar-level validation runs at `HarnessProfile[Config]` construction."""
@@ -244,59 +228,24 @@ class TestExcludedMiddlewareGrammar:
         with pytest.raises(ValueError, match="non-empty"):
             HarnessProfile(excluded_middleware=frozenset({entry}))
 
-    def test_rejects_multi_colon_entries(self) -> None:
-        with pytest.raises(ValueError, match="exactly one ':'"):
-            HarnessProfileConfig(excluded_middleware=frozenset({"a:b:c"}))
+    @pytest.mark.parametrize(
+        "entry",
+        ["a:b", "a:b:c", ":Foo", "deepagents:", "deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"],
+    )
+    def test_rejects_colon_containing_entries(self, entry: str) -> None:
+        """Class-path (`module:Class`) entries are reserved for a future revision."""
+        with pytest.raises(ValueError, match="not currently supported"):
+            HarnessProfileConfig(excluded_middleware=frozenset({entry}))
+        with pytest.raises(ValueError, match="not currently supported"):
+            HarnessProfile(excluded_middleware=frozenset({entry}))
 
-    def test_rejects_empty_module_half(self) -> None:
-        with pytest.raises(ValueError, match="module:Class"):
-            HarnessProfileConfig(excluded_middleware=frozenset({":Foo"}))
-
-    def test_rejects_empty_class_half(self) -> None:
-        with pytest.raises(ValueError, match="module:Class"):
-            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents:"}))
+    def test_rejects_underscore_prefixed_names(self) -> None:
+        with pytest.raises(ValueError, match="cannot start with"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"_PrivateMiddleware"}))
 
     def test_accepts_plain_public_name(self) -> None:
         config = HarnessProfileConfig(excluded_middleware=frozenset({"PublicStubMiddleware"}))
         assert "PublicStubMiddleware" in config.excluded_middleware
-
-    def test_accepts_well_formed_import_ref(self) -> None:
-        config = HarnessProfileConfig(excluded_middleware=frozenset({"my_pkg.mw:Foo"}))
-        assert "my_pkg.mw:Foo" in config.excluded_middleware
-
-    def test_accepts_import_ref_with_underscore_qualname(self) -> None:
-        """`_`-prefix rejection applies only to plain names, not import-ref qualnames."""
-        entry = "deepagents.middleware.summarization:_DeepAgentsSummarizationMiddleware"
-        config = HarnessProfileConfig(excluded_middleware=frozenset({entry}))
-        assert entry in config.excluded_middleware
-        assert config.to_harness_profile().excluded_middleware == frozenset({_DeepAgentsSummarizationMiddleware})
-
-
-class TestImportRefResolutionErrors:
-    """Import-ref failure modes surface clear `ValueError`s at conversion time."""
-
-    def test_missing_module_raises_with_type_name(self) -> None:
-        config = HarnessProfileConfig(
-            excluded_middleware=frozenset({"deepagents_nonexistent_xyz:Middleware"}),
-        )
-        with pytest.raises(ValueError, match="Could not import") as excinfo:
-            config.to_harness_profile()
-        # Error includes underlying exception type name for actionable diagnostics.
-        assert "ModuleNotFoundError" in str(excinfo.value) or "ImportError" in str(excinfo.value)
-
-    def test_missing_symbol_raises_with_attribute_name(self) -> None:
-        config = HarnessProfileConfig(
-            excluded_middleware=frozenset({"deepagents.middleware.async_subagents:NonexistentMiddleware"}),
-        )
-        with pytest.raises(ValueError, match="missing attribute 'NonexistentMiddleware'"):
-            config.to_harness_profile()
-
-    def test_target_is_not_middleware_class_raises_type_error(self) -> None:
-        config = HarnessProfileConfig(
-            excluded_middleware=frozenset({"deepagents.profiles.harness_profiles:HarnessProfileConfig"}),
-        )
-        with pytest.raises(TypeError, match="AgentMiddleware"):
-            config.to_harness_profile()
 
 
 class TestFromHarnessProfileRuntimeOnlyRejection:
@@ -316,16 +265,15 @@ class TestFromHarnessProfileRuntimeOnlyRejection:
 class TestRuntimeRoundTrip:
     """Full `HarnessProfile → Config → HarnessProfile` round-trip.
 
-    Covers the asymmetry between `from_harness_profile` (emits strings) and
-    `to_harness_profile` (resolves strings back to classes), including the
-    `serialized_name` alias path.
+    Class entries are only serializable when they expose a `serialized_name`
+    alias; the alias path is what this round-trip exercises.
     """
 
-    def test_round_trip_preserves_mixed_class_and_string_entries(self) -> None:
+    def test_round_trip_preserves_string_entries(self) -> None:
         profile = HarnessProfile(
             system_prompt_suffix="Respond briefly.",
             excluded_tools=frozenset({"execute"}),
-            excluded_middleware=frozenset({AsyncSubAgentMiddleware, "PublicStubMiddleware"}),
+            excluded_middleware=frozenset({"PublicStubMiddleware"}),
         )
         round_tripped = HarnessProfileConfig.from_harness_profile(profile).to_harness_profile()
         assert round_tripped == profile

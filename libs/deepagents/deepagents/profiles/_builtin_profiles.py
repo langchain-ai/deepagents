@@ -1,7 +1,7 @@
 """Bootstrap for built-in and third-party profile plugins.
 
-Built-in provider profiles (OpenAI, OpenRouter) are registered via
-explicit module imports — not entry points — so a malformed or missing
+Built-in provider and harness profiles are registered via explicit
+module imports — not entry points — so a malformed or missing
 `dist-info` in the environment cannot silently disable the SDK's own
 defaults. Third parties plug in via `importlib.metadata` entry points
 under two groups:
@@ -32,7 +32,7 @@ from deepagents.profiles.harness import (
     _anthropic_sonnet_4_6,
     _openai_codex,
 )
-from deepagents.profiles.harness_profiles import _HARNESS_PROFILES
+from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 from deepagents.profiles.provider import _openai, _openrouter
 from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES
 

@@ -25,7 +25,7 @@ from deepagents.profiles import (
     register_harness_profile,
     register_provider_profile,
 )
-from deepagents.profiles.harness_profiles import (
+from deepagents.profiles.harness.harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,
     _merge_middleware,
@@ -1457,7 +1457,7 @@ class TestProfilePluginLoader:
         """Concurrent user registration must not leak into bootstrap snapshots."""
         from deepagents.profiles import _builtin_profiles  # noqa: PLC0415
         from deepagents.profiles.harness import _anthropic_opus_4_7  # noqa: PLC0415
-        from deepagents.profiles.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+        from deepagents.profiles.harness.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
 
         started = threading.Event()
         release = threading.Event()
@@ -1530,7 +1530,7 @@ class TestLazyBootstrap:
         out = self._run(
             "import deepagents._models\n"
             "from deepagents.profiles import _builtin_profiles\n"
-            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES\n"
             "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
             "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
         )
@@ -1541,7 +1541,7 @@ class TestLazyBootstrap:
         out = self._run(
             "from deepagents._models import model_matches_spec\n"
             "from deepagents.profiles import _builtin_profiles\n"
-            "from deepagents.profiles.harness_profiles import _HARNESS_PROFILES\n"
+            "from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES\n"
             "from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES\n"
             "print(_builtin_profiles._loaded, len(_PROVIDER_PROFILES), len(_HARNESS_PROFILES))\n"
         )
@@ -1561,7 +1561,7 @@ class TestLazyBootstrap:
     def test_register_harness_profile_triggers_bootstrap(self) -> None:
         """First registration call flips `_loaded` to `True` before registering."""
         out = self._run(
-            "from deepagents.profiles.harness_profiles import register_harness_profile\n"
+            "from deepagents.profiles.harness.harness_profiles import register_harness_profile\n"
             "from deepagents import HarnessProfile\n"
             "from deepagents.profiles import _builtin_profiles\n"
             "before = _builtin_profiles._loaded\n"
@@ -1806,7 +1806,7 @@ class TestProfileLookupBreadcrumb:
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile("crumbprov", HarnessProfile(system_prompt_suffix="s"))
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness_profiles"):
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
                 _get_harness_profile("crumbprov:typo-model")
             messages = [r.getMessage() for r in caplog.records]
             assert any("No exact HarnessProfile" in m and "crumbprov" in m for m in messages)

@@ -31,7 +31,7 @@ from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
-from deepagents.profiles.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
+from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -1743,7 +1743,7 @@ class TestHasAnyHarnessProfile:
     """Regression test for `_has_any_harness_profile` helper."""
 
     def test_reports_true_when_registered(self) -> None:
-        from deepagents.profiles.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+        from deepagents.profiles.harness.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
 
         original = dict(_HARNESS_PROFILES)
         try:

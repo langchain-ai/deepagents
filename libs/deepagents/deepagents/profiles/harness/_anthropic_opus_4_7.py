@@ -18,7 +18,7 @@ Source: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering
 # published samples verbatim; hard-wrapping them would diverge from the
 # source of truth and make future updates harder to diff.
 
-from deepagents.profiles.harness_profiles import (
+from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
 )

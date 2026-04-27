@@ -14,7 +14,7 @@ Per-model keys (not the `"openai"` prefix) keep the default behavior of
 non-Codex OpenAI models unchanged.
 """
 
-from deepagents.profiles.harness_profiles import (
+from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
 )

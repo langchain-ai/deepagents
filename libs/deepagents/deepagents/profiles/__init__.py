@@ -9,11 +9,12 @@
 Exposes the public `ProviderProfile`, `HarnessProfile`, and
 `HarnessProfileConfig` APIs for customizing how `resolve_model` constructs chat
 models and how `create_deep_agent` shapes agent runtime behavior.
+
 Registration helpers are additive: re-registering under an existing key merges
 on top of the prior registration.
 """
 
-from deepagents.profiles.harness_profiles import (
+from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
     HarnessProfileConfig,

@@ -16,7 +16,6 @@ from deepagents._models import (
     model_matches_spec,
     resolve_model,
 )
-from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -815,18 +814,10 @@ class TestRegisterHarnessProfileAdditive:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_config_import_refs_convert_to_exact_class_exclusions(self) -> None:
-        """Config-file import refs resolve to class-form runtime exclusions."""
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile(
-                "import_ref_harness",
-                HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"})),
-            )
-            assert _get_harness_profile("import_ref_harness") == HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware}))
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+    def test_config_class_path_entries_are_rejected(self) -> None:
+        """Class-path (`module:Class`) entries are reserved for a future revision."""
+        with pytest.raises(ValueError, match="not currently supported"):
+            HarnessProfileConfig(excluded_middleware=frozenset({"deepagents.middleware.async_subagents:AsyncSubAgentMiddleware"}))
 
 
 class TestMergeHarnessProfiles:

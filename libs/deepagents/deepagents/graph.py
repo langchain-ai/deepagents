@@ -215,8 +215,7 @@ def _raise_on_name_collisions(
     A string entry that drops instances of more than one concrete class is
     almost always a surprise — e.g. a user middleware whose `.name`
     accidentally collides with a built-in alias. Force the caller to use a
-    class-form exclusion (or a `module:Class` import ref in
-    `HarnessProfileConfig`) to disambiguate.
+    class-form exclusion via the runtime `HarnessProfile` to disambiguate.
     """
     collisions = {name: classes for name, classes in name_matched_types.items() if len(classes) > 1}
     if not collisions:
@@ -225,9 +224,8 @@ def _raise_on_name_collisions(
     msg = (
         "HarnessProfile.excluded_middleware name entry matched multiple "
         "distinct middleware classes within a single stack: "
-        f"{'; '.join(labels)}. Use a class-form exclusion "
-        "(or a `module:Class` import ref in `HarnessProfileConfig`) to "
-        "disambiguate."
+        f"{'; '.join(labels)}. Use a class-form exclusion via the runtime "
+        "`HarnessProfile` to disambiguate."
     )
     raise ValueError(msg)
 

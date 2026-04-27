@@ -15,7 +15,7 @@ export function loadAuth(): Promise<AuthAdapter> {
         ? await import("./supabase")
         : cfg.auth === "clerk"
           ? await import("./clerk")
-          : await import("./none");
+          : await import("./anonymous");
     return mod.default;
   })();
   return _cache;

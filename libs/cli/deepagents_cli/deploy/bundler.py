@@ -95,7 +95,7 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
     }
 
     if config.auth is None:
-        payload["auth"] = "none"
+        payload["auth"] = "anonymous"
     else:
         provider = config.auth.provider
         payload["auth"] = provider

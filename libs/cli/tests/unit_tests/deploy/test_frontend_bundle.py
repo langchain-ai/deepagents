@@ -181,7 +181,7 @@ def test_bundle_succeeds_when_frontend_enabled_without_auth(
 
     # Frontend bundle copied with anonymous runtime config injected.
     html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")
-    assert '"auth":"none"' in html
+    assert '"auth":"anonymous"' in html
     assert "supabaseUrl" not in html
     assert "clerkPublishableKey" not in html
 
@@ -379,7 +379,7 @@ def test_build_runtime_config_json_anonymous_mode():
     payload_str = _build_runtime_config_json(cfg)
     payload = json.loads(payload_str)
     assert payload == {
-        "auth": "none",
+        "auth": "anonymous",
         "appName": "My App",
         "assistantId": "agent",
     }

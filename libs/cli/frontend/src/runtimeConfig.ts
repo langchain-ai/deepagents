@@ -13,8 +13,8 @@ export interface RuntimeConfigClerk {
   assistantId: string;
 }
 
-export interface RuntimeConfigNone {
-  auth: "none";
+export interface RuntimeConfigAnonymous {
+  auth: "anonymous";
   appName: string;
   assistantId: string;
 }
@@ -22,7 +22,7 @@ export interface RuntimeConfigNone {
 export type RuntimeConfig =
   | RuntimeConfigSupabase
   | RuntimeConfigClerk
-  | RuntimeConfigNone;
+  | RuntimeConfigAnonymous;
 
 declare global {
   interface Window {
@@ -60,9 +60,9 @@ export function getRuntimeConfig(): RuntimeConfig {
       assistantId: cfg.assistantId ?? "agent",
     };
   }
-  if (cfg.auth === "none") {
+  if (cfg.auth === "anonymous") {
     return {
-      auth: "none",
+      auth: "anonymous",
       appName: cfg.appName ?? "Deep Agent",
       assistantId: cfg.assistantId ?? "agent",
     };

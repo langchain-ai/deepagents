@@ -7,7 +7,7 @@ middleware.
 
 import logging
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from langchain.agents import AgentState, create_agent
@@ -25,7 +25,13 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
-from deepagents._models import get_model_identifier, get_model_provider, resolve_model
+from deepagents._excluded_middleware import (
+    _apply_excluded_middleware,
+    _validate_excluded_middleware_config,
+    _verify_excluded_middleware_coverage,
+)
+from deepagents._models import resolve_model
+from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
@@ -44,7 +50,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile
-from deepagents.profiles.harness.harness_profiles import _get_harness_profile, _has_any_harness_profile
+from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -164,323 +170,6 @@ Mirrors `_REQUIRED_MIDDLEWARE_CLASSES` via each class's reported `.name`.
 and `"_PermissionMiddleware"` are rejected — either spelling hits the
 informative scaffolding error instead of a silent no-op.
 """
-
-
-def _validate_excluded_middleware_config(profile: HarnessProfile) -> None:
-    """Validate stack-independent guards on `profile.excluded_middleware`.
-
-    Rejects required-scaffolding entries (class or the equivalent `.name`
-    string). Grammar-level checks (empty strings, multi-colon, underscore
-    prefix on plain names) already fire at `HarnessProfile` construction;
-    this function focuses on the assembly-time invariant that scaffolding
-    middleware must remain present for the agent to function.
-
-    Args:
-        profile: Profile whose `excluded_middleware` is validated.
-
-    Raises:
-        ValueError: If any entry is required scaffolding.
-    """
-    excluded = profile.excluded_middleware
-    if not excluded:
-        return
-
-    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-    excluded_names: set[str] = set()
-    for entry in excluded:
-        if isinstance(entry, type):
-            excluded_classes.add(entry)
-        else:
-            excluded_names.add(entry)
-
-    forbidden_classes = excluded_classes & _REQUIRED_MIDDLEWARE_CLASSES
-    forbidden_names = excluded_names & _REQUIRED_MIDDLEWARE_NAMES
-    if forbidden_classes or forbidden_names:
-        labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
-        msg = (
-            "HarnessProfile.excluded_middleware is invalid:\n  - "
-            f"required scaffolding cannot be excluded: {', '.join(labels)} "
-            f"(back filesystem tools, subagent dispatch, and permission "
-            f"enforcement — use excluded_tools for per-tool visibility or "
-            f"adjust profile settings instead of stripping scaffolding)"
-        )
-        raise ValueError(msg)
-
-
-def _raise_on_name_collisions(
-    name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]],
-) -> None:
-    """Raise `ValueError` if any string exclusion matched multiple distinct classes.
-
-    A string entry that drops instances of more than one concrete class is
-    almost always a surprise — e.g. a user middleware whose `.name`
-    accidentally collides with a built-in alias. Force the caller to use a
-    class-form exclusion via the runtime `HarnessProfile` to disambiguate.
-    """
-    collisions = {name: classes for name, classes in name_matched_types.items() if len(classes) > 1}
-    if not collisions:
-        return
-    labels = sorted(f"{name!r} matched {sorted(cls.__name__ for cls in classes)}" for name, classes in collisions.items())
-    msg = (
-        "HarnessProfile.excluded_middleware name entry matched multiple "
-        "distinct middleware classes within a single stack: "
-        f"{'; '.join(labels)}. Use a class-form exclusion via the runtime "
-        "`HarnessProfile` to disambiguate."
-    )
-    raise ValueError(msg)
-
-
-def _apply_excluded_middleware(
-    stack: list[AgentMiddleware[Any, Any, Any]],
-    profile: HarnessProfile,
-    *,
-    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] | None = None,
-    matched_names: set[str] | None = None,
-) -> list[AgentMiddleware[Any, Any, Any]]:
-    """Drop middleware in the stack matched by `profile.excluded_middleware`.
-
-    Class entries match on exact type (not `isinstance`), mirroring the
-    slot-identity semantics of `_merge_middleware` so a subclass introduced
-    by the caller is preserved when the profile excludes the base class.
-    String entries match `AgentMiddleware.name` exactly — defaults to the
-    class's `__name__` but is overridable when the public alias differs from
-    the impl class (e.g. `SummarizationMiddleware` for
-    `_DeepAgentsSummarizationMiddleware`).
-
-    When `matched_classes` / `matched_names` are supplied, matches are
-    recorded there so `_verify_excluded_middleware_coverage` can confirm
-    every entry matched *somewhere* across the stacks the profile applies to
-    (main agent + GP subagent). Per-stack checking would be too strict —
-    a profile legitimately targets middleware only one stack carries. Omit
-    the sets for single-stack filters where aggregation isn't meaningful.
-
-    Args:
-        stack: Fully assembled middleware list for a single agent/subagent.
-        profile: Profile whose `excluded_middleware` drives the filter.
-        matched_classes: Optional mutable set recording class matches across
-            calls for the same profile.
-        matched_names: Optional mutable set recording name matches, same
-            lifetime semantics as `matched_classes`.
-
-    Returns:
-        A new list with excluded entries removed. Always a fresh list, even
-            when no exclusions apply, so callers can mutate the result freely.
-    """
-    excluded = profile.excluded_middleware
-    if not excluded:
-        return list(stack)
-
-    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-    excluded_names: set[str] = set()
-    for entry in excluded:
-        if isinstance(entry, type):
-            excluded_classes.add(entry)
-        else:
-            excluded_names.add(entry)
-
-    filtered: list[AgentMiddleware[Any, Any, Any]] = []
-    name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]] = {}
-    for mw in stack:
-        mw_type = type(mw)
-        mw_name = mw.name
-        if mw_type in excluded_classes:
-            if matched_classes is not None:
-                matched_classes.add(mw_type)
-            continue
-        if mw_name in excluded_names:
-            name_matched_types.setdefault(mw_name, set()).add(mw_type)
-            if matched_names is not None:
-                matched_names.add(mw_name)
-            continue
-        filtered.append(mw)
-
-    _raise_on_name_collisions(name_matched_types)
-
-    removed_count = len(stack) - len(filtered)
-    if removed_count:
-        logger.debug(
-            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware (classes=%s, names=%s)",
-            removed_count,
-            sorted(cls.__name__ for cls in excluded_classes),
-            sorted(excluded_names),
-        )
-    return filtered
-
-
-def _verify_excluded_middleware_coverage(
-    profile: HarnessProfile,
-    matched_classes: set[type[AgentMiddleware[Any, Any, Any]]],
-    matched_names: set[str],
-) -> None:
-    """Raise `ValueError` if any `profile.excluded_middleware` entry matched nothing.
-
-    Run after every stack has been filtered so the accumulated `matched_*`
-    sets reflect matches anywhere. An entry that matched nothing is almost
-    always a typo or stale profile. Required-scaffolding and `_`-prefixed
-    entries are skipped — rejected earlier by
-    `_validate_excluded_middleware_config`.
-
-    Args:
-        profile: Profile whose `excluded_middleware` is being audited.
-        matched_classes: Accumulated class matches across filter calls.
-        matched_names: Accumulated name matches across filter calls.
-
-    Raises:
-        ValueError: If any entry is missing from the corresponding `matched_*` set.
-    """
-    excluded = profile.excluded_middleware
-    if not excluded:
-        return
-
-    excluded_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
-    excluded_names: set[str] = set()
-    for entry in excluded:
-        if isinstance(entry, type):
-            excluded_classes.add(entry)
-        else:
-            excluded_names.add(entry)
-
-    unmatched_classes = excluded_classes - matched_classes - _REQUIRED_MIDDLEWARE_CLASSES
-    unmatched_names = excluded_names - matched_names - _REQUIRED_MIDDLEWARE_NAMES
-    # Private-prefix names are rejected by the config guard; skip them here
-    # so the coverage error stays focused on legitimate "didn't match" cases.
-    unmatched_names = {name for name in unmatched_names if not name.startswith("_")}
-    if not unmatched_classes and not unmatched_names:
-        return
-
-    labels = sorted({cls.__name__ for cls in unmatched_classes} | {f"{name!r} (string)" for name in unmatched_names})
-    msg = (
-        f"HarnessProfile.excluded_middleware entries matched no middleware "
-        f"across any assembled stack: {', '.join(labels)}. Typo or stale "
-        f"profile — every exclusion must correspond to a middleware actually "
-        f"present at runtime. (Tip: use class-form exclusion when the class "
-        f"is available to catch typos at import time.)"
-    )
-    raise ValueError(msg)
-
-
-def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
-    """Look up the `HarnessProfile` for an already-resolved model.
-
-    If `spec` is provided (the original string the caller passed), it is used
-    for registry lookup. Otherwise both the model identifier (via `model_dump`)
-    and provider (via `_get_ls_params`) are extracted from the model instance
-    and combined into a `provider:identifier` key so that model-level profiles
-    registered under the canonical `provider:model` shape still resolve when
-    the caller hands in a pre-built model. The combined lookup is followed by
-    an identifier-only lookup (when the identifier is already in
-    `provider:model` shape) and a provider-only fallback.
-
-    A *bare* identifier (no `:`) is deliberately not consulted against the
-    registry. If it were, a pre-built model whose `model_name` happened to
-    coincide with a registered provider key (e.g. an in-house proxy whose
-    identifier is `"openai"`) would silently pick up that provider's profile.
-    Registering under a bare key is supported via the `spec` path, not
-    inferred from a model's identifier.
-
-    Args:
-        model: Resolved chat model instance.
-        spec: Original model spec string, or `None` for pre-built instances.
-
-    Returns:
-        The matching `HarnessProfile`, or an empty default (null object) when
-            nothing resolves.
-    """
-    if spec is not None:
-        return _get_harness_profile(spec) or HarnessProfile()
-    identifier = get_model_identifier(model)
-    provider = get_model_provider(model)
-    # Try the canonical `provider:model` key first so user registrations under
-    # that shape match. `_get_harness_profile` internally falls back from the
-    # exact key to the provider prefix, which also subsumes the pure
-    # provider-only case below when both pieces are known. Skip when the
-    # identifier already contains a colon to avoid producing a malformed
-    # double-colon key.
-    if provider and identifier and ":" not in identifier:
-        profile = _get_harness_profile(f"{provider}:{identifier}")
-        if profile is not None:
-            return profile
-    # Only consult identifier-only lookup when the identifier itself is in
-    # `provider:model` shape — otherwise a bare identifier could accidentally
-    # match a provider-wide registration (see docstring).
-    if identifier is not None and ":" in identifier:
-        profile = _get_harness_profile(identifier)
-        if profile is not None:
-            return profile
-    if provider is not None:
-        profile = _get_harness_profile(provider)
-        if profile is not None:
-            return profile
-    # Surface at warning when the user has registered profiles but none
-    # matched — a common "my profile isn't applying" failure mode where the
-    # pre-built model's identifier/provider couldn't be derived. With an
-    # empty registry, no profile was ever going to apply, so the miss is
-    # unsurprising and stays at debug.
-    level = logging.WARNING if _has_any_harness_profile() else logging.DEBUG
-    logger.log(
-        level,
-        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults. "
-        "If you registered a profile for this model, ensure the key matches the model's resolved provider and identifier.",
-        type(model).__name__,
-        identifier,
-        provider,
-    )
-    return HarnessProfile()
-
-
-def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
-    """Extract the tool name from any supported tool type.
-
-    Args:
-        tool: A tool in any of the forms accepted by `create_deep_agent`.
-
-    Returns:
-        The tool name, or `None` if it cannot be determined.
-    """
-    if isinstance(tool, dict):
-        name = tool.get("name")  # ty: ignore[invalid-argument-type]  # Callable & dict intersection confuses ty
-        return name if isinstance(name, str) else None
-    name = getattr(tool, "name", None)
-    return name if isinstance(name, str) else None
-
-
-def _apply_tool_description_overrides(
-    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None,
-    overrides: Mapping[str, str],
-) -> list[BaseTool | Callable | dict[str, Any]] | None:
-    """Apply description overrides without mutating caller-owned tools.
-
-    Only dict tools and `BaseTool` instances are rewritten. Plain callables are
-    returned unchanged because safely replacing their descriptions would require
-    wrapping them in new tool objects.
-
-    Args:
-        tools: User-supplied tools to copy and possibly rewrite.
-        overrides: Description overrides keyed by tool name.
-
-    Returns:
-        A copied tool list with supported overrides applied, or `None`.
-    """
-    if tools is None:
-        return None
-
-    copied_tools: list[BaseTool | Callable | dict[str, Any]] = []
-    for tool in tools:
-        name = _tool_name(tool)
-        override = overrides.get(name) if name is not None else None
-        if override is None:
-            copied_tools.append(tool)
-            continue
-        if isinstance(tool, dict):
-            rewritten_tool = cast("dict[str, Any]", tool).copy()
-            rewritten_tool["description"] = override
-            copied_tools.append(rewritten_tool)
-            continue
-        if isinstance(tool, BaseTool):
-            copied_tools.append(tool.model_copy(update={"description": override}))
-            continue
-        copied_tools.append(tool)
-    return copied_tools
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -710,7 +399,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Validate profile-level invariants (required scaffolding, private names)
     # once up front — these are stack-independent, so re-checking on every
     # filter pass would be wasteful and would report errors multiple times.
-    _validate_excluded_middleware_config(_profile)
+    _validate_excluded_middleware_config(
+        _profile,
+        required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+        required_names=_REQUIRED_MIDDLEWARE_NAMES,
+    )
     # Accumulate which entries matched across the main agent + general-purpose
     # subagent stacks (both use `_profile`). A profile-level entry only has to
     # match somewhere, not in every stack, so coverage is verified once after
@@ -780,14 +473,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
-            _validate_excluded_middleware_config(_subagent_profile)
+            _validate_excluded_middleware_config(
+                _subagent_profile,
+                required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+                required_names=_REQUIRED_MIDDLEWARE_NAMES,
+            )
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
                 _subagent_profile,
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
-            _verify_excluded_middleware_coverage(_subagent_profile, _subagent_matched_classes, _subagent_matched_names)
+            _verify_excluded_middleware_coverage(
+                _subagent_profile,
+                _subagent_matched_classes,
+                _subagent_matched_names,
+                required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+                required_names=_REQUIRED_MIDDLEWARE_NAMES,
+            )
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
@@ -931,7 +634,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale
     # profile.
-    _verify_excluded_middleware_coverage(_profile, _main_matched_classes, _main_matched_names)
+    _verify_excluded_middleware_coverage(
+        _profile,
+        _main_matched_classes,
+        _main_matched_names,
+        required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
+        required_names=_REQUIRED_MIDDLEWARE_NAMES,
+    )
 
     # Assemble base prompt: use _profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.

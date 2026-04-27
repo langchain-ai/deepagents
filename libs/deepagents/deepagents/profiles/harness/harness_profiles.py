@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger(__name__)
 
@@ -1010,3 +1011,76 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
             override.general_purpose_subagent,
         ),
     )
+
+
+def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> HarnessProfile:
+    """Look up the `HarnessProfile` for an already-resolved model.
+
+    If `spec` is provided (the original string the caller passed), it is used
+    for registry lookup. Otherwise both the model identifier (via `model_dump`)
+    and provider (via `_get_ls_params`) are extracted from the model instance
+    and combined into a `provider:identifier` key so that model-level profiles
+    registered under the canonical `provider:model` shape still resolve when
+    the caller hands in a pre-built model. The combined lookup is followed by
+    an identifier-only lookup (when the identifier is already in
+    `provider:model` shape) and a provider-only fallback.
+
+    A *bare* identifier (no `:`) is deliberately not consulted against the
+    registry. If it were, a pre-built model whose `model_name` happened to
+    coincide with a registered provider key (e.g. an in-house proxy whose
+    identifier is `"openai"`) would silently pick up that provider's profile.
+    Registering under a bare key is supported via the `spec` path, not
+    inferred from a model's identifier.
+
+    Args:
+        model: Resolved chat model instance.
+        spec: Original model spec string, or `None` for pre-built instances.
+
+    Returns:
+        The matching `HarnessProfile`, or an empty default (null object) when
+            nothing resolves.
+    """
+    # Local import: `_models` indirectly triggers `profiles/__init__`, so a
+    # top-level import here would cycle through `harness_profiles` itself.
+    from deepagents._models import get_model_identifier, get_model_provider  # noqa: PLC0415
+
+    if spec is not None:
+        return _get_harness_profile(spec) or HarnessProfile()
+    identifier = get_model_identifier(model)
+    provider = get_model_provider(model)
+    # Try the canonical `provider:model` key first so user registrations under
+    # that shape match. `_get_harness_profile` internally falls back from the
+    # exact key to the provider prefix, which also subsumes the pure
+    # provider-only case below when both pieces are known. Skip when the
+    # identifier already contains a colon to avoid producing a malformed
+    # double-colon key.
+    if provider and identifier and ":" not in identifier:
+        profile = _get_harness_profile(f"{provider}:{identifier}")
+        if profile is not None:
+            return profile
+    # Only consult identifier-only lookup when the identifier itself is in
+    # `provider:model` shape — otherwise a bare identifier could accidentally
+    # match a provider-wide registration (see docstring).
+    if identifier is not None and ":" in identifier:
+        profile = _get_harness_profile(identifier)
+        if profile is not None:
+            return profile
+    if provider is not None:
+        profile = _get_harness_profile(provider)
+        if profile is not None:
+            return profile
+    # Surface at warning when the user has registered profiles but none
+    # matched — a common "my profile isn't applying" failure mode where the
+    # pre-built model's identifier/provider couldn't be derived. With an
+    # empty registry, no profile was ever going to apply, so the miss is
+    # unsurprising and stays at debug.
+    level = logging.WARNING if _has_any_harness_profile() else logging.DEBUG
+    logger.log(
+        level,
+        "No harness profile matched pre-built model %s (identifier=%r, provider=%r); using defaults. "
+        "If you registered a profile for this model, ensure the key matches the model's resolved provider and identifier.",
+        type(model).__name__,
+        identifier,
+        provider,
+    )
+    return HarnessProfile()

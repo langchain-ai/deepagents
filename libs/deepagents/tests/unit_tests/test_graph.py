@@ -13,15 +13,13 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
-    _apply_tool_description_overrides,
-    _harness_profile_for_model,
     _resolve_extra_middleware,
-    _tool_name,
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -31,7 +29,11 @@ from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
-from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES, _get_harness_profile
+from deepagents.profiles.harness.harness_profiles import (
+    _HARNESS_PROFILES,
+    _get_harness_profile,
+    _harness_profile_for_model,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -1466,7 +1468,7 @@ class TestProfileMissLogLevel:
         model = MagicMock(spec=BaseChatModel)
         model.model_dump.return_value = {}
         model._get_ls_params = MagicMock(return_value={})
-        with caplog.at_level(logging.DEBUG, logger="deepagents.graph"):
+        with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
             result = _harness_profile_for_model(model, None)
         assert result == HarnessProfile()
         records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
@@ -1480,7 +1482,7 @@ class TestProfileMissLogLevel:
             model = MagicMock(spec=BaseChatModel)
             model.model_dump.return_value = {}
             model._get_ls_params = MagicMock(return_value={})
-            with caplog.at_level(logging.DEBUG, logger="deepagents.graph"):
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
                 result = _harness_profile_for_model(model, None)
             assert result == HarnessProfile()
             records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]

@@ -188,7 +188,7 @@ def _apply_summarization_event(messages: list[AnyMessage], event: object) -> lis
     calls. Forked subagents should inherit that same effective view instead of
     re-expanding already-compacted history.
     """
-    if not isinstance(event, dict):
+    if not isinstance(event, Mapping):
         return list(messages)
 
     event_mapping = cast("Mapping[str, object]", event)
@@ -201,13 +201,27 @@ def _apply_summarization_event(messages: list[AnyMessage], event: object) -> lis
     return [summary_message, *messages[cutoff_index:]]
 
 
-def _drop_active_tool_call_message(messages: list[AnyMessage], tool_call_id: str) -> list[AnyMessage]:
-    """Remove the parent AI message that is currently invoking the task tool."""
-    return [
-        message
-        for message in messages
-        if not (isinstance(message, AIMessage) and any(tool_call.get("id") == tool_call_id for tool_call in message.tool_calls))
-    ]
+def _messages_before_current_task_call(messages: list[AnyMessage], tool_call_id: str) -> list[AnyMessage]:
+    """Return the inherited prefix before the parent turn that launched this task.
+
+    Forked subagents should inherit the same prefix the parent model consumed,
+    then append their own task instruction. Removing by prefix keeps prior
+    completed tool calls intact and avoids rewriting earlier history.
+    """
+    if not tool_call_id:
+        return list(messages)
+
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if isinstance(message, AIMessage) and any(tool_call.get("id") == tool_call_id for tool_call in message.tool_calls):
+            return messages[:idx]
+
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if isinstance(message, ToolMessage) and message.tool_call_id == tool_call_id:
+            return messages[:idx]
+
+    return list(messages)
 
 
 def _child_config(runtime: ToolRuntime, *, fork_context: bool) -> RunnableConfig:
@@ -468,7 +482,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             parent_messages = list(runtime.state.get("messages", []))
             effective_messages = _apply_summarization_event(parent_messages, runtime.state.get(_SUMMARIZATION_EVENT_KEY))
             subagent_state["messages"] = [
-                *_drop_active_tool_call_message(effective_messages, runtime.tool_call_id or ""),
+                *_messages_before_current_task_call(effective_messages, runtime.tool_call_id or ""),
                 HumanMessage(content=description),
             ]
         else:

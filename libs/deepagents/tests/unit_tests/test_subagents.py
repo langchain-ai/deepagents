@@ -20,7 +20,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
@@ -1687,7 +1687,7 @@ class TestSubAgents:
 
         effective = subagents_middleware._apply_summarization_event(messages, event)
         forked = [
-            *subagents_middleware._drop_active_tool_call_message(effective, "call_fork"),
+            *subagents_middleware._messages_before_current_task_call(effective, "call_fork"),
             HumanMessage(content="Do forked work"),
         ]
 
@@ -1697,6 +1697,72 @@ class TestSubAgents:
             "Do forked work",
         ]
         assert all(not (isinstance(message, AIMessage) and message.tool_calls) for message in forked)
+
+    def test_task_fork_context_preserves_prior_tool_history_when_trimming_current_task(self) -> None:
+        """Only the current parent task turn should be removed from forked history."""
+        prior_tool_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "search",
+                    "args": {"query": "cacheable context"},
+                    "id": "prior_search",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        prior_tool_result = ToolMessage(content="prior search result", tool_call_id="prior_search")
+        messages: list[AnyMessage] = [
+            HumanMessage(content="Earlier user context."),
+            prior_tool_call,
+            prior_tool_result,
+            AIMessage(content="Earlier assistant answer."),
+            HumanMessage(content="Current request."),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {
+                            "description": "Do forked work",
+                            "subagent_type": "worker",
+                            "fork_context": True,
+                        },
+                        "id": "call_fork",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+        ]
+
+        forked = [
+            *subagents_middleware._messages_before_current_task_call(messages, "call_fork"),
+            HumanMessage(content="Do forked work"),
+        ]
+
+        assert forked[:-1] == messages[:-1]
+        assert forked[-1].content == "Do forked work"
+        assert prior_tool_call in forked
+        assert prior_tool_result in forked
+
+    def test_task_fork_context_trims_current_tool_message_if_ai_turn_is_absent(self) -> None:
+        """Checkpointed or resumed states should still avoid inheriting current task bookkeeping."""
+        messages: list[AnyMessage] = [
+            HumanMessage(content="Earlier user context."),
+            AIMessage(content="Earlier assistant answer."),
+            ToolMessage(content="current task result bookkeeping", tool_call_id="call_fork"),
+        ]
+
+        forked = [
+            *subagents_middleware._messages_before_current_task_call(messages, "call_fork"),
+            HumanMessage(content="Do forked work"),
+        ]
+
+        assert [message.content for message in forked] == [
+            "Earlier user context.",
+            "Earlier assistant answer.",
+            "Do forked work",
+        ]
 
     async def test_task_fork_context_async_path_matches_sync_state_behavior(self) -> None:
         """Async task invocation should build the same forked state as sync invocation."""

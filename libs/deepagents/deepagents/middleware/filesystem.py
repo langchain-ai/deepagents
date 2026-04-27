@@ -4,6 +4,7 @@
 import asyncio
 import concurrent.futures
 import contextvars
+import html
 import mimetypes
 import uuid
 import warnings
@@ -1069,6 +1070,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
 
+            command = html.unescape(command)
+
             resolved_backend = self._get_backend(runtime)
 
             # Runtime check - fail gracefully if not supported
@@ -1124,6 +1127,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     return f"Error: timeout must be non-negative, got {timeout}."
                 if timeout > self._max_execute_timeout:
                     return f"Error: timeout {timeout}s exceeds maximum allowed ({self._max_execute_timeout}s)."
+
+            command = html.unescape(command)
 
             resolved_backend = self._get_backend(runtime)
 

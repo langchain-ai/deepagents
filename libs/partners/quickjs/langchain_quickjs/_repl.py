@@ -7,6 +7,7 @@ without constructing an agent or wiring up LangGraph state.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -34,7 +35,7 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
-from langchain_quickjs._ptc import to_camel_case
+from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
 from langchain_quickjs._skills import LoadedSkill, SkillLoadError, aload_skill
 
 if TYPE_CHECKING:
@@ -304,6 +305,33 @@ def _inject_tool_args_for_ptc(
     return enriched
 
 
+def _bridge_symbol_name(tool_name: str) -> str:
+    """Build a stable, JS-safe global symbol for one PTC bridge."""
+    # Keep only identifier-safe characters and salt with a short hash to
+    # avoid collisions when different source names sanitize similarly.
+    normalized = "".join(
+        c if c.isalnum() or c in {"_", "$"} else "_" for c in tool_name
+    )
+    if not normalized or normalized[0].isdigit():
+        normalized = f"_{normalized}"
+    digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:8]
+    return f"__tools_{normalized}_{digest}"
+
+
+def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
+    """Return JS that atomically rebuilds ``globalThis.tools`` from bridges."""
+    statements = ["globalThis.tools = {};"]
+    for tool_name, bridge_symbol in sorted(bridges.items()):
+        quoted_tool_name = json.dumps(tool_name)
+        quoted_bridge_symbol = json.dumps(bridge_symbol)
+        statements.append(
+            "globalThis.tools"
+            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
+        )
+    statements.append("undefined")
+    return " ".join(statements)
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
@@ -337,6 +365,7 @@ class _ThreadREPL:
         # are reflected by rewriting ``globalThis.tools`` (see
         # install_tools) to include only the currently-active subset.
         self._registered_tools: dict[str, BaseTool] = {}
+        self._bridge_symbols: dict[str, str] = {}
         self._active_tool_names: frozenset[str] = frozenset()
         # Tracks whether ``globalThis.tools`` has been assigned at least
         # once. Distinct from ``_active_tool_names`` so the first call
@@ -403,7 +432,17 @@ class _ThreadREPL:
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
         ctx = cast("Context", self._ctx)
-        name_to_tool: dict[str, BaseTool] = {to_camel_case(t.name): t for t in tools}
+        name_to_tool: dict[str, BaseTool] = {}
+        for tool in tools:
+            camel = to_camel_case(tool.name)
+            if not is_valid_js_identifier(camel):
+                logger.warning(
+                    "Skipping PTC tool %r: %r is not a valid JS identifier",
+                    tool.name,
+                    camel,
+                )
+                continue
+            name_to_tool[camel] = tool
         target_names = frozenset(name_to_tool)
         if target_names == self._active_tool_names and self._tools_installed:
             # Fast path: stable toolset, nothing to do. Keep the bridge's
@@ -418,7 +457,7 @@ class _ThreadREPL:
         # Register host-function bridges for tools we haven't seen before.
         for camel, tool in name_to_tool.items():
             if camel not in self._registered_tools:
-                self._register_tool_bridge(camel)
+                self._bridge_symbols[camel] = self._register_tool_bridge(camel)
             self._registered_tools[camel] = tool
 
         # Rewrite globalThis.tools. Building the object inside a single
@@ -426,11 +465,8 @@ class _ThreadREPL:
         # there's no moment where tools is half-populated. The trailing
         # ``undefined`` sidesteps the MarshalError on object returns
         # (same trick as the console install).
-        if target_names:
-            pairs = ", ".join(f"{camel}: __tools_{camel}" for camel in target_names)
-            ctx.eval(f"globalThis.tools = {{ {pairs} }}; undefined")
-        else:
-            ctx.eval("globalThis.tools = {}; undefined")
+        bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
+        ctx.eval(_render_tools_namespace_assignment(bridges))
         self._active_tool_names = target_names
         self._tools_installed = True
 
@@ -445,7 +481,7 @@ class _ThreadREPL:
         """
         self._outer_runtime = runtime
 
-    def _register_tool_bridge(self, camel: str) -> None:
+    def _register_tool_bridge(self, camel: str) -> str:
         """Install a host-function bridge for one camel-cased tool name.
 
         The bridge is async so ``eval_async``'s driving loop can await
@@ -477,7 +513,9 @@ class _ThreadREPL:
             )
             return _coerce_tool_output(result)
 
-        ctx.register(f"__tools_{camel}", _bridge, is_async=True)
+        bridge_symbol = _bridge_symbol_name(camel)
+        ctx.register(bridge_symbol, _bridge, is_async=True)
+        return bridge_symbol
 
     def eval_sync(self, code: str) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on

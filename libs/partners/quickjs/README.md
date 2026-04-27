@@ -189,7 +189,7 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 
 ### How it works (so you can debug it)
 
-- Each PTC-exposed tool gets a QuickJS host-function bridge registered under `__tools_<camel>`. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
+- Each PTC-exposed tool gets a QuickJS host-function bridge registered under a generated `__tools_*` global symbol. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
 - When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so subagent tools like `task` see graph `state`, `store`, `context`, and a synthesised child `tool_call_id`.
 - Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.

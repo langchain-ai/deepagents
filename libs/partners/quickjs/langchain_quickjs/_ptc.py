@@ -76,27 +76,37 @@ def filter_tools_for_ptc(
             msg = "ptc list must be all str or all BaseTool, not mixed"
             raise TypeError(msg)
         config_cast = cast("list[BaseTool]", config)
-        return [t for t in config_cast if t.name != self_tool_name]
+        selected = [t for t in config_cast if t.name != self_tool_name]
+        _raise_on_invalid_ptc_tools(selected)
+        return selected
     candidates = [t for t in tools if t.name != self_tool_name]
     if config is True:
+        _raise_on_invalid_ptc_tools(candidates)
         return candidates
     if isinstance(config, list):
         allow = set(config)
-        return [t for t in candidates if t.name in allow]
+        selected = [t for t in candidates if t.name in allow]
+        _raise_on_invalid_ptc_tools(selected)
+        return selected
     if isinstance(config, dict):
         if "include" in config and "exclude" in config:
             msg = "ptc config cannot specify both include and exclude"
             raise ValueError(msg)
         if "include" in config:
             allow = set(config["include"])
-            return [t for t in candidates if t.name in allow]
+            selected = [t for t in candidates if t.name in allow]
+            _raise_on_invalid_ptc_tools(selected)
+            return selected
         if "exclude" in config:
             deny = set(config["exclude"])
-            return [t for t in candidates if t.name not in deny]
+            selected = [t for t in candidates if t.name not in deny]
+            _raise_on_invalid_ptc_tools(selected)
+            return selected
     return []
 
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
+_JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 
 
 def to_camel_case(name: str) -> str:
@@ -106,6 +116,29 @@ def to_camel_case(name: str) -> str:
     identifier shape across Python and TS backends. ``my_tool`` → ``myTool``.
     """
     return _CAMEL_SEP.sub(lambda m: m.group(1).upper(), name)
+
+
+def is_valid_js_identifier(name: str) -> bool:
+    """Return whether `name` is a valid JavaScript identifier."""
+    return _JS_IDENTIFIER.fullmatch(name) is not None
+
+
+def is_valid_ptc_tool_name(name: str) -> bool:
+    """Return whether a tool can be exposed as `tools.<camelCaseName>`."""
+    return is_valid_js_identifier(to_camel_case(name))
+
+
+def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
+    for tool in tools:
+        camel = to_camel_case(tool.name)
+        if is_valid_js_identifier(camel):
+            continue
+        msg = (
+            f"PTC tool name {tool.name!r} cannot be exposed as JavaScript "
+            f"identifier {camel!r}. Tool names must map to "
+            "`/^[A-Za-z_$][A-Za-z0-9_$]*$/`."
+        )
+        raise ValueError(msg)
 
 
 def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
@@ -118,6 +151,7 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
     """
     if not tools:
         return ""
+    _raise_on_invalid_ptc_tools(tools)
     blocks: list[str] = []
     for t in tools:
         camel = to_camel_case(t.name)
@@ -166,7 +200,7 @@ def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
         optional = "" if key in required else "?"
         type_str = _json_schema_to_ts(prop)
         desc = prop.get("description")
-        prefix = f"/** {desc} */ " if desc else ""
+        prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     body = "\n".join(fields) if fields else ""
     return (

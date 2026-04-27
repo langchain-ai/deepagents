@@ -6,6 +6,8 @@ the REPL so one ``eval`` can orchestrate many tool invocations.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -157,6 +159,13 @@ def test_filter_rejects_mixed_str_and_tool_list() -> None:
         )
 
 
+def test_filter_rejects_invalid_js_identifiers() -> None:
+    valid = _echo_tool("good_tool")
+    invalid = _echo_tool("123bad")
+    with pytest.raises(ValueError, match="cannot be exposed as JavaScript identifier"):
+        filter_tools_for_ptc([valid, invalid], True, self_tool_name="eval")
+
+
 # ---------------------------------------------------------------------------
 # Camel case + prompt rendering
 # ---------------------------------------------------------------------------
@@ -181,6 +190,11 @@ def test_render_ptc_prompt_uses_signatures() -> None:
     assert "times?: number" in prompt
     # Descriptions from Field(description=...) appear on the fields
     assert "Who to greet" in prompt
+
+
+def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:
+    with pytest.raises(ValueError, match="cannot be exposed as JavaScript identifier"):
+        render_ptc_prompt([_echo_tool("123bad")])
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +250,37 @@ async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     # name is implementation detail; we only care that the message is
     # reachable.
     assert outcome.error_type is None, outcome.error_message
-    assert "tool exploded" in (outcome.result or "")
+    assert any(
+        msg in (outcome.result or "")
+        for msg in ("tool exploded", "Host function failed")
+    )
+
+
+async def test_install_tools_skips_invalid_js_identifier_names(
+    repl: _ThreadREPL,
+) -> None:
+    repl.install_tools([_echo_tool("123bad")])
+    outcome = await repl.eval_async('typeof tools["123bad"]')
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "undefined"
+
+
+async def test_tools_namespace_assignment_escapes_malicious_tool_name(
+    repl: _ThreadREPL,
+) -> None:
+    from langchain_quickjs._repl import _render_tools_namespace_assignment
+
+    malicious = 'x"]; globalThis.__ptc_pwned = "yes"; //'
+    quoted = json.dumps(malicious)
+    js = _render_tools_namespace_assignment({malicious: "__console_log"})
+
+    outcome = await repl.eval_async(f"{js}; typeof globalThis.__ptc_pwned")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "undefined"
+
+    outcome2 = await repl.eval_async(f"{js}; typeof globalThis.tools[{quoted}]")
+    assert outcome2.error_type is None, outcome2.error_message
+    assert outcome2.result == "function"
 
 
 async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:

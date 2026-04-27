@@ -11,11 +11,6 @@ Claude Opus 4.7's documented behaviors:
   prior Opus generations when not prompted otherwise.
 
 Source: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices
-
-Registered directly by `_ensure_builtin_profiles_loaded` at
-`deepagents.profiles` import time. Not exposed as an
-`importlib.metadata` entry point — built-ins ship with the SDK and
-should not depend on install-time metadata to activate.
 """
 
 # ruff: noqa: E501
@@ -50,6 +45,7 @@ Do not spawn a subagent for work you can complete directly in a single response 
 
 Spawn multiple subagents in the same turn when fanning out across items or reading multiple files.
 </subagent_usage>"""
+"""Text appended to the assembled base system prompt."""
 
 
 def register() -> None:

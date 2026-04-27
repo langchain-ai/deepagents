@@ -17,11 +17,6 @@ guidance, add it here rather than at the provider key so it does not
 leak onto other Anthropic models.
 
 Source: https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices
-
-Registered directly by `_ensure_builtin_profiles_loaded` at
-`deepagents.profiles` import time. Not exposed as an
-`importlib.metadata` entry point — built-ins ship with the SDK and
-should not depend on install-time metadata to activate.
 """
 
 # ruff: noqa: E501
@@ -46,6 +41,7 @@ Never speculate about code you have not opened. If the user references a specifi
 <tool_result_reflection>
 After receiving tool results, carefully reflect on their quality and determine optimal next steps before proceeding. Use your thinking to plan and iterate based on this new information, and then take the best next action.
 </tool_result_reflection>"""
+"""Text appended to the assembled base system prompt."""
 
 
 def register() -> None:

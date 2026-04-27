@@ -172,8 +172,12 @@ def test_bundle_succeeds_when_frontend_enabled_without_auth(
     )
     bundle(cfg, project, build_dir)
 
-    # No auth.py written.
-    assert not (build_dir / "auth.py").exists()
+    # Anonymous auth.py is generated to override LangSmith Cloud's
+    # default x-api-key requirement (otherwise the bundled frontend
+    # can't reach /threads).
+    auth_py = (build_dir / "auth.py").read_text(encoding="utf-8")
+    assert "Anonymous-mode auth" in auth_py
+    assert '"identity": "anonymous"' in auth_py
 
     # Frontend bundle copied with anonymous runtime config injected.
     html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")

@@ -567,7 +567,12 @@ class TestCrossModuleConsistency:
         assert frozenset(SANDBOX_BLOCKS.keys()) == VALID_SANDBOX_PROVIDERS
 
     def test_auth_blocks_matches_valid_providers(self) -> None:
-        """AUTH_BLOCKS keys in templates.py must match VALID_AUTH_PROVIDERS."""
+        """User-facing AUTH_BLOCKS keys must match VALID_AUTH_PROVIDERS.
+
+        `anonymous` is an internal dispatch key for [frontend]-without-[auth]
+        mode; it intentionally is NOT a user-facing provider name.
+        """
         from deepagents_cli.deploy.templates import AUTH_BLOCKS
 
-        assert frozenset(AUTH_BLOCKS.keys()) == VALID_AUTH_PROVIDERS
+        user_facing = frozenset(AUTH_BLOCKS.keys()) - {"anonymous"}
+        assert user_facing == VALID_AUTH_PROVIDERS

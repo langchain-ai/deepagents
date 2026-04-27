@@ -207,23 +207,31 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 6. Generate auth.py if [auth] is configured.
-    auth_present = config.auth is not None
+    # 6. Generate auth.py.
+    # - [auth] configured → use the provider's block.
+    # - [frontend] enabled without [auth] → use the anonymous block,
+    #   which overrides LangSmith Cloud's default x-api-key requirement
+    #   so the bundled frontend can reach /threads etc.
+    frontend_enabled = config.frontend is not None and config.frontend.enabled
+    auth_provider: str | None = None
     if config.auth is not None:
+        auth_provider = config.auth.provider
+    elif frontend_enabled:
+        auth_provider = "anonymous"
+
+    auth_present = auth_provider is not None
+    if auth_provider is not None:
         (build_dir / "auth.py").write_text(
-            _render_auth_py(config.auth.provider),
+            _render_auth_py(auth_provider),
             encoding="utf-8",
         )
-        logger.info("Generated auth.py (%s)", config.auth.provider)
+        logger.info("Generated auth.py (%s)", auth_provider)
 
-    # 6b. Copy frontend bundle when enabled. [auth] is optional — when
-    # absent, the frontend ships in anonymous mode (see runtime config).
-    frontend_enabled = config.frontend is not None and config.frontend.enabled
+    # 6b. Copy frontend bundle when enabled.
     if frontend_enabled:
         _copy_frontend_dist(config, build_dir)
         (build_dir / "app.py").write_text(APP_PY_TEMPLATE, encoding="utf-8")
-        provider = config.auth.provider if config.auth is not None else "none"
-        logger.info("Copied frontend bundle and wrote app.py (%s)", provider)
+        logger.info("Copied frontend bundle and wrote app.py (%s)", auth_provider)
 
     # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(

@@ -122,6 +122,12 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             considered first; then name-matched agent tools are added.
             Duplicate names are deduplicated.
 
+            !!! warning
+                PTC calls currently execute through the REPL bridge and
+                do **not** go through the normal `ToolNode` path. As a
+                result, `interrupt_on` / HITL approval workflows are not
+                enforced per PTC-invoked tool call.
+
             The REPL's own tool is always excluded; a model asking for
             ``tools.eval("...")`` would recurse pointlessly.
 

@@ -57,6 +57,11 @@ def filter_tools_for_ptc(
     Mixed lists are supported and merged. Explicit ``BaseTool`` entries
     are included first, then name-matched agent tools are appended.
     Duplicate tool names are deduplicated.
+
+    Warning:
+        PTC tool calls execute through the REPL bridge and currently do
+        not respect `interrupt_on` / HITL approval hooks for each
+        individual tool invocation.
     """
     if isinstance(config, list):
         explicit_tools: list[BaseTool] = []

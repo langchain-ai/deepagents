@@ -143,7 +143,7 @@ Numeric rendering follows Node's REPL convention — whole-valued floats (`42.0`
 
 ## Programmatic tool calling (PTC)
 
-PTC is the reason to use this middleware over a plain code-interpreter tool. When enabled, every tool registered on the agent is also available inside the REPL as:
+PTC is the reason to use this middleware over a plain code-interpreter tool. When configured, each exposed tool is available inside the REPL as:
 
 ```ts
 async tools.<camelCaseName>(input: {...}): Promise<string>
@@ -165,11 +165,13 @@ await tools.summarize({ text: results.join("\n\n") })
 ### Enabling it
 
 ```python
-REPLMiddleware(ptc=True)                      # expose every tool except `eval`
-REPLMiddleware(ptc=["search_web"])            # allowlist
-REPLMiddleware(ptc={"exclude": ["dangerous"]})  # denylist
-REPLMiddleware(ptc=False)                     # default — disabled
+REPLMiddleware()                              # disabled (default)
+REPLMiddleware(ptc=["search_web"])            # explicit allowlist
+REPLMiddleware(ptc=[search_tool])             # explicit tool object allowlist
 ```
+
+Boolean `ptc` values are not supported. Use `ptc=None` (or omit `ptc`) to disable.
+Dict `ptc` configs are not supported.
 
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
 
@@ -232,7 +234,7 @@ REPLMiddleware(
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
-    ptc=False,                       # bool | list[str] | {"include":[...]} | {"exclude":[...]}
+    ptc=None,                        # None | list[str] | list[BaseTool]
     skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )
 ```

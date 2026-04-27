@@ -109,11 +109,11 @@ async def test_ptc_spawns_subagent_through_eval() -> None:
     )
 
 
-async def test_ptc_respects_exclude_config() -> None:
-    """When ptc excludes `task`, the model cannot call subagents from the REPL.
+async def test_ptc_respects_allowlist_config() -> None:
+    """When ptc allowlist omits `task`, the model cannot call it from the REPL.
 
     We give the model both `task` as a regular tool and `eval` with
-    PTC configured to exclude `task`. The REPL's `tools` namespace
+    PTC configured with an empty allowlist. The REPL's `tools` namespace
     should therefore be empty (or at least not include `task`).
     """
     agent = create_agent(
@@ -123,7 +123,7 @@ async def test_ptc_respects_exclude_config() -> None:
                 backend=None,
                 subagents=[_researcher_subagent()],
             ),
-            REPLMiddleware(ptc={"exclude": ["task"]}),
+            REPLMiddleware(ptc=[]),
         ],
     )
 

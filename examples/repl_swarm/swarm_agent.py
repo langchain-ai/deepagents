@@ -52,7 +52,13 @@ def _build_agent(model: str) -> object:
         model=model,
         backend=backend,
         skills=["/skills/"],
-        middleware=[REPLMiddleware(ptc=True, skills_backend=backend, timeout=None)],
+        middleware=[
+            REPLMiddleware(
+                ptc=["task"],
+                skills_backend=backend,
+                timeout=None,
+            )
+        ],
     )
 
 

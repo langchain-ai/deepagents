@@ -112,14 +112,15 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             ``eval`` call can then orchestrate many tool calls (loops,
             ``Promise.all``, conditional branching). Accepts:
 
-            - ``False`` (default) — disabled.
-            - ``True`` — expose every agent tool except the REPL itself.
-            - ``list[str]`` — expose only the listed agent tools.
-            - ``list[BaseTool]`` — expose the given tools directly; they
-              do not need to be on the agent. Use this to make tools
-              reachable only inside the REPL.
-            - ``{"include": [...]}`` — equivalent to ``list[str]``.
-            - ``{"exclude": [...]}`` — expose all except the listed tools.
+            - ``None`` (default) — disabled.
+            - ``list[str | BaseTool]`` — allowlist entries may be:
+              - ``str`` tool names, matched against the agent's toolset.
+              - ``BaseTool`` instances, exposed directly even if not on
+                the agent's tool list.
+
+            Mixed lists are supported. Explicit ``BaseTool`` entries are
+            considered first; then name-matched agent tools are added.
+            Duplicate names are deduplicated.
 
             The REPL's own tool is always excluded; a model asking for
             ``tools.eval("...")`` would recurse pointlessly.
@@ -144,7 +145,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
-        ptc: PTCOption = False,
+        ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
     ) -> None:
         """See the class docstring for parameter details.
@@ -345,7 +346,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         missing host-function bridges on the current thread's REPL, and
         rebuilds ``globalThis.tools`` if the exposed name set changed.
         """
-        if self._ptc is False:
+        if self._ptc is None:
             return self._base_system_prompt
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
         exposed = filter_tools_for_ptc(

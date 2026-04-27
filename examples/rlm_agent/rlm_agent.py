@@ -1,7 +1,9 @@
-"""Recursive Agents (RLM style) — `create_deep_agent` with a compiled general-purpose chain.
+"""Recursive Agents (RLM style).
+
+`create_deep_agent` with a compiled general-purpose chain.
 
 `create_rlm_agent` builds a Deep Agent whose own middleware stack
-includes `REPLMiddleware(ptc=True)`, and — for `max_depth > 0` —
+includes `REPLMiddleware(ptc=[...])`, and — for `max_depth > 0` —
 replaces the default `general-purpose` subagent with a
 `CompiledSubAgent` whose runnable is itself a depth-(N-1) RLM agent.
 The model delegates via `tools.task({subagent_type: "general-purpose",
@@ -57,11 +59,12 @@ def create_rlm_agent(
 ) -> Any:
     """Build a Deep Agent with a recursive compiled general-purpose chain.
 
-    At every depth the agent itself has `REPLMiddleware(ptc=True)` so
-    the model can write `eval` + `Promise.all(tools.<x>(...))` to
-    parallelize. For `max_depth > 0` the default `general-purpose`
-    subagent is replaced with a `CompiledSubAgent` pointing at a
-    depth-(N-1) RLM agent. The model reaches it the usual way:
+    At every depth the agent itself has PTC configured with an explicit
+    include-list (`task` plus user-provided tool names), so the model
+    can write `eval` + `Promise.all(tools.<x>(...))` to parallelize.
+    For `max_depth > 0` the default `general-purpose` subagent is
+    replaced with a `CompiledSubAgent` pointing at a depth-(N-1) RLM
+    agent. The model reaches it the usual way:
     `tools.task({subagent_type: "general-purpose", ...})`.
 
     Args:
@@ -127,11 +130,12 @@ def _build(
     auto-injected default at this level.
     """
     if max_depth == 0:
+        ptc_tool_names = sorted({*(t.name for t in tools or []), "task"})
         return create_deep_agent(
             model=model,
             tools=tools,
             subagents=extra_subagents,
-            middleware=[REPLMiddleware(ptc=True)],
+            middleware=[REPLMiddleware(ptc=ptc_tool_names)],
             **kwargs,
         )
 
@@ -147,11 +151,12 @@ def _build(
         description=GENERAL_PURPOSE_SUBAGENT["description"],
         runnable=deeper,
     )
+    ptc_tool_names = sorted({*(t.name for t in tools or []), "task"})
     return create_deep_agent(
         model=model,
         tools=tools,
         subagents=[compiled_gp, *extra_subagents],
-        middleware=[REPLMiddleware(ptc=True)],
+        middleware=[REPLMiddleware(ptc=ptc_tool_names)],
         **kwargs,
     )
 

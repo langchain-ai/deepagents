@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.tools import BaseTool
 
@@ -32,20 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-class PTCConfig(TypedDict, total=False):
-    """Filter for which agent tools are exposed inside the REPL.
-
-    Use ``include`` **or** ``exclude``, not both. ``exclude`` is always
-    additive with PTC's own hard-coded exclusions (the REPL's own eval
-    tool, for example) — users cannot force the REPL tool into its own
-    namespace.
-    """
-
-    include: list[str]
-    exclude: list[str]
-
-
-PTCOption = bool | list[str] | list[BaseTool] | PTCConfig
+PTCOption = list[str | BaseTool]
 
 
 def filter_tools_for_ptc(
@@ -61,48 +48,52 @@ def filter_tools_for_ptc(
     If the model wants a nested eval, it can just write nested code in one
     call — that's the whole point of PTC.
 
-    When ``config`` is a ``list[BaseTool]`` the provided tools are used
-    directly (minus ``self_tool_name``) and ``tools`` is ignored — the
-    caller is supplying the PTC set, not filtering the agent set.
+    ``config`` is allowlist-only:
+
+    - ``str`` entries: expose matching tool names from ``tools``.
+    - ``BaseTool`` entries: expose those tools directly (minus
+      ``self_tool_name``).
+
+    Mixed lists are supported and merged. Explicit ``BaseTool`` entries
+    are included first, then name-matched agent tools are appended.
+    Duplicate tool names are deduplicated.
     """
-    if config is False:
-        return []
-    if (
-        isinstance(config, list)
-        and config
-        and any(isinstance(t, BaseTool) for t in config)
-    ):
-        if any(not isinstance(t, BaseTool) for t in config):
-            msg = "ptc list must be all str or all BaseTool, not mixed"
-            raise TypeError(msg)
-        config_cast = cast("list[BaseTool]", config)
-        selected = [t for t in config_cast if t.name != self_tool_name]
-        _raise_on_invalid_ptc_tools(selected)
-        return selected
-    candidates = [t for t in tools if t.name != self_tool_name]
-    if config is True:
-        _raise_on_invalid_ptc_tools(candidates)
-        return candidates
     if isinstance(config, list):
-        allow = set(config)
-        selected = [t for t in candidates if t.name in allow]
+        explicit_tools: list[BaseTool] = []
+        allow_names: set[str] = set()
+        for entry in config:
+            if isinstance(entry, BaseTool):
+                if entry.name != self_tool_name:
+                    explicit_tools.append(entry)
+                continue
+            if isinstance(entry, str):
+                allow_names.add(entry)
+                continue
+            msg = "ptc list entries must be str or BaseTool"
+            raise TypeError(msg)
+        selected = [
+            *explicit_tools,
+            *[
+                t
+                for t in tools
+                if t.name != self_tool_name and t.name in allow_names
+            ],
+        ]
+        deduped: list[BaseTool] = []
+        seen_names: set[str] = set()
+        for tool in selected:
+            if tool.name in seen_names:
+                continue
+            seen_names.add(tool.name)
+            deduped.append(tool)
+        selected = deduped
         _raise_on_invalid_ptc_tools(selected)
         return selected
-    if isinstance(config, dict):
-        if "include" in config and "exclude" in config:
-            msg = "ptc config cannot specify both include and exclude"
-            raise ValueError(msg)
-        if "include" in config:
-            allow = set(config["include"])
-            selected = [t for t in candidates if t.name in allow]
-            _raise_on_invalid_ptc_tools(selected)
-            return selected
-        if "exclude" in config:
-            deny = set(config["exclude"])
-            selected = [t for t in candidates if t.name not in deny]
-            _raise_on_invalid_ptc_tools(selected)
-            return selected
-    return []
+    msg = (
+        "Unsupported `ptc` config type. "
+        "Use a list of tool names, list of BaseTool instances, or disable PTC."
+    )
+    raise TypeError(msg)
 
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")

@@ -16,7 +16,7 @@ at depth 0, where `general-purpose` is the plain built-in.
 A plain Deep Agent can delegate to a subagent via the `task` tool.
 That's one call per subtask, serialized across model turns.
 
-With `REPLMiddleware(ptc=True)` on the agent, the model can write:
+With `REPLMiddleware(ptc=["task", ...])` on the agent, the model can write:
 
 ```javascript
 // inside one `eval` tool call

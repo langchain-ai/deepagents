@@ -103,14 +103,30 @@ def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
 # ---------------------------------------------------------------------------
 
 
-def test_filter_false_returns_empty() -> None:
-    assert filter_tools_for_ptc([_greet_tool()], False, self_tool_name="eval") == []
+def test_filter_rejects_boolean_config() -> None:
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        filter_tools_for_ptc([_greet_tool()], True, self_tool_name="eval")
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        filter_tools_for_ptc([_greet_tool()], False, self_tool_name="eval")
 
 
-def test_filter_true_excludes_self_tool() -> None:
+def test_filter_rejects_dict_config() -> None:
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        filter_tools_for_ptc(  # type: ignore[arg-type]
+            [_greet_tool()],
+            {"include": ["greet"]},
+            self_tool_name="eval",
+        )
+
+
+def test_filter_list_include_empty_returns_empty() -> None:
+    assert filter_tools_for_ptc([_greet_tool()], [], self_tool_name="eval") == []
+
+
+def test_filter_list_include_excludes_self_tool() -> None:
     greet = _greet_tool()
     eval_tool = _echo_tool("eval")  # same name as the REPL tool
-    out = filter_tools_for_ptc([greet, eval_tool], True, self_tool_name="eval")
+    out = filter_tools_for_ptc([greet, eval_tool], ["greet"], self_tool_name="eval")
     names = [t.name for t in out]
     assert names == ["greet"]
 
@@ -119,21 +135,6 @@ def test_filter_list_include() -> None:
     a, b, c = _echo_tool("a"), _echo_tool("b"), _echo_tool("c")
     out = filter_tools_for_ptc([a, b, c], ["a", "c"], self_tool_name="eval")
     assert [t.name for t in out] == ["a", "c"]
-
-
-def test_filter_dict_exclude_keeps_rest() -> None:
-    a, b, c = _echo_tool("a"), _echo_tool("b"), _echo_tool("c")
-    out = filter_tools_for_ptc([a, b, c], {"exclude": ["b"]}, self_tool_name="eval")
-    assert [t.name for t in out] == ["a", "c"]
-
-
-def test_filter_rejects_both_include_and_exclude() -> None:
-    with pytest.raises(ValueError, match="both include and exclude"):
-        filter_tools_for_ptc(
-            [_echo_tool()],
-            {"include": ["echo"], "exclude": ["echo"]},
-            self_tool_name="eval",
-        )
 
 
 def test_filter_list_of_tools_uses_them_directly() -> None:
@@ -150,11 +151,22 @@ def test_filter_list_of_tools_excludes_self_tool() -> None:
     assert [t.name for t in out] == ["greet"]
 
 
-def test_filter_rejects_mixed_str_and_tool_list() -> None:
-    with pytest.raises(TypeError, match="all str or all BaseTool"):
-        filter_tools_for_ptc(
+def test_filter_accepts_mixed_str_and_tool_list() -> None:
+    agent_echo = _echo_tool("echo")
+    direct_greet = _greet_tool()
+    out = filter_tools_for_ptc(
+        [agent_echo],
+        [direct_greet, "echo"],
+        self_tool_name="eval",
+    )
+    assert [t.name for t in out] == ["greet", "echo"]
+
+
+def test_filter_rejects_invalid_mixed_entry_type() -> None:
+    with pytest.raises(TypeError, match="ptc list entries must be str or BaseTool"):
+        filter_tools_for_ptc(  # type: ignore[list-item]
             [_echo_tool()],
-            ["echo", _greet_tool()],
+            ["echo", 42],
             self_tool_name="eval",
         )
 
@@ -163,7 +175,9 @@ def test_filter_rejects_invalid_js_identifiers() -> None:
     valid = _echo_tool("good_tool")
     invalid = _echo_tool("123bad")
     with pytest.raises(ValueError, match="cannot be exposed as JavaScript identifier"):
-        filter_tools_for_ptc([valid, invalid], True, self_tool_name="eval")
+        filter_tools_for_ptc(
+            [valid, invalid], ["good_tool", "123bad"], self_tool_name="eval"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +334,10 @@ def test_middleware_ptc_default_off_omits_prompt_block() -> None:
     assert "`tools` namespace" not in prompt
 
 
-def test_middleware_ptc_true_includes_prompt_block() -> None:
+def test_middleware_ptc_list_includes_prompt_block() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=True)
+    mw = REPLMiddleware(ptc=["greet", "eval"])
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     prompt = mw._prepare_for_call(req)
     # Greet included
@@ -352,7 +366,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     """
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=True)
+    mw = REPLMiddleware(ptc=["greet", "eval"])
     # Simulate a model-call turn without any langgraph config present.
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     mw._prepare_for_call(req)
@@ -362,3 +376,15 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     outcome = await first.eval_async("typeof tools.greet")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "function"
+
+
+def test_middleware_rejects_boolean_ptc_config() -> None:
+    with pytest.raises(TypeError, match="Boolean `ptc` is no longer supported"):
+        REPLMiddleware(ptc=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Boolean `ptc` is no longer supported"):
+        REPLMiddleware(ptc=False)  # type: ignore[arg-type]
+
+
+def test_middleware_rejects_dict_ptc_config() -> None:
+    with pytest.raises(TypeError, match="Dict `ptc` configs are no longer supported"):
+        REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]

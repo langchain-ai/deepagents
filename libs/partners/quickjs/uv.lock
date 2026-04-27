@@ -1510,10 +1510,11 @@ source = { editable = "../../../../quickjs-wasm" }
 
 [package.metadata]
 requires-dist = [
+    { name = "matplotlib", marker = "extra == 'bench'", specifier = ">=3.8" },
     { name = "mypy", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-codspeed", marker = "extra == 'bench'", specifier = ">=3.0" },
+    { name = "pytest-codspeed", marker = "extra == 'bench'", specifier = ">=4.3.0" },
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
 ]

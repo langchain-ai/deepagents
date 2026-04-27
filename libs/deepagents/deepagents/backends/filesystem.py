@@ -18,6 +18,7 @@ from deepagents.backends.protocol import (
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -446,6 +447,39 @@ class FilesystemBackend(BackendProtocol):
             return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Remove a file from the filesystem.
+
+        Returns a structured error when the path is outside the configured
+        root (in `virtual_mode`) or does not resolve to an existing path.
+        `exists()` and `is_dir()` follow symlinks, so a broken symlink is
+        reported as not found and a symlink that points at a directory is
+        rejected as a directory — neither is unlinked. A symlink that
+        points at a regular file is unlinked itself, not its target.
+
+        Args:
+            file_path: Path of the file to remove.
+
+        Returns:
+            `DeleteResult` with `path` on success, or `error` on failure.
+        """
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except ValueError as e:
+            return DeleteResult(error=str(e))
+
+        if not resolved_path.exists():
+            return DeleteResult(error=f"File '{file_path}' not found")
+        if resolved_path.is_dir():
+            return DeleteResult(error=f"Cannot delete directory '{file_path}'")
+
+        try:
+            resolved_path.unlink()
+        except OSError as e:
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+        return DeleteResult(path=file_path)
 
     def grep(
         self,

@@ -70,28 +70,46 @@ class TestResolveExtraMiddleware:
     """Tests for _resolve_extra_middleware."""
 
     def test_empty_profile_returns_empty_list(self) -> None:
-        result = _resolve_extra_middleware(HarnessProfile())
+        result = _resolve_extra_middleware(HarnessProfile(), backend=MagicMock())
         assert result == []
 
     def test_static_sequence_returned_as_list(self) -> None:
         sentinel = MagicMock()
         profile = HarnessProfile(extra_middleware=(sentinel,))
-        result = _resolve_extra_middleware(profile)
+        result = _resolve_extra_middleware(profile, backend=MagicMock())
         assert result == [sentinel]
 
     def test_callable_factory_is_invoked(self) -> None:
         sentinel = MagicMock()
-        factory = MagicMock(return_value=[sentinel])
+
+        def factory() -> list[MagicMock]:
+            return [sentinel]
+
         profile = HarnessProfile(extra_middleware=factory)
-        result = _resolve_extra_middleware(profile)
-        factory.assert_called_once()
+        result = _resolve_extra_middleware(profile, backend=MagicMock())
         assert result == [sentinel]
+
+    def test_backend_aware_factory_receives_backend(self) -> None:
+        """Backend-aware factories are invoked with the resolved backend."""
+        sentinel = MagicMock()
+        captured: list[object] = []
+
+        def factory(backend: object) -> list[MagicMock]:
+            captured.append(backend)
+            return [sentinel]
+
+        profile = HarnessProfile(extra_middleware=factory)
+        backend = MagicMock()
+        result = _resolve_extra_middleware(profile, backend=backend)
+        assert result == [sentinel]
+        assert captured == [backend]
 
     def test_returns_fresh_list_each_call(self) -> None:
         sentinel = MagicMock()
         profile = HarnessProfile(extra_middleware=(sentinel,))
-        a = _resolve_extra_middleware(profile)
-        b = _resolve_extra_middleware(profile)
+        backend = MagicMock()
+        a = _resolve_extra_middleware(profile, backend=backend)
+        b = _resolve_extra_middleware(profile, backend=backend)
         assert a == b
         assert a is not b
 

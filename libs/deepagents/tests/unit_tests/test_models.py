@@ -30,6 +30,7 @@ from deepagents.profiles.harness_profiles import (
     _get_harness_profile,
     _merge_middleware,
     _merge_profiles,
+    _resolve_middleware_spec,
 )
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_APP_TITLE,
@@ -896,6 +897,71 @@ class TestMergeHarnessProfiles:
         merged = _merge_profiles(base, HarnessProfile())
         assert list(merged.extra_middleware) == [mw]
 
+    def test_extra_middleware_backend_aware_factory_preserved_alone(self) -> None:
+        """A backend-aware factory survives the merge when the other side is empty."""
+        mw = MagicMock()
+
+        def factory(backend: object) -> list[MagicMock]:
+            assert backend == "sentinel-backend"
+            return [mw]
+
+        base = HarnessProfile(extra_middleware=factory)
+        merged = _merge_profiles(base, HarnessProfile())
+        assert merged.extra_middleware is factory
+
+    def test_extra_middleware_merge_backend_aware_plus_sequence(self) -> None:
+        """Mixing a backend-aware factory with a sequence yields a backend-aware merge."""
+        mw_a, mw_b = MagicMock(), MagicMock()
+
+        def base_factory(backend: object) -> list[MagicMock]:
+            assert backend == "sentinel-backend"
+            return [mw_a]
+
+        base = HarnessProfile(extra_middleware=base_factory)
+        override = HarnessProfile(extra_middleware=[mw_b])
+        merged = _merge_profiles(base, override)
+        assert callable(merged.extra_middleware)
+        # Merged factory must receive the backend and forward it.
+        assert list(merged.extra_middleware("sentinel-backend")) == [mw_a, mw_b]
+
+    def test_extra_middleware_merge_two_backend_aware_factories(self) -> None:
+        """Both backend-aware: both receive the backend; type-slot merge still applies."""
+        mw_a, mw_b = MagicMock(), MagicMock()
+
+        def base_factory(backend: object) -> list[MagicMock]:
+            assert backend == "sentinel-backend"
+            return [mw_a]
+
+        def override_factory(backend: object) -> list[MagicMock]:
+            assert backend == "sentinel-backend"
+            return [mw_b]
+
+        base = HarnessProfile(extra_middleware=base_factory)
+        override = HarnessProfile(extra_middleware=override_factory)
+        merged = _merge_profiles(base, override)
+        assert callable(merged.extra_middleware)
+        assert list(merged.extra_middleware("sentinel-backend")) == [mw_a, mw_b]
+
+    def test_extra_middleware_merge_zero_arg_preserves_zero_arg_shape(self) -> None:
+        """Two zero-arg factories merge into a zero-arg factory, not a backend-aware one."""
+        mw_a, mw_b = MagicMock(), MagicMock()
+        base = HarnessProfile(extra_middleware=lambda: [mw_a])
+        override = HarnessProfile(extra_middleware=lambda: [mw_b])
+        merged = _merge_profiles(base, override)
+        assert callable(merged.extra_middleware)
+        # Zero-arg shape is preserved for backward compatibility.
+        assert list(merged.extra_middleware()) == [mw_a, mw_b]
+
+    def test_resolve_middleware_spec_rejects_missing_backend(self) -> None:
+        """Backend-aware factories must receive a real backend, not `None`."""
+
+        def backend_aware(backend: object) -> list[MagicMock]:  # pragma: no cover - not invoked
+            del backend
+            return []
+
+        with pytest.raises(ValueError, match="Backend-aware middleware factory"):
+            _resolve_middleware_spec(backend_aware)
+
     def test_general_purpose_subagent_merge_combines_fields(self) -> None:
         base = HarnessProfile(
             general_purpose_subagent=GeneralPurposeSubagentProfile(
@@ -1044,6 +1110,100 @@ class TestBuiltInProfiles:
         assert haiku is not None
         assert opus.system_prompt_suffix.startswith(sonnet.system_prompt_suffix)
         assert sonnet.system_prompt_suffix == haiku.system_prompt_suffix
+
+
+class TestBuiltInCodexProfile:
+    """Tests for the built-in Codex harness registration.
+
+    Each Codex spec receives a `HarnessProfile` carrying the
+    Codex-specific system-prompt suffix. No `ProviderProfile` is
+    registered for Codex today — model-construction defaults are left
+    to OpenAI's server-side adaptive reasoning. Non-Codex OpenAI models
+    must remain unaffected.
+    """
+
+    _CODEX_SPECS = (
+        "openai:gpt-5.1-codex",
+        "openai:gpt-5.2-codex",
+        "openai:gpt-5.3-codex",
+    )
+
+    @pytest.mark.parametrize("spec", _CODEX_SPECS)
+    def test_codex_harness_profile_has_expected_suffix(self, spec: str) -> None:
+        """Every Codex spec receives the behavior-shaping prompt suffix."""
+        profile = _get_harness_profile(spec)
+        assert profile is not None
+        assert profile.system_prompt_suffix is not None
+        assert "## Codex-Specific Behavior" in profile.system_prompt_suffix
+        assert "## Parallel Tool Use" in profile.system_prompt_suffix
+        assert "## Plan Hygiene" in profile.system_prompt_suffix
+
+    def test_codex_harness_profile_omits_unavailable_tool_guidance(self) -> None:
+        """Until `apply_patch` and tool aliases land, the suffix must not name them.
+
+        Telling the model to call `apply_patch` (PR B) or referencing the
+        `shell_command` alias for `execute` (PR A) when those capabilities
+        are not wired into the harness would push the model toward
+        hallucinated tool calls. Guard against reintroducing those
+        references before the corresponding follow-up work ships.
+        """
+        profile = _get_harness_profile("openai:gpt-5.3-codex")
+        assert profile is not None
+        assert profile.system_prompt_suffix is not None
+        assert "apply_patch" not in profile.system_prompt_suffix
+        assert "shell_command" not in profile.system_prompt_suffix
+        assert "## File Editing" not in profile.system_prompt_suffix
+
+    @pytest.mark.parametrize("spec", _CODEX_SPECS)
+    def test_no_provider_profile_registered_for_codex(self, spec: str) -> None:
+        """Codex deliberately ships harness-only; provider lookup falls back to `"openai"`.
+
+        Guards against someone reintroducing a Codex `ProviderProfile`
+        without updating this test — ensures the pure-harness scope of
+        PR C stays explicit rather than drifting silently.
+        """
+        profile = get_provider_profile(spec)
+        assert profile is not None
+        assert profile.init_kwargs == {"use_responses_api": True}
+
+    def test_non_codex_openai_unaffected_by_codex_registrations(self) -> None:
+        """Codex per-model registrations must not leak into plain OpenAI models."""
+        provider = get_provider_profile("openai:gpt-5")
+        assert provider is not None
+        assert provider.init_kwargs == {"use_responses_api": True}
+        assert _get_harness_profile("openai:gpt-5") is None
+
+    def test_codex_harness_suffix_identical_across_specs(self) -> None:
+        """All Codex specs share one suffix string — guards against drift."""
+        suffixes = {
+            _get_harness_profile(spec).system_prompt_suffix  # type: ignore[union-attr]
+            for spec in self._CODEX_SPECS
+        }
+        assert len(suffixes) == 1
+
+    def test_ensure_builtin_profiles_loaded_is_idempotent_for_codex(self) -> None:
+        """Re-running the bootstrap must not double-register Codex entries.
+
+        The harness-profile merge is additive: a naive second pass that
+        re-registered under the same key would chain the suffix onto
+        itself, doubling its length. This test exercises the `_loaded`
+        guard by checking the suffix stays stable across repeated calls.
+        """
+        from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+            _ensure_builtin_profiles_loaded,
+        )
+
+        first = _get_harness_profile("openai:gpt-5.3-codex")
+        assert first is not None
+        assert first.system_prompt_suffix is not None
+        suffix_before = first.system_prompt_suffix
+
+        _ensure_builtin_profiles_loaded()
+        _ensure_builtin_profiles_loaded()
+
+        second = _get_harness_profile("openai:gpt-5.3-codex")
+        assert second is not None
+        assert second.system_prompt_suffix == suffix_before
 
 
 class TestProfilePluginLoader:

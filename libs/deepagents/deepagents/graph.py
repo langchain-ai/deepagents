@@ -44,7 +44,11 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile
-from deepagents.profiles.harness_profiles import _get_harness_profile, _has_any_harness_profile
+from deepagents.profiles.harness_profiles import (
+    _get_harness_profile,
+    _has_any_harness_profile,
+    _resolve_middleware_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,19 +121,28 @@ def get_default_model() -> ChatAnthropic:
 
 def _resolve_extra_middleware(
     profile: HarnessProfile,
+    backend: BackendProtocol | BackendFactory,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Materialize the `extra_middleware` from a harness profile.
 
+    Delegates arity-aware dispatch to
+    `deepagents.profiles.harness_profiles._resolve_middleware_spec`, so
+    all three spec shapes (sequence, zero-arg factory, backend-aware
+    factory) are handled consistently. The `backend` argument is
+    threaded through to backend-aware factories; sequences and
+    zero-arg factories ignore it.
+
     Args:
         profile: The harness profile to read from.
+        backend: The resolved backend for the agent being assembled,
+            passed to backend-aware `extra_middleware` factories so
+            they can wire middleware that cooperates with the same
+            backend as `FilesystemMiddleware`.
 
     Returns:
         A fresh list of middleware instances (may be empty).
     """
-    extra = profile.extra_middleware
-    if callable(extra):
-        return list(extra())  # ty: ignore[call-top-callable]
-    return list(extra)
+    return list(_resolve_middleware_spec(profile.extra_middleware, backend))
 
 
 _REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(
@@ -769,7 +782,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(spec.get("middleware", []))
 
             # Harness-profile middleware for this subagent's model
-            subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile))
+            subagent_middleware.extend(_resolve_extra_middleware(_subagent_profile, backend))
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
@@ -829,7 +842,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         # Add harness-profile middleware, if any
-        gp_middleware.extend(_resolve_extra_middleware(_profile))
+        gp_middleware.extend(_resolve_extra_middleware(_profile, backend))
 
         # Strip excluded tools after all tool-injecting middleware has run
         if _profile.excluded_tools:
@@ -900,7 +913,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Harness-profile middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
-    deepagent_middleware.extend(_resolve_extra_middleware(_profile))
+    deepagent_middleware.extend(_resolve_extra_middleware(_profile, backend))
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Unconditional prompt caching (see general-purpose subagent comment).

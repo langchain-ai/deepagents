@@ -22,11 +22,11 @@ The host-function bridge that actually invokes each tool lives in
 
 from __future__ import annotations
 
-import json
-import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool
+
+from langchain_quickjs import _prompt
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -97,27 +97,19 @@ def filter_tools_for_ptc(
     raise TypeError(msg)
 
 
-_CAMEL_SEP = re.compile(r"[-_]([a-z])")
-_JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
-
-
 def to_camel_case(name: str) -> str:
-    """Convert ``snake_case`` / ``kebab-case`` → ``camelCase``.
-
-    Matches the TS package's convention so PTC-savvy users get the same
-    identifier shape across Python and TS backends. ``my_tool`` → ``myTool``.
-    """
-    return _CAMEL_SEP.sub(lambda m: m.group(1).upper(), name)
+    """Convert ``snake_case`` / ``kebab-case`` → ``camelCase``."""
+    return _prompt.to_camel_case(name)
 
 
 def is_valid_js_identifier(name: str) -> bool:
     """Return whether `name` is a valid JavaScript identifier."""
-    return _JS_IDENTIFIER.fullmatch(name) is not None
+    return _prompt.is_valid_js_identifier(name)
 
 
 def is_valid_ptc_tool_name(name: str) -> bool:
     """Return whether a tool can be exposed as `tools.<camelCaseName>`."""
-    return is_valid_js_identifier(to_camel_case(name))
+    return _prompt.is_valid_ptc_tool_name(name)
 
 
 def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
@@ -134,109 +126,8 @@ def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
 
 
 def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
-    """Build the `tools` namespace section of the system prompt.
-
-    One block per tool: name, description (first line), and a TS-ish
-    signature derived from the Pydantic args_schema. Falls back to
-    ``input: Record<string, unknown>`` when a tool has no schema or the
-    schema can't be walked.
-    """
+    """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
     _raise_on_invalid_ptc_tools(tools)
-    blocks: list[str] = []
-    for t in tools:
-        camel = to_camel_case(t.name)
-        schema = _safe_json_schema(t)
-        signature = _render_signature(camel, schema)
-        description = (
-            (t.description or "").strip().splitlines()[0] if t.description else ""
-        )
-        blocks.append(f"/** {description} */\n{signature}")
-    body = "\n\n".join(blocks)
-    return (
-        "\n\n"
-        "### API Reference — `tools` namespace\n\n"
-        "The agent tools listed below are callable as async functions inside the REPL "
-        "under the `tools` namespace. Each takes a single object argument and returns "
-        "a Promise that resolves to a string. Use `await`; combine with `Promise.all` "
-        "for concurrent calls.\n\n"
-        "```typescript\n"
-        f"{body}\n"
-        "```"
-    )
-
-
-def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
-    try:
-        if tool.args_schema is None:
-            return None
-        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
-        if callable(model_json_schema):
-            return model_json_schema()
-    except Exception:  # noqa: BLE001 — prompt rendering is best-effort
-        return None
-    return None
-
-
-def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
-    if not schema or not isinstance(schema.get("properties"), dict):
-        return f"async tools.{fn_name}(input: Record<string, unknown>): Promise<string>"
-    props: dict[str, Any] = schema["properties"]
-    required = set(schema.get("required", []))
-    # Keep the interface inline (same arg) rather than defining a named
-    # interface — fewer lines in the prompt, and JS-side naming doesn't
-    # matter since the model is just reading the shape.
-    fields = []
-    for key, prop in props.items():
-        optional = "" if key in required else "?"
-        type_str = _json_schema_to_ts(prop)
-        desc = prop.get("description")
-        prefix = f"/**\n *{desc}\n */ " if desc else ""
-        fields.append(f"  {prefix}{key}{optional}: {type_str};")
-    body = "\n".join(fields) if fields else ""
-    return (
-        f"async tools.{fn_name}(input: {{\n{body}\n}}): Promise<string>"
-        if body
-        else f"async tools.{fn_name}(input: Record<string, unknown>): Promise<string>"
-    )
-
-
-def _json_schema_to_ts(prop: dict[str, Any]) -> str:
-    """Shallow JSON-Schema → TS type renderer.
-
-    Handles the cases Pydantic v2 actually emits for simple tool schemas:
-    primitives, arrays, nested objects, enums, unions via ``anyOf``.
-    ``$ref`` and ``allOf`` fall back to ``unknown`` — the description is
-    usually enough for the model to understand intent, and the call still
-    works because we pass input through unchanged.
-    """
-    if "enum" in prop:
-        return " | ".join(json.dumps(v) for v in prop["enum"])
-    if "anyOf" in prop:
-        parts = [_json_schema_to_ts(p) for p in prop["anyOf"]]
-        return " | ".join(dict.fromkeys(parts))  # dedupe while preserving order
-    t = prop.get("type")
-    if t == "string":
-        return "string"
-    if t in {"integer", "number"}:
-        return "number"
-    if t == "boolean":
-        return "boolean"
-    if t == "null":
-        return "null"
-    if t == "array":
-        items = prop.get("items")
-        inner = _json_schema_to_ts(items) if isinstance(items, dict) else "unknown"
-        return f"{inner}[]"
-    if t == "object":
-        sub_props = prop.get("properties")
-        if isinstance(sub_props, dict) and sub_props:
-            required = set(prop.get("required", []))
-            fields = [
-                f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
-                for k, v in sub_props.items()
-            ]
-            return "{ " + "; ".join(fields) + " }"
-        return "Record<string, unknown>"
-    return "unknown"
+    return _prompt.render_ptc_prompt(tools)

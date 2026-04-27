@@ -15,7 +15,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
-from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
@@ -35,6 +34,11 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs._format import (
+    coerce_tool_output,
+    format_handle,
+    stringify,
+)
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
 from langchain_quickjs._skills import LoadedSkill, SkillLoadError, aload_skill
 
@@ -53,8 +57,6 @@ logger = logging.getLogger(__name__)
 # a handle-shaped result so the model sees "you got back a function" rather
 # than nothing.
 _HANDLE_PLACEHOLDER = "[unmarshalable value]"
-
-_TRUNCATE_MARKER = "… [truncated {n} chars]"
 
 
 @dataclass
@@ -88,7 +90,7 @@ class _ConsoleBuffer:
 
     def append(self, level: str, args: tuple[Any, ...]) -> None:
         del level  # flattened; see class docstring
-        self._lines.append(" ".join(_stringify(a) for a in args))
+        self._lines.append(" ".join(stringify(a) for a in args))
 
     def drain(self) -> str:
         if not self._lines:
@@ -96,79 +98,6 @@ class _ConsoleBuffer:
         out = "\n".join(self._lines)
         self._lines.clear()
         return out
-
-
-def _format_handle(handle: Any) -> str:
-    """Describe a ``Handle`` value in REPL-style shorthand.
-
-    Caller owns the handle's lifetime; we only read from it.
-    """
-    kind = handle.type_of
-    if kind == "function":
-        # Arity is convenient context when the model wants to call the
-        # thing back. Fall back gracefully if .length is absent.
-        try:
-            arity_h = handle.get("length")
-            try:
-                arity = arity_h.to_python()
-            finally:
-                arity_h.dispose()
-        except Exception:  # noqa: BLE001 — best-effort
-            return "[Function]"
-        return f"[Function] arity={arity}"
-    return f"[{kind}]"
-
-
-def _stringify(value: Any) -> str:
-    """Best-effort string form for a console arg or eval result.
-
-    QuickJS auto-marshals primitives and plain objects through msgpack, so
-    everything we see here is already a Python value. Formatting choices
-    match Node's REPL rather than Python's ``repr``:
-
-    - ``None`` → ``"null"`` (the model expects JS-shaped output)
-    - ``UNDEFINED`` → ``"undefined"``
-    - Booleans → ``"true"`` / ``"false"``
-    - Whole-valued floats → integer form (``42.0`` → ``"42"``). JS has no
-      integer type, so every ``1 + 1`` comes back as a float; without this
-      the model sees ``42.0`` where a human would expect ``42``. Applied
-      recursively inside lists and dicts.
-    """
-    return _format_jsvalue(value)
-
-
-def _format_jsvalue(value: Any) -> str:
-    if value is None:
-        return "null"
-    if value is UNDEFINED:
-        return "undefined"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float):
-        # Preserve ±inf / NaN: .is_integer() returns False for NaN and inf,
-        # so they fall through to str().
-        if value.is_integer():
-            return str(int(value))
-        return str(value)
-    if isinstance(value, str):
-        # Top-level strings render bare (matches what a REPL user expects
-        # when they eval a string expression); nested strings get quoted
-        # so ``[1, "a"]`` renders as ``[1, "a"]`` not ``[1, a]``.
-        return value
-    if isinstance(value, list):
-        return "[" + ", ".join(_format_nested(v) for v in value) + "]"
-    if isinstance(value, dict):
-        return (
-            "{" + ", ".join(f"{k}: {_format_nested(v)}" for k, v in value.items()) + "}"
-        )
-    return repr(value)
-
-
-def _format_nested(value: Any) -> str:
-    """Like ``_format_jsvalue`` but quotes nested strings."""
-    if isinstance(value, str):
-        return f'"{value}"'
-    return _format_jsvalue(value)
 
 
 def _normalize_tool_input(raw: Any) -> dict[str, Any]:
@@ -187,68 +116,6 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     # schema validation produces an informative error rather than a
     # silent miss.
     return {"input": raw}
-
-
-def _coerce_tool_output(value: Any) -> str:
-    """Tools return arbitrary Python; JS-side users expect a string.
-
-    Handles four shapes:
-
-    - ``str`` — pass through unchanged.
-    - ``langgraph.types.Command`` — the shape ``task`` / subagent tools
-      return. Extract the last ``ToolMessage`` content from
-      ``command.update["messages"]`` since that's what the parent agent
-      would normally see; the state update itself is intentionally
-      dropped — PTC calls happen inside a JS ``await`` and we have
-      nowhere to funnel a state mutation back into the parent graph.
-    - everything else — ``json.dumps`` for faithful JSON → JS parseable
-      round-tripping, falling back to ``str`` on non-serialisable
-      values.
-    """
-    if isinstance(value, str):
-        return value
-    if isinstance(value, Command):
-        return _coerce_command_output(value)
-    # When we invoke with a ToolCall-shaped input, BaseTool wraps the
-    # return value in a ToolMessage. Unwrap its content so the JS side
-    # sees the raw tool output, not a Python repr of the envelope.
-    if isinstance(value, ToolMessage):
-        return _coerce_tool_message_output(value)
-    if isinstance(value, list):
-        # Some tools return a mixed ``list[Command | ToolMessage]``.
-        # Mirror parent-agent behavior by surfacing the last message-like
-        # entry as the JS-visible value.
-        for entry in reversed(value):
-            if isinstance(entry, ToolMessage):
-                return _coerce_tool_message_output(entry)
-            if isinstance(entry, Command):
-                return _coerce_command_output(entry)
-    return _coerce_message_content(value)
-
-
-def _coerce_message_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    try:
-        return json.dumps(content, default=str)
-    except (TypeError, ValueError):
-        return str(content)
-
-
-def _coerce_tool_message_output(message: ToolMessage) -> str:
-    return _coerce_message_content(message.content)
-
-
-def _coerce_command_output(command: Command) -> str:
-    update = command.update
-    if isinstance(update, dict):
-        messages = update.get("messages")
-        if isinstance(messages, list):
-            for entry in reversed(messages):
-                content = getattr(entry, "content", None)
-                if content is not None:
-                    return _coerce_message_content(content)
-    return str(update)
 
 
 def _extract_commands(value: Any) -> list[Command]:
@@ -542,7 +409,7 @@ class _ThreadREPL:
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
             self._ptc_command_buffer.extend(_extract_commands(result))
-            return _coerce_tool_output(result)
+            return coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
@@ -579,7 +446,7 @@ class _ThreadREPL:
         self._ptc_command_buffer.clear()
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
-            outcome.result = _stringify(value)
+            outcome.result = stringify(value)
         except MarshalError:
             outcome.result_kind = "handle"
             outcome.result = await self._describe_via_handle_async(code)
@@ -632,7 +499,7 @@ class _ThreadREPL:
         except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
             return _HANDLE_PLACEHOLDER
         try:
-            return _format_handle(handle)
+            return format_handle(handle)
         finally:
             handle.dispose()
 
@@ -778,45 +645,3 @@ class _Registry:
     async def _aclose_runtime(self) -> None:
         if self._runtime is not None:
             self._runtime.close()
-
-
-def format_outcome(
-    outcome: EvalOutcome,
-    *,
-    max_result_chars: int,
-) -> str:
-    """Render an EvalOutcome as the tool's wire format (see spec §8)."""
-    parts: list[str] = []
-    if outcome.stdout:
-        parts.append(
-            f"<stdout>\n{_truncate(outcome.stdout, max_result_chars)}\n</stdout>"
-        )
-    if outcome.error_type is not None:
-        inner = outcome.error_message
-        if outcome.error_stack:
-            inner = f"{inner}\n{outcome.error_stack}"
-        parts.append(
-            f'<error type="{_xml_escape(outcome.error_type)}">'
-            f"{_xml_escape(_truncate(inner, max_result_chars))}"
-            f"</error>"
-        )
-    else:
-        body = outcome.result if outcome.result is not None else "undefined"
-        kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
-        body_xml = _xml_escape(_truncate(body, max_result_chars))
-        parts.append(f"<result{kind_attr}>{body_xml}</result>")
-    return "\n".join(parts)
-
-
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    keep = max(0, limit - len(_TRUNCATE_MARKER.format(n=0)))
-    dropped = len(text) - keep
-    return text[:keep] + _TRUNCATE_MARKER.format(n=dropped)
-
-
-def _xml_escape(text: str) -> str:
-    # Minimal escape — we emit the tag set we control, so we only need to
-    # keep angle brackets from closing our wrapper tags early.
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

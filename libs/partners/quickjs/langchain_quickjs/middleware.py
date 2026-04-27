@@ -29,12 +29,14 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.skills import SkillMetadata
 
+from langchain_quickjs._format import format_outcome
+from langchain_quickjs._prompt import render_repl_system_prompt
 from langchain_quickjs._ptc import (
     PTCOption,
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from langchain_quickjs._repl import _Registry, format_outcome
+from langchain_quickjs._repl import _Registry
 from langchain_quickjs._skills import scan_skill_references
 
 logger = logging.getLogger(__name__)
@@ -44,17 +46,6 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 _EvalToolResult = ToolMessage | list[Command | ToolMessage]
-
-_SYSTEM_PROMPT_TEMPLATE = (
-    "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
-    "REPL backed by QuickJS.\n"
-    "- State (variables, functions) persists across calls within this conversation.\n"
-    "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "
-    "no `fetch`, no `require`.\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
-    "- `console.log` output is captured and returned alongside the result."
-)
 
 
 class EvalSchema(BaseModel):
@@ -109,6 +100,14 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         capture_console: If ``True``, install a ``console`` object that
             buffers ``console.log/warn/error`` calls and emits them in
             ``<stdout>`` blocks alongside the result. Default ``True``.
+        skills_backend: Optional ``BackendProtocol`` the REPL reads skill
+            source files from. When set and a paired
+            ``SkillsMiddleware`` populates ``skills_metadata`` in state,
+            skills with a ``module`` frontmatter key become dynamic-
+            importable from the REPL as ``await import("@/skills/<name>")``.
+            When ``None``, skill modules are not installed
+            (``import(...)`` fails at the resolver). This must be the
+            same backend ``SkillsMiddleware`` uses.
         ptc: Programmatic tool calling — expose agent tools inside the
             REPL as ``tools.<camelCase>(input) => Promise<string>``. One
             ``eval`` call can then orchestrate many tool calls (loops,
@@ -145,7 +144,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(  # noqa: D417 — class docstring documents the full parameter list; this delegates
+    def __init__(
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
@@ -156,21 +155,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
     ) -> None:
-        """See the class docstring for parameter details.
-
-        Args:
-            skills_backend: Optional ``BackendProtocol`` the REPL reads
-                skill source files from. When set and a paired
-                ``SkillsMiddleware`` populates ``skills_metadata`` in
-                state, skills with a ``module`` frontmatter key become
-                dynamic-importable from the REPL as
-                ``await import("@/skills/<name>")``. When ``None``,
-                skill modules are not installed (``import(...)`` fails
-                at the resolver). This must be the same backend
-                ``SkillsMiddleware`` uses — the REPL treats skill file
-                paths relative to SKILL.md as coming from the same
-                store.
-        """
         super().__init__()
         self._memory_limit = memory_limit
         self._timeout = timeout
@@ -184,7 +168,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             timeout=timeout,
             capture_console=capture_console,
         )
-        self._base_system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
+        self._base_system_prompt = render_repl_system_prompt(
             tool_name=tool_name,
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),

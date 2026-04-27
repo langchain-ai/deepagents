@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
-from langchain_quickjs._repl import _Registry, _ThreadREPL, format_outcome
+from langchain_quickjs._format import format_outcome
+from langchain_quickjs._repl import _Registry, _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Fixtures

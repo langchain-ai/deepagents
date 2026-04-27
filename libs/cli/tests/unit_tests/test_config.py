@@ -1635,6 +1635,100 @@ app_categories = ["cloud-agent"]
         assert "app_categories" not in kwargs
 
 
+class TestCreateModelForwardsProviderProfile:
+    """Tests that `create_model` forwards profile kwargs to `init_chat_model`.
+
+    Regression coverage for the original PDF bug reported in #2959: env-default
+    and explicit OpenAI selections both need `use_responses_api=True` so file
+    content blocks are routed through the Responses API.
+    """
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_env_default_openai_gets_use_responses_api(
+        self, mock_init: Mock, mock_default: Mock
+    ) -> None:
+        """No-spec `create_model()` resolves to OpenAI with `use_responses_api=True`."""
+        mock_default.return_value = "openai:gpt-5.2"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model()
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_openai_spec_gets_use_responses_api(self, mock_init: Mock) -> None:
+        """Explicit `openai:*` selection also inherits the SDK Responses API default."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model("openai:gpt-5.2")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_model_params_override_profile_default(self, mock_init: Mock) -> None:
+        """`--model-params` (extra_kwargs) wins over profile defaults."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model(
+            "openai:gpt-5.2",
+            extra_kwargs={"use_responses_api": False},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_config_toml_opt_out_wins_over_profile(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """`use_responses_api=false` in `config.toml` opts out of the default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai.params]
+use_responses_api = false
+""")
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model("openai:gpt-5.2")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_anthropic_unaffected(self, mock_init: Mock) -> None:
+        """Providers without a `ProviderProfile` are not given a `use_responses_api`."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model("anthropic:claude-sonnet-4-5")
+
+        _, call_kwargs = mock_init.call_args
+        assert "use_responses_api" not in call_kwargs
+
+
 class TestCreateModelFromClass:
     """Tests for _create_model_from_class() custom class factory."""
 

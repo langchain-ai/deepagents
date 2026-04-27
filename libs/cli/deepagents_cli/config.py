@@ -2257,6 +2257,13 @@ def create_model(
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
 
+    # SDK profile defaults sit beneath config.toml; user config still wins.
+    if provider:
+        from deepagents.profiles.provider import apply_provider_profile
+
+        spec = f"{provider}:{model_name}" if model_name else provider
+        kwargs = apply_provider_profile(spec, kwargs)
+
     # CLI --model-params take highest priority
     if extra_kwargs:
         kwargs.update(extra_kwargs)

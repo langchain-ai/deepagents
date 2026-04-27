@@ -211,6 +211,17 @@ You have access to async subagent tools that launch background tasks on remote L
 - When you want to run multiple tasks concurrently and collect results later"""
 
 
+def _build_async_subagent_system_prompt(
+    async_subagents: list[AsyncSubAgent],
+    system_prompt: str | None = ASYNC_TASK_SYSTEM_PROMPT,
+) -> str | None:
+    """Build the system prompt block appended by `AsyncSubAgentMiddleware`."""
+    if not system_prompt:
+        return system_prompt
+    agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
+    return system_prompt + "\n\nAvailable async subagent types:\n" + agents_desc
+
+
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
     """Build headers for a remote Agent Protocol server.
 
@@ -921,11 +932,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         self.tools = _build_async_subagent_tools(async_subagents)
 
-        if system_prompt:
-            agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
-            self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n" + agents_desc
-        else:
-            self.system_prompt = system_prompt
+        self.system_prompt = _build_async_subagent_system_prompt(async_subagents, system_prompt)
 
     def wrap_model_call(
         self,

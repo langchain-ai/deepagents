@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_cli import theme
+from deepagents_cli._env_vars import FORK_SUBAGENT
 from deepagents_cli.config import (
     _ShellAllowAll,
     config,
@@ -1053,6 +1054,7 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
+    force_fork_subagents = os.environ.get(FORK_SUBAGENT) == "1"
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
@@ -1062,7 +1064,9 @@ def create_cli_agent(
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],
         }
-        if subagent_meta["model"]:
+        if force_fork_subagents:
+            subagent["fork"] = True
+        elif subagent_meta["model"]:
             subagent["model"] = subagent_meta["model"]
         if restrictive_shell_allow_list is not None:
             subagent["middleware"] = [
@@ -1070,7 +1074,7 @@ def create_cli_agent(
             ]
         custom_subagents.append(subagent)
 
-    if restrictive_shell_allow_list is not None:
+    if force_fork_subagents or restrictive_shell_allow_list is not None:
         from deepagents.middleware.subagents import (
             GENERAL_PURPOSE_SUBAGENT,
             SubAgent as RuntimeSubAgent,
@@ -1084,8 +1088,13 @@ def create_cli_agent(
                 "name": GENERAL_PURPOSE_SUBAGENT["name"],
                 "description": GENERAL_PURPOSE_SUBAGENT["description"],
                 "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
             }
+            if force_fork_subagents:
+                general_purpose_subagent["fork"] = True
+            if restrictive_shell_allow_list is not None:
+                general_purpose_subagent["middleware"] = [
+                    ShellAllowListMiddleware(restrictive_shell_allow_list)
+                ]
             custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features

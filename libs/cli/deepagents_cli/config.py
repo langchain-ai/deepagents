@@ -1895,7 +1895,10 @@ def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
 
 
 def _get_provider_kwargs(
-    provider: str, *, model_name: str | None = None
+    provider: str,
+    *,
+    model_name: str | None = None,
+    is_env_default: bool = False,
 ) -> dict[str, Any]:
     """Get provider-specific kwargs from the config file.
 
@@ -1908,6 +1911,10 @@ def _get_provider_kwargs(
     Args:
         provider: Provider name (e.g., openai, anthropic, fireworks, ollama).
         model_name: Optional model name for per-model overrides.
+        is_env_default: Whether the model was resolved from environment-based
+            defaults (i.e., no explicit model was provided by the caller).
+            Used to apply sensible provider defaults that should not override
+            an explicit user choice.
 
     Returns:
         Dictionary of provider-specific kwargs.
@@ -1934,6 +1941,9 @@ def _get_provider_kwargs(
         api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    if provider == "openai" and is_env_default:
+        result.setdefault("use_responses_api", True)
 
     if provider == "openrouter":
         from deepagents.profiles._openrouter import (
@@ -2205,8 +2215,8 @@ def create_model(
         has_provider_credentials,
     )
 
-    if not model_spec:
-        model_spec = _get_default_model_spec()
+    is_env_default = not model_spec
+    model_spec = model_spec or _get_default_model_spec()
 
     # Parse provider:model syntax
     provider: str
@@ -2248,7 +2258,9 @@ def create_model(
             raise ModelConfigError(msg)
 
     # Provider-specific kwargs (with per-model overrides)
-    kwargs = _get_provider_kwargs(provider, model_name=model_name)
+    kwargs = _get_provider_kwargs(
+        provider, model_name=model_name, is_env_default=is_env_default
+    )
 
     # CLI --model-params take highest priority
     if extra_kwargs:

@@ -471,8 +471,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._option_widgets = []
 
         if not self._filtered_models:
-            msg = "Loading models…" if not self._loaded else "No matching models"
-            await self._options_container.mount(Static(Content.styled(msg, "dim")))
+            if not self._loaded:
+                empty_content: Content = Content.styled("Loading models…", "dim")
+            else:
+                typed = self._filter_text.strip()
+                if typed and ":" in typed:
+                    empty_content = Content.assemble(
+                        ("No matching models — press ", "dim"),
+                        ("Enter", "bold"),
+                        (" to use ", "dim"),
+                        (typed, "bold"),
+                        (" as a custom provider:model spec", "dim"),
+                    )
+                elif typed:
+                    empty_content = Content.assemble(
+                        ("No matching models — press ", "dim"),
+                        ("Enter", "bold"),
+                        (" to use ", "dim"),
+                        (typed, "bold"),
+                        (" as a custom model spec (no provider prefix)", "dim"),
+                    )
+                else:
+                    empty_content = Content.styled("No matching models", "dim")
+            await self._options_container.mount(Static(empty_content))
             self._update_footer()
             return
 

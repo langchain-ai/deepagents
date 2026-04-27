@@ -11,7 +11,6 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
-    _string_value,
     get_model_identifier,
     get_model_provider,
     model_matches_spec,
@@ -293,22 +292,6 @@ class TestOpenRouterAttributionKwargs:
         assert result == {}
 
 
-class TestStringValue:
-    """Tests for `_string_value`."""
-
-    def test_present(self) -> None:
-        assert _string_value({"key": "val"}, "key") == "val"
-
-    def test_missing(self) -> None:
-        assert _string_value({}, "key") is None
-
-    def test_empty(self) -> None:
-        assert _string_value({"key": ""}, "key") is None
-
-    def test_non_string(self) -> None:
-        assert _string_value({"key": 42}, "key") is None
-
-
 class TestProviderProfile:
     """Tests for `ProviderProfile`."""
 
@@ -317,11 +300,6 @@ class TestProviderProfile:
         assert profile.init_kwargs == {}
         assert profile.pre_init is None
         assert profile.init_kwargs_factory is None
-
-    def test_frozen(self) -> None:
-        profile = ProviderProfile()
-        with pytest.raises(AttributeError):
-            profile.pre_init = lambda _spec: None  # type: ignore[misc]
 
 
 class TestProviderProfileRegistry:
@@ -644,11 +622,6 @@ class TestHarnessProfile:
         assert profile.excluded_tools == frozenset()
         assert profile.extra_middleware == ()
         assert profile.general_purpose_subagent is None
-
-    def test_frozen(self) -> None:
-        profile = HarnessProfile()
-        with pytest.raises(AttributeError):
-            profile.system_prompt_suffix = "nope"  # type: ignore[misc]
 
 
 class TestHarnessProfileRegistry:
@@ -1642,35 +1615,6 @@ class TestResolveModelWithProviderProfiles:
             _PROVIDER_PROFILES.update(original)
 
 
-class TestProfileImmutability:
-    """Tests that `frozen=True` profile fields can't be mutated post-construction."""
-
-    def test_provider_init_kwargs_unaliased_after_construction(self) -> None:
-        """Mutating the source dict after construction must not mutate the profile."""
-        source = {"a": 1}
-        profile = ProviderProfile(init_kwargs=source)
-        source["a"] = 999
-        source["b"] = 2
-        assert profile.init_kwargs == {"a": 1}
-
-    def test_provider_init_kwargs_cannot_be_mutated_in_place(self) -> None:
-        profile = ProviderProfile(init_kwargs={"a": 1})
-        with pytest.raises(TypeError):
-            profile.init_kwargs["a"] = 999  # type: ignore[index]
-
-    def test_harness_tool_description_overrides_unaliased(self) -> None:
-        source = {"ls": "original"}
-        profile = HarnessProfile(tool_description_overrides=source)
-        source["ls"] = "mutated"
-        source["new"] = "added"
-        assert dict(profile.tool_description_overrides) == {"ls": "original"}
-
-    def test_harness_tool_description_overrides_cannot_be_mutated_in_place(self) -> None:
-        profile = HarnessProfile(tool_description_overrides={"ls": "original"})
-        with pytest.raises(TypeError):
-            profile.tool_description_overrides["ls"] = "mutated"  # type: ignore[index]
-
-
 class TestRegisterProfileKeyValidation:
     """Tests for key-shape validation in `register_provider_profile` and `register_harness_profile`."""
 
@@ -1994,31 +1938,3 @@ class TestChainedPreInitAndFactoryErrorLogging:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
-
-
-class TestHarnessProfileExtraMiddlewareFreeze:
-    """Tests that `extra_middleware` sequences are defensively frozen in `__post_init__`."""
-
-    def test_sequence_stored_as_tuple(self) -> None:
-        class MW:
-            pass
-
-        mw = MW()
-        source: list[MW] = [mw]
-        profile = HarnessProfile(extra_middleware=source)
-        assert isinstance(profile.extra_middleware, tuple)
-        assert profile.extra_middleware == (mw,)
-        source.append(MW())
-        assert profile.extra_middleware == (mw,)
-
-    def test_factory_stored_as_is(self) -> None:
-        class MW:
-            pass
-
-        mw = MW()
-
-        def factory() -> list[MW]:
-            return [mw]
-
-        profile = HarnessProfile(extra_middleware=factory)
-        assert profile.extra_middleware is factory

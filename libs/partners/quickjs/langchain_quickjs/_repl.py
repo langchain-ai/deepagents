@@ -71,7 +71,7 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
-    command_updates: list[Command] = field(default_factory=list)
+    commands: list[Command] = field(default_factory=list)
 
 
 class _ConsoleBuffer:
@@ -599,7 +599,7 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
         finally:
-            outcome.command_updates.extend(self._ptc_command_buffer)
+            outcome.commands.extend(self._ptc_command_buffer)
             self._ptc_command_buffer.clear()
             outcome.stdout = self._console.drain()
         return outcome

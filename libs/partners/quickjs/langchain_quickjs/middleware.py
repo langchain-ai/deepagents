@@ -216,8 +216,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )
-            if outcome.command_updates:
-                return [*outcome.command_updates, message]
+            if outcome.commands:
+                return [*outcome.commands, message]
             return message
 
         code_doc = (
@@ -271,8 +271,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 tool_call_id=runtime.tool_call_id,
                 name=tool_name,
             )
-            if outcome.command_updates:
-                return [*outcome.command_updates, message]
+            if outcome.commands:
+                return [*outcome.commands, message]
             return message
 
         return StructuredTool.from_function(

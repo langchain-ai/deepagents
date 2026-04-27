@@ -283,7 +283,7 @@ async def test_command_tool_updates_are_collected_from_single_eval(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "done"
-    assert [cmd.update.get("ptc_values") for cmd in outcome.command_updates] == [
+    assert [cmd.update.get("ptc_values") for cmd in outcome.commands] == [
         [1],
         [2],
     ]
@@ -292,9 +292,9 @@ async def test_command_tool_updates_are_collected_from_single_eval(
 async def test_command_buffer_is_scoped_to_one_eval(repl: _ThreadREPL) -> None:
     repl.install_tools([_command_tool()])
     first = await repl.eval_async("await tools.emitCommand({value: 7})")
-    assert len(first.command_updates) == 1
+    assert len(first.commands) == 1
     second = await repl.eval_async("1 + 1")
-    assert second.command_updates == []
+    assert second.commands == []
 async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"

@@ -1536,6 +1536,184 @@ base_url = "https://wrong-url.com"
         assert kwargs["base_url"] == "https://correct-url.com"
 
 
+class TestOpenAIResponsesApiDefault:
+    """Tests for the automatic use_responses_api default for OpenAI.
+
+    When the model is resolved from environment-based defaults (`is_env_default=True`)
+    and the provider is OpenAI, `_get_provider_kwargs` injects
+    `use_responses_api=True` so that file content blocks (e.g. PDFs) are
+    correctly routed to the Responses API instead of Chat Completions.
+    """
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    def test_injects_use_responses_api_for_openai_env_default(self) -> None:
+        """use_responses_api=True is injected for openai when is_env_default."""
+        kwargs = _get_provider_kwargs("openai", is_env_default=True)
+        assert kwargs.get("use_responses_api") is True
+
+    def test_no_injection_when_not_env_default(self) -> None:
+        """use_responses_api is not injected when caller explicitly chose OpenAI."""
+        kwargs = _get_provider_kwargs("openai", is_env_default=False)
+        assert "use_responses_api" not in kwargs
+
+    def test_no_injection_for_default_is_env_default_false(self) -> None:
+        """Default is_env_default=False — no injection without explicit opt-in."""
+        kwargs = _get_provider_kwargs("openai")
+        assert "use_responses_api" not in kwargs
+
+    def test_no_injection_for_non_openai_provider(self) -> None:
+        """use_responses_api is not injected for other providers."""
+        for provider in ("anthropic", "google_genai", "ollama"):
+            kwargs = _get_provider_kwargs(provider, is_env_default=True)
+            assert "use_responses_api" not in kwargs, (
+                f"Expected no use_responses_api for provider '{provider}'"
+            )
+
+    def test_config_toml_opt_out_is_respected(self, tmp_path: Path) -> None:
+        """User can opt out by setting use_responses_api=false in config.toml."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai.params]
+use_responses_api = false
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs("openai", is_env_default=True)
+
+        assert kwargs.get("use_responses_api") is False
+
+    def test_config_toml_explicit_true_is_preserved(self, tmp_path: Path) -> None:
+        """Explicit use_responses_api=true in config.toml is preserved."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai.params]
+use_responses_api = true
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            kwargs = _get_provider_kwargs("openai", is_env_default=True)
+
+        assert kwargs.get("use_responses_api") is True
+
+    def test_api_key_still_resolved_alongside_responses_api(self) -> None:
+        """Resolving use_responses_api does not suppress api_key resolution."""
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False):
+            kwargs = _get_provider_kwargs("openai", is_env_default=True)
+
+        assert kwargs.get("use_responses_api") is True
+        assert kwargs.get("api_key") == "sk-test"
+
+
+class TestCreateModelEnvDefaultFlag:
+    """Tests for is_env_default propagation in create_model().
+
+    Verifies that create_model() correctly identifies whether the model spec
+    was provided by the caller or resolved from environment-based defaults,
+    and that it passes the flag through to _get_provider_kwargs so the
+    OpenAI Responses API default is applied only in the right cases.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_spec_passes_is_env_default_true(
+        self,
+        mock_init: Mock,
+        mock_default: Mock,
+    ) -> None:
+        """create_model() with no spec treats the result as env default."""
+        mock_default.return_value = "openai:gpt-4o"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        with patch(
+            "deepagents_cli.config._get_provider_kwargs", wraps=_get_provider_kwargs
+        ) as spy:
+            create_model()
+
+        _, spy_kwargs = spy.call_args
+        assert spy_kwargs.get("is_env_default") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_spec_passes_is_env_default_false(
+        self,
+        mock_init: Mock,
+    ) -> None:
+        """create_model() with explicit spec does not treat it as env default."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        with patch(
+            "deepagents_cli.config._get_provider_kwargs", wraps=_get_provider_kwargs
+        ) as spy:
+            create_model("anthropic:claude-sonnet-4-5")
+
+        _, spy_kwargs = spy.call_args
+        assert spy_kwargs.get("is_env_default") is False
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_empty_string_spec_passes_is_env_default_true(
+        self,
+        mock_init: Mock,
+        mock_default: Mock,
+    ) -> None:
+        """create_model('') is treated the same as no spec — env default."""
+        mock_default.return_value = "openai:gpt-4o"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        with patch(
+            "deepagents_cli.config._get_provider_kwargs", wraps=_get_provider_kwargs
+        ) as spy:
+            create_model("")
+
+        _, spy_kwargs = spy.call_args
+        assert spy_kwargs.get("is_env_default") is True
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_env_default_openai_model_gets_use_responses_api(
+        self,
+        mock_init: Mock,
+        mock_default: Mock,
+    ) -> None:
+        """No-spec create_model() with OpenAI default passes use_responses_api=True."""
+        mock_default.return_value = "openai:gpt-4o"
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model()
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_openai_spec_does_not_get_use_responses_api(
+        self,
+        mock_init: Mock,
+    ) -> None:
+        """Explicit openai:gpt-4o spec does not inject use_responses_api."""
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init.return_value = mock_model
+
+        create_model("openai:gpt-4o")
+
+        _, call_kwargs = mock_init.call_args
+        assert "use_responses_api" not in call_kwargs
+
+
 class TestOpenRouterVersionCheck:
     """Tests for OpenRouter version enforcement via the SDK check."""
 

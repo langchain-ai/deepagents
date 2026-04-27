@@ -451,11 +451,12 @@ class FilesystemBackend(BackendProtocol):
     def delete(self, file_path: str) -> DeleteResult:
         """Remove a file from the filesystem.
 
-        Refuses to delete directories and returns a structured error when
-        the path is outside the configured root (in `virtual_mode`) or does
-        not resolve to an existing regular file. `unlink` removes the
-        symlink itself rather than its target, matching standard POSIX
-        semantics.
+        Returns a structured error when the path is outside the configured
+        root (in `virtual_mode`) or does not resolve to an existing path.
+        `exists()` and `is_dir()` follow symlinks, so a broken symlink is
+        reported as not found and a symlink that points at a directory is
+        rejected as a directory — neither is unlinked. A symlink that
+        points at a regular file is unlinked itself, not its target.
 
         Args:
             file_path: Path of the file to remove.

@@ -35,15 +35,18 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BACKEND_TYPES
 
-    # A middleware "spec" is one of three shapes the profile accepts:
-    #   * a static sequence of middleware instances,
-    #   * a zero-arg factory returning a sequence, or
-    #   * a backend-aware factory that takes the resolved `BACKEND_TYPES`
-    #     argument and returns a sequence.
-    # The third form exists so profiles can opt into backend-coupled
-    # middleware (e.g., a V4A `apply_patch` tool) without needing to
-    # thread the backend through ad-hoc plumbing.
     _MiddlewareSpec = Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] | Callable[[BACKEND_TYPES], Sequence[AgentMiddleware]]
+    """A middleware "spec" is one of three shapes the profile accepts:
+
+    * A static sequence of middleware instances,
+    * A zero-arg factory returning a sequence, or
+    * A backend-aware factory that takes the resolved `BACKEND_TYPES`
+        argument and returns a sequence.
+
+    The third form exists so profiles can opt into backend-coupled
+    middleware (e.g., a V4A `apply_patch` tool) without needing to
+    thread the backend through ad-hoc plumbing.
+    """
 
 logger = logging.getLogger(__name__)
 

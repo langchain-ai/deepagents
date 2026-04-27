@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents_cli.deploy.config import DeployConfig
+
 
 def setup_deploy_parsers(
     subparsers: Any,  # noqa: ANN401
@@ -386,7 +388,7 @@ def _dev(
         shutil.rmtree(build_dir, ignore_errors=True)
 
 
-def _seed_hub_repo(config: Any, build_dir: Path) -> None:
+def _seed_hub_repo(config: DeployConfig, build_dir: Path) -> None:
     """Eagerly create the LangSmith Hub agent repo at bundle time.
 
     Mirrors the per-(process, assistant_id) seeding that the generated
@@ -449,7 +451,7 @@ def _seed_hub_repo(config: Any, build_dir: Path) -> None:
         if backend.has_prior_commits():
             print(f"Hub repo {identifier} already exists — skipping seed.")
             return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"Error: failed to inspect hub repo {identifier}: {exc}")
         raise SystemExit(1) from None
 
@@ -460,7 +462,7 @@ def _seed_hub_repo(config: Any, build_dir: Path) -> None:
     print(f"Creating hub repo {identifier} with {len(batch)} file(s)...")
     try:
         responses = backend.upload_files(batch)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"Error: hub seed failed for {identifier}: {exc}")
         raise SystemExit(1) from None
 

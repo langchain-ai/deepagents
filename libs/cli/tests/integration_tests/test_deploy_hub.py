@@ -147,6 +147,34 @@ def test_hub_bundle_seeds_through_composite(
     assert "Deploy hub integration test" in read.file_data["content"]
 
 
+def test_seed_hub_repo_creates_repo_before_invocation(
+    tmp_path: Path, hub_identifier: str
+) -> None:
+    """`_seed_hub_repo` must create the hub repo at deploy time, not first run.
+
+    Bundles a minimal hub-backed project, runs the CLI seed helper directly,
+    and asserts the agent repo exists in LangSmith Hub — proving the agent
+    is created before any graph invocation.
+    """
+    from langsmith import Client
+
+    from deepagents_cli.deploy.commands import _seed_hub_repo
+
+    project = tmp_path / "project"
+    _scaffold_project(project)
+    build = tmp_path / "build"
+    config = DeployConfig(
+        agent=AgentConfig(name="deploy-hub-test"),
+        memories=MemoriesConfig(backend="hub", identifier=hub_identifier),
+    )
+    bundle(config, project, build)
+
+    _seed_hub_repo(config, build)
+
+    pulled = Client().pull_agent(hub_identifier)
+    assert "AGENTS.md" in pulled.files
+
+
 def test_store_bundle_omits_vendored_hub(tmp_path: Path) -> None:
     """Regression: default store mode must not ship the hub module."""
     project = tmp_path / "project"

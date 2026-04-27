@@ -5,12 +5,17 @@ Registers a `HarnessProfile` for each OpenAI Codex model spec with:
 * a behavior-shaping `system_prompt_suffix` that aligns Deep Agents'
   runtime defaults with how Codex was trained to operate — autonomous
   senior engineer demeanor, bias to action, parallel tool use, and TODO
-  hygiene; and
+  hygiene;
 * a backend-aware `extra_middleware` factory that contributes an
   `_ApplyPatchMiddleware` so the agent can apply V4A diffs through the
   same filesystem backend `FilesystemMiddleware` uses. Codex models are
   trained to emit V4A `apply_patch` invocations; without the middleware
-  they underperform on file-editing tasks.
+  they underperform on file-editing tasks; and
+* `tool_aliases` that present Deep Agents' canonical tool names under
+  the names Codex was trained on (`shell_command`, `ls`). Aliasing is
+  applied by `_ToolAliasingMiddleware` as the innermost name-aware
+  transform, so routing, exclusion, HITL, and permissions all continue
+  to operate on canonical names.
 
 The suffix is appended to whatever `base_system_prompt` is ultimately
 assembled for the agent, so it layers cleanly on top of user- or
@@ -27,6 +32,7 @@ install-time metadata to activate.
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from deepagents.middleware._apply_patch import _ApplyPatchMiddleware
@@ -36,7 +42,7 @@ from deepagents.profiles.harness_profiles import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
 
@@ -95,6 +101,29 @@ follow-up work that introduces those capabilities to the harness.
 """
 
 
+_CODEX_TOOL_ALIASES: Mapping[str, str] = MappingProxyType(
+    {
+        "execute": "shell_command",
+        "list_dir": "ls",
+    }
+)
+"""Canonical Deep Agents tool name -> Codex-trained alias.
+
+Codex's training distribution heavily features `shell_command` (for shell
+execution) and `ls` (for directory listing). Presenting Deep Agents' more
+generic canonical names — `execute` and `list_dir` — to Codex measurably
+degrades tool-selection accuracy and per-call argument quality on those
+tools. The aliasing layer renames them at the model boundary only; every
+other layer of the runtime continues to use canonical names.
+
+The map is frozen via `MappingProxyType` to prevent accidental mutation
+through a shared reference after profile registration. New entries
+should only be added when there is concrete evidence (eval delta, OpenAI
+prompting guidance) that another canonical tool name diverges from
+Codex's trained vocabulary.
+"""
+
+
 def _apply_patch_factory(backend: BACKEND_TYPES) -> Sequence[AgentMiddleware[Any, Any, Any]]:
     """Contribute `_ApplyPatchMiddleware` bound to the agent's backend.
 
@@ -112,6 +141,7 @@ def register() -> None:
     """Register the built-in Codex harness profile for each Codex spec."""
     profile = HarnessProfile(
         system_prompt_suffix=_CODEX_SYSTEM_PROMPT_SUFFIX,
+        tool_aliases=_CODEX_TOOL_ALIASES,
         extra_middleware=_apply_patch_factory,
     )
     for spec in _CODEX_MODEL_SPECS:

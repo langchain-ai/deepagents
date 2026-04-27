@@ -11,6 +11,8 @@ from deepagents import (
     HarnessProfileConfig,
 )
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from deepagents.profiles.harness._codex import _CODEX_MODEL_SPECS
+from deepagents.profiles.harness_profiles import _get_harness_profile, _merge_profiles
 
 
 class TestGeneralPurposeSubagentProfileSerde:
@@ -364,6 +366,7 @@ class TestHarnessProfileConfigYamlRoundTrip:
             tool_description_overrides={"ls": "List files."},
             excluded_tools=frozenset({"execute"}),
             excluded_middleware=frozenset({"SummarizationMiddleware"}),
+            tool_aliases={"execute": "shell_command", "list_dir": "ls"},
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
         serialized = yaml.safe_dump(config.to_dict())
@@ -379,3 +382,131 @@ class TestHarnessProfileConfigYamlRoundTrip:
         )
         output = yaml.safe_dump(config.to_dict())
         assert "!!" not in output
+
+
+class TestToolAliases:
+    """Construction, validation, merge, and serde for `tool_aliases`."""
+
+    def test_default_is_empty(self) -> None:
+        assert dict(HarnessProfile().tool_aliases) == {}
+        assert dict(HarnessProfileConfig().tool_aliases) == {}
+
+    def test_valid_aliases_construct(self) -> None:
+        aliases = {"execute": "shell_command", "list_dir": "ls"}
+        profile = HarnessProfile(tool_aliases=aliases)
+        config = HarnessProfileConfig(tool_aliases=aliases)
+        assert dict(profile.tool_aliases) == aliases
+        assert dict(config.tool_aliases) == aliases
+
+    def test_duplicate_alias_values_rejected_at_construction(self) -> None:
+        """Two canonical names cannot share an alias — reverse map would be lossy."""
+        with pytest.raises(ValueError, match="must be unique"):
+            HarnessProfile(tool_aliases={"a": "x", "b": "x"})
+        with pytest.raises(ValueError, match="must be unique"):
+            HarnessProfileConfig(tool_aliases={"a": "x", "b": "x"})
+
+    def test_key_value_collision_rejected_at_construction(self) -> None:
+        """A name cannot be both canonical and an alias for a different tool."""
+        with pytest.raises(ValueError, match="must be disjoint"):
+            HarnessProfile(tool_aliases={"a": "b", "b": "c"})
+        with pytest.raises(ValueError, match="must be disjoint"):
+            HarnessProfileConfig(tool_aliases={"a": "b", "b": "c"})
+
+    def test_tool_aliases_round_trip_through_config(self) -> None:
+        config = HarnessProfileConfig(tool_aliases={"execute": "shell_command", "list_dir": "ls"})
+        data = config.to_dict()
+        assert data["tool_aliases"] == {"execute": "shell_command", "list_dir": "ls"}
+        assert isinstance(data["tool_aliases"], dict)
+        assert HarnessProfileConfig.from_dict(data) == config
+
+    def test_to_dict_omits_empty_tool_aliases(self) -> None:
+        config = HarnessProfileConfig(tool_aliases={})
+        assert "tool_aliases" not in config.to_dict()
+
+    def test_construction_rejects_non_string_alias_types(self) -> None:
+        """Non-string keys/values raise at construction (fail-fast).
+
+        This is stricter than `tool_description_overrides`, which validates
+        only at `to_dict` time. Aliasing's invariants are non-trivial
+        (injective values, disjoint keys/values) and the runtime middleware
+        needs them to hold for round-tripping to be unambiguous, so the
+        check moves up to construction where it surfaces immediately.
+        """
+        with pytest.raises(TypeError, match="tool_aliases"):
+            HarnessProfileConfig(
+                tool_aliases={"a": 1}  # ty: ignore[invalid-argument-type]  # test fixture types
+            )
+
+    def test_from_dict_rejects_non_string_alias(self) -> None:
+        with pytest.raises(TypeError, match="tool_aliases"):
+            HarnessProfileConfig.from_dict({"tool_aliases": {"execute": 1}})
+
+    def test_from_dict_rejects_invalid_alias_map(self) -> None:
+        with pytest.raises(ValueError, match="must be unique"):
+            HarnessProfileConfig.from_dict({"tool_aliases": {"a": "x", "b": "x"}})
+
+    def test_to_harness_profile_passes_through_aliases(self) -> None:
+        config = HarnessProfileConfig(tool_aliases={"execute": "shell_command"})
+        runtime = config.to_harness_profile()
+        assert dict(runtime.tool_aliases) == {"execute": "shell_command"}
+
+    def test_from_harness_profile_passes_through_aliases(self) -> None:
+        runtime = HarnessProfile(tool_aliases={"execute": "shell_command"})
+        config = HarnessProfileConfig.from_harness_profile(runtime)
+        assert dict(config.tool_aliases) == {"execute": "shell_command"}
+
+    def test_tool_aliases_frozen_after_construction(self) -> None:
+        """The internal mapping is read-only so registered profiles can't be mutated."""
+        source = {"execute": "shell_command"}
+        profile = HarnessProfile(tool_aliases=source)
+        with pytest.raises(TypeError):
+            profile.tool_aliases["execute"] = "something_else"  # type: ignore[index]
+        source["execute"] = "mutated_externally"
+        assert profile.tool_aliases["execute"] == "shell_command"
+
+
+class TestToolAliasesMerge:
+    """`_merge_profiles` semantics for `tool_aliases`."""
+
+    def test_disjoint_maps_union(self) -> None:
+        base = HarnessProfile(tool_aliases={"execute": "shell_command"})
+        override = HarnessProfile(tool_aliases={"list_dir": "ls"})
+        merged = _merge_profiles(base, override)
+        assert dict(merged.tool_aliases) == {
+            "execute": "shell_command",
+            "list_dir": "ls",
+        }
+
+    def test_override_wins_per_key(self) -> None:
+        base = HarnessProfile(tool_aliases={"execute": "shell_command"})
+        override = HarnessProfile(tool_aliases={"execute": "run_command"})
+        merged = _merge_profiles(base, override)
+        assert merged.tool_aliases["execute"] == "run_command"
+
+    def test_individually_valid_maps_can_combine_into_invalid_composite(self) -> None:
+        """Cross-profile collision is caught when the merged profile is constructed."""
+        base = HarnessProfile(tool_aliases={"execute": "shell_command"})
+        override = HarnessProfile(tool_aliases={"shell_command": "foo"})
+        with pytest.raises(ValueError, match="must be disjoint"):
+            _merge_profiles(base, override)
+
+
+class TestCodexToolAliases:
+    """Codex harness profile registers the expected aliases."""
+
+    def test_codex_profile_has_expected_aliases(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5.1-codex")
+        assert profile is not None
+        assert dict(profile.tool_aliases) == {
+            "execute": "shell_command",
+            "list_dir": "ls",
+        }
+
+    def test_all_codex_specs_share_aliases(self) -> None:
+        for spec in _CODEX_MODEL_SPECS:
+            profile = _get_harness_profile(spec)
+            assert profile is not None
+            assert dict(profile.tool_aliases) == {
+                "execute": "shell_command",
+                "list_dir": "ls",
+            }

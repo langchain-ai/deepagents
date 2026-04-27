@@ -71,6 +71,7 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+    command_updates: list[Command] = field(default_factory=list)
 
 
 class _ConsoleBuffer:
@@ -234,6 +235,15 @@ def _coerce_tool_output(value: Any) -> str:
         return str(value)
 
 
+def _extract_commands(value: Any) -> list[Command]:
+    """Collect LangGraph ``Command`` values from a tool return payload."""
+    if isinstance(value, Command):
+        return [value]
+    if isinstance(value, list):
+        return [entry for entry in value if isinstance(entry, Command)]
+    return []
+
+
 def _synth_tool_call_id(tool_name: str) -> str:
     """Mint a synthetic tool_call_id for a PTC-driven tool invocation.
 
@@ -275,16 +285,24 @@ def _inject_tool_args_for_ptc(
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. ``type(outer_runtime)`` rather than a literal import
     # so the shape stays in lockstep with whatever langgraph ships.
-    derived = type(outer_runtime)(
-        state=outer_runtime.state,
-        tool_call_id=tool_call_id,
-        config=outer_runtime.config,
-        context=outer_runtime.context,
-        store=outer_runtime.store,
-        stream_writer=outer_runtime.stream_writer,
-        execution_info=getattr(outer_runtime, "execution_info", None),
-        server_info=getattr(outer_runtime, "server_info", None),
-    )
+    runtime_kwargs: dict[str, Any] = {
+        "state": outer_runtime.state,
+        "tool_call_id": tool_call_id,
+        "config": outer_runtime.config,
+        "context": outer_runtime.context,
+        "store": outer_runtime.store,
+        "stream_writer": outer_runtime.stream_writer,
+        "execution_info": getattr(outer_runtime, "execution_info", None),
+        "server_info": getattr(outer_runtime, "server_info", None),
+    }
+    if hasattr(outer_runtime, "tools"):
+        runtime_kwargs["tools"] = outer_runtime.tools
+    try:
+        derived = type(outer_runtime)(**runtime_kwargs)
+    except TypeError:
+        # Older ToolRuntime signatures don't include ``tools``.
+        runtime_kwargs.pop("tools", None)
+        derived = type(outer_runtime)(**runtime_kwargs)
 
     enriched = dict(payload)
     if injected.runtime:
@@ -378,6 +396,9 @@ class _ThreadREPL:
         # graph state, store, context, etc. Set via ``set_outer_runtime``
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
+        # ``Command`` values emitted by PTC-invoked tools during the
+        # currently-running eval call. Drained into ``EvalOutcome``.
+        self._ptc_command_buffer: list[Command] = []
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
         # __init__ returns.
@@ -511,6 +532,7 @@ class _ThreadREPL:
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
+            self._ptc_command_buffer.extend(_extract_commands(result))
             return _coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -545,6 +567,7 @@ class _ThreadREPL:
         """
         ctx = cast("Context", self._ctx)
         outcome = EvalOutcome()
+        self._ptc_command_buffer.clear()
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = _stringify(value)
@@ -575,7 +598,10 @@ class _ThreadREPL:
         except MemoryLimitError as e:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
-        outcome.stdout = self._console.drain()
+        finally:
+            outcome.command_updates.extend(self._ptc_command_buffer)
+            self._ptc_command_buffer.clear()
+            outcome.stdout = self._console.drain()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:

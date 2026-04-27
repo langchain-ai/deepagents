@@ -22,6 +22,7 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
+_EvalToolResult = ToolMessage | list[Command | ToolMessage]
 
 _SYSTEM_PROMPT_TEMPLATE = (
     "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
@@ -205,11 +207,18 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         fallback_id = self._fallback_thread_id
         middleware = self
 
-        def _run(outcome_fn: Any, code: str, tool_call_id: str | None) -> ToolMessage:
-            content = format_outcome(outcome_fn(code), max_result_chars=max_chars)
-            return ToolMessage(
-                content=content, tool_call_id=tool_call_id, name=tool_name
+        def _run(
+            outcome_fn: Any, code: str, tool_call_id: str | None
+        ) -> _EvalToolResult:
+            outcome = outcome_fn(code)
+            message = ToolMessage(
+                content=format_outcome(outcome, max_result_chars=max_chars),
+                tool_call_id=tool_call_id,
+                name=tool_name,
             )
+            if outcome.command_updates:
+                return [*outcome.command_updates, message]
+            return message
 
         code_doc = (
             "JavaScript expression or statement(s) to evaluate in the persistent REPL."
@@ -218,7 +227,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> ToolMessage:
+        ) -> _EvalToolResult:
             repl = registry.get(_resolve_thread_id(fallback_id))
             # The sync path doesn't support PTC (host-fn bridges are
             # async); set_outer_runtime is a no-op here.
@@ -231,7 +240,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> ToolMessage:
+        ) -> _EvalToolResult:
             repl = registry.get(_resolve_thread_id(fallback_id))
             # Install any referenced skills before eval. If install
             # fails (bad skill, unknown name, backend error) we short-
@@ -254,15 +263,17 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # would otherwise retain a reference past the call.
             repl.set_outer_runtime(runtime)
             try:
-                content = format_outcome(
-                    await repl.eval_async(code),
-                    max_result_chars=max_chars,
-                )
+                outcome = await repl.eval_async(code)
             finally:
                 repl.set_outer_runtime(None)
-            return ToolMessage(
-                content=content, tool_call_id=runtime.tool_call_id, name=tool_name
+            message = ToolMessage(
+                content=format_outcome(outcome, max_result_chars=max_chars),
+                tool_call_id=runtime.tool_call_id,
+                name=tool_name,
             )
+            if outcome.command_updates:
+                return [*outcome.command_updates, message]
+            return message
 
         return StructuredTool.from_function(
             name=tool_name,

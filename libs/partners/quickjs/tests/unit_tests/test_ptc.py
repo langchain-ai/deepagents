@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 
@@ -63,6 +65,34 @@ def _echo_tool(name: str = "echo") -> BaseTool:
     return StructuredTool.from_function(
         name=name,
         description=f"Echo back its input ({name}).",
+        func=_fn,
+        args_schema=_In,
+    )
+
+
+def _command_tool(name: str = "emit_command") -> BaseTool:
+    """A tool that returns a LangGraph ``Command`` update."""
+
+    class _In(BaseModel):
+        value: int = Field(description="Integer marker to emit")
+
+    def _fn(value: int) -> Command:
+        return Command(
+            update={
+                "ptc_values": [value],
+                "messages": [
+                    ToolMessage(
+                        content=f"value={value}",
+                        tool_call_id=f"ptc_call_{value}",
+                        name=name,
+                    )
+                ],
+            }
+        )
+
+    return StructuredTool.from_function(
+        name=name,
+        description="Return a Command update carrying the input value.",
         func=_fn,
         args_schema=_In,
     )
@@ -242,7 +272,29 @@ async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
     assert {c["name"] for c in calls} == {"a", "b"}
 
 
-@pytest.mark.xfail
+async def test_command_tool_updates_are_collected_from_single_eval(
+    repl: _ThreadREPL,
+) -> None:
+    repl.install_tools([_command_tool()])
+    outcome = await repl.eval_async(
+        "await tools.emitCommand({value: 1});\n"
+        "await tools.emitCommand({value: 2});\n"
+        "'done'"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "done"
+    assert [cmd.update.get("ptc_values") for cmd in outcome.command_updates] == [
+        [1],
+        [2],
+    ]
+
+
+async def test_command_buffer_is_scoped_to_one_eval(repl: _ThreadREPL) -> None:
+    repl.install_tools([_command_tool()])
+    first = await repl.eval_async("await tools.emitCommand({value: 7})")
+    assert len(first.command_updates) == 1
+    second = await repl.eval_async("1 + 1")
+    assert second.command_updates == []
 async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     def _boom(**_: object) -> str:
         msg = "tool exploded"
@@ -379,13 +431,51 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     assert outcome.result == "function"
 
 
-def test_middleware_rejects_boolean_ptc_config() -> None:
-    with pytest.raises(TypeError, match="Boolean `ptc` is no longer supported"):
-        REPLMiddleware(ptc=True)  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="Boolean `ptc` is no longer supported"):
-        REPLMiddleware(ptc=False)  # type: ignore[arg-type]
+async def test_middleware_eval_tool_returns_commands_plus_tool_message() -> None:
+    from types import SimpleNamespace
+
+    from langchain.tools import ToolRuntime
+
+    command_tool = _command_tool()
+    mw = REPLMiddleware(ptc=[command_tool])
+    tool = mw.tools[0]
+    mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool]))
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={},
+        stream_writer=lambda _chunk: None,
+        tools=[tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+    assert tool.coroutine is not None
+    result = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.emitCommand({value: 5})",
+    )
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert isinstance(result[0], Command)
+    assert result[0].update.get("ptc_values") == [5]
+    assert isinstance(result[1], ToolMessage)
+    assert result[1].name == "eval"
 
 
-def test_middleware_rejects_dict_ptc_config() -> None:
-    with pytest.raises(TypeError, match="Dict `ptc` configs are no longer supported"):
-        REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
+def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
+    from types import SimpleNamespace
+
+    mw = REPLMiddleware(ptc=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
+    mw = REPLMiddleware(ptc=False)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
+
+
+def test_middleware_rejects_dict_ptc_config_during_prepare() -> None:
+    from types import SimpleNamespace
+
+    mw = REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
+        mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))

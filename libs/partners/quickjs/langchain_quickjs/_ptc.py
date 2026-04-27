@@ -78,11 +78,7 @@ def filter_tools_for_ptc(
             raise TypeError(msg)
         selected = [
             *explicit_tools,
-            *[
-                t
-                for t in tools
-                if t.name != self_tool_name and t.name in allow_names
-            ],
+            *[t for t in tools if t.name != self_tool_name and t.name in allow_names],
         ]
         deduped: list[BaseTool] = []
         seen_names: set[str] = set()

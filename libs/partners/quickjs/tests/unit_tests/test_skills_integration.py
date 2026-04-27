@@ -8,14 +8,18 @@ the unit tests because it needs no network or model call.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillMetadata
 
 from langchain_quickjs._repl import _Registry
-from langchain_quickjs._skills import SkillScopeInvalid
+from langchain_quickjs._skills import InvalidSkillScopeError
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from deepagents.middleware.skills import SkillMetadata
 
 
 def _metadata(name: str, *, path: str, module: str | None = None) -> SkillMetadata:
@@ -57,7 +61,9 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
         {
             f"{skill_dir}/SKILL.md": "---\nname: slugify\ndescription: x\n---\n",
             f"{skill_dir}/index.js": (
-                "export function toSlug(s) { return s.toLowerCase().replace(/ /g, '-'); }"
+                "export function toSlug(s) {\n"
+                "  return s.toLowerCase().replace(/ /g, '-');\n"
+                "}"
             ),
         },
     )
@@ -70,7 +76,8 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
     assert errors == []
 
     outcome = await repl.eval_async(
-        "const m = await import(\"@/skills/slugify\"); globalThis.r = m.toSlug('Hello World');"
+        'const m = await import("@/skills/slugify");\n'
+        "globalThis.r = m.toSlug('Hello World');"
     )
     assert outcome.error_type is None
     after = await repl.eval_async("globalThis.r")
@@ -119,7 +126,8 @@ async def test_multi_file_skill_relative_import(
         {
             f"{skill_dir}/SKILL.md": "---\nname: multi\ndescription: x\n---\n",
             f"{skill_dir}/index.ts": (
-                'import { value } from "./util.ts";\nexport const doubled = value * 2;\n'
+                'import { value } from "./util.ts";\n'
+                "export const doubled = value * 2;\n"
             ),
             f"{skill_dir}/util.ts": "export const value = 7;\n",
         },
@@ -235,7 +243,7 @@ async def test_broken_skill_failure_is_cached(
         frozenset({"broken"}), {"broken": meta}, backend, repl
     )
     assert len(errors1) == 1
-    assert isinstance(errors1[0], SkillScopeInvalid)
+    assert isinstance(errors1[0], InvalidSkillScopeError)
 
     # Same error comes back on second call — from the cache, not a new
     # backend load. We can't directly assert "no I/O happened", but we

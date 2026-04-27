@@ -10,8 +10,9 @@ import asyncio
 import json
 import logging
 import threading
+import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
@@ -110,9 +111,9 @@ def _format_handle(handle: Any) -> str:
                 arity = arity_h.to_python()
             finally:
                 arity_h.dispose()
-            return f"[Function] arity={arity}"
         except Exception:  # noqa: BLE001 — best-effort
             return "[Function]"
+        return f"[Function] arity={arity}"
     return f"[{kind}]"
 
 
@@ -241,8 +242,6 @@ def _synth_tool_call_id(tool_name: str) -> str:
     state (checkpointer, tracing) can correlate the PTC sub-call back
     to the REPL cell that issued it.
     """
-    import uuid
-
     return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
 
 
@@ -262,7 +261,9 @@ def _inject_tool_args_for_ptc(
     ``tool_call_id`` is freshly minted per sub-call.
     """
     try:
-        from langgraph.prebuilt.tool_node import _get_all_injected_args
+        from langgraph.prebuilt.tool_node import (  # noqa: PLC0415 — optional dep, imported here so ImportError is catchable
+            _get_all_injected_args,
+        )
     except ImportError:  # pragma: no cover — langgraph always present
         return payload
 
@@ -359,7 +360,7 @@ class _ThreadREPL:
             self._install_console()
 
     def _install_console(self) -> None:
-        ctx = self._ctx
+        ctx = cast("Context", self._ctx)
         buf = self._console
 
         @ctx.function(name="__console_log")
@@ -401,7 +402,7 @@ class _ThreadREPL:
         self._worker.run_sync(self._ainstall_tools(tools))
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
-        ctx = self._ctx
+        ctx = cast("Context", self._ctx)
         name_to_tool: dict[str, BaseTool] = {to_camel_case(t.name): t for t in tools}
         target_names = frozenset(name_to_tool)
         if target_names == self._active_tool_names and self._tools_installed:
@@ -453,6 +454,7 @@ class _ThreadREPL:
         later ``install_tools`` that swaps the underlying object (same
         name, different instance) is picked up without re-registration.
         """
+        ctx = cast("Context", self._ctx)
         registered = self._registered_tools
 
         async def _bridge(raw_input: Any = None) -> str:
@@ -475,7 +477,7 @@ class _ThreadREPL:
             )
             return _coerce_tool_output(result)
 
-        self._ctx.register(f"__tools_{camel}", _bridge, is_async=True)
+        ctx.register(f"__tools_{camel}", _bridge, is_async=True)
 
     def eval_sync(self, code: str) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
@@ -503,9 +505,10 @@ class _ThreadREPL:
         evals against shared state is almost always a prompting bug,
         and a loud failure is a better signal than silent serialisation.
         """
+        ctx = cast("Context", self._ctx)
         outcome = EvalOutcome()
         try:
-            value = await self._ctx.eval_async(code, timeout=self._per_call_timeout)
+            value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = _stringify(value)
         except MarshalError:
             outcome.result_kind = "handle"
@@ -550,10 +553,9 @@ class _ThreadREPL:
         outcome.error_stack = e.stack
 
     async def _describe_via_handle_async(self, code: str) -> str:
+        ctx = cast("Context", self._ctx)
         try:
-            handle = await self._ctx.eval_handle_async(
-                code, timeout=self._per_call_timeout
-            )
+            handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
         except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
             return _HANDLE_PLACEHOLDER
         try:
@@ -728,9 +730,8 @@ def format_outcome(
     else:
         body = outcome.result if outcome.result is not None else "undefined"
         kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
-        parts.append(
-            f"<result{kind_attr}>{_xml_escape(_truncate(body, max_result_chars))}</result>"
-        )
+        body_xml = _xml_escape(_truncate(body, max_result_chars))
+        parts.append(f"<result{kind_attr}>{body_xml}</result>")
     return "\n".join(parts)
 
 

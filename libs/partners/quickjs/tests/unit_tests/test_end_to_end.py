@@ -15,8 +15,10 @@ handlers and assert it no longer errors.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from typing import Any
+from collections.abc import (
+    Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
+)
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -25,6 +27,9 @@ from langchain_core.tools import tool
 from pydantic import Field
 
 from langchain_quickjs import REPLMiddleware
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # The exact snippet a model produced in production when this regressed.
 _EVAL_CODE = "var result = tools.listUserIds({}); result;"
@@ -40,7 +45,7 @@ class _FakeChatModel(GenericFakeChatModel):
 
     messages: Iterator[AIMessage | str] = Field(exclude=True)
 
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> "_FakeChatModel":
+    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _FakeChatModel:
         return self
 
 

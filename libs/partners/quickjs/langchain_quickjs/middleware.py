@@ -4,6 +4,7 @@ State persists across tool calls within a LangGraph thread (each thread
 gets its own QuickJS context).
 """
 
+import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -47,7 +48,8 @@ _SYSTEM_PROMPT_TEMPLATE = (
     "REPL backed by QuickJS.\n"
     "- State (variables, functions) persists across calls within this conversation.\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Sandboxed: no filesystem, no stdlib, no network, no real clock, no `fetch`, no `require`.\n"
+    "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "
+    "no `fetch`, no `require`.\n"
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
@@ -134,7 +136,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
-    def __init__(
+    def __init__(  # noqa: D417 — class docstring documents the full parameter list; this delegates
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
@@ -202,12 +204,13 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 content=content, tool_call_id=tool_call_id, name=tool_name
             )
 
+        code_doc = (
+            "JavaScript expression or statement(s) to evaluate in the persistent REPL."
+        )
+
         def sync_eval(
             runtime: ToolRuntime[None, Any],
-            code: Annotated[
-                str,
-                "JavaScript expression or statement(s) to evaluate in the persistent REPL.",
-            ],
+            code: Annotated[str, code_doc],
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             # The sync path doesn't support PTC (host-fn bridges are
@@ -220,10 +223,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
-            code: Annotated[
-                str,
-                "JavaScript expression or statement(s) to evaluate in the persistent REPL.",
-            ],
+            code: Annotated[str, code_doc],
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             # Install any referenced skills before eval. If install
@@ -337,7 +337,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
 
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
-        """Install PTC bindings for this turn and return the full system-prompt addendum.
+        """Install PTC bindings for this turn and return the system-prompt addendum.
 
         Called from both sync and async model-call wrappers. Reads the
         live tool list off the request (middlewares upstream may have
@@ -377,11 +377,9 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return append_to_system_message(system_message, prompt)
 
     def __del__(self) -> None:
-        # Best-effort cleanup. If the Runtime was never built (no tool
-        # calls happened) this is a no-op. Wrapped in a bare except because
-        # __del__ must not raise during interpreter shutdown, when wasmtime
-        # or its dependencies may already be half-unloaded.
-        try:
+        """Best-effort Runtime cleanup on GC; never raises at shutdown."""
+        # Wrapped in ``contextlib.suppress`` because __del__ must not raise
+        # during interpreter shutdown, when dependencies may already be
+        # half-unloaded.
+        with contextlib.suppress(Exception):
             self._registry.close()
-        except Exception:  # noqa: BLE001 — GC path, never raise
-            pass

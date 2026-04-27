@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from langchain_core.tools import BaseTool
 
@@ -67,11 +67,16 @@ def filter_tools_for_ptc(
     """
     if config is False:
         return []
-    if isinstance(config, list) and config and any(isinstance(t, BaseTool) for t in config):
+    if (
+        isinstance(config, list)
+        and config
+        and any(isinstance(t, BaseTool) for t in config)
+    ):
         if any(not isinstance(t, BaseTool) for t in config):
             msg = "ptc list must be all str or all BaseTool, not mixed"
             raise TypeError(msg)
-        return [t for t in config if t.name != self_tool_name]
+        config_cast = cast("list[BaseTool]", config)
+        return [t for t in config_cast if t.name != self_tool_name]
     candidates = [t for t in tools if t.name != self_tool_name]
     if config is True:
         return candidates
@@ -188,7 +193,7 @@ def _json_schema_to_ts(prop: dict[str, Any]) -> str:
     t = prop.get("type")
     if t == "string":
         return "string"
-    if t == "integer" or t == "number":
+    if t in {"integer", "number"}:
         return "number"
     if t == "boolean":
         return "boolean"

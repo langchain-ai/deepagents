@@ -87,6 +87,8 @@ ignore = [
     "ISC001",  # Messes with the formatter
     "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed — too strict for generic wrappers
     "ASYNC109",  # StructuredTool async wrapper should mirror sync tool parameters
+    "PLR0911",  # Too many return statements — branchy marshalers (JSON→TS, value formatting) are intentionally flat
+    "PLR0913",  # Too many arguments — middleware constructors legitimately expose many knobs
 ]
 extend-safe-fixes = ["PLR6201"]
 
@@ -121,4 +123,5 @@ filterwarnings = []
     "FBT",
     "INP001",
     "SLF001",
+    "PLC0415",  # Inline imports inside test functions (for per-test isolation) are idiomatic
 ]

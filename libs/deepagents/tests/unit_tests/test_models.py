@@ -40,8 +40,9 @@ from deepagents.profiles.provider._openrouter import (
 )
 from deepagents.profiles.provider.provider_profiles import (
     _PROVIDER_PROFILES,
-    _get_provider_profile,
     _merge_provider_profiles,
+    apply_provider_profile,
+    get_provider_profile,
 )
 
 
@@ -331,7 +332,7 @@ class TestProviderProfileRegistry:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("test_provider", profile)
-            assert _get_provider_profile("test_provider:some-model") is profile
+            assert get_provider_profile("test_provider:some-model") is profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -343,22 +344,22 @@ class TestProviderProfileRegistry:
         try:
             register_provider_profile("test_prov", base_profile)
             register_provider_profile("test_prov:special-model", model_profile)
-            merged = _get_provider_profile("test_prov:special-model")
+            merged = get_provider_profile("test_prov:special-model")
             assert merged.init_kwargs == {"a": 1, "b": 2}
-            assert _get_provider_profile("test_prov:other-model") is base_profile
+            assert get_provider_profile("test_prov:other-model") is base_profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
     def test_returns_none_for_unknown(self) -> None:
-        assert _get_provider_profile("nonexistent:model") is None
+        assert get_provider_profile("nonexistent:model") is None
 
     def test_bare_model_name_without_colon_returns_none(self) -> None:
-        assert _get_provider_profile("claude-sonnet-4-6") is None
+        assert get_provider_profile("claude-sonnet-4-6") is None
 
     def test_empty_spec_returns_none(self) -> None:
         """Empty spec has no colon and no exact match."""
-        assert _get_provider_profile("") is None
+        assert get_provider_profile("") is None
 
     def test_exact_miss_falls_back_to_provider(self) -> None:
         """A typo'd model spec should fall back to the provider profile, not None."""
@@ -366,7 +367,123 @@ class TestProviderProfileRegistry:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("fbprov", base)
-            assert _get_provider_profile("fbprov:missing-model") is base
+            assert get_provider_profile("fbprov:missing-model") is base
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+
+class TestApplyProviderProfile:
+    """Tests for the `apply_provider_profile` convenience helper.
+
+    Verifies the merge contract used by `resolve_model` and any external
+    harness building chat models through its own pipeline: caller kwargs win
+    on conflict, profile defaults sit beneath them, `pre_init` fires for side
+    effects unless suppressed, and unregistered specs no-op cleanly.
+    """
+
+    def test_unregistered_spec_returns_kwargs_copy(self) -> None:
+        """No registered profile means kwargs flow through unchanged."""
+        kwargs = {"temperature": 0.5}
+        result = apply_provider_profile("nonexistent:model", kwargs)
+        assert result == kwargs
+        assert result is not kwargs  # fresh dict
+
+    def test_unregistered_spec_with_no_kwargs_returns_empty_dict(self) -> None:
+        """Calling without kwargs on an unregistered spec yields empty dict."""
+        assert apply_provider_profile("nonexistent:model") == {}
+
+    def test_profile_defaults_applied_when_no_kwargs(self) -> None:
+        """Profile `init_kwargs` flow through when no caller kwargs are given."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "appprov",
+                ProviderProfile(init_kwargs={"temperature": 0.7, "stream": True}),
+            )
+            result = apply_provider_profile("appprov")
+            assert result == {"temperature": 0.7, "stream": True}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_caller_kwargs_win_on_conflict(self) -> None:
+        """Caller-supplied kwargs override profile defaults on shared keys."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "winprov",
+                ProviderProfile(init_kwargs={"temperature": 0, "shared": "profile"}),
+            )
+            result = apply_provider_profile("winprov", {"shared": "caller"})
+            assert result == {"temperature": 0, "shared": "caller"}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_factory_output_layered_under_caller(self) -> None:
+        """`init_kwargs_factory` runs and merges beneath caller kwargs."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "factprov",
+                ProviderProfile(
+                    init_kwargs={"a": 1},
+                    init_kwargs_factory=lambda: {"b": 2, "shared": "factory"},
+                ),
+            )
+            result = apply_provider_profile("factprov", {"shared": "caller", "c": 3})
+            assert result == {"a": 1, "b": 2, "shared": "caller", "c": 3}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_pre_init_runs_with_spec_by_default(self) -> None:
+        """`pre_init` is invoked with the resolved spec by default."""
+        seen: list[str] = []
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "preinitprov",
+                ProviderProfile(pre_init=seen.append),
+            )
+            apply_provider_profile("preinitprov:m")
+            assert seen == ["preinitprov:m"]
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_pre_init_suppressed_with_run_pre_init_false(self) -> None:
+        """`run_pre_init=False` skips the side-effectful hook."""
+        seen: list[str] = []
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "noinitprov",
+                ProviderProfile(
+                    init_kwargs={"k": "v"},
+                    pre_init=seen.append,
+                ),
+            )
+            result = apply_provider_profile("noinitprov", run_pre_init=False)
+            assert seen == []
+            assert result == {"k": "v"}
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_caller_kwargs_dict_not_mutated(self) -> None:
+        """The caller's `kwargs` mapping is never mutated in place."""
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile(
+                "immprov",
+                ProviderProfile(init_kwargs={"profile_only": "x"}),
+            )
+            caller_kwargs = {"caller_only": "y"}
+            result = apply_provider_profile("immprov", caller_kwargs)
+            assert caller_kwargs == {"caller_only": "y"}  # untouched
+            assert result == {"profile_only": "x", "caller_only": "y"}
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -386,7 +503,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             register_provider_profile("layered_prov", ProviderProfile(init_kwargs={"a": 1}))
             register_provider_profile("layered_prov", ProviderProfile(init_kwargs={"b": 2}))
-            profile = _get_provider_profile("layered_prov")
+            profile = get_provider_profile("layered_prov")
             assert profile.init_kwargs == {"a": 1, "b": 2}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -398,7 +515,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             register_provider_profile("coll_prov", ProviderProfile(init_kwargs={"shared": "first"}))
             register_provider_profile("coll_prov", ProviderProfile(init_kwargs={"shared": "second"}))
-            profile = _get_provider_profile("coll_prov")
+            profile = get_provider_profile("coll_prov")
             assert profile.init_kwargs == {"shared": "second"}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -409,7 +526,7 @@ class TestRegisterProviderProfileAdditive:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("openai", ProviderProfile(init_kwargs={"temperature": 0}))
-            profile = _get_provider_profile("openai:gpt-5")
+            profile = get_provider_profile("openai:gpt-5")
             assert profile.init_kwargs == {"use_responses_api": True, "temperature": 0}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -423,7 +540,7 @@ class TestRegisterProviderProfileAdditive:
                 "openai",
                 ProviderProfile(init_kwargs={"use_responses_api": False}),
             )
-            profile = _get_provider_profile("openai:gpt-5")
+            profile = get_provider_profile("openai:gpt-5")
             assert profile.init_kwargs == {"use_responses_api": False}
         finally:
             _PROVIDER_PROFILES.clear()
@@ -442,7 +559,7 @@ class TestRegisterProviderProfileAdditive:
                 "chain_prov",
                 ProviderProfile(pre_init=lambda spec: calls.append(f"second:{spec}")),
             )
-            profile = _get_provider_profile("chain_prov")
+            profile = get_provider_profile("chain_prov")
             assert profile.pre_init is not None
             profile.pre_init("spec")
             assert calls == ["first:spec", "second:spec"]
@@ -456,7 +573,7 @@ class TestRegisterProviderProfileAdditive:
         try:
             profile = ProviderProfile(init_kwargs={"unique_key": True})
             register_provider_profile("novelprov", profile)
-            assert _get_provider_profile("novelprov") is profile
+            assert get_provider_profile("novelprov") is profile
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -821,7 +938,7 @@ class TestProfileMergingEndToEnd:
                 "openai:o3-pro",
                 ProviderProfile(init_kwargs={"reasoning_effort": "high"}),
             )
-            profile = _get_provider_profile("openai:o3-pro")
+            profile = get_provider_profile("openai:o3-pro")
             assert profile.init_kwargs == {
                 "use_responses_api": True,
                 "reasoning_effort": "high",
@@ -863,11 +980,11 @@ class TestBuiltInProfiles:
     """Tests for built-in provider and harness registrations."""
 
     def test_openai_provider_profile_sets_responses_api(self) -> None:
-        profile = _get_provider_profile("openai:gpt-5")
+        profile = get_provider_profile("openai:gpt-5")
         assert profile.init_kwargs == {"use_responses_api": True}
 
     def test_openrouter_provider_profile_has_pre_init_and_factory(self) -> None:
-        profile = _get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
+        profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
 
@@ -1370,7 +1487,7 @@ class TestProfileLookupBreadcrumb:
         try:
             register_provider_profile("crumbprov", ProviderProfile(init_kwargs={"a": 1}))
             with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.provider.provider_profiles"):
-                _get_provider_profile("crumbprov:typo-model")
+                get_provider_profile("crumbprov:typo-model")
             messages = [r.getMessage() for r in caplog.records]
             assert any("No exact ProviderProfile" in m and "crumbprov" in m for m in messages)
         finally:
@@ -1421,7 +1538,7 @@ class TestProfileLookupKeyValidation:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
-            assert _get_provider_profile("partprov:") is None
+            assert get_provider_profile("partprov:") is None
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
@@ -1430,13 +1547,13 @@ class TestProfileLookupKeyValidation:
         original = dict(_PROVIDER_PROFILES)
         try:
             register_provider_profile("partprov", ProviderProfile(init_kwargs={"a": 1}))
-            assert _get_provider_profile(":some-model") is None
+            assert get_provider_profile(":some-model") is None
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
 
     def test_provider_lookup_rejects_double_colon(self) -> None:
-        assert _get_provider_profile("a:b:c") is None
+        assert get_provider_profile("a:b:c") is None
 
 
 class TestOpenRouterEmptyEnvVar:
@@ -1472,7 +1589,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("chainprov", ProviderProfile(pre_init=base_pre))
             register_provider_profile("chainprov", ProviderProfile(pre_init=over_pre))
-            merged = _get_provider_profile("chainprov")
+            merged = get_provider_profile("chainprov")
             assert merged is not None
             assert merged.pre_init is not None
             with (
@@ -1501,7 +1618,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("chainprov2", ProviderProfile(pre_init=base_pre))
             register_provider_profile("chainprov2", ProviderProfile(pre_init=over_pre))
-            merged = _get_provider_profile("chainprov2")
+            merged = get_provider_profile("chainprov2")
             assert merged is not None
             assert merged.pre_init is not None
             with (
@@ -1531,7 +1648,7 @@ class TestChainedPreInitAndFactoryErrorLogging:
         try:
             register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=base_factory))
             register_provider_profile("factprov", ProviderProfile(init_kwargs_factory=override_factory))
-            merged = _get_provider_profile("factprov")
+            merged = get_provider_profile("factprov")
             assert merged is not None
             assert merged.init_kwargs_factory is not None
             with (

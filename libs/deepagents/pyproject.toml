@@ -28,6 +28,12 @@ dependencies = [
     "wcmatch",
 ]
 
+[project.optional-dependencies]
+# Video frame extraction via `read_file` requires ffmpeg/ffprobe on PATH.
+# This extra is currently a placeholder so consumers can declare intent;
+# no Python-level deps are needed today.
+video = []
+
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -132,6 +138,7 @@ filterwarnings = [
 ]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",
+    "integration: tests that require external binaries (e.g., ffmpeg/ffprobe)",
 ]
 
 [tool.ty.environment]

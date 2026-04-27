@@ -1,3 +1,4 @@
+import base64
 import time
 from unittest.mock import patch
 
@@ -31,6 +32,8 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     update_file_data,
 )
+from deepagents.middleware import _ffmpeg as _ffmpeg_module
+from deepagents.middleware._ffmpeg import ExtractedFrame, FFmpegMissingError
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     NUM_CHARS_PER_TOKEN,
@@ -1330,6 +1333,150 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, str)
         assert result == EMPTY_CONTENT_WARNING
+
+    def test_read_file_video_returns_extracted_frames(self, monkeypatch):
+        """Reading a video file should run ffmpeg and return frame image blocks."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": base64.b64encode(b"fake-video-bytes").decode("ascii"),
+                        "encoding": "base64",
+                    }
+                )
+
+        captured: dict = {}
+
+        def fake_extract(_path, params):
+            captured["params"] = params
+            frames = [
+                ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0jpg1", timestamp_s=10.0),
+                ExtractedFrame(jpeg_bytes=b"\xff\xd8\xff\xe0jpg2", timestamp_s=12.0),
+            ]
+            return frames, 60.0
+
+        monkeypatch.setattr(_ffmpeg_module, "extract_frames", fake_extract)
+
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="vid-1",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke(
+            {
+                "file_path": "/app/clip.mp4",
+                "runtime": runtime,
+                "sampling_rate": 0.5,
+                "time_offset": 10.0,
+                "duration": 20.0,
+            }
+        )
+
+        assert captured["params"].sampling_rate == 0.5
+        assert captured["params"].time_offset == 10.0
+        assert captured["params"].duration == 20.0
+
+        assert isinstance(result, ToolMessage)
+        assert result.name == "read_file"
+        assert result.tool_call_id == "vid-1"
+        assert result.additional_kwargs["video_frame_count"] == 2
+        assert result.additional_kwargs["video_sampling_rate"] == 0.5
+        # Expected layout: [preamble] + 2 * [timestamp_text, image]
+        assert isinstance(result.content, list)
+        assert len(result.content) == 5
+        assert result.content[0]["type"] == "text"
+        assert "frame(s) were extracted" in result.content[0]["text"]
+        assert result.content[1]["type"] == "text"
+        assert "Frame 1 at t=10.0s" in result.content[1]["text"]
+        assert result.content[2]["type"] == "image"
+        assert result.content[2]["mime_type"] == "image/jpeg"
+        # base64 round-trip
+        assert base64.b64decode(result.content[2]["base64"]) == b"\xff\xd8\xff\xe0jpg1"
+        assert result.content[3]["text"] == "Frame 2 at t=12.0s"
+
+    def test_read_file_video_returns_error_when_ffmpeg_missing(self, monkeypatch):
+        """If ffmpeg is unavailable, read_file should return a clear error string."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": base64.b64encode(b"x").decode("ascii"),
+                        "encoding": "base64",
+                    }
+                )
+
+        def raise_missing(_path, _params):
+            msg = "not on PATH"
+            raise FFmpegMissingError(msg)
+
+        monkeypatch.setattr(_ffmpeg_module, "extract_frames", raise_missing)
+
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="vid-err",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/clip.mp4", "runtime": runtime})
+
+        assert isinstance(result, str)
+        assert "ffmpeg is not available" in result
+
+    def test_read_file_video_rejects_invalid_params(self):
+        """Bad sampling_rate/time_offset/duration should return validation errors."""
+
+        class VideoBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(
+                    file_data={
+                        "content": base64.b64encode(b"x").decode("ascii"),
+                        "encoding": "base64",
+                    }
+                )
+
+        middleware = FilesystemMiddleware(backend=VideoBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="vid-bad",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke(
+            {
+                "file_path": "/app/clip.mp4",
+                "runtime": runtime,
+                "sampling_rate": 0.0,
+            }
+        )
+        assert isinstance(result, str)
+        assert "sampling_rate" in result
+
+        result = read_file_tool.invoke(
+            {
+                "file_path": "/app/clip.mp4",
+                "runtime": runtime,
+                "duration": -1,
+            }
+        )
+        assert isinstance(result, str)
+        assert "duration" in result
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""

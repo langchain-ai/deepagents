@@ -34,6 +34,37 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 - **[API Reference](https://reference.langchain.com/python/deepagents/)** — Full SDK reference documentation
 - **[Chat LangChain](https://chat.langchain.com)** - Chat interactively with the docs
 
+## Optional features
+
+### Video input (optional)
+
+When the agent calls `read_file` on a video file (`.mp4`, `.mov`, `.webm`, etc.), `deepagents` extracts JPEG frames using **FFmpeg** and returns them as image content blocks. The agent picks the window with three optional `read_file` parameters:
+
+- `sampling_rate` — frames per second (default `0.5`)
+- `time_offset` — seconds into the source to start sampling (default `0`)
+- `duration` — seconds of source to sample (default `30`)
+
+This requires `ffmpeg` and `ffprobe` to be on `PATH`:
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Debian/Ubuntu
+sudo apt-get install -y ffmpeg
+
+# Verify
+ffmpeg -version && ffprobe -version
+```
+
+Then install the deepagents `video` extra (currently a placeholder but declares intent for future Python-level video deps):
+
+```bash
+pip install 'deepagents[video]'
+```
+
+If FFmpeg is missing or extraction fails, `read_file` returns an error string and the agent turn still completes.
+
 ## 📕 Releases & Versioning
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.

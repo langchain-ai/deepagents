@@ -2,13 +2,16 @@
 # ruff: noqa: E501
 
 import asyncio
+import base64 as _b64
 import concurrent.futures
 import contextvars
+import logging
 import mimetypes
 import uuid
 import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
@@ -52,7 +55,141 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
+from deepagents.middleware import _ffmpeg
+from deepagents.middleware._ffmpeg import (
+    ExtractedFrame,
+    ExtractionError,
+    ExtractionParams,
+    FFmpegMissingError,
+    FileCorruptError,
+    NoVideoStreamError,
+)
 from deepagents.middleware._utils import append_to_system_message
+
+logger = logging.getLogger(__name__)
+
+# Defaults for video frame extraction via read_file. The agent specifies
+# these per-call via the read_file tool; max_width and jpeg_quality are
+# fixed at sensible values.
+DEFAULT_VIDEO_SAMPLING_RATE = 0.5  # frames per second
+DEFAULT_VIDEO_TIME_OFFSET = 0.0  # seconds into source
+DEFAULT_VIDEO_DURATION = 30.0  # seconds of source to sample
+_VIDEO_MAX_WIDTH = 512
+_VIDEO_JPEG_QUALITY = 5
+
+_VIDEO_MIME_TO_EXT: dict[str, str] = {
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/x-msvideo": "avi",
+    "video/webm": "webm",
+    "video/x-m4v": "m4v",
+    "video/x-ms-wmv": "wmv",
+    "video/mpeg": "mpeg",
+}
+
+
+def _frames_to_content_blocks(
+    frames: list[ExtractedFrame],
+    file_path: str,
+    sampling_rate: float,
+    time_offset: float,
+    duration: float,
+    source_duration_s: float,
+) -> list[dict[str, Any]]:
+    """Build a `[preamble, (timestamp_text, image) x N]` content-block list."""
+    preamble = (
+        f"The following {len(frames)} frame(s) were extracted from '{file_path}' "
+        f"(source duration {source_duration_s:.1f}s) starting at "
+        f"t={time_offset:.1f}s for {duration:.1f}s at {sampling_rate} fps."
+    )
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": preamble}]
+    for i, frame in enumerate(frames):
+        blocks.append({"type": "text", "text": f"Frame {i + 1} at t={frame.timestamp_s:.1f}s"})
+        blocks.append(
+            {
+                "type": "image",
+                "base64": _b64.b64encode(frame.jpeg_bytes).decode("ascii"),
+                "mime_type": "image/jpeg",
+            }
+        )
+    return blocks
+
+
+def _read_video_as_frames(  # noqa: PLR0911 - early returns for distinct error conditions
+    base64_content: str,
+    file_path: str,
+    mime_type: str,
+    tool_call_id: str | None,
+    sampling_rate: float,
+    time_offset: float,
+    duration: float,
+) -> ToolMessage | str:
+    """Decode the video bytes, run ffmpeg, and return frames as image content blocks."""
+    if sampling_rate <= 0:
+        return f"Error: sampling_rate must be > 0; got {sampling_rate}"
+    if time_offset < 0:
+        return f"Error: time_offset must be >= 0; got {time_offset}"
+    if duration <= 0:
+        return f"Error: duration must be > 0; got {duration}"
+
+    try:
+        video_bytes = _b64.b64decode(base64_content, validate=True)
+    except (ValueError, TypeError) as exc:
+        return f"Error: video content for '{file_path}' is not valid base64: {exc}"
+
+    ext = _VIDEO_MIME_TO_EXT.get(mime_type, "mp4")
+    params = ExtractionParams(
+        sampling_rate=sampling_rate,
+        time_offset=time_offset,
+        duration=duration,
+        max_width=_VIDEO_MAX_WIDTH,
+        jpeg_quality=_VIDEO_JPEG_QUALITY,
+    )
+
+    try:
+        with NamedTemporaryFile(suffix=f".{ext}", delete=True) as tmp:
+            tmp.write(video_bytes)
+            tmp.flush()
+            frames, source_duration_s = _ffmpeg.extract_frames(Path(tmp.name), params)
+    except FFmpegMissingError:
+        return f"Error: ffmpeg is not available on this host; cannot extract frames from '{file_path}'."
+    except NoVideoStreamError:
+        return f"Error: '{file_path}' has no decodable video stream."
+    except FileCorruptError:
+        return f"Error: '{file_path}' is corrupt or has no readable duration."
+    except ExtractionError as exc:
+        logger.warning("video extraction failed for %r: %s", file_path, exc)
+        return f"Error: failed to extract frames from '{file_path}': {exc}"
+
+    if not frames:
+        return (
+            f"Error: no frames produced for '{file_path}' at "
+            f"time_offset={time_offset}s, duration={duration}s "
+            f"(source duration {source_duration_s:.1f}s). The window may be past the end of the video."
+        )
+
+    blocks = _frames_to_content_blocks(
+        frames,
+        file_path,
+        sampling_rate,
+        time_offset,
+        duration,
+        source_duration_s,
+    )
+    return ToolMessage(
+        content_blocks=cast("list[ContentBlock]", blocks),
+        name="read_file",
+        tool_call_id=tool_call_id,
+        additional_kwargs={
+            "read_file_path": file_path,
+            "read_file_media_type": mime_type,
+            "video_sampling_rate": sampling_rate,
+            "video_time_offset": time_offset,
+            "video_duration": duration,
+            "video_frame_count": len(frames),
+        },
+    )
+
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -136,6 +273,18 @@ class ReadFileSchema(BaseModel):
         default=DEFAULT_READ_LIMIT,
         description="Maximum number of lines to read. Use for pagination of large files.",
     )
+    sampling_rate: float = Field(
+        default=DEFAULT_VIDEO_SAMPLING_RATE,
+        description="Video files only: frames-per-second to sample from the source. Default 0.5 (one frame every 2 seconds). Ignored for non-video files.",
+    )
+    time_offset: float = Field(
+        default=DEFAULT_VIDEO_TIME_OFFSET,
+        description="Video files only: seconds into the source to start sampling from. Default 0. Ignored for non-video files.",
+    )
+    duration: float = Field(
+        default=DEFAULT_VIDEO_DURATION,
+        description="Video files only: seconds of source material to sample. Default 30. Ignored for non-video files.",
+    )
 
 
 class WriteFileSchema(BaseModel):
@@ -212,6 +361,12 @@ For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
 - Do NOT use `offset`/`limit` for images (pagination is text-only)
 - If file details were compacted from history, call `read_file` again on the same path
+
+For video files specifically:
+- `read_file` extracts JPEG frames from the video and returns them inline as image blocks. The raw video bytes are never sent to the model.
+- Pick frames with `sampling_rate` (frames per second, default 0.5), `time_offset` (seconds into the source to start, default 0), and `duration` (seconds of source to sample, default 30).
+- Number of frames returned is approximately `sampling_rate * duration`. At defaults that's ~15 frames.
+- To inspect a different segment, call `read_file` again with a different `time_offset` / `duration`. To get a denser look at fast action, raise `sampling_rate`. Each call re-runs ffmpeg, so don't sample more than you need.
 
 - You should ALWAYS make sure a file has been read before editing it."""
 
@@ -724,12 +879,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(
+        def _handle_read_result(  # noqa: PLR0911 - early returns for distinct branches
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
             limit: int,
+            sampling_rate: float,
+            time_offset: float,
+            duration: float,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
                 warnings.warn(
@@ -750,9 +908,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             file_type = _get_file_type(validated_path)
             content = read_result.file_data["content"]
+            mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+
+            if file_type == "video":
+                return _read_video_as_frames(
+                    content,
+                    validated_path,
+                    mime_type,
+                    tool_call_id,
+                    sampling_rate,
+                    time_offset,
+                    duration,
+                )
 
             if file_type != "text":
-                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(
                     content_blocks=cast("list[ContentBlock]", [{"type": file_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",
@@ -774,6 +943,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            sampling_rate: Annotated[float, "Video files only: frames-per-second to sample. Default 0.5."] = DEFAULT_VIDEO_SAMPLING_RATE,
+            time_offset: Annotated[float, "Video files only: seconds into the source to start sampling. Default 0."] = DEFAULT_VIDEO_TIME_OFFSET,
+            duration: Annotated[float, "Video files only: seconds of source to sample. Default 30."] = DEFAULT_VIDEO_DURATION,
         ) -> ToolMessage | str:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -782,13 +954,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
+            return _handle_read_result(
+                read_result,
+                validated_path,
+                runtime.tool_call_id,
+                offset,
+                limit,
+                sampling_rate,
+                time_offset,
+                duration,
+            )
 
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
+            sampling_rate: Annotated[float, "Video files only: frames-per-second to sample. Default 0.5."] = DEFAULT_VIDEO_SAMPLING_RATE,
+            time_offset: Annotated[float, "Video files only: seconds into the source to start sampling. Default 0."] = DEFAULT_VIDEO_TIME_OFFSET,
+            duration: Annotated[float, "Video files only: seconds of source to sample. Default 30."] = DEFAULT_VIDEO_DURATION,
         ) -> ToolMessage | str:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -797,7 +981,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
-            return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
+            return _handle_read_result(
+                read_result,
+                validated_path,
+                runtime.tool_call_id,
+                offset,
+                limit,
+                sampling_rate,
+                time_offset,
+                duration,
+            )
 
         return StructuredTool.from_function(
             name="read_file",

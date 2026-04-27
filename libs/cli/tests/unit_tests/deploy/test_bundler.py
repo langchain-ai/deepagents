@@ -308,8 +308,18 @@ class TestRenderDeployGraph:
         assert "AGENTS.md" in result
         assert 'mode="deny"' in result
 
-    def test_default_memories_backend_is_store(self) -> None:
+    def test_default_memories_backend_is_hub(self) -> None:
+        """`_minimal_config()` relies on `MemoriesConfig()` — default must be hub."""
         result = _render_deploy_graph(_minimal_config(), mcp_present=False)
+        assert "MEMORIES_BACKEND = 'hub'" in result
+
+    def test_store_backend_opt_in(self) -> None:
+        """Opt-in to the store backend still works for existing projects."""
+        config = DeployConfig(
+            agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(backend="store"),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
         assert "MEMORIES_BACKEND = 'store'" in result
 
     def test_hub_backend_wires_context_hub_route(self) -> None:
@@ -399,7 +409,10 @@ class TestBundle:
     def test_store_bundle_does_not_vendor_context_hub(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")
         build = tmp_path / "build"
-        config = _minimal_config()
+        config = DeployConfig(
+            agent=AgentConfig(name="test-agent", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(backend="store"),
+        )
         bundle(config, project, build)
         assert not (build / "_context_hub.py").exists()
 

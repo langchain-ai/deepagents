@@ -137,16 +137,16 @@ class AuthConfig:
 class MemoriesConfig:
     """`[memories]` section — backing store for `/memories/`.
 
-    `backend = "store"` (default) routes `/memories/` through a
-    `StoreBackend` against the LangGraph runtime store. `backend = "hub"`
-    routes it through a `ContextHubBackend` bound to a LangSmith Hub
-    agent repo, giving persistent, git-like storage.
+    `backend = "hub"` (default) routes `/memories/` through a
+    `ContextHubBackend` bound to a LangSmith Hub agent repo, giving
+    persistent, git-like storage. `backend = "store"` routes it through a
+    `StoreBackend` against the LangGraph runtime store.
 
     `identifier` overrides the Hub agent repo. When omitted, it defaults
     to `-/{agent.name}` at bundle time.
     """
 
-    backend: MemoriesBackend = "store"
+    backend: MemoriesBackend = "hub"
     identifier: str = ""
 
 
@@ -487,7 +487,7 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
             )
             raise ValueError(msg)
 
-        backend = memories_data.get("backend", "store")
+        backend = memories_data.get("backend", "hub")
         if backend not in VALID_MEMORIES_BACKENDS:
             msg = (
                 f"Unknown memories backend: {backend}. "
@@ -636,10 +636,11 @@ model = "anthropic:claude-sonnet-4-6"
 # [auth]
 # provider = "supabase"   # supabase | clerk
 
-# [memories] is optional. Defaults to the LangGraph runtime store.
-# Set backend = "hub" to persist /memories/ in a LangSmith Hub agent repo.
+# [memories] is optional. Defaults to a LangSmith Hub agent repo
+# (`backend = "hub"`). Set backend = "store" to use the LangGraph
+# runtime store instead.
 # [memories]
-# backend = "hub"          # store | hub
+# backend = "hub"            # hub | store
 # identifier = "-/my-agent"  # optional override; defaults to `-/{agent.name}`
 """
 

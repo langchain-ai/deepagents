@@ -250,14 +250,9 @@ app_name = "My App"
     assert '"auth":"supabase"' in html
 
 
-@pytest.mark.usefixtures("shipped_frontend_dist")
-def test_deploy_dry_run_anonymous_prints_warning(tmp_path, monkeypatch, capsys):
-    """`_deploy` with frontend enabled and no [auth] prints a warning."""
-    from deepagents_cli.deploy.commands import _deploy
-
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    project = tmp_path / "proj"
-    project.mkdir()
+def _write_anonymous_project(project: Path) -> None:
+    """Helper: write an [agent]+[frontend] (no [auth]) project at *project*."""
+    project.mkdir(exist_ok=True)
     (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
     (project / "deepagents.toml").write_text(
         """
@@ -271,11 +266,104 @@ enabled = true
         encoding="utf-8",
     )
 
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_dry_run_anonymous_prints_warning(tmp_path, monkeypatch, capsys):
+    """`_deploy` with frontend enabled and no [auth] prints the new warning."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_anonymous_project(tmp_path / "proj")
+
+    _deploy(config_path=str(tmp_path / "proj" / "deepagents.toml"), dry_run=True)
+
+    captured = capsys.readouterr()
+    assert "ANONYMOUS auth" in captured.out
+    assert "API is open to anyone" in captured.out
+    # Summary line uses the new label.
+    assert "Auth: anonymous (API open to anyone)" in captured.out
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_default_summary_label(tmp_path, monkeypatch, capsys):
+    """No [auth] and no [frontend] prints the 'Auth: default' summary line."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
+    (project / "deepagents.toml").write_text(
+        """
+[agent]
+name = "my-agent"
+model = "anthropic:claude-sonnet-4-6"
+""",
+        encoding="utf-8",
+    )
+
     _deploy(config_path=str(project / "deepagents.toml"), dry_run=True)
 
     captured = capsys.readouterr()
-    assert "Frontend is enabled without [auth]" in captured.out
-    assert "anyone with the deploy url" in captured.out.lower()
+    assert "Auth: default (LangSmith API key required)" in captured.out
+    # No anonymous warning fires for the default case.
+    assert "ANONYMOUS auth" not in captured.out
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_anonymous_dry_run_skips_confirmation(tmp_path, monkeypatch):
+    """`--dry-run` on an anonymous deploy never prompts."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_anonymous_project(tmp_path / "proj")
+
+    def _no_input(_prompt: str) -> str:
+        msg = "input() should not be called during dry-run"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    # Should not raise.
+    _deploy(config_path=str(tmp_path / "proj" / "deepagents.toml"), dry_run=True)
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_anonymous_aborts_on_no(tmp_path, monkeypatch, capsys):
+    """Answering anything other than y/yes aborts the deploy with exit 1."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_anonymous_project(tmp_path / "proj")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    with pytest.raises(SystemExit) as excinfo:
+        _deploy(config_path=str(tmp_path / "proj" / "deepagents.toml"), dry_run=False)
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "Aborted." in captured.out
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_deploy_anonymous_aborts_on_eof(tmp_path, monkeypatch, capsys):
+    """Closing stdin (EOFError) aborts cleanly with exit 1."""
+    from deepagents_cli.deploy.commands import _deploy
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_anonymous_project(tmp_path / "proj")
+
+    def _raises_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _raises_eof)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _deploy(config_path=str(tmp_path / "proj" / "deepagents.toml"), dry_run=False)
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "Aborted." in captured.out
 
 
 def test_build_runtime_config_json_anonymous_mode():

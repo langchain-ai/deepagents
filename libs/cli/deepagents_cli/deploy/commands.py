@@ -265,18 +265,43 @@ def _deploy(
             print(f"  - {err}")
         raise SystemExit(1)
 
-    # Warn if shipping the frontend without [auth] — anonymous deploys
-    # are reachable by anyone with the URL.
-    if config.frontend is not None and config.frontend.enabled and config.auth is None:
-        # ANSI yellow; falls back gracefully on terminals without color.
+    # Warn + confirm if shipping the frontend without [auth]. The
+    # generated auth.py for this case is permissive (overrides the
+    # LangSmith default x-api-key requirement) so the API is reachable
+    # by anyone with the deploy URL.
+    is_anonymous = (
+        config.frontend is not None and config.frontend.enabled and config.auth is None
+    )
+    if is_anonymous:
+        # ANSI yellow first line; bullets uncolored.
         print(
-            "\033[33m⚠ Frontend is enabled without [auth]. "
-            "Anyone with the deploy URL can use this agent.\033[0m"
+            "\033[33m⚠ This deploy will use ANONYMOUS auth. "
+            "The API is open to anyone with the deploy URL.\033[0m"
         )
         print(
-            "  Add an [auth] section "
-            '(provider = "supabase" or "clerk") to require sign-in.'
+            "  • Browser UI shows per-browser threads (cookie-scoped UX, not security)."
         )
+        print(
+            "  • Anyone with the URL can call the API directly "
+            "(curl /threads, /runs, etc.) — no auth."
+        )
+        print(
+            "  • For real per-user auth, add an [auth] section "
+            '(provider = "supabase" or "clerk").'
+        )
+        # Skip the interactive confirm on dry-run (no real push happens).
+        if not dry_run:
+            try:
+                answer = (
+                    input("Continue with anonymous deploy? [y/N]: ").strip().lower()
+                )
+            except (EOFError, KeyboardInterrupt):
+                print()
+                print("Aborted.")
+                raise SystemExit(1) from None
+            if answer not in {"y", "yes"}:
+                print("Aborted.")
+                raise SystemExit(1)
 
     # Bundle
     build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))

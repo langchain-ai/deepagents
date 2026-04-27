@@ -502,7 +502,9 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     if config.auth is not None:
         print(f"  Auth: {config.auth.provider}")
     elif config.frontend is not None and config.frontend.enabled:
-        print("  Auth: none (anonymous frontend)")
+        print("  Auth: anonymous (API open to anyone)")
+    else:
+        print("  Auth: default (LangSmith API key required)")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

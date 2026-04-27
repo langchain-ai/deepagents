@@ -542,9 +542,13 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         for spec in self._subagents:
             if "runnable" in spec:
-                # CompiledSubAgent - use as-is
+                # CompiledSubAgent - propagate the declared name onto the runnable so
+                # that lc_agent_name in streaming output reflects the subagent name
+                # rather than the parent agent name.
                 compiled = cast("CompiledSubAgent", spec)
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": compiled["runnable"]})
+                runnable = compiled["runnable"]
+                runnable.name = compiled["name"]
+                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
                 continue
 
             # SubAgent - validate required fields

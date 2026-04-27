@@ -2,7 +2,9 @@
 
 import pytest
 from langchain.agents import create_agent
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langgraph.graph import START, MessagesState, StateGraph
 
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
@@ -120,6 +122,31 @@ class TestSubagentMiddlewareInit:
                     }
                 ],
             )
+
+    def test_compiled_subagent_name_propagated_to_runnable(self) -> None:
+        """Test that CompiledSubAgent.name is set on the runnable so lc_agent_name is correct."""
+
+        def echo_node(_state: MessagesState) -> dict:
+            return {"messages": [AIMessage(content="hello")]}
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("echo", echo_node)
+        builder.add_edge(START, "echo")
+        graph = builder.compile()  # compiled without a name
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        assert specs[0]["runnable"].name == "my-subagent"
 
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""

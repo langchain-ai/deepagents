@@ -345,7 +345,16 @@ def _collect_experiment_links() -> list[dict[str, str]]:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     _ = exitstatus
-    if session.exitstatus == 1:
+    # Test failures alone shouldn't fail the CI step — aggregation/reporting
+    # steps need to run even when some evals regress. But if no tests ran, the
+    # session is either misconfigured (e.g. unknown `--eval-category` value) or
+    # crashed before collection; preserve the non-zero exit so the step fails
+    # loudly instead of silently producing an empty report. `_RESULTS["total"]`
+    # is incremented only on the `call` phase, so marked-skip runs (setup-only
+    # reports) also leave `total == 0` and are treated as "no tests ran".
+    # Non-1 exit codes (interrupt, internal error, usage error, no-tests-
+    # collected) are never rewritten.
+    if session.exitstatus == 1 and _RESULTS["total"] > 0:
         session.exitstatus = 0
 
     if not _EXPERIMENT_LINKS:

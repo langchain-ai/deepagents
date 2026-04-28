@@ -16,12 +16,14 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tools import fetch_url, http_request, web_search
 from config import build_adapter_config
 from cron import build_cron_tools, origin_ctx, start_ticker
 from mcp_tools import MCPSessionManager, get_mcp_tools
 from whatsapp_adapter import (
     MessageEvent,
+    MessageType,
     WhatsAppAdapter,
     _build_inbound_content,
     extract_markdown_media,
@@ -34,6 +36,13 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 _MEDIA_ATTACH_INSTRUCTIONS = (
+    "You are running as a WhatsApp assistant. "
+    "CRITICAL: Do NOT send any text response until your task is fully complete. "
+    "Any text you output is immediately delivered to the user as a final message — "
+    "there is no way to continue working after sending text. "
+    "Use tools silently until the work is done, then respond once with your complete answer. "
+    "Do NOT send progress updates or interim messages mid-task. "
+    "\n\n"
     "To attach an image or video in your reply, include "
     "`![short description](/absolute/path/to/file)` in your final message. "
     "The path must be a local file you have already saved (for example, "
@@ -235,9 +244,28 @@ async def main() -> None:
         print(f"[main] Memory sources: {memory_sources}")
 
     # --- Agent setup ---
+    # Patch model.profile with context size so summarization middleware can
+    # compute fraction-based trigger thresholds. AGENT_CONTEXT_SIZE overrides
+    # whatever LangChain's built-in registry reports (needed for models like
+    # local/OpenRouter endpoints whose profile is empty or wrong).
+    raw_ctx = os.getenv("AGENT_CONTEXT_SIZE", "").strip()
+    if raw_ctx:
+        try:
+            ctx_size = int(raw_ctx)
+            model.profile = {**model.profile, "max_input_tokens": ctx_size}
+            print(f"[main] Context size override: {ctx_size} tokens")
+        except ValueError:
+            logger.warning("AGENT_CONTEXT_SIZE=%r is not an int; ignoring", raw_ctx)
+    elif not model.profile.get("max_input_tokens"):
+        logger.warning(
+            "Model profile has no max_input_tokens; summarization will use fixed "
+            "token fallbacks (170k trigger). Set AGENT_CONTEXT_SIZE to override."
+        )
+
+    backend = LocalShellBackend(virtual_mode=False)
     agent = create_deep_agent(
         model=model,
-        backend=LocalShellBackend(virtual_mode=False),
+        backend=backend,
         tools=[
             http_request,
             web_search,
@@ -248,6 +276,7 @@ async def main() -> None:
         skills=skill_sources or None,
         memory=memory_sources,
         system_prompt=_MEDIA_ATTACH_INSTRUCTIONS,
+        middleware=[create_summarization_tool_middleware(model, backend)],
     )
 
     # --- Per-chat conversation history (in-memory) ---
@@ -300,6 +329,8 @@ async def main() -> None:
 
         task.add_done_callback(_cleanup)
 
+    _speech_enabled: bool = os.getenv("SPEECH_ENABLED", "").lower() in ("true", "1", "yes")
+
     async def _process_message(event: MessageEvent) -> None:
         """Run the agent for one inbound message, serialized per chat."""
         chat_id = event.chat_id
@@ -315,6 +346,45 @@ async def main() -> None:
                 conversations.pop(chat_id, None)
                 await adapter.send(chat_id, "Conversation cleared.")
                 return
+
+            # --- Voice message handling ---
+            if event.message_type == MessageType.VOICE:
+                if not _speech_enabled:
+                    await adapter.send(
+                        chat_id,
+                        "_(Voice messages are not enabled. "
+                        "Set SPEECH_ENABLED=true to transcribe them.)_",
+                        reply_to=event.message_id,
+                    )
+                    return
+                if not event.media_urls:
+                    await adapter.send(
+                        chat_id,
+                        "_(Received a voice message but no audio file was attached.)_",
+                        reply_to=event.message_id,
+                    )
+                    return
+                await adapter.send_typing(chat_id)
+                import speech as _speech  # noqa: PLC0415  # optional heavy dep
+                logger.info("[speech] Transcribing voice message from chat %s", chat_id)
+                transcription = await asyncio.to_thread(
+                    _speech.transcribe, event.media_urls[0],
+                )
+                if transcription:
+                    event.text = f"[Voice message]: {transcription}"
+                    logger.info(
+                        "[speech] Transcription for %s: %s",
+                        chat_id,
+                        transcription[:120],
+                    )
+                else:
+                    await adapter.send(
+                        chat_id,
+                        "_(Could not transcribe voice message.)_",
+                        reply_to=event.message_id,
+                    )
+                    return
+            # --- End voice message handling ---
 
             # Send typing indicator
             await adapter.send_typing(chat_id)
@@ -344,62 +414,97 @@ async def main() -> None:
                     status_result.message_id if status_result.success else None
                 )
 
-                # Stream agent execution so we can surface tool actions
+                # Stream agent execution so we can surface tool actions.
+                # Retry up to 3 times on model parse errors (e.g. malformed
+                # tool call responses from OpenAI-compat endpoints).
+                _MAX_RETRIES = 3
                 actions: list[dict] = []
                 last_edit_time = 0.0
                 root_run_id: str | None = None
                 final_output: dict | None = None
 
-                async for ev in agent.astream_events(
-                    {"messages": history},
-                    version="v2",
-                    config={"recursion_limit": recursion_limit},
-                ):
-                    kind = ev["event"]
-                    run_id = ev.get("run_id")
+                for _attempt in range(_MAX_RETRIES):
+                  try:
+                    actions = []
+                    root_run_id = None
+                    final_output = None
 
-                    # Capture the root run so we can grab its output later
-                    if root_run_id is None and kind == "on_chain_start":
-                        root_run_id = run_id
+                    async for ev in agent.astream_events(
+                        {"messages": history},
+                        version="v2",
+                        config={"recursion_limit": recursion_limit},
+                    ):
+                        kind = ev["event"]
+                        run_id = ev.get("run_id")
 
-                    elif kind == "on_tool_start":
-                        tool_input = ev.get("data", {}).get("input", {})
-                        desc = _describe_action(
-                            ev.get("name", "tool"), tool_input,
+                        # Capture the root run so we can grab its output later
+                        if root_run_id is None and kind == "on_chain_start":
+                            root_run_id = run_id
+
+                        elif kind == "on_tool_start":
+                            tool_input = ev.get("data", {}).get("input", {})
+                            desc = _describe_action(
+                                ev.get("name", "tool"), tool_input,
+                            )
+                            actions.append({
+                                "run_id": run_id,
+                                "description": desc,
+                                "status": "running",
+                            })
+
+                            # Throttled status edit
+                            now = time.monotonic()
+                            if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
+                                await adapter.edit_message(
+                                    chat_id, status_msg_id,
+                                    _build_status_text(actions),
+                                )
+                                last_edit_time = now
+
+                        elif kind == "on_tool_end":
+                            # Mark the matching action as done (by run_id)
+                            tool_run_id = ev.get("run_id")
+                            for a in actions:
+                                if a.get("run_id") == tool_run_id and a["status"] == "running":
+                                    a["status"] = "done"
+                                    break
+
+                            now = time.monotonic()
+                            if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
+                                await adapter.edit_message(
+                                    chat_id, status_msg_id,
+                                    _build_status_text(actions),
+                                )
+                                last_edit_time = now
+
+                        elif kind == "on_chain_end" and run_id == root_run_id:
+                            final_output = ev.get("data", {}).get("output", {})
+
+                    break  # success — exit retry loop
+
+                  except asyncio.CancelledError:
+                    raise
+                  except Exception as _retry_exc:
+                    _err = str(_retry_exc)
+                    _status = getattr(_retry_exc, "status_code", None)
+                    if _status in (413, 400) and ("exceed_context_size_error" in _err or "exceeds the available context size" in _err) or _status == 413:
+                        if _attempt + 1 < _MAX_RETRIES and len(history) > 2:
+                            logger.warning(
+                                "[whatsapp] Context overflow (attempt %d/%d), trimming history (%d → %d messages)",
+                                _attempt + 1, _MAX_RETRIES, len(history), max(2, len(history) // 2),
+                            )
+                            keep = max(2, len(history) // 2)
+                            del history[1:-keep]  # keep first (oldest) human msg + last `keep` messages
+                            continue
+                    if "Failed to parse" in _err or "tool_call" in _err.lower():
+                        logger.warning(
+                            "[whatsapp] Model parse error (attempt %d/%d), retrying: %s",
+                            _attempt + 1, _MAX_RETRIES, _retry_exc,
                         )
-                        actions.append({
-                            "run_id": run_id,
-                            "description": desc,
-                            "status": "running",
-                        })
-
-                        # Throttled status edit
-                        now = time.monotonic()
-                        if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
-                            await adapter.edit_message(
-                                chat_id, status_msg_id,
-                                _build_status_text(actions),
-                            )
-                            last_edit_time = now
-
-                    elif kind == "on_tool_end":
-                        # Mark the matching action as done (by run_id)
-                        tool_run_id = ev.get("run_id")
-                        for a in actions:
-                            if a.get("run_id") == tool_run_id and a["status"] == "running":
-                                a["status"] = "done"
-                                break
-
-                        now = time.monotonic()
-                        if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
-                            await adapter.edit_message(
-                                chat_id, status_msg_id,
-                                _build_status_text(actions),
-                            )
-                            last_edit_time = now
-
-                    elif kind == "on_chain_end" and run_id == root_run_id:
-                        final_output = ev.get("data", {}).get("output", {})
+                        if _attempt + 1 < _MAX_RETRIES:
+                            await asyncio.sleep(1)
+                            continue
+                    raise
 
                 # Mark every remaining action as done
                 for a in actions:

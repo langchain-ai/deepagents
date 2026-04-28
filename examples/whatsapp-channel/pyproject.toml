@@ -23,6 +23,9 @@ build-backend = "setuptools.build_meta"
 include = ["cron*"]
 
 [project.optional-dependencies]
+speech = [
+    "nemo_toolkit[asr]>=2.4.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",

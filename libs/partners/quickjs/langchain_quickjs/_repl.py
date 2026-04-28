@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import threading
-import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -624,40 +623,45 @@ class _Slot:
     worker: ThreadWorker
     runtime: Runtime
     repl: _ThreadREPL
-    last_used: float = 0.0
 
 
 @dataclass
 class _Registry:
-    """Per-thread Runtime registry with idle-TTL eviction.
+    """Per-thread Runtime registry.
 
     Each LangGraph ``thread_id`` gets its own ``_Slot`` (worker + Runtime
-    + Context). Slots idle longer than ``idle_ttl_sec`` are evicted on
-    the next ``get()`` call — eviction is lazy, not via a background
-    sweeper.
-
-    The registry owns only slot lifecycle (create, evict, close); REPL-
-    local concerns like skill install state stay on ``_ThreadREPL``.
+    + Context). Eviction is driven externally via ``evict(thread_id)`` —
+    typically from the middleware's ``after_agent`` hook — so each agent
+    invocation runs against a fresh REPL.
     """
 
     memory_limit: int
     timeout: float
     capture_console: bool
-    idle_ttl_sec: float = 3600.0
-    max_active_threads: int | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
-            self._evict_stale_locked()
             slot = self._slots.get(thread_id)
             if slot is None:
-                self._evict_for_cap_locked()
                 slot = self._build_slot_locked(thread_id)
                 self._slots[thread_id] = slot
-            slot.last_used = time.monotonic()
             return slot.repl
+
+    def evict(self, thread_id: str) -> None:
+        """Close and remove the slot for ``thread_id``. No-op if absent."""
+        with self._lock:
+            slot = self._slots.pop(thread_id, None)
+        if slot is not None:
+            self._close_slot(slot)
+
+    async def aevict(self, thread_id: str) -> None:
+        """Async variant of ``evict``: closes the runtime via the worker loop."""
+        with self._lock:
+            slot = self._slots.pop(thread_id, None)
+        if slot is not None:
+            await self._aclose_slot(slot)
 
     def _build_slot_locked(self, thread_id: str) -> _Slot:
         name = f"quickjs-worker-{thread_id[:8]}"
@@ -671,27 +675,15 @@ class _Registry:
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
-    def _evict_stale_locked(self) -> None:
-        now = time.monotonic()
-        stale = [
-            tid
-            for tid, slot in self._slots.items()
-            if now - slot.last_used > self.idle_ttl_sec
-        ]
-        for tid in stale:
-            self._close_slot(self._slots.pop(tid))
-
-    def _evict_for_cap_locked(self) -> None:
-        if self.max_active_threads is None:
-            return
-        while len(self._slots) >= self.max_active_threads:
-            oldest = min(self._slots, key=lambda t: self._slots[t].last_used)
-            self._close_slot(self._slots.pop(oldest))
-
     def _close_slot(self, slot: _Slot) -> None:
         # Best-effort; never block shutdown on a misbehaving runtime.
         with contextlib.suppress(Exception):
             slot.worker.run_sync(_aclose_runtime(slot.runtime))
+        slot.worker.close()
+
+    async def _aclose_slot(self, slot: _Slot) -> None:
+        with contextlib.suppress(Exception):
+            await slot.worker.run_async(_aclose_runtime(slot.runtime))
         slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
@@ -699,9 +691,10 @@ class _Registry:
 
     def close(self) -> None:
         with self._lock:
-            for slot in self._slots.values():
-                self._close_slot(slot)
+            slots = list(self._slots.values())
             self._slots.clear()
+        for slot in slots:
+            self._close_slot(slot)
 
 
 async def _aclose_runtime(runtime: Runtime) -> None:

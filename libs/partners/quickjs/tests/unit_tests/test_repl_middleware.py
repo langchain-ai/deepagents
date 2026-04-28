@@ -290,65 +290,81 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
         reg.close()
 
 
-def test_ttl_evicts_stale_slot_on_next_get() -> None:
-    """A slot past ``idle_ttl_sec`` is closed the next time any thread
-    calls ``get()`` — the returning stale thread gets a fresh slot."""
-    reg = _Registry(
-        memory_limit=32 * 1024 * 1024,
-        timeout=5.0,
-        capture_console=True,
-        idle_ttl_sec=60.0,
-    )
+def test_evict_closes_and_removes_slot() -> None:
+    """``evict`` closes the runtime and drops the slot from the registry."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
     try:
-        repl_a_first = reg.get("thread-a")
+        reg.get("thread-a")
+        rt = reg._slots["thread-a"].runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+            reg.evict("thread-a")
+        assert close_spy.called
+        assert "thread-a" not in reg._slots
+    finally:
+        reg.close()
+
+
+def test_evict_returns_fresh_slot_on_next_get() -> None:
+    """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        first = reg.get("thread-a")
         first_runtime = reg._slots["thread-a"].runtime
-        # Fake staleness: rewind last_used well past the TTL.
-        reg._slots["thread-a"].last_used -= 120.0
-        repl_a_second = reg.get("thread-a")
-        # Fresh slot, fresh Runtime.
-        assert repl_a_second is not repl_a_first
+        reg.evict("thread-a")
+        second = reg.get("thread-a")
+        assert second is not first
         assert reg._slots["thread-a"].runtime is not first_runtime
     finally:
         reg.close()
 
 
-def test_ttl_eviction_fires_for_any_thread_s_call() -> None:
-    """Lazy eviction runs on every ``get()``, not just the stale thread's —
-    so a new thread's arrival cleans up old idle ones."""
-    reg = _Registry(
-        memory_limit=32 * 1024 * 1024,
-        timeout=5.0,
-        capture_console=True,
-        idle_ttl_sec=60.0,
-    )
+def test_evict_unknown_thread_id_is_noop() -> None:
+    """Evicting a thread_id that was never registered does not raise."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
     try:
-        reg.get("old")
-        reg._slots["old"].last_used -= 120.0
-        reg.get("fresh")
-        assert "old" not in reg._slots
-        assert "fresh" in reg._slots
+        reg.evict("never-existed")
+        assert reg._slots == {}
     finally:
         reg.close()
 
 
-def test_max_active_threads_evicts_lru() -> None:
-    """When ``max_active_threads`` is reached, the least-recently-used
-    slot is closed before a new one is created."""
-    reg = _Registry(
-        memory_limit=32 * 1024 * 1024,
-        timeout=5.0,
-        capture_console=True,
-        max_active_threads=2,
-    )
+async def test_aevict_closes_and_removes_slot() -> None:
+    """``aevict`` closes the runtime via the worker loop and drops the slot."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
     try:
-        reg.get("a")
-        reg.get("b")
-        # "a" is older than "b" at this point.
-        reg.get("c")
-        assert "a" not in reg._slots
-        assert set(reg._slots) == {"b", "c"}
+        reg.get("thread-a")
+        rt = reg._slots["thread-a"].runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+            await reg.aevict("thread-a")
+        assert close_spy.called
+        assert "thread-a" not in reg._slots
     finally:
         reg.close()
+
+
+def test_after_agent_evicts_current_thread_slot() -> None:
+    """``after_agent`` evicts the slot for the resolved thread_id."""
+    mw = REPLMiddleware()
+    try:
+        # Force a slot to exist for the middleware's fallback thread id.
+        mw._registry.get(mw._fallback_thread_id)
+        assert mw._fallback_thread_id in mw._registry._slots
+        mw.after_agent(state={}, runtime=MagicMock())
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+async def test_aafter_agent_evicts_current_thread_slot() -> None:
+    """``aafter_agent`` evicts the slot for the resolved thread_id."""
+    mw = REPLMiddleware()
+    try:
+        mw._registry.get(mw._fallback_thread_id)
+        assert mw._fallback_thread_id in mw._registry._slots
+        await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
 
 
 # ---------------------------------------------------------------------------

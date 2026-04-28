@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.skills import SkillMetadata
+    from langgraph.runtime import Runtime
 
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import render_repl_system_prompt
@@ -130,14 +131,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             The REPL's own tool is always excluded; a model asking for
             ``tools.eval("...")`` would recurse pointlessly.
-        idle_ttl_sec: Close a LangGraph thread's Runtime after this many
-            seconds of inactivity. Eviction is lazy: the next ``get()``
-            on any thread scans and closes stale slots. On return, the
-            user's ``globalThis`` scratchpad is reset; referenced skills
-            are reloaded from the backend on demand.
-        max_active_threads: Optional hard cap on concurrent slots. When
-            exceeded, least-recently-used slots are evicted regardless
-            of TTL. ``None`` (default) = TTL only.
 
     Example:
         ```python
@@ -161,8 +154,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         capture_console: bool = True,
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
-        idle_ttl_sec: float = 3600.0,
-        max_active_threads: int | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -177,8 +168,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
-            idle_ttl_sec=idle_ttl_sec,
-            max_active_threads=max_active_threads,
         )
         self._base_system_prompt = render_repl_system_prompt(
             tool_name=tool_name,
@@ -363,6 +352,22 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self, system_message: SystemMessage | None, prompt: str
     ) -> SystemMessage:
         return append_to_system_message(system_message, prompt)
+
+    def after_agent(
+        self,
+        state: Any,  # noqa: ARG002
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> None:
+        """Evict this thread's REPL slot so the next run starts fresh."""
+        self._registry.evict(_resolve_thread_id(self._fallback_thread_id))
+
+    async def aafter_agent(
+        self,
+        state: Any,  # noqa: ARG002
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> None:
+        """Evict this thread's REPL slot so the next run starts fresh."""
+        await self._registry.aevict(_resolve_thread_id(self._fallback_thread_id))
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""

@@ -202,13 +202,8 @@ async def test_install_cache_avoids_second_fetch(
 
 
 async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> None:
-    """TTL eviction clears slot-local skill cache for that thread."""
-    reg = _Registry(
-        memory_limit=32 * 1024 * 1024,
-        timeout=5.0,
-        capture_console=True,
-        idle_ttl_sec=60.0,
-    )
+    """``Registry.evict`` clears the slot-local skill cache for that thread."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
     try:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         skill_dir = str(tmp_path / "skills" / "persist")
@@ -230,8 +225,7 @@ async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> N
         key = _cache_key(meta)
         assert key in repl_a._installed_skills
 
-        # Evict t1 (simulate long idle), then return — fresh slot.
-        reg._slots["t1"].last_used -= 120.0
+        reg.evict("t1")
         repl_a_new = reg.get("t1")
         assert repl_a_new is not repl_a
         assert key not in repl_a_new._installed_skills

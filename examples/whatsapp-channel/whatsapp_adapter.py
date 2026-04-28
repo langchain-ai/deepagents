@@ -172,6 +172,11 @@ def _build_inbound_content(event: MessageEvent) -> str | list[dict]:
     vLLM, LocalAI) by definition. This keeps the adapter provider-agnostic.
     """
     text = event.text.strip()
+    # Voice messages: the caller has already substituted the transcript into
+    # event.text and cleared event.media_urls. Return transcript text only —
+    # never pass raw audio data to the model.
+    if event.message_type == MessageType.VOICE:
+        return text
     if event.message_type != MessageType.PHOTO or not event.media_urls:
         return text
 
@@ -523,11 +528,132 @@ class WhatsAppAdapter:
         self._self_only: bool = str(
             config.get("self_only", "false")
         ).lower() in ("true", "1", "yes", "on")
+        self._bot_header: str = str(config.get("bot_header", "deepagents bot"))
         self._on_message: MessageCallback | None = None
         self._bridge_process: subprocess.Popen | None = None
         self._http_session: Any = None  # aiohttp.ClientSession
         self._poll_task: asyncio.Task | None = None
         self._running = False
+        self._last_health_status: str = "disconnected"
+        self._reconnect_attempt = 0
+
+    async def _restart_bridge(self) -> bool:
+        """Restart the bridge subprocess and re-establish connection.
+
+        Called when the bridge process dies or WhatsApp disconnects.
+        Returns True if the bridge is successfully reconnected.
+        """
+        self._reconnect_attempt += 1
+        attempt = self._reconnect_attempt
+        logger.info("[whatsapp] Reconnect attempt %d", attempt)
+
+        # Shut down the stale bridge process cleanly
+        try:
+            if _IS_WINDOWS:
+                self._bridge_process.terminate()
+            else:
+                os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGTERM)
+            await asyncio.sleep(2)
+            if self._bridge_process.poll() is None:
+                if _IS_WINDOWS:
+                    self._bridge_process.kill()
+                else:
+                    os.killpg(os.getpgid(self._bridge_process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        self._bridge_process = None
+
+        # Give the port a moment to be released
+        await asyncio.sleep(1)
+
+        # Kill any orphaned process on the port (in case the killed process
+        # left it bound)
+        _kill_port_process(self._bridge_port)
+        await asyncio.sleep(1)
+
+        # Start a fresh bridge
+        import aiohttp
+
+        self._session_path.mkdir(parents=True, exist_ok=True)
+
+        bridge_env = os.environ.copy()
+        bridge_cmd = [
+            "node", str(self._bridge_script),
+            "--port", str(self._bridge_port),
+            "--session", str(self._session_path),
+            "--media-dir", str(self._session_path.parent / "media"),
+            "--bot-header", self._bot_header,
+        ]
+        if self._self_only:
+            bridge_cmd.append("--self-only")
+
+        self._bridge_process = subprocess.Popen(
+            bridge_cmd,
+            preexec_fn=None if _IS_WINDOWS else os.setsid,
+            env=bridge_env,
+        )
+
+        # Phase 1: wait for HTTP server (up to 15s)
+        http_ready = False
+        health_data: dict = {}
+        for _ in range(15):
+            await asyncio.sleep(1)
+            if self._bridge_process.poll() is not None:
+                logger.error(
+                    "[whatsapp] Bridge died during restart (exit %s)",
+                    self._bridge_process.returncode,
+                )
+                return False
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"http://127.0.0.1:{self._bridge_port}/health",
+                        timeout=aiohttp.ClientTimeout(total=2),
+                    ) as resp:
+                        if resp.status == 200:
+                            http_ready = True
+                            health_data = await resp.json()
+                            if health_data.get("status") == "connected":
+                                break
+            except Exception:
+                continue
+
+        if not http_ready:
+            logger.error("[whatsapp] Bridge HTTP did not start during restart")
+            return False
+
+        # Phase 2: wait for WhatsApp connection (up to 60s)
+        if health_data.get("status") != "connected":
+            logger.info(
+                "[whatsapp] Restarted bridge, waiting for WhatsApp connection...",
+            )
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if self._bridge_process.poll() is not None:
+                    logger.error("[whatsapp] Bridge died during restart connection")
+                    return False
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"http://127.0.0.1:{self._bridge_port}/health",
+                            timeout=aiohttp.ClientTimeout(total=2),
+                        ) as resp:
+                            if resp.status == 200:
+                                health_data = await resp.json()
+                                if health_data.get("status") == "connected":
+                                    break
+                except Exception:
+                    continue
+            else:
+                logger.warning(
+                    "[whatsapp] WhatsApp not connected after restart (may need QR)",
+                )
+                # Still proceed — session may still be loading, poll loop
+                # will keep watching.
+
+        self._last_health_status = health_data.get("status", "disconnected")
+        print(f"[whatsapp] Bridge restarted (attempt {attempt})")
+        return True
 
     def on_message(self, callback: MessageCallback) -> None:
         """Register the callback invoked for each inbound message."""
@@ -585,6 +711,7 @@ class WhatsAppAdapter:
             "--port", str(self._bridge_port),
             "--session", str(self._session_path),
             "--media-dir", str(self._session_path.parent / "media"),
+            "--bot-header", self._bot_header,
         ]
         if self._self_only:
             bridge_cmd.append("--self-only")
@@ -620,14 +747,18 @@ class WhatsAppAdapter:
             print("[whatsapp] Bridge HTTP server did not start in 15s")
             return False
 
-        # Phase 2: wait for WhatsApp connection (up to 15s more)
+        # Phase 2: wait for WhatsApp connection (up to 60s — session reload
+        # from disk can be slow, especially on first run after a container
+        # rebuild when Chromium needs to bootstrap its profile).
         if health_data.get("status") != "connected":
             print("[whatsapp] Bridge HTTP ready, waiting for WhatsApp connection...")
-            for _ in range(15):
+            for i in range(120):
                 await asyncio.sleep(1)
                 if self._bridge_process.poll() is not None:
                     print("[whatsapp] Bridge died during connection")
                     return False
+                if (i + 1) % 15 == 0:
+                    print(f"[whatsapp] Still waiting for WhatsApp... ({i + 1}s)")
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(
@@ -641,13 +772,54 @@ class WhatsAppAdapter:
                 except Exception:
                     continue
             else:
-                print("[whatsapp] WhatsApp not connected after 30s (may need QR scan)")
+                print("[whatsapp] WhatsApp not connected after 120s (may need QR scan)")
 
+        self._last_health_status = health_data.get("status", "disconnected")
+        self._reconnect_attempt = 0
         self._http_session = aiohttp.ClientSession()
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_messages())
         print(f"[whatsapp] Bridge started on port {self._bridge_port}")
         return True
+
+    async def _check_and_reconnect(self) -> bool:
+        """Check bridge health and restart if disconnected.
+
+        Reuses the existing HTTP session for the health check to avoid
+        connection leaks.  Returns True if the bridge is connected.
+        """
+        if not self._http_session:
+            return False
+
+        if not self._bridge_process or self._bridge_process.poll() is not None:
+            logger.info("[whatsapp] Bridge process is dead, restarting...")
+            return await self._restart_bridge()
+
+        try:
+            import aiohttp
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/health",
+                timeout=aiohttp.ClientTimeout(total=3),
+            ) as resp:
+                if resp.status == 200:
+                    health = await resp.json()
+                    status = health.get("status", "disconnected")
+                    self._last_health_status = status
+                    if status == "connected":
+                        return True
+                    # Bridge is alive but WhatsApp disconnected
+                    logger.warning(
+                        "[whatsapp] WhatsApp disconnected (%s), restarting bridge",
+                        status,
+                    )
+                    return await self._restart_bridge()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[whatsapp] Health check failed: %s, restarting bridge", e)
+            return await self._restart_bridge()
+
+        return False
 
     async def disconnect(self) -> None:
         """Stop polling and shut down the bridge process."""
@@ -700,13 +872,18 @@ class WhatsAppAdapter:
 
         import aiohttp
 
-        # Prepend bot header so users can distinguish bot replies,
-        # and so the bridge can filter them out in self-only mode.
-        formatted = format_message(f"**deepagents bot**\n{content}")
-        chunks = truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # Format content then chunk, prepending the bot header to every chunk
+        # so the bridge can filter them in self-only mode and users can
+        # distinguish bot replies even for multi-part messages.
+        formatted = format_message(content)
+        header = format_message(f"**{self._bot_header}**")
+        # Reserve space for the header + newline in every chunk
+        chunk_limit = self.MAX_MESSAGE_LENGTH - len(header) - 1
+        chunks = truncate_message(formatted, chunk_limit)
 
         last_id = None
         for i, chunk in enumerate(chunks):
+            chunk = f"{header}\n{chunk}"
             payload: dict[str, Any] = {"chatId": chat_id, "message": chunk}
             if reply_to and i == 0:
                 payload["replyTo"] = reply_to
@@ -862,6 +1039,15 @@ class WhatsAppAdapter:
         while self._running:
             if not self._http_session:
                 break
+
+            # Periodically check bridge health and auto-reconnect
+            connected = await self._check_and_reconnect()
+            if not connected:
+                # Bridge failed to restart — wait before retrying
+                await asyncio.sleep(10)
+                continue
+
+            # Poll for messages (with a 30s timeout so we re-check health often)
             try:
                 async with self._http_session.get(
                     f"http://127.0.0.1:{self._bridge_port}/messages",
@@ -869,13 +1055,29 @@ class WhatsAppAdapter:
                 ) as resp:
                     if resp.status == 200:
                         messages = await resp.json()
+                        if messages:
+                            logger.info(
+                                "[whatsapp] Poll: received %d message(s)",
+                                len(messages),
+                            )
                         for msg_data in messages:
                             event = self._build_message_event(msg_data)
-                            if event and self._on_message:
-                                try:
-                                    await self._on_message(event)
-                                except Exception:
-                                    logger.exception("Error in message callback")
+                            if event:
+                                logger.info(
+                                    "[whatsapp] Dispatching event for %s: %s",
+                                    event.chat_id,
+                                    event.text[:60],
+                                )
+                                if self._on_message:
+                                    try:
+                                        await self._on_message(event)
+                                    except Exception:
+                                        logger.exception("Error in message callback")
+                            else:
+                                logger.debug(
+                                    "[whatsapp] Message filtered out: %s",
+                                    msg_data.get("chatId"),
+                                )
             except asyncio.CancelledError:
                 break
             except Exception as e:

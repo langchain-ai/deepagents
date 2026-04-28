@@ -4,6 +4,11 @@ services:
       # Context is the repo root so the Dockerfile can access libs/
       context: ../..
       dockerfile: examples/whatsapp-channel/Dockerfile
+      args:
+        # Mirror the runtime SPEECH_ENABLED flag into the build so
+        # nemo_toolkit[asr] is installed when speech is wanted.
+        # Set SPEECH_ENABLED=true in .env, then rebuild: docker compose build
+        - INSTALL_SPEECH=${SPEECH_ENABLED:-false}
     # Interactive terminal needed for QR code display on first login
     stdin_open: true
     tty: true
@@ -20,9 +25,10 @@ services:
       # /root/.deepagents (agent runs as root). Create ~/.deepagents on the
       # host before `docker compose up` or docker will mount an empty dir.
       - ${HOME:-/root}/.deepagents:/root/.deepagents
+      - /Users/pookie/git/frigate-mcp:/Users/pookie/git/frigate-mcp
+      - ${HOME:-/root}/agent-workspace:/app/workspace
     # No ports exposed — bridge runs on localhost inside the container
 
 volumes:
   whatsapp-session:
   whatsapp-media:
-

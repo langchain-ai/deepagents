@@ -371,7 +371,11 @@ async def main() -> None:
                     _speech.transcribe, event.media_urls[0],
                 )
                 if transcription:
+                    # Replace the raw audio with the transcript so the agent
+                    # receives plain text. Clear media_urls so no audio data
+                    # leaks into the agent's message block.
                     event.text = f"[Voice message]: {transcription}"
+                    event.media_urls = []
                     logger.info(
                         "[speech] Transcription for %s: %s",
                         chat_id,

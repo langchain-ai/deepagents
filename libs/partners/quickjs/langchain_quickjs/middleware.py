@@ -155,6 +155,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
     ) -> None:
+        """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
         self._memory_limit = memory_limit
         self._timeout = timeout

@@ -291,7 +291,8 @@ def test_render_ptc_prompt_empty() -> None:
 def test_render_ptc_prompt_uses_signatures() -> None:
     prompt = render_ptc_prompt([_greet_tool()])
     assert "`tools` namespace" in prompt
-    assert "async tools.greet(input:" in prompt
+    assert "globalThis.tools" in prompt
+    assert "async function greet(input:" in prompt
     # Fields come through
     assert "name: string" in prompt
     assert "times?: number" in prompt
@@ -478,7 +479,7 @@ def test_middleware_ptc_list_includes_prompt_block() -> None:
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     prompt = mw._prepare_for_call(req)
     # Greet included
-    assert "async tools.greet(" in prompt
+    assert "async function greet(" in prompt
     # The REPL's own tool never appears
     assert "tools.eval(" not in prompt
 
@@ -490,7 +491,7 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     mw = REPLMiddleware(ptc=[_greet_tool()])
     req = SimpleNamespace(tools=[])
     prompt = mw._prepare_for_call(req)
-    assert "async tools.greet(" in prompt
+    assert "async function greet(" in prompt
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:

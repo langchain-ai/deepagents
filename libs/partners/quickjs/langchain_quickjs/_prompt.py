@@ -15,9 +15,11 @@ if TYPE_CHECKING:
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
+    "### Interpreter\n\n"
     "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
-    "REPL backed by QuickJS.\n"
-    "- State (variables, functions) persists across calls within this conversation.\n"
+    "REPL.\n"
+    "- State (variables, functions) persists across tool calls within a single turn of "
+    "conversation. They DO NOT persist across multiple turns.\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "
     "no `fetch`, no `require`.\n"
@@ -65,19 +67,18 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
         schema = _safe_json_schema(tool)
         signature = _render_signature(camel, schema)
         description = (
-            (tool.description or "").strip().splitlines()[0]
-            if tool.description
-            else ""
+            (tool.description or "").strip().splitlines()[0] if tool.description else ""
         )
         blocks.append(f"/** {description} */\n{signature}")
     body = "\n\n".join(blocks)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
-        "The agent tools listed below are callable as async functions inside the REPL "
-        "under the `tools` namespace. Each takes a single object argument and returns "
-        "a Promise that resolves to a string. Use `await`; combine with `Promise.all` "
-        "for concurrent calls.\n\n"
+        "The agent tools listed below are exposed on the global object at "
+        "`globalThis.tools` (also reachable as `tools`). Each takes a single object "
+        "argument and returns a Promise that resolves to a string.\n\n"
+        "Invocation pattern: `await tools.<name>({ ... })`).\n\n"
+        "Use `await`; combine with `Promise.all` for concurrent calls.\n\n"
         "```typescript\n"
         f"{body}\n"
         "```"
@@ -98,7 +99,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
 
 def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
     if not schema or not isinstance(schema.get("properties"), dict):
-        return f"async tools.{fn_name}(input: Record<string, unknown>): Promise<string>"
+        return (
+            f"async function {fn_name}(input: Record<string, unknown>): Promise<string>"
+        )
     props: dict[str, Any] = schema["properties"]
     required = set(schema.get("required", []))
     fields = []
@@ -110,9 +113,9 @@ def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     body = "\n".join(fields) if fields else ""
     return (
-        f"async tools.{fn_name}(input: {{\n{body}\n}}): Promise<string>"
+        f"async function {fn_name}(input: {{\n{body}\n}}): Promise<string>"
         if body
-        else f"async tools.{fn_name}(input: Record<string, unknown>): Promise<string>"
+        else f"async function {fn_name}(input: Record<string, unknown>): Promise<string>"
     )
 
 

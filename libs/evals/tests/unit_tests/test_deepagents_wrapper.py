@@ -6,47 +6,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_harbor.deepagents_wrapper import (
-    DeepAgentsWrapper,
-    _accepts_temperature,
-)
+from deepagents_harbor.deepagents_wrapper import DeepAgentsWrapper
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-class TestAcceptsTemperature:
-    """`_accepts_temperature` recognizes reasoning-only model prefixes."""
-
-    @pytest.mark.parametrize(
-        "model_name",
-        [
-            "o1-mini",
-            "o1-preview",
-            "o3-mini",
-            "o4-mini",
-            "gpt-5",
-            "gpt-5-mini",
-            "openai:o3-mini",
-            "openai:gpt-5-codex",
-        ],
-    )
-    def test_reasoning_models_reject_temperature(self, model_name: str) -> None:
-        assert _accepts_temperature(model_name) is False
-
-    @pytest.mark.parametrize(
-        "model_name",
-        [
-            "claude-sonnet-4-6",
-            "anthropic:claude-opus-4-1",
-            "gpt-4o-mini",
-            "openai:gpt-4o",
-            "gemini-2.5-flash",
-            "openrouter:zai/glm-4.6",
-        ],
-    )
-    def test_chat_models_accept_temperature(self, model_name: str) -> None:
-        assert _accepts_temperature(model_name) is True
 
 
 class TestModelNameRequired:

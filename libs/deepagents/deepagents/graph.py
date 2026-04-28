@@ -121,41 +121,29 @@ def get_default_model() -> ChatAnthropic:
     )
 
 
-_REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(
-    {
-        FilesystemMiddleware,
-        SubAgentMiddleware,
-        _PermissionMiddleware,
-    }
+_REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
+    (FilesystemMiddleware, ()),
+    (SubAgentMiddleware, ()),
+    (_PermissionMiddleware, ("PermissionMiddleware",)),
 )
-"""Middleware classes that core deep agent features depend on.
+"""Scaffolding middleware that core deep agent features depend on.
 
-Removing any of these silently breaks core features: `FilesystemMiddleware`
-backs every built-in file tool, `SubAgentMiddleware` backs the `task` tool
-handler, and `_PermissionMiddleware` enforces `permissions` rules (a security
-guarantee).
+Each entry pairs a class with any extra string aliases its `.name` may take
+beyond `__name__`. Removing any of these silently breaks core features:
+`FilesystemMiddleware` backs every built-in file tool, `SubAgentMiddleware`
+backs the `task` tool handler, and `_PermissionMiddleware` enforces
+`permissions` rules (a security guarantee). `_PermissionMiddleware` is
+intentionally private, so both `"_PermissionMiddleware"` and the public alias
+`"PermissionMiddleware"` are rejected — either spelling hits the informative
+scaffolding error instead of a silent no-op.
 
 Tracked here so `HarnessProfile.excluded_middleware` cannot strip them:
 `_apply_excluded_middleware` raises `ValueError` rather than proceeding with
 a silently degraded agent.
 """
 
-
-_REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(
-    {
-        "FilesystemMiddleware",
-        "SubAgentMiddleware",
-        "_PermissionMiddleware",
-        "PermissionMiddleware",
-    }
-)
-"""String identifiers that must not appear in `excluded_middleware`.
-
-Mirrors `_REQUIRED_MIDDLEWARE_CLASSES` via each class's reported `.name`.
-`_PermissionMiddleware` is intentionally private, so both `"PermissionMiddleware"`
-and `"_PermissionMiddleware"` are rejected — either spelling hits the
-informative scaffolding error instead of a silent no-op.
-"""
+_REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(cls for cls, _ in _REQUIRED_MIDDLEWARE)
+_REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in _REQUIRED_MIDDLEWARE for name in (cls.__name__, *aliases))
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -383,8 +371,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     model = get_default_model() if model is None else resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)
     # Validate profile-level invariants (required scaffolding, private names)
-    # once up front — these are stack-independent, so re-checking on every
-    # filter pass would be wasteful and would report errors multiple times.
     _validate_excluded_middleware_config(
         _profile,
         required_classes=_REQUIRED_MIDDLEWARE_CLASSES,

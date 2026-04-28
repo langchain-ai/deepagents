@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from deepagents import (
@@ -327,3 +329,31 @@ class TestHarnessProfileConfigYamlRoundTrip:
         )
         output = yaml.safe_dump(config.to_dict())
         assert "!!" not in output
+
+
+class TestMaterializeExtraMiddleware:
+    """Tests for `HarnessProfile.materialize_extra_middleware`."""
+
+    def test_empty_profile_returns_empty_list(self) -> None:
+        assert HarnessProfile().materialize_extra_middleware() == []
+
+    def test_static_sequence_returned_as_list(self) -> None:
+        sentinel = MagicMock()
+        profile = HarnessProfile(extra_middleware=(sentinel,))
+        assert profile.materialize_extra_middleware() == [sentinel]
+
+    def test_callable_factory_is_invoked(self) -> None:
+        sentinel = MagicMock()
+        factory = MagicMock(return_value=[sentinel])
+        profile = HarnessProfile(extra_middleware=factory)
+        result = profile.materialize_extra_middleware()
+        factory.assert_called_once()
+        assert result == [sentinel]
+
+    def test_returns_fresh_list_each_call(self) -> None:
+        sentinel = MagicMock()
+        profile = HarnessProfile(extra_middleware=(sentinel,))
+        a = profile.materialize_extra_middleware()
+        b = profile.materialize_extra_middleware()
+        assert a == b
+        assert a is not b

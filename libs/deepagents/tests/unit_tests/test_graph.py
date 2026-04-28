@@ -19,7 +19,6 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
-    _resolve_extra_middleware,
     create_deep_agent,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -66,36 +65,6 @@ class TestCreateDeepAgentMetadata:
         agent = create_deep_agent(model=model)
         assert agent.config is not None
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
-
-
-class TestResolveExtraMiddleware:
-    """Tests for _resolve_extra_middleware."""
-
-    def test_empty_profile_returns_empty_list(self) -> None:
-        result = _resolve_extra_middleware(HarnessProfile())
-        assert result == []
-
-    def test_static_sequence_returned_as_list(self) -> None:
-        sentinel = MagicMock()
-        profile = HarnessProfile(extra_middleware=(sentinel,))
-        result = _resolve_extra_middleware(profile)
-        assert result == [sentinel]
-
-    def test_callable_factory_is_invoked(self) -> None:
-        sentinel = MagicMock()
-        factory = MagicMock(return_value=[sentinel])
-        profile = HarnessProfile(extra_middleware=factory)
-        result = _resolve_extra_middleware(profile)
-        factory.assert_called_once()
-        assert result == [sentinel]
-
-    def test_returns_fresh_list_each_call(self) -> None:
-        sentinel = MagicMock()
-        profile = HarnessProfile(extra_middleware=(sentinel,))
-        a = _resolve_extra_middleware(profile)
-        b = _resolve_extra_middleware(profile)
-        assert a == b
-        assert a is not b
 
 
 class TestProfileForModel:

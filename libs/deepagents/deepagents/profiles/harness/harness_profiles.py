@@ -565,6 +565,13 @@ class HarnessProfile:
             if isinstance(entry, str):
                 _validate_config_middleware_string(entry, "excluded_middleware")
 
+    def materialize_extra_middleware(self) -> list[AgentMiddleware]:
+        """Return a fresh list of `extra_middleware`, invoking factory if supplied.
+
+        Each call returns a new list so consumers may mutate freely.
+        """
+        return list(_resolve_middleware_seq(self.extra_middleware))
+
 
 _HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))
 """Top-level keys accepted by `HarnessProfileConfig.from_dict`.

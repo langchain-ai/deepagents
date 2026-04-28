@@ -43,10 +43,17 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest
 
 
-def _make_model(dump: dict[str, Any]) -> MagicMock:
-    """Create a mock BaseChatModel with a given model_dump return."""
+def _make_model(attrs: dict[str, Any]) -> MagicMock:
+    """Create a mock BaseChatModel exposing `attrs` via attribute access.
+
+    `get_model_identifier` reads `model_name` / `model` directly off the
+    instance, so attributes are set explicitly. `model_dump.return_value`
+    is also populated for tests that still introspect the serialized form.
+    """
     model = MagicMock(spec=BaseChatModel)
-    model.model_dump.return_value = dump
+    model.model_dump.return_value = dict(attrs)
+    for key, value in attrs.items():
+        setattr(model, key, value)
     return model
 
 
@@ -1041,71 +1048,50 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_rejects_required_scaffolding(self) -> None:
-        """Excluding a required class raises `ValueError` at assembly time.
+        """Excluding a required class raises `ValueError` at construction time.
 
         Splitting the assertion per class makes the failure message point at
         the specific class that slipped past the deny-list, rather than a
-        single composite test that hides which class regressed.
+        single composite test that hides which class regressed. The check
+        fires at `HarnessProfile` `__post_init__` so register-site typos
+        fail before reaching `create_deep_agent`.
         """
         forbidden_classes: tuple[type[AgentMiddleware[Any, Any, Any]], ...] = (
             FilesystemMiddleware,
             SubAgentMiddleware,
             _PermissionMiddleware,
         )
-        original = dict(_HARNESS_PROFILES)
-        try:
-            for forbidden_cls in forbidden_classes:
-                _HARNESS_PROFILES.clear()
-                _HARNESS_PROFILES.update(original)
+        for forbidden_cls in forbidden_classes:
+            with pytest.raises(ValueError, match=forbidden_cls.__name__):
                 # cast silences ty's narrow inference when HarnessProfile's
                 # field type is `frozenset[type[AgentMiddleware[Any, Any, Any]]]`
                 # and the loop variable is a specific scaffolding class — the
                 # runtime behavior is identical, but ty sees the exact class
                 # instead of the parameterized base.
-                register_harness_profile(
-                    "denyprov",
-                    HarnessProfile(
-                        excluded_middleware=cast(
-                            "frozenset[type[AgentMiddleware[Any, Any, Any]]]",
-                            frozenset({forbidden_cls}),
-                        )
-                    ),
+                HarnessProfile(
+                    excluded_middleware=cast(
+                        "frozenset[type[AgentMiddleware[Any, Any, Any]]]",
+                        frozenset({forbidden_cls}),
+                    )
                 )
-                fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-                with (
-                    patch("deepagents.graph.resolve_model", return_value=fake_model),
-                    pytest.raises(ValueError, match=forbidden_cls.__name__),
-                ):
-                    create_deep_agent(model="denyprov:some-model")
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
 
 
 class TestScaffoldingViolationAggregation:
-    """Multiple scaffolding exclusions surface together in a single `ValueError`."""
+    """Multiple scaffolding exclusions surface together in a single `ValueError`.
+
+    Aggregation happens at `HarnessProfile` construction so all violations
+    in a single registration are reported in one error rather than one at a
+    time across repeated edits.
+    """
 
     def test_class_and_name_violations_report_together(self) -> None:
         """Mixing class-form and name-form scaffolding entries reports both in one message."""
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile(
-                "multiviol",
-                HarnessProfile(excluded_middleware=frozenset({FilesystemMiddleware, "SubAgentMiddleware"})),
-            )
-            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-            with (
-                patch("deepagents.graph.resolve_model", return_value=fake_model),
-                pytest.raises(ValueError, match="scaffolding") as excinfo,
-            ):
-                create_deep_agent(model="multiviol:some-model")
-            message = str(excinfo.value)
-            assert "FilesystemMiddleware" in message
-            assert "SubAgentMiddleware" in message
-            assert "scaffolding" in message
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+        with pytest.raises(ValueError, match="scaffolding") as excinfo:
+            HarnessProfile(excluded_middleware=frozenset({FilesystemMiddleware, "SubAgentMiddleware"}))
+        message = str(excinfo.value)
+        assert "FilesystemMiddleware" in message
+        assert "SubAgentMiddleware" in message
+        assert "scaffolding" in message
 
 
 class TestRequiredMiddlewareNamesCoverage:
@@ -1257,28 +1243,16 @@ class TestStringFormExcludedMiddleware:
         ],
     )
     def test_string_entry_rejects_required_scaffolding(self, forbidden: str) -> None:
-        """Public-name strings of required scaffolding raise `ValueError` at assembly time.
+        """Public-name strings of required scaffolding raise `ValueError` at construction.
 
-        The private `"_PermissionMiddleware"` spelling is rejected earlier at
-        `HarnessProfile` construction by the grammar guard (see
-        `test_string_entry_rejects_private_underscore_prefixed_names`), so
-        only public names reach the scaffolding check.
+        The private `"_PermissionMiddleware"` spelling is rejected by the
+        grammar guard on `HarnessProfile.__post_init__` (see
+        `test_string_entry_rejects_private_underscore_prefixed_names`); the
+        public spellings here are caught by the same construction-time
+        scaffolding guard rather than waiting for `create_deep_agent`.
         """
-        original = dict(_HARNESS_PROFILES)
-        try:
-            register_harness_profile(
-                "denyprov",
-                HarnessProfile(excluded_middleware=frozenset({forbidden})),
-            )
-            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-            with (
-                patch("deepagents.graph.resolve_model", return_value=fake_model),
-                pytest.raises(ValueError, match="scaffolding"),
-            ):
-                create_deep_agent(model="denyprov:some-model")
-        finally:
-            _HARNESS_PROFILES.clear()
-            _HARNESS_PROFILES.update(original)
+        with pytest.raises(ValueError, match="scaffolding"):
+            HarnessProfile(excluded_middleware=frozenset({forbidden}))
 
     @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware", "_PermissionMiddleware"])
     def test_string_entry_rejects_private_underscore_prefixed_names(self, entry: str) -> None:
@@ -1711,6 +1685,219 @@ class TestSubagentLevelToolExclusionAndOverrides:
             _HARNESS_PROFILES.update(original)
 
 
+class TestSubagentSystemPromptWiring:
+    """`HarnessProfile` prompt fields apply to declarative subagents and the auto-added GP subagent.
+
+    Without this wiring, built-in profile suffixes (e.g. Codex behavior
+    overlays, Claude Opus 4.7 tool-usage guidance) would silently be dropped
+    when a subagent picks up that model — middleware/tool fields would apply
+    but prompt fields would not, an asymmetry that confuses users.
+    """
+
+    def _capture_subagents(self, model: str | BaseChatModel, **kwargs: Any) -> list[Any]:
+        """Run `create_deep_agent`, returning the subagent specs given to `SubAgentMiddleware`."""
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(model=model, **kwargs)
+        # `subagents` may be absent if no subagent was built; surface as empty.
+        if not mock_subagents.called:
+            return []
+        return list(mock_subagents.call_args.kwargs["subagents"])
+
+    def test_subagent_inherits_profile_suffix(self) -> None:
+        """A declarative subagent's `system_prompt` gains the profile's suffix."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "subprompt",
+                HarnessProfile(system_prompt_suffix="Be terse."),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            sub = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subprompt"):
+                    return sub
+                return parent
+
+            with patch("deepagents.graph.resolve_model", side_effect=fake_resolve):
+                specs = self._capture_subagents(
+                    model=parent,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Authored worker prompt.",
+                            "model": "subprompt:worker-model",
+                        }
+                    ],
+                )
+            worker = next(s for s in specs if s.get("name") == "worker")
+            assert worker["system_prompt"] == "Authored worker prompt.\n\nBe terse."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_subagent_base_system_prompt_replaces_authored_prompt(self) -> None:
+        """`base_system_prompt` is treated as the new base, mirroring main-agent semantics."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "subbase",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Suffix.",
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            sub = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subbase"):
+                    return sub
+                return parent
+
+            with patch("deepagents.graph.resolve_model", side_effect=fake_resolve):
+                specs = self._capture_subagents(
+                    model=parent,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Authored worker prompt.",
+                            "model": "subbase:worker-model",
+                        }
+                    ],
+                )
+            worker = next(s for s in specs if s.get("name") == "worker")
+            assert worker["system_prompt"] == "Profile base.\n\nSuffix."
+            assert "Authored worker prompt." not in worker["system_prompt"]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_inherits_profile_suffix(self) -> None:
+        """The auto-added GP subagent receives the main profile's suffix.
+
+        Built-ins like the Codex / Claude Opus 4.7 profiles register a suffix;
+        this asserts the GP subagent picks it up alongside the main agent.
+        """
+        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpsuffix",
+                HarnessProfile(system_prompt_suffix="GP suffix."),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpsuffix:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            expected = GENERAL_PURPOSE_SUBAGENT["system_prompt"] + "\n\nGP suffix."
+            assert gp["system_prompt"] == expected
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_with_gp_override_and_profile_suffix(self) -> None:
+        """`general_purpose_subagent.system_prompt` is the GP base; the profile suffix layers on top.
+
+        This locks in the layering order: GP-level system_prompt overrides the
+        default GP base, then the profile suffix is appended.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpcombined",
+                HarnessProfile(
+                    system_prompt_suffix="Trailer.",
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
+                        system_prompt="GP override.",
+                    ),
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpcombined:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "GP override.\n\nTrailer."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_override_beats_profile_base(self) -> None:
+        """GP-level `system_prompt` wins over the profile-level `base_system_prompt`.
+
+        Both fields can carry a base-prompt replacement, but
+        `general_purpose_subagent.system_prompt` is GP-specific configuration
+        while `base_system_prompt` is a global override that primarily targets
+        the main agent. For the GP subagent, the more-specific intent wins —
+        otherwise a user setting both fields would silently see their GP
+        override dropped, which is surprising and hard to debug.
+
+        The profile suffix still layers on top of the GP override.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpprec",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Trailer.",
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
+                        system_prompt="GP override.",
+                    ),
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpprec:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "GP override.\n\nTrailer."
+            # Lock in the more-specific-wins semantic: profile.base_system_prompt
+            # MUST NOT appear in the GP prompt when a GP-level override is set.
+            assert "Profile base." not in gp["system_prompt"]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_falls_back_to_profile_base_without_override(self) -> None:
+        """Without a GP-level override, `profile.base_system_prompt` does apply to the GP subagent.
+
+        Symmetric to the precedence test above: when the user hasn't set a
+        GP-level prompt, the profile-level base override is still the right
+        fallback (it just shouldn't *override* the GP-specific intent when both
+        are set).
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpfallback",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Trailer.",
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpfallback:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "Profile base.\n\nTrailer."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
 class TestPrebuiltSubagentModelResolvesProfile:
     """A pre-built `BaseChatModel` passed as a subagent's `model` must still get a harness profile via identifier/provider extraction."""
 
@@ -1724,9 +1911,10 @@ class TestPrebuiltSubagentModelResolvesProfile:
             )
 
             parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-            # Subagent pre-built model: expose model_dump + _get_ls_params so
+            # Subagent pre-built model: expose model_name + _get_ls_params so
             # `_harness_profile_for_model` can extract identifier and provider.
             subagent_model = MagicMock(spec=BaseChatModel)
+            subagent_model.model_name = "sub-model"
             subagent_model.model_dump.return_value = {"model_name": "sub-model"}
             subagent_model._get_ls_params = MagicMock(return_value={"ls_provider": "prebuiltprov"})
 

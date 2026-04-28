@@ -13,8 +13,8 @@ prompt assembly, tool visibility, middleware, and default subagent behavior
 `ProviderProfile`, which controls the model-construction phase.
 
 Users may register profiles via `register_harness_profile`. Deep Agents
-ships no built-in harness profiles; the registry is empty until a caller
-registers one.
+ships built-in harness profiles for several frontier model specs.
+They may be layered on top of via additive merge semantics.
 """
 
 from __future__ import annotations
@@ -34,6 +34,49 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 logger = logging.getLogger(__name__)
+
+
+def _scaffolding_violation_label(entry: object) -> str | None:
+    """Return a violation label for `entry` when it names required scaffolding.
+
+    Class entries are matched on `__name__`; string entries are matched
+    directly. Returns `None` when `entry` does not name scaffolding so
+    callers can collect violations across an entire `excluded_middleware`
+    set and surface them in one error.
+
+    The required-scaffolding set is owned by `deepagents.graph` and imported
+    lazily to avoid a top-level cycle (`graph` already imports this module).
+    By the time any `HarnessProfile`/`HarnessProfileConfig` is constructed,
+    `graph` is loadable: the package `__init__` imports `graph` before
+    `profiles`, and built-in profile registration runs lazily — well after
+    module load.
+    """
+    from deepagents.graph import _REQUIRED_MIDDLEWARE_NAMES  # noqa: PLC0415
+
+    if isinstance(entry, str):
+        if entry in _REQUIRED_MIDDLEWARE_NAMES:
+            return f"{entry!r} (string)"
+        return None
+    if isinstance(entry, type) and entry.__name__ in _REQUIRED_MIDDLEWARE_NAMES:
+        return entry.__name__
+    return None
+
+
+def _format_scaffolding_rejection(violations: list[str]) -> str:
+    """Format the construction-time scaffolding-rejection error message.
+
+    Mirrors the assembly-time message from
+    `_validate_excluded_middleware_config` so users see the same wording
+    regardless of where the rejection fires.
+    """
+    labels = sorted(set(violations))
+    return (
+        "HarnessProfile.excluded_middleware is invalid:\n  - "
+        f"required scaffolding cannot be excluded: {', '.join(labels)} "
+        "(back filesystem tools, subagent dispatch, and permission "
+        "enforcement — use excluded_tools for per-tool visibility or "
+        "adjust profile settings instead of stripping scaffolding)"
+    )
 
 
 @dataclass(frozen=True)
@@ -220,8 +263,14 @@ class HarnessProfileConfig:
                 "tool_description_overrides",
                 MappingProxyType(dict(self.tool_description_overrides)),
             )
+        scaffolding_violations: list[str] = []
         for entry in self.excluded_middleware:
             _validate_config_middleware_string(entry, "excluded_middleware")
+            label = _scaffolding_violation_label(entry)
+            if label is not None:
+                scaffolding_violations.append(label)
+        if scaffolding_violations:
+            raise ValueError(_format_scaffolding_rejection(scaffolding_violations))
 
     def to_dict(self) -> dict[str, Any]:
         """Dump this config to plain dict/list/scalar values.
@@ -291,6 +340,20 @@ class HarnessProfileConfig:
 
         `excluded_middleware` entries are passed through as name-based
         exclusions matched against `AgentMiddleware.name`.
+
+        !!! note "Intentional asymmetry with `from_harness_profile`"
+
+            This direction is currently lossless because `HarnessProfileConfig`
+            carries only the file-friendly subset of fields by design —
+            `extra_middleware` instances and factories cannot be
+            represented in YAML/JSON, so they are absent from this type
+            and the resulting `HarnessProfile` will not have them
+            populated. The reverse direction (`from_harness_profile`)
+            *raises* when a runtime profile contains runtime-only state,
+            rather than silently dropping it. Round-tripping a runtime
+            profile that uses `extra_middleware` through config form is
+            therefore not supported by design at this moment — keep
+            such profiles in `HarnessProfile` form.
 
         Returns:
             A runtime `HarnessProfile` with equivalent declarative settings.
@@ -491,7 +554,9 @@ class HarnessProfile:
             through the runtime `HarnessProfile` instead.
         - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`,
             `_PermissionMiddleware`) cannot be excluded as class or as their
-            `.name` string (raises `ValueError` at assembly time).
+            `.name` string. The check fires at `HarnessProfile` construction,
+            so register-site typos fail fast rather than waiting until
+            `create_deep_agent` resolves the profile.
         - Entries that match no middleware in the assembled stack are
             rejected as likely typos or stale profiles.
     """
@@ -561,9 +626,15 @@ class HarnessProfile:
         extra = self.extra_middleware
         if not callable(extra) and not isinstance(extra, tuple):
             object.__setattr__(self, "extra_middleware", tuple(extra))
+        scaffolding_violations: list[str] = []
         for entry in self.excluded_middleware:
             if isinstance(entry, str):
                 _validate_config_middleware_string(entry, "excluded_middleware")
+            label = _scaffolding_violation_label(entry)
+            if label is not None:
+                scaffolding_violations.append(label)
+        if scaffolding_violations:
+            raise ValueError(_format_scaffolding_rejection(scaffolding_violations))
 
     def materialize_extra_middleware(self) -> list[AgentMiddleware]:
         """Return a fresh list of `extra_middleware`, invoking factory if supplied.
@@ -571,6 +642,27 @@ class HarnessProfile:
         Each call returns a new list so consumers may mutate freely.
         """
         return list(_resolve_middleware_seq(self.extra_middleware))
+
+
+def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
+    """Apply `profile`'s prompt overlay to `base_prompt`.
+
+    `base_system_prompt` (when set) replaces `base_prompt` outright;
+    `system_prompt_suffix` (when set) is appended with a blank-line
+    separator. Both are independently optional, mirroring the field
+    semantics — a profile that sets only the suffix layers it on top of
+    whatever base the caller passes in.
+
+    Used uniformly across the main agent (`base_prompt=BASE_AGENT_PROMPT`),
+    declarative subagents (`base_prompt=spec["system_prompt"]`), and the
+    auto-added general-purpose subagent (`base_prompt=GP base prompt`), so a
+    profile registered under a model spec applies the same overlay regardless
+    of which stack the model lands in.
+    """
+    prompt = profile.base_system_prompt if profile.base_system_prompt is not None else base_prompt
+    if profile.system_prompt_suffix is not None:
+        prompt = prompt + "\n\n" + profile.system_prompt_suffix
+    return prompt
 
 
 _HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))

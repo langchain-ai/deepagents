@@ -65,10 +65,17 @@ def _bootstrap_profile_registries() -> None:
     _ensure_builtin_profiles_loaded()
 
 
-def _make_model(dump: dict) -> MagicMock:
-    """Create a mock BaseChatModel with a given `model_dump` return value."""
+def _make_model(attrs: dict) -> MagicMock:
+    """Create a mock BaseChatModel exposing `attrs` via attribute access.
+
+    `get_model_identifier` reads `model_name` / `model` directly off the
+    instance, so attributes are set explicitly. `model_dump.return_value` is
+    also populated for tests that still introspect the serialized form.
+    """
     model = MagicMock(spec=BaseChatModel)
-    model.model_dump.return_value = dump
+    model.model_dump.return_value = dict(attrs)
+    for key, value in attrs.items():
+        setattr(model, key, value)
     return model
 
 
@@ -1123,7 +1130,13 @@ class TestProfilePluginLoader:
         assert groups == {_PROVIDER_PROFILE_GROUP, _HARNESS_PROFILE_GROUP}
 
     def test_broken_plugin_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A plugin whose `load()` raises must not prevent sibling plugins from running."""
+        """A plugin whose `load()` raises must not prevent sibling plugins from running.
+
+        Plugin-level breakage is logged at `ERROR` (rather than `WARNING`) so a
+        broken plugin's missing registrations don't slip past users without
+        debug logging enabled. The dist name is included when available so the
+        offending package is identifiable from the message alone.
+        """
         from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
             _ensure_builtin_profiles_loaded,
         )
@@ -1132,6 +1145,8 @@ class TestProfilePluginLoader:
         broken = MagicMock()
         broken.name = "broken"
         broken.value = "nope:nope"
+        broken.dist = MagicMock(name="brokendist")
+        broken.dist.name = "broken-dist"
         broken.load.side_effect = ImportError("boom")
         good = MagicMock()
         good.name = "good"
@@ -1144,7 +1159,7 @@ class TestProfilePluginLoader:
             return []
 
         with (
-            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 side_effect=fake_entry_points,
@@ -1153,10 +1168,17 @@ class TestProfilePluginLoader:
             _ensure_builtin_profiles_loaded()
 
         good_called.assert_called_once_with()
-        assert any("broken" in rec.message and "nope:nope" in rec.message for rec in caplog.records)
+        error_records = [rec for rec in caplog.records if rec.levelno == logging.ERROR]
+        assert any("broken" in rec.message and "nope:nope" in rec.message for rec in error_records)
+        assert any("broken-dist" in rec.message for rec in error_records)
 
     def test_non_callable_entry_point_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """An entry point resolving to a non-callable must be skipped, not invoked."""
+        """An entry point resolving to a non-callable must be skipped, not invoked.
+
+        Surfaced at `ERROR` because declaring a non-callable as a registration
+        hook is a structural plugin bug — the plugin's registrations will be
+        absent without a clear signal.
+        """
         from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
             _ensure_builtin_profiles_loaded,
         )
@@ -1167,7 +1189,7 @@ class TestProfilePluginLoader:
         ep.load.return_value = "not callable"
 
         with (
-            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 return_value=[ep],
@@ -1175,10 +1197,16 @@ class TestProfilePluginLoader:
         ):
             _ensure_builtin_profiles_loaded()
 
-        assert any("did not resolve to a callable" in rec.message for rec in caplog.records)
+        error_records = [rec for rec in caplog.records if rec.levelno == logging.ERROR]
+        assert any("did not resolve to a callable" in rec.message for rec in error_records)
 
     def test_registration_raises_logged_and_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
-        """A registration callable that raises must be isolated to itself."""
+        """A registration callable that raises must be isolated to itself.
+
+        Surfaced at `ERROR` so a structural plugin bug (e.g. calling
+        `register_*_profile("", ...)` and getting a `ValueError` back) is
+        visible at default log levels instead of being silently dropped.
+        """
         from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
             _ensure_builtin_profiles_loaded,
         )
@@ -1189,7 +1217,7 @@ class TestProfilePluginLoader:
         ep.load.return_value = MagicMock(side_effect=RuntimeError("bad"))
 
         with (
-            caplog.at_level(logging.WARNING, logger="deepagents.profiles._builtin_profiles"),
+            caplog.at_level(logging.ERROR, logger="deepagents.profiles._builtin_profiles"),
             patch(
                 "deepagents.profiles._builtin_profiles.entry_points",
                 return_value=[ep],
@@ -1197,7 +1225,8 @@ class TestProfilePluginLoader:
         ):
             _ensure_builtin_profiles_loaded()
 
-        assert any("registration callable" in rec.message and "raised" in rec.message for rec in caplog.records)
+        error_records = [rec for rec in caplog.records if rec.levelno == logging.ERROR]
+        assert any("registration callable" in rec.message and "raised" in rec.message for rec in error_records)
 
     def test_entry_points_call_itself_raises(self, caplog: pytest.LogCaptureFixture) -> None:
         """If `entry_points(group=...)` raises, the loader must log and continue."""
@@ -1662,6 +1691,44 @@ class TestRegisterProfileKeyValidation:
         with pytest.raises(ValueError, match="empty provider"):
             register_harness_profile("openai:", HarnessProfile())
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "   ",  # whitespace-only
+            " openai",  # leading whitespace
+            "openai ",  # trailing whitespace
+        ],
+    )
+    def test_whitespace_keys_rejected(self, key: str) -> None:
+        """Whitespace-only and whitespace-padded keys are rejected as malformed.
+
+        Without the strip-equality guard, a typo like `"openai "` would
+        register under a key no normal lookup ever reproduces, leaving the
+        registration silently inert.
+        """
+        with pytest.raises(ValueError, match="whitespace"):
+            register_provider_profile(key, ProviderProfile())
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "openai : gpt-5",
+            "openai :gpt-5",
+            "openai: gpt-5",
+            " openai:gpt-5",
+            "openai:gpt-5 ",
+        ],
+    )
+    def test_whitespace_around_colon_rejected(self, key: str) -> None:
+        """Whitespace adjacent to `:` or wrapping the whole key is rejected.
+
+        This is symmetric with the bare-provider whitespace check — the
+        registry should never accept a key that the lookup helper would not
+        produce when normalizing a model spec.
+        """
+        with pytest.raises(ValueError, match="whitespace"):
+            register_harness_profile(key, HarnessProfile())
+
     def test_valid_provider_key_accepted(self) -> None:
         original = dict(_PROVIDER_PROFILES)
         try:
@@ -1792,15 +1859,24 @@ class TestProfileLookupBreadcrumb:
 
 
 class TestGetModelProviderLogging:
-    """Tests that `get_model_provider` logs a debug breadcrumb when `_get_ls_params` raises."""
+    """Tests that `get_model_provider` surfaces `_get_ls_params` failures at INFO."""
 
-    def test_logs_exception_at_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_logs_exception_at_info_with_module_qualname(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Failures must fire at INFO so users see the breadcrumb without enabling DEBUG.
+
+        Custom integrations whose `_get_ls_params` raises silently miss
+        profile resolution, so the message also includes the model class's
+        full module path to make the offending integration easy to identify.
+        """
         model = _make_model({})
         model._get_ls_params = MagicMock(side_effect=AttributeError("boom"))
-        with caplog.at_level(logging.DEBUG, logger="deepagents._models"):
+        with caplog.at_level(logging.INFO, logger="deepagents._models"):
             assert get_model_provider(model) is None
-        messages = [r.getMessage() for r in caplog.records]
-        assert any("_get_ls_params" in m and "boom" in m for m in messages)
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert any("_get_ls_params" in r.getMessage() and "boom" in r.getMessage() for r in info_records)
+        # The message includes both the module path and class name so users
+        # can pinpoint the offending integration without guessing.
+        assert any(type(model).__module__ in r.getMessage() and type(model).__name__ in r.getMessage() for r in info_records)
 
 
 class TestProfileLookupKeyValidation:

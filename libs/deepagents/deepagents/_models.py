@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
@@ -41,8 +40,7 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
     """Extract the provider-native model identifier from a chat model.
 
     Providers do not agree on a single field name for the identifier. Some use
-    `model_name`, while others use `model`. Reading the serialized model config
-    lets us inspect both without relying on reflective attribute access.
+    `model_name`, while others use `model`.
 
     Args:
         model: Chat model instance to inspect.
@@ -50,8 +48,7 @@ def get_model_identifier(model: BaseChatModel) -> str | None:
     Returns:
         The configured model identifier, or `None` if it is unavailable.
     """
-    config = model.model_dump()
-    return _string_value(config, "model_name") or _string_value(config, "model")
+    return _string_attr(model, "model_name") or _string_attr(model, "model")
 
 
 def get_model_provider(model: BaseChatModel) -> str | None:
@@ -70,8 +67,13 @@ def get_model_provider(model: BaseChatModel) -> str | None:
     try:
         ls_params = model._get_ls_params()
     except (AttributeError, TypeError, NotImplementedError) as exc:
-        logger.debug(
-            "Could not extract provider from %s via _get_ls_params: %s",
+        # INFO rather than DEBUG: a missing or raising `_get_ls_params` causes
+        # profile resolution to silently miss for that model. Custom
+        # integrations need this to be visible at default log levels so users
+        # can debug "my profile isn't applying" without enabling DEBUG.
+        logger.info(
+            "Could not extract provider from %s.%s via _get_ls_params: %s",
+            type(model).__module__,
             type(model).__name__,
             exc,
         )
@@ -109,9 +111,9 @@ def model_matches_spec(model: BaseChatModel, spec: str) -> bool:
     return bool(separator) and model_name == current
 
 
-def _string_value(config: dict[str, Any], key: str) -> str | None:
-    """Return a non-empty string value from a serialized model config."""
-    value = config.get(key)
+def _string_attr(obj: object, attr: str) -> str | None:
+    """Return a non-empty string attribute from `obj`, or `None`."""
+    value = getattr(obj, attr, None)
     if isinstance(value, str) and value:
         return value
     return None

@@ -331,6 +331,56 @@ class TestHarnessProfileConfigYamlRoundTrip:
         assert "!!" not in output
 
 
+class TestApplyProfilePrompt:
+    """Tests for `_apply_profile_prompt`.
+
+    The helper drives prompt assembly for the main agent, declarative
+    subagents, and the auto-added GP subagent. These tests pin down the
+    layering rules so a refactor of any of those call sites can't silently
+    diverge from the documented semantics.
+    """
+
+    def test_empty_profile_returns_base_unchanged(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        assert _apply_profile_prompt(HarnessProfile(), "base") == "base"
+
+    def test_base_system_prompt_replaces_base(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(base_system_prompt="custom base")
+        assert _apply_profile_prompt(profile, "ignored") == "custom base"
+
+    def test_system_prompt_suffix_appended_to_base(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(system_prompt_suffix="suffix")
+        assert _apply_profile_prompt(profile, "base") == "base\n\nsuffix"
+
+    def test_base_and_suffix_combine(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(
+            base_system_prompt="custom base",
+            system_prompt_suffix="suffix",
+        )
+        assert _apply_profile_prompt(profile, "ignored") == "custom base\n\nsuffix"
+
+    def test_empty_string_base_replaces_base(self) -> None:
+        """`""` is distinct from `None` — explicitly empty replaces."""
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(base_system_prompt="")
+        assert _apply_profile_prompt(profile, "ignored") == ""
+
+    def test_empty_string_suffix_still_appended(self) -> None:
+        """An explicit empty suffix is appended (with separator) — distinct from `None`."""
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(system_prompt_suffix="")
+        assert _apply_profile_prompt(profile, "base") == "base\n\n"
+
+
 class TestMaterializeExtraMiddleware:
     """Tests for `HarnessProfile.materialize_extra_middleware`."""
 

@@ -50,7 +50,7 @@ from deepagents.middleware.subagents import (
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles import GeneralPurposeSubagentProfile
-from deepagents.profiles.harness.harness_profiles import _harness_profile_for_model
+from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt, _harness_profile_for_model
 
 logger = logging.getLogger(__name__)
 
@@ -523,6 +523,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "tools": subagent_tools or [],
                 "middleware": subagent_middleware,
             }
+            processed_spec["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec["system_prompt"])
             if subagent_interrupt_on is not None:
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
@@ -575,7 +576,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if gp_profile.description is not None:
             general_purpose_spec["description"] = gp_profile.description
         if gp_profile.system_prompt is not None:
-            general_purpose_spec["system_prompt"] = gp_profile.system_prompt
+            # GP-specific override beats `profile.base_system_prompt`; only the
+            # profile suffix layers on top.
+            gp_prompt = gp_profile.system_prompt
+            if _profile.system_prompt_suffix is not None:
+                gp_prompt = gp_prompt + "\n\n" + _profile.system_prompt_suffix
+            general_purpose_spec["system_prompt"] = gp_prompt
+        else:
+            general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
         if interrupt_on is not None:
             general_purpose_spec["interrupt_on"] = interrupt_on
 
@@ -657,18 +665,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    # Assemble base prompt: use _profile.base_system_prompt if set, else
-    # BASE_AGENT_PROMPT, then append profile suffix if present.
-    # Finally prepend user system_prompt (handled below).
-    base_prompt = _profile.base_system_prompt if _profile.base_system_prompt is not None else BASE_AGENT_PROMPT
-    if _profile.system_prompt_suffix is not None:
-        base_prompt = base_prompt + "\n\n" + _profile.system_prompt_suffix
+    base_prompt = _apply_profile_prompt(_profile, BASE_AGENT_PROMPT)
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = base_prompt
     elif isinstance(system_prompt, SystemMessage):
         final_system_prompt = SystemMessage(content_blocks=[*system_prompt.content_blocks, {"type": "text", "text": f"\n\n{base_prompt}"}])
     else:
-        # String: simple concatenation
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
     return create_agent(

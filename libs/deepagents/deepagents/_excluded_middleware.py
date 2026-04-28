@@ -57,15 +57,11 @@ def _validate_excluded_middleware_config(
     forbidden_classes = excluded_classes & required_classes
     forbidden_names = excluded_names & required_names
     if forbidden_classes or forbidden_names:
-        labels = sorted({cls.__name__ for cls in forbidden_classes} | {f"{name!r} (string)" for name in forbidden_names})
-        msg = (
-            "HarnessProfile.excluded_middleware is invalid:\n  - "
-            f"required scaffolding cannot be excluded: {', '.join(labels)} "
-            f"(back filesystem tools, subagent dispatch, and permission "
-            f"enforcement — use excluded_tools for per-tool visibility or "
-            f"adjust profile settings instead of stripping scaffolding)"
-        )
-        raise ValueError(msg)
+        # Lazy import: harness_profiles owns the per-class guidance text.
+        from deepagents.profiles.harness.harness_profiles import _format_scaffolding_rejection  # noqa: PLC0415
+
+        labels = [cls.__name__ for cls in forbidden_classes] + [f"{name!r} (string)" for name in forbidden_names]
+        raise ValueError(_format_scaffolding_rejection(labels))
 
 
 def _raise_on_name_collisions(
@@ -160,8 +156,9 @@ def _apply_excluded_middleware(
     removed_count = len(stack) - len(filtered)
     if removed_count:
         logger.debug(
-            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware (classes=%s, names=%s)",
+            "Dropped %d middleware instance(s) from stack per profile.excluded_middleware=%r (matched classes=%s, names=%s)",
             removed_count,
+            sorted(repr(entry) for entry in profile.excluded_middleware),
             sorted(cls.__name__ for cls in excluded_classes),
             sorted(excluded_names),
         )

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 import warnings
-from importlib.metadata import entry_points
+from importlib.metadata import EntryPoint, entry_points
 
 from deepagents.profiles.harness import (
     _anthropic_haiku_4_5,
@@ -37,6 +37,21 @@ from deepagents.profiles.provider import _openai, _openrouter
 from deepagents.profiles.provider.provider_profiles import _PROVIDER_PROFILES
 
 logger = logging.getLogger(__name__)
+
+
+def _format_plugin_label(ep: EntryPoint) -> str:
+    """Return a human-readable identifier for a plugin entry point.
+
+    Includes the source distribution name when available so logs can point
+    at the misbehaving package, not just the entry-point name (which can
+    collide across distributions).
+    """
+    dist = getattr(ep, "dist", None)
+    dist_name = getattr(dist, "name", None) if dist is not None else None
+    if isinstance(dist_name, str) and dist_name:
+        return f"{ep.name!r} (dist={dist_name!r})"
+    return repr(ep.name)
+
 
 _PROVIDER_PROFILE_GROUP = "deepagents.provider_profiles"
 """Entry-point group name for third-party `ProviderProfile` plugins."""
@@ -162,14 +177,22 @@ def _ensure_builtin_profiles_loaded() -> None:
 def _invoke_profile_plugins(group: str) -> None:
     """Invoke every entry-point callable in `group`, isolating failures.
 
-    Any of the following conditions is logged at `WARNING` and skipped
-    without affecting sibling plugins:
+    Failure handling differentiates environment-level breakage from
+    plugin-level bugs:
 
     1. `entry_points(group=...)` itself raises (e.g. malformed
-        `dist-info` metadata). The whole group is skipped.
-    2. `ep.load()` raises (missing dependency, import-time error).
+        `dist-info` metadata). Logged at `WARNING` — environment-level,
+        not attributable to a specific plugin. The whole group is skipped.
+    2. `ep.load()` raises (missing dependency, import-time error). Logged
+        at `ERROR` with the source distribution name — a structural bug
+        in the plugin that the plugin author needs to fix.
     3. The entry-point target resolves to something that is not callable.
-    4. The registration callable raises when invoked.
+        Logged at `ERROR` (declaring a non-callable as a registration hook
+        is a plugin bug).
+    4. The registration callable raises when invoked. Logged at `ERROR` —
+        the plugin attempted to register but produced a `ValueError` /
+        `TypeError` / etc. The plugin's registrations are silently absent
+        if this is suppressed, so the elevated level helps users notice.
 
     Plugins are iterated in whatever order
     `importlib.metadata.entry_points` returns — callers MUST NOT rely on
@@ -189,21 +212,22 @@ def _invoke_profile_plugins(group: str) -> None:
         warnings.warn(msg, stacklevel=2)
         return
     for ep in eps:
+        plugin_label = _format_plugin_label(ep)
         try:
             register = ep.load()
-        except Exception as exc:  # noqa: BLE001
-            msg = f"Skipping {group} plugin {ep.name!r}: failed to load entry point {ep.value!r}: {type(exc).__name__}: {exc}"
-            logger.warning(msg, exc_info=True)
+        except Exception as exc:
+            msg = f"Skipping {group} plugin {plugin_label}: failed to load entry point {ep.value!r}: {type(exc).__name__}: {exc}"
+            logger.exception(msg)
             warnings.warn(msg, stacklevel=2)
             continue
         if not callable(register):
-            msg = f"Skipping {group} plugin {ep.name!r}: entry point {ep.value!r} did not resolve to a callable."
-            logger.warning(msg)
+            msg = f"Skipping {group} plugin {plugin_label}: entry point {ep.value!r} did not resolve to a callable."
+            logger.error(msg)
             warnings.warn(msg, stacklevel=2)
             continue
         try:
             register()
-        except Exception as exc:  # noqa: BLE001
-            msg = f"Skipping {group} plugin {ep.name!r}: registration callable {ep.value!r} raised: {type(exc).__name__}: {exc}"
-            logger.warning(msg, exc_info=True)
+        except Exception as exc:
+            msg = f"Skipping {group} plugin {plugin_label}: registration callable {ep.value!r} raised: {type(exc).__name__}: {exc}"
+            logger.exception(msg)
             warnings.warn(msg, stacklevel=2)

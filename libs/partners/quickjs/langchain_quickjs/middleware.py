@@ -174,8 +174,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),
         )
-        # Backwards-compatible alias used in tests / external introspection.
-        self.system_prompt = self._base_system_prompt
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         # Stable fallback thread id — used when ``thread_id`` isn't in
         # langgraph config. Must be instance-scoped so ``wrap_model_call``

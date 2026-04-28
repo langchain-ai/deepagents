@@ -45,6 +45,7 @@ def _write(backend: FilesystemBackend, files: dict[str, str]) -> None:
 def _cache_key(meta: SkillMetadata) -> tuple[str, str, str | None]:
     return (meta["name"], meta["path"], meta.get("module"))
 
+
 @pytest.fixture
 def registry() -> _Registry:
     reg = _Registry(memory_limit=64 * 1024 * 1024, timeout=5.0, capture_console=True)
@@ -73,7 +74,8 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
 
     repl = registry.get("t1")
     outcome = await repl.eval_async(
-        "const m = await import(\"@/skills/slugify\"); globalThis.r = m.toSlug('Hello World');",
+        'const m = await import("@/skills/slugify");\n'
+        "globalThis.r = m.toSlug('Hello World');",
         skills={"slugify": meta},
         skills_backend=backend,
     )
@@ -241,7 +243,9 @@ async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> N
             skills_backend=backend,
         )
         assert key in repl_a_new._installed_skills
-        outcome = await repl_a_new.eval_async('const m = await import("@/skills/persist"); m.k')
+        outcome = await repl_a_new.eval_async(
+            'const m = await import("@/skills/persist"); m.k'
+        )
         assert outcome.error_type is None
         assert outcome.result == "7"
     finally:

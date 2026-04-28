@@ -130,6 +130,14 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             The REPL's own tool is always excluded; a model asking for
             ``tools.eval("...")`` would recurse pointlessly.
+        idle_ttl_sec: Close a LangGraph thread's Runtime after this many
+            seconds of inactivity. Eviction is lazy: the next ``get()``
+            on any thread scans and closes stale slots. On return, the
+            user's ``globalThis`` scratchpad is reset; referenced skills
+            are reloaded from the backend on demand.
+        max_active_threads: Optional hard cap on concurrent slots. When
+            exceeded, least-recently-used slots are evicted regardless
+            of TTL. ``None`` (default) = TTL only.
 
     Example:
         ```python
@@ -156,30 +164,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         idle_ttl_sec: float = 3600.0,
         max_active_threads: int | None = None,
     ) -> None:
-        """See the class docstring for parameter details.
-
-        Args:
-            skills_backend: Optional ``BackendProtocol`` the REPL reads
-                skill source files from. When set and a paired
-                ``SkillsMiddleware`` populates ``skills_metadata`` in
-                state, skills with a ``module`` frontmatter key become
-                dynamic-importable from the REPL as
-                ``await import("@/skills/<name>")``. When ``None``,
-                skill modules are not installed (``import(...)`` fails
-                at the resolver). This must be the same backend
-                ``SkillsMiddleware`` uses — the REPL treats skill file
-                paths relative to SKILL.md as coming from the same
-                store.
-            idle_ttl_sec: Close a LangGraph thread's Runtime after this
-                many seconds of inactivity. Eviction is lazy: the next
-                ``get()`` on any thread scans and closes stale slots.
-                On return, the user's ``globalThis`` scratchpad is
-                reset; referenced skills are reloaded from the backend
-                on demand.
-            max_active_threads: Optional hard cap on concurrent slots.
-                When exceeded, least-recently-used slots are evicted
-                regardless of TTL. ``None`` (default) = TTL only.
-        """
+        """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
         self._memory_limit = memory_limit
         self._timeout = timeout
@@ -232,7 +217,6 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         code_doc = (
             "JavaScript expression or statement(s) to evaluate in the persistent REPL."
         )
-
 
         def sync_eval(
             runtime: ToolRuntime[None, Any],

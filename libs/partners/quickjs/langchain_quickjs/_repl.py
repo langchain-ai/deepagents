@@ -501,7 +501,7 @@ class _ThreadREPL:
                 self._installed_skills.add(cache_key)
         return errors
 
-    async def _aeval_async(
+    async def _aeval_async(  # noqa: C901
         self,
         code: str,
         *,

@@ -109,15 +109,7 @@ class TestProfileForModel:
             _HARNESS_PROFILES.update(original)
 
     def test_matches_combined_provider_model_key_for_prebuilt(self) -> None:
-        """Model-level keys (`provider:model`) resolve for pre-built models.
-
-        Prior to combining the identifier and provider into a single registry
-        key, a profile registered under `"fakeprov:my-model"` was unreachable
-        when the caller handed in a pre-built model without a spec string: the
-        bare identifier `"my-model"` never matched the full key, and lookup
-        silently fell through to any provider-level profile (or the empty
-        default). This asserts the combined key is consulted first.
-        """
+        """Model-level keys (`provider:model`) resolve for pre-built models."""
         original = dict(_HARNESS_PROFILES)
         try:
             provider_profile = HarnessProfile(system_prompt_suffix="provider level")
@@ -770,11 +762,7 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_preserves_subclass(self) -> None:
-        """Exclusion matches on exact type, so subclasses of an excluded class are kept.
-
-        Passes both the base class and a subclass instance so the exclusion
-        entry has something to match — required by the coverage guard.
-        """
+        """Exclusion matches on exact type, so subclasses of an excluded class are kept."""
         base_instance = _StubMW()
         subclass_instance = _StubSubMW()
         original = dict(_HARNESS_PROFILES)
@@ -804,7 +792,12 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_strips_from_general_purpose_subagent_stack(self) -> None:
-        """The auto-added general-purpose subagent has its stack filtered too."""
+        """The auto-added general-purpose subagent has its stack filtered too.
+
+        Covers the case where a profile injects middleware *and* excludes the same
+        class — the auto-generated general-purpose subagent inherits the profile's
+        stack and must have the excluded entries removed.
+        """
         provided = _StubMW()
 
         def factory() -> list[AgentMiddleware]:
@@ -838,7 +831,13 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_strips_from_declarative_subagent_stack(self) -> None:
-        """Declarative `SubAgent` specs built by `create_deep_agent` are filtered too."""
+        """Declarative `SubAgent` specs built by `create_deep_agent` are filtered too.
+
+        Covers the case where a user-supplied declarative subagent spec resolves to a
+        profile whose `excluded_middleware` removes a class that the same profile
+        also adds via `extra_middleware` — the spec's compiled stack must not
+        contain the excluded class.
+        """
         provided = _StubMW()
 
         original = dict(_HARNESS_PROFILES)
@@ -898,7 +897,13 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_strips_async_subagent_middleware(self) -> None:
-        """Async subagents add `AsyncSubAgentMiddleware` to the parent stack — it can be excluded."""
+        """Async subagents add `AsyncSubAgentMiddleware` to the parent stack — it can be excluded.
+
+        Covers the case where a graph-id (remote) subagent causes
+        `AsyncSubAgentMiddleware` to be appended to the parent stack and the
+        profile lists that class in `excluded_middleware` — the auto-added
+        middleware must still be filtered out.
+        """
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -931,7 +936,12 @@ class TestMiddlewareExclusionWiring:
             _HARNESS_PROFILES.update(original)
 
     def test_excluded_middleware_handles_multiple_classes_in_one_set(self) -> None:
-        """A single exclusion set with two classes removes instances of both."""
+        """A single exclusion set with two classes removes instances of both.
+
+        Covers the case where `excluded_middleware` contains more than one class
+        and the user passes instances of each via `middleware=` — every listed
+        class must be filtered, not just the first.
+        """
         stub = _StubMW()
         other = _OtherStubMW()
         original = dict(_HARNESS_PROFILES)

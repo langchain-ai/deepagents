@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/langchain-ai-deepagents-badge.png)](https://mseep.ai/app/langchain-ai-deepagents)
+
 <div align="center">
   <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
     <picture>

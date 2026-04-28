@@ -6,7 +6,6 @@ middleware.
 """
 
 import logging
-import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -25,6 +24,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
+from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents._models import get_model_identifier, get_model_provider, resolve_model
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -98,8 +98,36 @@ this is used as the sole system prompt.
 # Replaceable via `_HarnessProfile.base_system_prompt` (internal)
 
 
+def _build_default_model() -> ChatAnthropic:
+    """Construct the default model without emitting a deprecation warning.
+
+    Internal helper used by `create_deep_agent` so the parameter-level
+    `model=None` warning isn't paired with a separate function-level warning
+    from `get_default_model`. Direct user calls go through `get_default_model`,
+    which keeps its decorator and warns once per process.
+    """
+    return ChatAnthropic(model_name="claude-sonnet-4-6")
+
+
+@deprecated(
+    since="0.5.3",
+    removal="1.0.0",
+    message=(
+        "Relying on the default model is deprecated and will be removed in "
+        "deepagents==1.0.0 alongside support for `model=None` in "
+        "`create_deep_agent`. Construct your model explicitly "
+        "(e.g., `ChatAnthropic(model_name=...)`). See "
+        "https://docs.langchain.com/oss/python/deepagents/models"
+    ),
+    package="deepagents",
+)
 def get_default_model() -> ChatAnthropic:
     """Get the default model for Deep Agents.
+
+    !!! deprecated
+        Deprecated since `0.5.3`; will be removed in `deepagents==1.0.0`.
+        Construct your model explicitly (e.g.,
+        `ChatAnthropic(model_name="claude-sonnet-4-6")`).
 
     Used as a fallback when `model=None` is passed to `create_deep_agent`.
 
@@ -108,9 +136,7 @@ def get_default_model() -> ChatAnthropic:
     Returns:
         `ChatAnthropic` instance configured with `claude-sonnet-4-6`.
     """
-    return ChatAnthropic(
-        model_name="claude-sonnet-4-6",
-    )
+    return _build_default_model()
 
 
 def _resolve_extra_middleware(
@@ -416,17 +442,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     _model_spec: str | None = model if isinstance(model, str) else None
 
     if model is None:
-        warnings.warn(
-            "Passing `model=None` to `create_deep_agent` is deprecated and "
-            "will be removed in a future release. The `model` parameter type "
-            "will change from `BaseChatModel | str | None` to "
-            "`BaseChatModel | str`. Please specify a model explicitly. "
-            "See https://docs.langchain.com/oss/python/deepagents/models",
-            DeprecationWarning,
-            stacklevel=2,
+        warn_deprecated(
+            since="0.5.3",
+            removal="1.0.0",
+            message=(
+                "Passing `model=None` to `create_deep_agent` is deprecated "
+                "and will be removed in deepagents==1.0.0. The `model` "
+                "parameter type will change from `BaseChatModel | str | None` "
+                "to `BaseChatModel | str`. Specify a model explicitly "
+                "(e.g., `ChatAnthropic(model_name=...)`). See "
+                "https://docs.langchain.com/oss/python/deepagents/models"
+            ),
+            package="deepagents",
         )
-
-    model = get_default_model() if model is None else resolve_model(model)
+        # Use the un-decorated builder so we don't burn the dedupe flag on
+        # `get_default_model` — direct user callers still see one warning.
+        model = _build_default_model()
+    else:
+        model = resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)
 
     # Copy of `tools` with any provider-specific description rewrites.

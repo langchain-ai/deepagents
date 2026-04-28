@@ -1,9 +1,11 @@
+import warnings
 from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -681,3 +683,28 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+class TestVirtualModeDefaultDeprecation:
+    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+
+    def test_omitted_virtual_mode_warns(self, tmp_path: Path) -> None:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            be = FilesystemBackend(root_dir=str(tmp_path))
+
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert "virtual_mode" in str(deprecations[0].message)
+        # Default falls back to `False` for backwards compatibility.
+        assert be.virtual_mode is False
+
+    def test_explicit_virtual_mode_does_not_warn(self, tmp_path: Path) -> None:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+            FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []

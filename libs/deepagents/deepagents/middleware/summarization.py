@@ -74,6 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
@@ -269,12 +270,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
         if _deprecated_history_prefix is not None:
-            warnings.warn(
-                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
-                " and will be removed in 0.7."
-                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=(
+                    "The argument `history_path_prefix` is deprecated and "
+                    "will be removed in deepagents==0.7.0. Use "
+                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
+                    "instead."
+                ),
+                package="deepagents",
             )
 
         # Initialize langchain helper for core summarization logic

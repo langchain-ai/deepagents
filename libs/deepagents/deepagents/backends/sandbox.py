@@ -266,9 +266,20 @@ if file_type != 'text':
 with open(path, 'rb') as f:
     raw_prefix = f.read(8192)
 
+# Tolerate a multi-byte UTF-8 char truncated at the prefix boundary.
+is_binary = False
 try:
     raw_prefix.decode('utf-8')
-except UnicodeDecodeError:
+except UnicodeDecodeError as e:
+    if e.reason == 'unexpected end of data':
+        try:
+            raw_prefix[:e.start].decode('utf-8')
+        except UnicodeDecodeError:
+            is_binary = True
+    else:
+        is_binary = True
+
+if is_binary:
     with open(path, 'rb') as f:
         raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))

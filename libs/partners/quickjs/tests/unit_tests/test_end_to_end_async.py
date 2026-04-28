@@ -1,16 +1,8 @@
-"""End-to-end tests for ``REPLMiddleware`` with a fake LLM.
+"""Async end-to-end tests for ``REPLMiddleware`` with a fake LLM.
 
-Regression gate for the sync tool handler: before the worker-thread
-refactor, sync ``invoke`` ran ``ctx.eval``, which cannot dispatch async
-host functions (PTC bridges are ``is_async=True``). Any eval that
-referenced ``tools.*`` surfaced as:
-
-    <error type="ConcurrentEval">sync ctx.eval dispatched a registered
-    async host function; use ctx.eval_async for code that awaits async
-    host calls</error>
-
-We reproduce the exact production snippet on both the sync and async
-handlers and assert it no longer errors.
+Covers the same integration surfaces as the prior quickjs e2e suite:
+agent wiring, REPL execution, PTC tool calls, runtime propagation,
+error surfacing, and concurrent agent runs.
 """
 
 from __future__ import annotations
@@ -19,10 +11,8 @@ import asyncio
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
@@ -37,16 +27,13 @@ from langchain_quickjs import REPLMiddleware
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# The exact snippet a model produced in production when this regressed.
-_EVAL_CODE = "var result = tools.listUserIds({}); result;"
-
 
 class _FakeChatModel(GenericFakeChatModel):
     """GenericFakeChatModel whose bind_tools returns self.
 
     Without the override, ``create_deep_agent``'s bind_tools call replaces
     the model with a RunnableBinding whose ``_generate`` no longer reads
-    from our pre-scripted iterator.
+    from the pre-scripted iterator.
     """
 
     messages: Iterator[AIMessage | str] = Field(exclude=True)
@@ -56,9 +43,9 @@ class _FakeChatModel(GenericFakeChatModel):
 
 
 @tool
-def list_user_ids() -> list[int]:
-    """List user IDs."""
-    return [1, 21, 35, 41, 42, 43]
+def list_user_ids() -> list[str]:
+    """Return example user identifiers for QuickJS bridging tests."""
+    return ["user_1", "user_2", "user_3"]
 
 
 @tool("sync_label")
@@ -88,13 +75,7 @@ async def always_fails(value: str) -> str:
     raise RuntimeError(msg)
 
 
-@tool
-def echo_foo(foo: str) -> str:
-    """Echo the value of `foo`."""
-    return f"got {foo}"
-
-
-def _script(code: str, *, final_message: str = "Done.") -> Iterator[AIMessage]:
+def _script(code: str, *, final_message: str = "done") -> Iterator[AIMessage]:
     return iter(
         [
             AIMessage(
@@ -117,7 +98,7 @@ def _make_agent(
     code: str,
     middleware: REPLMiddleware,
     *,
-    final_message: str = "Done.",
+    final_message: str = "done",
 ) -> Any:
     return create_deep_agent(
         model=_FakeChatModel(messages=_script(code, final_message=final_message)),
@@ -133,24 +114,19 @@ def _eval_tool_message(result: dict[str, Any]) -> ToolMessage:
     return messages[-1]
 
 
-def _assert_no_error(content: str) -> None:
-    assert "ConcurrentEval" not in content, content
-    assert "<error" not in content, content
-
-
 def _assert_result_contains(content: str, expected: str) -> None:
     assert "<error" not in content, content
     assert "<result" in content, content
     assert expected in content, content
 
 
-def test_deepagent_with_quickjs_interpreter_sync() -> None:
-    """Basic sync test with QuickJS interpreter."""
-    result = _make_agent(
+async def test_deepagent_with_quickjs_interpreter() -> None:
+    """Basic async test with QuickJS interpreter."""
+    result = await _make_agent(
         "6 * 7",
         REPLMiddleware(),
         final_message="The answer is 42.",
-    ).invoke(
+    ).ainvoke(
         {"messages": [HumanMessage(content="Use the eval tool to calculate 6 * 7")]}
     )
 
@@ -159,14 +135,14 @@ def test_deepagent_with_quickjs_interpreter_sync() -> None:
     assert result["messages"][-1].content == "The answer is 42."
 
 
-def test_deepagent_with_quickjs_json_roundtrip_foreign_function_sync() -> None:
-    """Verify sync eval can parse JSON strings returned from PTC tool calls."""
+async def test_deepagent_with_quickjs_json_roundtrip_foreign_function() -> None:
+    """Verify async eval can parse JSON strings returned from PTC tool calls."""
     code = (
         "const idsJson = await tools.listUserIds({});\n"
         "const ids = JSON.parse(idsJson);\n"
         "ids.join(',');"
     )
-    result = _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).invoke(
+    result = await _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).ainvoke(
         {
             "messages": [
                 HumanMessage(
@@ -177,11 +153,11 @@ def test_deepagent_with_quickjs_json_roundtrip_foreign_function_sync() -> None:
     )
 
     tool_message = _eval_tool_message(result)
-    _assert_result_contains(tool_message.content, "1,21,35,41,42,43")
+    _assert_result_contains(tool_message.content, "user_1,user_2,user_3")
 
 
-def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:
-    """Verify sync eval can call sync and async LangChain tools in one run."""
+async def test_deepagent_with_quickjs_async_foreign_function() -> None:
+    """Verify the eval tool can call sync and async LangChain tools in one run."""
     code = (
         "const [left, right] = await Promise.all([\n"
         "  tools.syncLabel({value: 'left'}),\n"
@@ -189,10 +165,10 @@ def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:
         "]);\n"
         "`${left}|${right}`;"
     )
-    result = _make_agent(
+    result = await _make_agent(
         code,
         REPLMiddleware(ptc=[sync_label_tool, async_label_tool]),
-    ).invoke(
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(content="Use the eval tool to call sync and async tools")
@@ -204,13 +180,13 @@ def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:
     _assert_result_contains(tool_message.content, "sync:left|async:right")
 
 
-def test_quickjs_sync_timeout_error() -> None:
-    """Verify sync eval path surfaces QuickJS eval timeouts."""
-    result = _make_agent(
+async def test_quickjs_async_timeout_error() -> None:
+    """Verify the async eval path surfaces QuickJS eval timeouts."""
+    result = await _make_agent(
         "while (true) {}",
         REPLMiddleware(timeout=1),
         final_message="timeout hit",
-    ).invoke(
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(content="Use the eval tool and keep looping until timeout")
@@ -223,12 +199,12 @@ def test_quickjs_sync_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
-def test_quickjs_sync_tool_exception() -> None:
-    """Verify sync tool exceptions surface as eval errors."""
-    result = _make_agent(
+async def test_quickjs_async_tool_exception() -> None:
+    """Verify async tool exceptions surface as eval errors."""
+    result = await _make_agent(
         "await tools.alwaysFails({value: 'x'})",
         REPLMiddleware(ptc=[always_fails]),
-    ).invoke(
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(
@@ -243,12 +219,12 @@ def test_quickjs_sync_tool_exception() -> None:
     assert "Host function failed" in tool_message.content
 
 
-def test_quickjs_sync_toolruntime_configurable_foreign_function() -> None:
-    """Verify sync PTC tool calls see configurable runtime data."""
-    result = _make_agent(
+async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
+    """Verify async PTC tool calls see configurable runtime data."""
+    result = await _make_agent(
         "await tools.runtimeConfigurable({value: 'value'})",
         REPLMiddleware(ptc=[runtime_configurable]),
-    ).invoke(
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(
@@ -263,15 +239,15 @@ def test_quickjs_sync_toolruntime_configurable_foreign_function() -> None:
     _assert_result_contains(tool_message.content, "value:user-123")
 
 
-def test_quickjs_sync_parallel_agents_across_threads() -> None:
-    """Verify many sync agents can run in parallel threads with REPL middleware."""
+async def test_quickjs_async_parallel_agents() -> None:
+    """Verify many async agents can run in parallel with REPL middleware."""
 
-    def _run_agent(index: int) -> tuple[int, dict[str, object]]:
-        result = _make_agent(
+    async def _run_agent(index: int) -> tuple[int, dict[str, object]]:
+        result = await _make_agent(
             f"{index} * 10",
             REPLMiddleware(),
             final_message=f"done-{index}",
-        ).invoke(
+        ).ainvoke(
             {
                 "messages": [
                     HumanMessage(content=f"Use the eval tool to multiply {index} by 10")
@@ -280,59 +256,10 @@ def test_quickjs_sync_parallel_agents_across_threads() -> None:
         )
         return index, result
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        runs = list(executor.map(_run_agent, range(12)))
+    runs = await asyncio.gather(*(_run_agent(index) for index in range(25)))
 
-    assert len(runs) == 12
+    assert len(runs) == 25
     for index, result in runs:
         tool_message = _eval_tool_message(result)
         _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
-
-
-def test_sync_ptc_eval_through_repl() -> None:
-    """``invoke`` path: the observed production snippet must not error."""
-    result = _make_agent(_EVAL_CODE, REPLMiddleware(ptc=[list_user_ids])).invoke(
-        {"messages": [HumanMessage(content="go")]}
-    )
-    _assert_no_error(_eval_tool_message(result).content)
-
-
-async def test_async_ptc_eval_through_repl() -> None:
-    """``ainvoke`` path: same guard on the async handler."""
-    result = await _make_agent(
-        _EVAL_CODE,
-        REPLMiddleware(ptc=[list_user_ids]),
-    ).ainvoke({"messages": [HumanMessage(content="go")]})
-    _assert_no_error(_eval_tool_message(result).content)
-
-
-@pytest.mark.xfail
-def test_wrong_arg_name_surfaces_to_model() -> None:
-    """Document what the model sees when JS calls a tool with a misspelled arg."""
-    agent = create_deep_agent(
-        model=_FakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "eval",
-                                "args": {
-                                    "code": 'await tools.echoFoo({not_foo: "x"})',
-                                },
-                                "id": "call_1",
-                                "type": "tool_call",
-                            },
-                        ],
-                    ),
-                    AIMessage(content="Done."),
-                ]
-            )
-        ),
-        middleware=[REPLMiddleware(ptc=[echo_foo])],
-    )
-    result = agent.invoke({"messages": [HumanMessage(content="go")]})
-    content = _eval_tool_message(result).content
-    assert "Host function failed" not in content

@@ -128,13 +128,16 @@ _REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = 
         _PermissionMiddleware,
     }
 )
-"""Middleware classes that `HarnessProfile.excluded_middleware` must not strip.
+"""Middleware classes that core deep agent features depend on.
 
 Removing any of these silently breaks core features: `FilesystemMiddleware`
 backs every built-in file tool, `SubAgentMiddleware` backs the `task` tool
 handler, and `_PermissionMiddleware` enforces `permissions` rules (a security
-guarantee). `_apply_excluded_middleware` raises `ValueError` rather than
-proceeding with a silently degraded agent.
+guarantee).
+
+Tracked here so `HarnessProfile.excluded_middleware` cannot strip them:
+`_apply_excluded_middleware` raises `ValueError` rather than proceeding with
+a silently degraded agent.
 """
 
 

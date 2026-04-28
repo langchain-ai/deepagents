@@ -21,7 +21,7 @@ def test_state_backend_runtime_deprecation_warning():
         StateBackend(runtime="ignored_value")
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
-        assert "v0.7" in str(deprecation_warnings[0].message)
+        assert "0.6.0" in str(deprecation_warnings[0].message)
         assert "runtime" in str(deprecation_warnings[0].message)
 
 

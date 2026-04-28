@@ -314,7 +314,7 @@ def test_compat_wrapper_old_style_runtime_access_warns() -> None:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert ".runtime" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
+        assert "0.6.0" in str(w[0].message)
 
 
 def test_compat_wrapper_old_style_state_access_warns() -> None:
@@ -328,7 +328,7 @@ def test_compat_wrapper_old_style_state_access_warns() -> None:
         assert len(w) == 1
         assert issubclass(w[0].category, DeprecationWarning)
         assert ".state" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
+        assert "0.6.0" in str(w[0].message)
 
 
 def test_compat_wrapper_proxies_runtime_attrs() -> None:
@@ -364,11 +364,12 @@ def test_compat_wrapper_old_style_factory_end_to_end() -> None:
     def old_factory(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
         return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = old_factory(compat)  # type: ignore[arg-type]
-        assert result == ("bob", "filesystem")
-        assert len(w) == 1  # one warning from .runtime access
+    # The `.runtime` deprecation warning is verified by
+    # `test_compat_wrapper_old_style_runtime_access_warns`; langchain's
+    # `@deprecated` decorator dedupes per-process, so we don't re-assert
+    # warning emission here.
+    result = old_factory(compat)  # type: ignore[arg-type]
+    assert result == ("bob", "filesystem")
 
 
 def test_compat_wrapper_new_style_factory_end_to_end() -> None:

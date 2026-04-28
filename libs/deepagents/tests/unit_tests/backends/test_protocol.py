@@ -126,11 +126,8 @@ class TestDeprecatedMethodsRouteToNewNames:
             def ls(self, path: str) -> LsResult:
                 return LsResult(error="error")
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            with pytest.raises(NotImplementedError, match="new `ls` API"):
-                MyBackend().ls_info("/")
-        assert any("ls_info" in str(x.message) for x in w)
+        with pytest.raises(NotImplementedError, match="new `ls` API"):
+            MyBackend().ls_info("/")
 
     def test_grep_raw_delegates_to_grep(self) -> None:
         class MyBackend(BackendProtocol):

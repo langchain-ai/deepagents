@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     import pytest
 
 from deepagents._version import __version__
-from deepagents.graph import get_default_model
 
 import tests.evals.utils as _evals_utils
 
@@ -146,10 +145,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         client = ls_client.Client()
         dataset = _get_test_suite(client, test_suite_name)
 
-        model_opt = session.config.getoption("--model", default=None)
-        model_name = model_opt or str(get_default_model().model)
         experiment_metadata = {
-            "model": model_name,
+            "model": session.config.getoption("--model"),
             "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
             "deepagents_version": __version__,
         }
@@ -374,9 +371,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
-        "model": session.config.getoption("--model")
-        or str(session.config._inicache.get("model", ""))
-        or str(get_default_model().model),
+        "model": session.config.getoption("--model"),
         **_RESULTS,
         "correctness": correctness,
         "category_scores": category_scores,

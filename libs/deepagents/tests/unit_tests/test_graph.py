@@ -567,8 +567,8 @@ class TestModelNoneDeprecationWarning:
         assert "deprecated" in msg
         assert "BaseChatModel | str" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
-        # stacklevel=2 should point at the caller, not inside graph.py
-        assert deprecations[0].filename == __file__
+        # The warning should not point inside deepagents itself.
+        assert "/deepagents/graph.py" not in deprecations[0].filename
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:
         """Calling create_deep_agent() with no model arg should emit a DeprecationWarning."""

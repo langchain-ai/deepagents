@@ -6,7 +6,6 @@ middleware.
 """
 
 import logging
-import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -16,6 +15,11 @@ from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _Input
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+from langchain_core._api.deprecation import (
+    deprecated,
+    suppress_langchain_deprecation_warning,
+    warn_deprecated,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.tools import BaseTool
@@ -98,6 +102,17 @@ this is used as the sole system prompt.
 # Replaceable via `_HarnessProfile.base_system_prompt` (internal)
 
 
+@deprecated(
+    since="0.5.4",
+    removal="1.0.0",
+    message=(
+        "Relying on the default model is deprecated and will be removed "
+        "alongside support for `model=None` in `create_deep_agent`. Specify a "
+        "model explicitly. "
+        "See https://docs.langchain.com/oss/python/deepagents/models"
+    ),
+    package="deepagents",
+)
 def get_default_model() -> ChatAnthropic:
     """Get the default model for Deep Agents.
 
@@ -416,17 +431,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     _model_spec: str | None = model if isinstance(model, str) else None
 
     if model is None:
-        warnings.warn(
-            "Passing `model=None` to `create_deep_agent` is deprecated and "
-            "will be removed in a future release. The `model` parameter type "
-            "will change from `BaseChatModel | str | None` to "
-            "`BaseChatModel | str`. Please specify a model explicitly. "
-            "See https://docs.langchain.com/oss/python/deepagents/models",
-            DeprecationWarning,
-            stacklevel=2,
+        warn_deprecated(
+            since="0.5.4",
+            removal="1.0.0",
+            message=(
+                "Passing `model=None` to `create_deep_agent` is deprecated. "
+                "The `model` parameter type will change from "
+                "`BaseChatModel | str | None` to `BaseChatModel | str`. "
+                "Specify a model explicitly. "
+                "See https://docs.langchain.com/oss/python/deepagents/models"
+            ),
+            package="deepagents",
         )
-
-    model = get_default_model() if model is None else resolve_model(model)
+        # Suppress the redundant `get_default_model` deprecation warning here;
+        # the caller has already been warned about `model=None` above.
+        with suppress_langchain_deprecation_warning():
+            model = get_default_model()
+    else:
+        model = resolve_model(model)
     _profile = _harness_profile_for_model(model, _model_spec)
 
     # Copy of `tools` with any provider-specific description rewrites.

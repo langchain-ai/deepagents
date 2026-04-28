@@ -9,13 +9,13 @@ import abc
 import asyncio
 import inspect
 import logging
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
+from langchain_core._api.deprecation import deprecated, warn_deprecated
 from typing_extensions import TypedDict
 
 FileFormat = Literal["v1", "v2"]
@@ -196,10 +196,12 @@ def _normalize_files_update(
     if isinstance(files_update, _Unset):
         return None
 
-    warnings.warn(
-        "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
-        DeprecationWarning,
-        stacklevel=3,
+    warn_deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        name="files_update",
+        addendum="State updates are now handled internally by the backend.",
+        package="deepagents",
     )
     return files_update
 
@@ -337,10 +339,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             LsResult with directory entries or error.
         """
         if type(self).ls_info is not BackendProtocol.ls_info:
-            warnings.warn(
-                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message="`ls_info` is deprecated; rename to `ls` instead.",
+                package="deepagents",
             )
             return LsResult(entries=self.ls_info(path))
 
@@ -422,10 +425,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             `GrepResult` with matches or error.
         """
         if type(self).grep_raw is not BackendProtocol.grep_raw:
-            warnings.warn(
-                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message="`grep_raw` is deprecated; rename to `grep` instead.",
+                package="deepagents",
             )
             result = self.grep_raw(pattern, path, glob)
             if isinstance(result, str):
@@ -466,10 +470,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             GlobResult with matching files or error.
         """
         if type(self).glob_info is not BackendProtocol.glob_info:
-            warnings.warn(
-                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message="`glob_info` is deprecated; rename to `glob` instead.",
+                package="deepagents",
             )
             return GlobResult(matches=self.glob_info(pattern, path))
 
@@ -598,117 +603,93 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
     # -- deprecated methods --------------------------------------------------
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="ls",
+        package="deepagents",
+    )
     def ls_info(self, path: str) -> list["FileInfo"]:
-        """List all files in a directory with metadata.
-
-        !!! warning "Deprecated"
-
-            Use `ls` instead.
-        """
-        warnings.warn(
-            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """List all files in a directory with metadata."""
         result = self.ls(path)
         if result.error is not None:
             msg = "This behavior is only available via the new `ls` API."
             raise NotImplementedError(msg)
         return result.entries or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="als",
+        package="deepagents",
+    )
     async def als_info(self, path: str) -> list["FileInfo"]:
-        """Async version of `ls_info`.
-
-        !!! warning "Deprecated"
-
-            Use `als` instead.
-        """
-        warnings.warn(
-            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """Async version of `ls_info`."""
         result = await self.als(path)
         if result.error is not None:
             msg = "This behavior is only available via the new `als` API."
             raise NotImplementedError(msg)
         return result.entries or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="glob",
+        package="deepagents",
+    )
     def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Find files matching a glob pattern.
-
-        !!! warning "Deprecated"
-
-            Use `glob` instead.
-        """
-        warnings.warn(
-            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """Find files matching a glob pattern."""
         result = self.glob(pattern, path)
         if result.error is not None:
             msg = "This behavior is only available via the new `glob` API."
             raise NotImplementedError(msg)
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="aglob",
+        package="deepagents",
+    )
     async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Async version of `glob_info`.
-
-        !!! warning "Deprecated"
-
-            Use `aglob` instead.
-        """
-        warnings.warn(
-            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """Async version of `glob_info`."""
         result = await self.aglob(pattern, path)
         if result.error is not None:
             msg = "This behavior is only available via the new `aglob` API."
             raise NotImplementedError(msg)
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="grep",
+        package="deepagents",
+    )
     def grep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> list["GrepMatch"] | str:
-        """Search for a literal text pattern in files.
-
-        !!! warning "Deprecated"
-
-            Use `grep` instead.
-        """
-        warnings.warn(
-            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """Search for a literal text pattern in files."""
         result = self.grep(pattern, path, glob)
         if result.error is not None:
             return result.error
         return result.matches or []
 
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        alternative="agrep",
+        package="deepagents",
+    )
     async def agrep_raw(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
     ) -> list["GrepMatch"] | str:
-        """Async version of `grep_raw`.
-
-        !!! warning "Deprecated"
-
-            Use `agrep` instead.
-        """
-        warnings.warn(
-            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        """Async version of `grep_raw`."""
         result = await self.agrep(pattern, path, glob)
         if result.error is not None:
             return result.error

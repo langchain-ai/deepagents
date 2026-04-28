@@ -1,9 +1,9 @@
 """StateBackend: Store files in LangGraph agent state (ephemeral)."""
 
 import base64
-import warnings
 from typing import Any
 
+from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.runnables import RunnableConfig
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
@@ -64,12 +64,16 @@ class StateBackend(BackendProtocol):
                 plain `str` with an `encoding` field.
         """
         if runtime is not None:
-            warnings.warn(
-                "Passing `runtime` to StateBackend is deprecated and will be "
-                "removed in v0.7. StateBackend now reads and writes "
-                "state via `get_config()`. Simply use `StateBackend()` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=(
+                    "Passing `runtime` to `StateBackend` is deprecated and "
+                    "will be removed in deepagents==0.6.0. `StateBackend` now "
+                    "reads and writes state via `get_config()`. Use "
+                    "`StateBackend()` instead."
+                ),
+                package="deepagents",
             )
         self._file_format = file_format
 

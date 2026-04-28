@@ -6,7 +6,6 @@ import concurrent.futures
 import contextvars
 import mimetypes
 import uuid
-import warnings
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
@@ -25,6 +24,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
@@ -639,12 +639,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            warnings.warn(
-                "Passing a callable (factory) as `backend` is deprecated and "
-                "will be removed in v0.7. Pass a `BackendProtocol` instance "
-                "directly instead (e.g. `StateBackend()`).",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=(
+                    "Passing a callable (factory) as `backend` is deprecated. "
+                    "Pass a `BackendProtocol` instance directly instead "
+                    "(e.g. `StateBackend()`)."
+                ),
+                package="deepagents",
             )
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
@@ -732,12 +735,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
-                warnings.warn(
-                    "Returning a plain `str` from `backend.read()` is deprecated. "
-                    "Return a `ReadResult` instead. Returning `str` will not be "
-                    "supported in v0.7.",
-                    DeprecationWarning,
-                    stacklevel=2,
+                warn_deprecated(
+                    since="0.5.0",
+                    removal="0.6.0",
+                    message=("Returning a plain `str` from `backend.read()` is deprecated. Return a `ReadResult` instead."),
+                    package="deepagents",
                 )
                 # Legacy backends already format with line numbers
                 return _truncate(read_result, validated_path, limit)

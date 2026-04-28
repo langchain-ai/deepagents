@@ -1,7 +1,7 @@
 """Tests for the deprecated ``files_update`` field on WriteResult and EditResult.
 
 ``files_update`` was removed in favour of internal backend state handling.
-Passing it should emit a DeprecationWarning (scheduled for removal in v0.7)
+Passing it should emit a DeprecationWarning (scheduled for removal in v0.6)
 but must not raise an error so existing callers aren't broken.
 """
 
@@ -30,7 +30,7 @@ class TestWriteResultFilesUpdateDeprecation:
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
         assert "files_update" in str(deprecation_warnings[0].message)
-        assert "v0.7" in str(deprecation_warnings[0].message)
+        assert "0.6.0" in str(deprecation_warnings[0].message)
         assert result.files_update is None
 
     def test_warning_with_files_update_dict(self) -> None:
@@ -71,7 +71,7 @@ class TestEditResultFilesUpdateDeprecation:
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
         assert "files_update" in str(deprecation_warnings[0].message)
-        assert "v0.7" in str(deprecation_warnings[0].message)
+        assert "0.6.0" in str(deprecation_warnings[0].message)
         assert result.files_update is None
         assert result.occurrences == 2
 

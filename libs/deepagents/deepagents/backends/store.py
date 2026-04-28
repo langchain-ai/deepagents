@@ -2,11 +2,11 @@
 
 import base64
 import re
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
+from langchain_core._api.deprecation import deprecated, warn_deprecated
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 class BackendContext(Generic[StateT, ContextT]):
     """Context passed to namespace factory functions.
 
-    Deprecated: `BackendContext` will be removed in version 0.7.0.
+    Deprecated: `BackendContext` will be removed in version 0.6.0.
     Namespace factories now receive a `Runtime` instance directly.
     Migrate from `lambda ctx: (ctx.runtime.context.user_id, "fs")`
     to `lambda rt: (rt.server_info.user.identity, "fs")`.
@@ -62,7 +62,7 @@ class _NamespaceRuntimeCompat:
     Allows old-style namespace factories (accessing ``.runtime`` / ``.state``)
     to work alongside new-style factories (accessing ``Runtime`` attrs directly).
 
-    Will be removed in v0.7.
+    Will be removed in v0.6.
     """
 
     def __init__(self, runtime: "Runtime[Any] | None", state: object = None) -> None:
@@ -70,26 +70,32 @@ class _NamespaceRuntimeCompat:
         self._state = state
 
     @property
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        message=(
+            "Accessing `.runtime` on the namespace factory argument is "
+            "deprecated and will be removed in deepagents==0.6.0. The "
+            "argument is now a Runtime instance — use its attributes directly "
+            "(e.g. `rt.context` instead of `ctx.runtime.context`)."
+        ),
+        package="deepagents",
+    )
     def runtime(self) -> "Runtime[Any] | None":
-        warnings.warn(
-            "Accessing .runtime on the namespace factory argument is deprecated. "
-            "The argument is now a Runtime instance — use its attributes directly "
-            "(e.g. `rt.context` instead of `ctx.runtime.context`). "
-            "This will be removed in v0.7.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return self._runtime
 
     @property
+    @deprecated(
+        since="0.5.0",
+        removal="0.6.0",
+        message=(
+            "Accessing `.state` on the namespace factory argument is "
+            "deprecated and will be removed in deepagents==0.6.0. Namespace "
+            "resolution should not depend on state."
+        ),
+        package="deepagents",
+    )
     def state(self) -> object:
-        warnings.warn(
-            "Accessing .state on the namespace factory argument is deprecated. "
-            "Namespace resolution should not depend on state. "
-            "This will be removed in v0.7.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return self._state
 
     def __getattr__(self, name: str) -> object:
@@ -101,7 +107,7 @@ class _NamespaceRuntimeCompat:
 
 # Type alias for namespace factory functions.
 # Accepts Runtime directly. Old-style BackendContext callables still work
-# via _NamespaceRuntimeCompat but are deprecated (removed in v0.7).
+# via _NamespaceRuntimeCompat but are deprecated (removed in v0.6).
 NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
@@ -183,7 +189,7 @@ class StoreBackend(BackendProtocol):
                 If ``None``, uses legacy assistant_id detection from metadata (deprecated).
 
                 Old-style callables that accept ``BackendContext`` still work
-                but are deprecated and will be removed in v0.7.
+                but are deprecated and will be removed in v0.6.
 
             file_format: Storage format version. `"v1"` (default) stores
                 content as `list[str]` (lines split on `\\n`) without an
@@ -194,13 +200,16 @@ class StoreBackend(BackendProtocol):
                     namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
         """
         if runtime is not None:
-            warnings.warn(
-                "Passing `runtime` to StoreBackend is deprecated and will be "
-                "removed in v0.7. StoreBackend now obtains store "
-                "and context via `get_store()` / `get_runtime()`. Simply use "
-                "`StoreBackend()` or `StoreBackend(store=my_store)` instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=(
+                    "Passing `runtime` to `StoreBackend` is deprecated. "
+                    "`StoreBackend` now obtains store and context via "
+                    "`get_store()` / `get_runtime()`. Use `StoreBackend()` or "
+                    "`StoreBackend(store=my_store)` instead."
+                ),
+                package="deepagents",
             )
         self._store = store
         self._namespace = namespace
@@ -250,11 +259,11 @@ class StoreBackend(BackendProtocol):
         .. deprecated::
             Pass `namespace` to StoreBackend instead of relying on legacy detection.
         """
-        warnings.warn(
-            "StoreBackend without explicit `namespace` is deprecated and will be removed in v0.7. "
-            "Pass `namespace=lambda ctx: (...)` to StoreBackend.",
-            DeprecationWarning,
-            stacklevel=3,
+        warn_deprecated(
+            since="0.5.0",
+            removal="0.6.0",
+            message=("`StoreBackend` without an explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to `StoreBackend`."),
+            package="deepagents",
         )
         namespace = "filesystem"
 
@@ -289,10 +298,11 @@ class StoreBackend(BackendProtocol):
 
         # BACKWARDS COMPAT: legacy list[str] format
         if isinstance(raw_content, list):
-            warnings.warn(
-                "Store item with list[str] content is deprecated and will be removed in v0.7. Content should be stored as a plain str.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=("Store item with `list[str]` content is deprecated. Content should be stored as a plain `str`."),
+                package="deepagents",
             )
             content = "\n".join(raw_content)
         elif isinstance(raw_content, str):

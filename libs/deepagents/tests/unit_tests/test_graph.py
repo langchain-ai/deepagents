@@ -10,6 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._version import __version__
 from deepagents.graph import (
     BASE_AGENT_PROMPT,
@@ -567,7 +568,10 @@ class TestModelNoneDeprecationWarning:
         assert "deprecated" in msg
         assert "BaseChatModel | str" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
-        # The warning should not point inside deepagents itself.
+        # The warning must be a `LangChainDeprecationWarning`, not stdlib —
+        # this is the strongest signal that we routed through `warn_deprecated`.
+        assert deprecations[0].category is LangChainDeprecationWarning
+        # And it should not be attributed to a frame inside deepagents itself.
         assert "/deepagents/graph.py" not in deprecations[0].filename
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:

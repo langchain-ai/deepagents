@@ -13,8 +13,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
-from langchain_core._api.deprecation import warn_deprecated
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -90,7 +90,11 @@ def _normalize_content(file_data: FileData) -> str:
         warn_deprecated(
             since="0.5.0",
             removal="0.6.0",
-            message=("`FileData` with `list[str]` content is deprecated. Content should be stored as a plain `str`."),
+            message=(
+                "`FileData` with `list[str]` content is deprecated and will "
+                "be removed in deepagents==0.6.0. Content should be stored "
+                "as a plain `str`."
+            ),
             package="deepagents",
         )
         return "\n".join(content)

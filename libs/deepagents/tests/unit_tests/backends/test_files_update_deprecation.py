@@ -1,7 +1,7 @@
 """Tests for the deprecated ``files_update`` field on WriteResult and EditResult.
 
 ``files_update`` was removed in favour of internal backend state handling.
-Passing it should emit a DeprecationWarning (scheduled for removal in v0.6)
+Passing it should emit a DeprecationWarning (scheduled for removal in 0.6.0)
 but must not raise an error so existing callers aren't broken.
 """
 

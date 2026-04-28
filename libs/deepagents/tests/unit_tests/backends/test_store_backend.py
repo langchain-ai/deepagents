@@ -364,12 +364,11 @@ def test_compat_wrapper_old_style_factory_end_to_end() -> None:
     def old_factory(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
         return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
 
-    # The `.runtime` deprecation warning is verified by
-    # `test_compat_wrapper_old_style_runtime_access_warns`; langchain's
-    # `@deprecated` decorator dedupes per-process, so we don't re-assert
-    # warning emission here.
-    result = old_factory(compat)  # type: ignore[arg-type]
-    assert result == ("bob", "filesystem")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        result = old_factory(compat)  # type: ignore[arg-type]
+        assert result == ("bob", "filesystem")
+        assert len(w) == 1  # one warning from .runtime access
 
 
 def test_compat_wrapper_new_style_factory_end_to_end() -> None:

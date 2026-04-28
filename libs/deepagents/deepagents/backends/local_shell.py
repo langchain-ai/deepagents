@@ -12,8 +12,7 @@ import subprocess
 import uuid
 from typing import TYPE_CHECKING
 
-from langchain_core._api.deprecation import warn_deprecated
-
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
@@ -171,16 +170,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 since="0.5.0",
                 removal="0.6.0",
                 message=(
-                    "`LocalShellBackend` `virtual_mode` default will change; "
-                    "please specify `virtual_mode` explicitly. Note: "
-                    "`virtual_mode` is for virtual path semantics (e.g., "
-                    "`CompositeBackend` routing) and optional path-based "
-                    "guardrails; it does not provide sandboxing or process "
-                    "isolation. Security note: leaving `virtual_mode=False` "
-                    "allows absolute paths and `'..'` to bypass `root_dir`, "
-                    "and `LocalShellBackend` provides no sandboxing (execute "
-                    "runs commands on the host; `virtual_mode` does not "
-                    "restrict shell execution). See "
+                    "`LocalShellBackend` `virtual_mode` default will change "
+                    "in deepagents==0.6.0; please specify `virtual_mode` "
+                    "explicitly. Note: `virtual_mode` is for virtual path "
+                    "semantics (e.g., `CompositeBackend` routing) and "
+                    "optional path-based guardrails; it does not provide "
+                    "sandboxing or process isolation. Security note: leaving "
+                    "`virtual_mode=False` allows absolute paths and `'..'` "
+                    "to bypass `root_dir`, and `LocalShellBackend` provides "
+                    "no sandboxing (`execute()` runs commands on the host; "
+                    "`virtual_mode` does not restrict shell execution). See "
                     "https://reference.langchain.com/python/deepagents/ for "
                     "usage guidelines."
                 ),

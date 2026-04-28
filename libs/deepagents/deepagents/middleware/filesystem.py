@@ -24,7 +24,6 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
@@ -32,6 +31,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
@@ -643,8 +643,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 since="0.5.0",
                 removal="0.6.0",
                 message=(
-                    "Passing a callable (factory) as `backend` is deprecated. "
-                    "Pass a `BackendProtocol` instance directly instead "
+                    "Passing a callable (factory) as `backend` is deprecated "
+                    "and will be removed in deepagents==0.6.0. Pass a "
+                    "`BackendProtocol` instance directly instead "
                     "(e.g. `StateBackend()`)."
                 ),
                 package="deepagents",
@@ -738,7 +739,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 warn_deprecated(
                     since="0.5.0",
                     removal="0.6.0",
-                    message=("Returning a plain `str` from `backend.read()` is deprecated. Return a `ReadResult` instead."),
+                    message=(
+                        "Returning a plain `str` from `backend.read()` is "
+                        "deprecated and will be removed in deepagents==0.6.0. "
+                        "Return a `ReadResult` instead."
+                    ),
                     package="deepagents",
                 )
                 # Legacy backends already format with line numbers

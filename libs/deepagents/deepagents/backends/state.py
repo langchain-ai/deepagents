@@ -3,11 +3,11 @@
 import base64
 from typing import Any
 
-from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.runnables import RunnableConfig
 from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,

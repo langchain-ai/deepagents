@@ -46,6 +46,27 @@ load_dotenv()
 
 _MAX_FILE_LISTING = 10  # maximum files shown in the system prompt directory context
 
+# Reasoning-only model name prefixes that reject `temperature` at the API.
+# Match is performed after stripping any provider prefix (e.g. `openai:`).
+_REASONING_MODEL_PREFIXES: tuple[str, ...] = (
+    "o1",
+    "o3",
+    "o4",
+    "gpt-5",
+)
+
+
+def _accepts_temperature(model_name: str) -> bool:
+    """Return whether the named model accepts a `temperature` parameter.
+
+    Reasoning-only models (`o1-*`, `o3-*`, `o4-*`, `gpt-5*`) reject
+    `temperature` at the OpenAI Responses API and fail at first call rather
+    than at construction.
+    """
+    bare = model_name.split(":", 1)[1] if ":" in model_name else model_name
+    return not bare.startswith(_REASONING_MODEL_PREFIXES)
+
+
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
 
@@ -86,8 +107,9 @@ class DeepAgentsWrapper(BaseAgent):
 
         Args:
             logs_dir: Directory for storing logs
-            model_name: Name of the LLM model to use
-            temperature: Temperature setting for the model
+            model_name: Name of the LLM model to use (required, non-empty).
+            temperature: Temperature setting for the model. Skipped for
+                reasoning-only models that reject the parameter.
             verbose: Enable verbose output
             use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
                 If False, use create_deep_agent from SDK.
@@ -95,7 +117,15 @@ class DeepAgentsWrapper(BaseAgent):
                 (e.g. `"MiniMax"`).
 
                 Requires an `openrouter:` model prefix.
+
+        Raises:
+            ValueError: If `model_name` is empty/whitespace, or if
+                `openrouter_provider` is set without an `openrouter:` prefix.
         """
+        if not model_name or not model_name.strip():
+            msg = "model_name must be a non-empty string"
+            raise ValueError(msg)
+
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
         if openrouter_provider and not model_name.startswith("openrouter:"):
@@ -109,7 +139,12 @@ class DeepAgentsWrapper(BaseAgent):
                 "only": [openrouter_provider],
                 "allow_fallbacks": False,
             }
-        self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
+        # Reasoning-only models (o1/o3/o4/gpt-5*) reject `temperature`. Skip
+        # it for those — the failure would otherwise surface only at the first
+        # API call, after sandbox setup.
+        if _accepts_temperature(model_name):
+            model_kwargs["temperature"] = temperature
+        self._model = init_chat_model(model_name, **model_kwargs)
 
         self._temperature = temperature
         self._verbose = verbose

@@ -15,8 +15,9 @@ from functools import lru_cache
 from typing import Any, Final, Literal, NotRequired, TypeAlias
 
 from langchain.tools import ToolRuntime
-from langchain_core._api.deprecation import deprecated, warn_deprecated
 from typing_extensions import TypedDict
+
+from deepagents._api.deprecation import deprecated, warn_deprecated
 
 FileFormat = Literal["v1", "v2"]
 r"""File storage format version.
@@ -196,11 +197,16 @@ def _normalize_files_update(
     if isinstance(files_update, _Unset):
         return None
 
+    # Use an explicit `message=` to bypass `langchain_core`'s auto-formatter,
+    # which mis-attributes the package as "LangChain" when `name` lacks a dot.
     warn_deprecated(
         since="0.5.0",
         removal="0.6.0",
-        name="files_update",
-        addendum="State updates are now handled internally by the backend.",
+        message=(
+            "`files_update` was deprecated in deepagents 0.5.0 and will be "
+            "removed in deepagents==0.6.0. State updates are now handled "
+            "internally by the backend."
+        ),
         package="deepagents",
     )
     return files_update
@@ -326,7 +332,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     Note:
         Legacy data may still contain `"content": list[str]` (lines split on
         `\\n`).  Backends accept this for backwards compatibility and emit a
-        `DeprecationWarning`.
+        `LangChainDeprecationWarning` (a `DeprecationWarning` subclass).
     """
 
     def ls(self, path: str) -> "LsResult":
@@ -342,7 +348,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             warn_deprecated(
                 since="0.5.0",
                 removal="0.6.0",
-                message="`ls_info` is deprecated; rename to `ls` instead.",
+                message=("`ls_info` is deprecated and will be removed in deepagents==0.6.0; rename to `ls` instead."),
                 package="deepagents",
             )
             return LsResult(entries=self.ls_info(path))
@@ -428,7 +434,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             warn_deprecated(
                 since="0.5.0",
                 removal="0.6.0",
-                message="`grep_raw` is deprecated; rename to `grep` instead.",
+                message=("`grep_raw` is deprecated and will be removed in deepagents==0.6.0; rename to `grep` instead."),
                 package="deepagents",
             )
             result = self.grep_raw(pattern, path, glob)
@@ -473,7 +479,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             warn_deprecated(
                 since="0.5.0",
                 removal="0.6.0",
-                message="`glob_info` is deprecated; rename to `glob` instead.",
+                message=("`glob_info` is deprecated and will be removed in deepagents==0.6.0; rename to `glob` instead."),
                 package="deepagents",
             )
             return GlobResult(matches=self.glob_info(pattern, path))

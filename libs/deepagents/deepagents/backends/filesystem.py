@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 import wcmatch.glob as wcglob
-from langchain_core._api.deprecation import warn_deprecated
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
@@ -133,14 +133,15 @@ class FilesystemBackend(BackendProtocol):
                 since="0.5.0",
                 removal="0.6.0",
                 message=(
-                    "`FilesystemBackend` `virtual_mode` default will change; "
-                    "please specify `virtual_mode` explicitly. Note: "
-                    "`virtual_mode` is for virtual path semantics (e.g., "
-                    "`CompositeBackend` routing) and optional path-based "
-                    "guardrails; it does not provide sandboxing or process "
-                    "isolation. Security note: leaving `virtual_mode=False` "
-                    "allows absolute paths and `'..'` to bypass `root_dir`. "
-                    "Consult the API reference for details."
+                    "`FilesystemBackend` `virtual_mode` default will change "
+                    "in deepagents==0.6.0; please specify `virtual_mode` "
+                    "explicitly. Note: `virtual_mode` is for virtual path "
+                    "semantics (e.g., `CompositeBackend` routing) and "
+                    "optional path-based guardrails; it does not provide "
+                    "sandboxing or process isolation. Security note: leaving "
+                    "`virtual_mode=False` allows absolute paths and `'..'` "
+                    "to bypass `root_dir`. Consult the API reference for "
+                    "details."
                 ),
                 package="deepagents",
             )

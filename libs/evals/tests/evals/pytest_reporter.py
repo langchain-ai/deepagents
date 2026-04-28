@@ -423,6 +423,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if not report_path_opt:
         return
 
+    # Don't clobber an existing report with a `model: null` payload when the
+    # session aborted before `--model` validation in `pytest_configure`.
+    if not payload["model"]:
+        return
+
     report_path = Path(str(report_path_opt))
     report_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -66,7 +66,6 @@ from langchain.agents.middleware.summarization import (
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
 from langchain.tools import ToolRuntime
-from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
@@ -75,6 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
@@ -273,7 +273,12 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             warn_deprecated(
                 since="0.5.0",
                 removal="0.6.0",
-                message=("The argument `history_path_prefix` is deprecated. Use `CompositeBackend(artifacts_root='/my/root', ...)` instead."),
+                message=(
+                    "The argument `history_path_prefix` is deprecated and "
+                    "will be removed in deepagents==0.6.0. Use "
+                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
+                    "instead."
+                ),
                 package="deepagents",
             )
 

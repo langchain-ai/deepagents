@@ -6,12 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic
 
-from langchain_core._api.deprecation import deprecated, warn_deprecated
 from langgraph.config import get_config, get_store
 from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item
 from langgraph.typing import ContextT, StateT
 
+from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
@@ -62,7 +62,7 @@ class _NamespaceRuntimeCompat:
     Allows old-style namespace factories (accessing ``.runtime`` / ``.state``)
     to work alongside new-style factories (accessing ``Runtime`` attrs directly).
 
-    Will be removed in v0.6.
+    Will be removed in deepagents 0.6.0.
     """
 
     def __init__(self, runtime: "Runtime[Any] | None", state: object = None) -> None:
@@ -107,7 +107,7 @@ class _NamespaceRuntimeCompat:
 
 # Type alias for namespace factory functions.
 # Accepts Runtime directly. Old-style BackendContext callables still work
-# via _NamespaceRuntimeCompat but are deprecated (removed in v0.6).
+# via _NamespaceRuntimeCompat but are deprecated (removed in deepagents 0.6.0).
 NamespaceFactory = Callable[["Runtime[Any]"], tuple[str, ...]]
 
 # Allowed characters in namespace components: alphanumeric, plus characters
@@ -189,7 +189,7 @@ class StoreBackend(BackendProtocol):
                 If ``None``, uses legacy assistant_id detection from metadata (deprecated).
 
                 Old-style callables that accept ``BackendContext`` still work
-                but are deprecated and will be removed in v0.6.
+                but are deprecated and will be removed in deepagents 0.6.0.
 
             file_format: Storage format version. `"v1"` (default) stores
                 content as `list[str]` (lines split on `\\n`) without an
@@ -204,8 +204,9 @@ class StoreBackend(BackendProtocol):
                 since="0.5.0",
                 removal="0.6.0",
                 message=(
-                    "Passing `runtime` to `StoreBackend` is deprecated. "
-                    "`StoreBackend` now obtains store and context via "
+                    "Passing `runtime` to `StoreBackend` is deprecated and "
+                    "will be removed in deepagents==0.6.0. `StoreBackend` "
+                    "now obtains store and context via "
                     "`get_store()` / `get_runtime()`. Use `StoreBackend()` or "
                     "`StoreBackend(store=my_store)` instead."
                 ),
@@ -256,13 +257,17 @@ class StoreBackend(BackendProtocol):
         Uses ``get_config()`` to find assistant_id in metadata.
         Defaults to ``("filesystem",)``.
 
-        .. deprecated::
-            Pass `namespace` to StoreBackend instead of relying on legacy detection.
+        !!! deprecated
+            Pass `namespace` to `StoreBackend` instead of relying on legacy detection.
         """
         warn_deprecated(
             since="0.5.0",
             removal="0.6.0",
-            message=("`StoreBackend` without an explicit `namespace` is deprecated. Pass `namespace=lambda ctx: (...)` to `StoreBackend`."),
+            message=(
+                "`StoreBackend` without an explicit `namespace` is deprecated "
+                "and will be removed in deepagents==0.6.0. Pass "
+                "`namespace=lambda ctx: (...)` to `StoreBackend`."
+            ),
             package="deepagents",
         )
         namespace = "filesystem"
@@ -301,7 +306,11 @@ class StoreBackend(BackendProtocol):
             warn_deprecated(
                 since="0.5.0",
                 removal="0.6.0",
-                message=("Store item with `list[str]` content is deprecated. Content should be stored as a plain `str`."),
+                message=(
+                    "Store item with `list[str]` content is deprecated and "
+                    "will be removed in deepagents==0.6.0. Content should "
+                    "be stored as a plain `str`."
+                ),
                 package="deepagents",
             )
             content = "\n".join(raw_content)

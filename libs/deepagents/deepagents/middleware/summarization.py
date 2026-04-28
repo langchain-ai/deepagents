@@ -272,10 +272,10 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         if _deprecated_history_prefix is not None:
             warn_deprecated(
                 since="0.5.0",
-                removal="0.6.0",
+                removal="0.7.0",
                 message=(
                     "The argument `history_path_prefix` is deprecated and "
-                    "will be removed in deepagents==0.6.0. Use "
+                    "will be removed in deepagents==0.7.0. Use "
                     "`CompositeBackend(artifacts_root='/my/root', ...)` "
                     "instead."
                 ),

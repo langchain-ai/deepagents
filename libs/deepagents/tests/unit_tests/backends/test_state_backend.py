@@ -11,6 +11,7 @@ import warnings
 
 import pytest
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.state import StateBackend
 
 
@@ -21,8 +22,11 @@ def test_state_backend_runtime_deprecation_warning():
         StateBackend(runtime="ignored_value")
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
-        assert "0.6.0" in str(deprecation_warnings[0].message)
+        assert deprecation_warnings[0].category is LangChainDeprecationWarning
+        assert "0.7.0" in str(deprecation_warnings[0].message)
         assert "runtime" in str(deprecation_warnings[0].message)
+        # The warning should attribute to this test file, not deepagents internals.
+        assert deprecation_warnings[0].filename == __file__
 
 
 def test_state_backend_no_deprecation_without_runtime():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 import sys
@@ -14,6 +15,8 @@ if TYPE_CHECKING:
 from deepagents._version import __version__
 
 import tests.evals.utils as _evals_utils
+
+logger = logging.getLogger(__name__)
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -426,6 +429,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     # Don't clobber an existing report with a `model: null` payload when the
     # session aborted before `--model` validation in `pytest_configure`.
     if not payload["model"]:
+        logger.warning(
+            "Skipping report write to %s: session aborted before --model validation.",
+            report_path_opt,
+        )
         return
 
     report_path = Path(str(report_path_opt))

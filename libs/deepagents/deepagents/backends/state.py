@@ -66,10 +66,10 @@ class StateBackend(BackendProtocol):
         if runtime is not None:
             warn_deprecated(
                 since="0.5.0",
-                removal="0.6.0",
+                removal="0.7.0",
                 message=(
                     "Passing `runtime` to `StateBackend` is deprecated and "
-                    "will be removed in deepagents==0.6.0. `StateBackend` now "
+                    "will be removed in deepagents==0.7.0. `StateBackend` now "
                     "reads and writes state via `get_config()`. Use "
                     "`StateBackend()` instead."
                 ),

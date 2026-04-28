@@ -85,12 +85,13 @@ class DeepAgentsWrapper(BaseAgent):
         """Initialize Deep AgentsWrapper.
 
         Args:
-            logs_dir: Directory for storing logs
+            logs_dir: Directory for storing logs.
             model_name: Name of the LLM model to use.
             temperature: Temperature setting for the model.
-            verbose: Enable verbose output
-            use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                If False, use create_deep_agent from SDK.
+            verbose: Enable verbose output.
+            use_cli_agent: If `True`, use `create_cli_agent` from
+                `deepagents-cli` (default). If `False`, use
+                `create_deep_agent` from the SDK.
             openrouter_provider: Pin OpenRouter routing to a single provider
                 (e.g. `"MiniMax"`).
 

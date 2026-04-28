@@ -36,3 +36,18 @@ class TestOpenRouterPrefix:
                 model_name="claude-sonnet-4-6",
                 openrouter_provider="MiniMax",
             )
+
+
+class TestHappyPathConstruction:
+    """Wrapper construction succeeds with a valid model name and stashes state."""
+
+    def test_constructs_with_valid_model_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stub the credential so `init_chat_model` doesn't reject us.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        wrapper = DeepAgentsWrapper(logs_dir=tmp_path, model_name="claude-sonnet-4-6")
+
+        assert wrapper._model_name == "claude-sonnet-4-6"
+        assert wrapper._model is not None
+        assert wrapper._temperature == 0.0

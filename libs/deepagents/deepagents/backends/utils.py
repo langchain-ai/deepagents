@@ -89,10 +89,10 @@ def _normalize_content(file_data: FileData) -> str:
     if isinstance(content, list):
         warn_deprecated(
             since="0.5.0",
-            removal="0.6.0",
+            removal="0.7.0",
             message=(
                 "`FileData` with `list[str]` content is deprecated and will "
-                "be removed in deepagents==0.6.0. Content should be stored "
+                "be removed in deepagents==0.7.0. Content should be stored "
                 "as a plain `str`."
             ),
             package="deepagents",

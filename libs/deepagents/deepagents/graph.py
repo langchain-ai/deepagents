@@ -110,18 +110,24 @@ def _build_default_model() -> ChatAnthropic:
 
 
 @deprecated(
-    since="0.5.4",
+    since="0.5.3",
     removal="1.0.0",
     message=(
         "Relying on the default model is deprecated and will be removed in "
         "deepagents==1.0.0 alongside support for `model=None` in "
-        "`create_deep_agent`. Specify a model explicitly. "
-        "See https://docs.langchain.com/oss/python/deepagents/models"
+        "`create_deep_agent`. Construct your model explicitly "
+        "(e.g., `ChatAnthropic(model_name=...)`). See "
+        "https://docs.langchain.com/oss/python/deepagents/models"
     ),
     package="deepagents",
 )
 def get_default_model() -> ChatAnthropic:
     """Get the default model for Deep Agents.
+
+    !!! deprecated
+        Deprecated since `0.5.3`; will be removed in `deepagents==1.0.0`.
+        Construct your model explicitly (e.g.,
+        `ChatAnthropic(model_name="claude-sonnet-4-6")`).
 
     Used as a fallback when `model=None` is passed to `create_deep_agent`.
 
@@ -437,14 +443,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     if model is None:
         warn_deprecated(
-            since="0.5.4",
+            since="0.5.3",
             removal="1.0.0",
             message=(
                 "Passing `model=None` to `create_deep_agent` is deprecated "
                 "and will be removed in deepagents==1.0.0. The `model` "
                 "parameter type will change from `BaseChatModel | str | None` "
-                "to `BaseChatModel | str`. Specify a model explicitly. "
-                "See https://docs.langchain.com/oss/python/deepagents/models"
+                "to `BaseChatModel | str`. Specify a model explicitly "
+                "(e.g., `ChatAnthropic(model_name=...)`). See "
+                "https://docs.langchain.com/oss/python/deepagents/models"
             ),
             package="deepagents",
         )

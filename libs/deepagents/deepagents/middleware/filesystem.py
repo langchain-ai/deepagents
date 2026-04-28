@@ -641,10 +641,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if callable(self.backend):
             warn_deprecated(
                 since="0.5.0",
-                removal="0.6.0",
+                removal="0.7.0",
                 message=(
                     "Passing a callable (factory) as `backend` is deprecated "
-                    "and will be removed in deepagents==0.6.0. Pass a "
+                    "and will be removed in deepagents==0.7.0. Pass a "
                     "`BackendProtocol` instance directly instead "
                     "(e.g. `StateBackend()`)."
                 ),
@@ -738,10 +738,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if isinstance(read_result, str):
                 warn_deprecated(
                     since="0.5.0",
-                    removal="0.6.0",
+                    removal="0.7.0",
                     message=(
                         "Returning a plain `str` from `backend.read()` is "
-                        "deprecated and will be removed in deepagents==0.6.0. "
+                        "deprecated and will be removed in deepagents==0.7.0. "
                         "Return a `ReadResult` instead."
                     ),
                     package="deepagents",

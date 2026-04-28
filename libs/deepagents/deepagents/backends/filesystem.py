@@ -708,7 +708,20 @@ class FilesystemBackend(BackendProtocol):
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
                 if error is None:
-                    raise
+                    if isinstance(exc, (OSError, RuntimeError)):
+                        # e.g. OSError(ELOOP) on Linux/mac when a path traverses
+                        # a symlink loop, or RuntimeError("Symlink loop ...")
+                        # on Python 3.12. Without this guard, callers like
+                        # MemoryMiddleware.abefore_agent crash the entire agent
+                        # before a single LLM call.
+                        logger.warning(
+                            "upload_files(%s) failed to open path: %s; recording as invalid_path",
+                            path,
+                            exc,
+                        )
+                        error = INVALID_PATH
+                    else:
+                        raise
                 responses.append(FileUploadResponse(path=path, error=error))
 
         return responses
@@ -738,7 +751,20 @@ class FilesystemBackend(BackendProtocol):
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
                 if error is None:
-                    raise
+                    if isinstance(exc, (OSError, RuntimeError)):
+                        # e.g. OSError(ELOOP) on Linux/mac when a path traverses
+                        # a symlink loop, or RuntimeError("Symlink loop ...")
+                        # on Python 3.12. Without this guard, callers like
+                        # MemoryMiddleware.abefore_agent crash the entire agent
+                        # before a single LLM call.
+                        logger.warning(
+                            "download_files(%s) failed to open path: %s; recording as invalid_path",
+                            path,
+                            exc,
+                        )
+                        error = INVALID_PATH
+                    else:
+                        raise
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
 

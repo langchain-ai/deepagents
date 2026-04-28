@@ -681,3 +681,37 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+def test_download_files_handles_symlink_loop(tmp_path: Path):
+    """A symlink loop must NOT crash download_files — it should be returned as
+    a per-file error so callers like MemoryMiddleware.abefore_agent can keep
+    going and the agent can still reach the first LLM call.
+    """
+    import os
+
+    loop = tmp_path / "loop.md"
+    os.symlink(loop, loop)  # self-referential loop
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    responses = be.download_files([str(loop)])
+    assert len(responses) == 1
+    assert responses[0].content is None
+    assert responses[0].error is not None  # mapped to a standard error, not raised
+
+
+def test_upload_files_handles_symlink_loop(tmp_path: Path):
+    """Same guarantee on the upload path: a symlink-loop target produces an
+    error response, never a raised OSError.
+    """
+    import os
+
+    loop = tmp_path / "loop.md"
+    os.symlink(loop, loop)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    responses = be.upload_files([(str(loop), b"content")])
+    assert len(responses) == 1
+    assert responses[0].error is not None

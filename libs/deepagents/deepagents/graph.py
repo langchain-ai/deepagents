@@ -143,7 +143,16 @@ a silently degraded agent.
 """
 
 _REQUIRED_MIDDLEWARE_CLASSES: frozenset[type[AgentMiddleware[Any, Any, Any]]] = frozenset(cls for cls, _ in _REQUIRED_MIDDLEWARE)
+"""Set of all class types that cannot be excluded from the middleware stack.
+
+Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
+"""
+
 _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in _REQUIRED_MIDDLEWARE for name in (cls.__name__, *aliases))
+"""Set of all `.name` values that cannot be excluded from the middleware stack.
+
+Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
+"""
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches

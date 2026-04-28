@@ -17,7 +17,7 @@ from typing_extensions import TypedDict
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
-from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_quickjs import REPLMiddleware
 from langchain_repl.middleware import ReplMiddleware
 
 from tests.evals.utils import (
@@ -441,7 +441,7 @@ def _create_agent(model: BaseChatModel, repl_name: str | None):
     if repl_name == "langchain":
         middleware = [ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
     elif repl_name == "quickjs":
-        middleware = [QuickJSMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
+        middleware = [REPLMiddleware(ptc=RELATIONAL_TOOLS)]
     return create_deep_agent(model=model, middleware=middleware)
 
 

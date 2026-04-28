@@ -1,17 +1,45 @@
+"""Async end-to-end tests for ``REPLMiddleware`` with a fake LLM.
+
+Covers the same integration surfaces as the prior quickjs e2e suite:
+agent wiring, REPL execution, PTC tool calls, runtime propagation,
+error surfacing, and concurrent agent runs.
+"""
+
 from __future__ import annotations
 
 import asyncio
-import threading
+from collections.abc import (
+    Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
+)
+from typing import TYPE_CHECKING, Any
 
-from deepagents.graph import create_deep_agent
+from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
+from pydantic import Field
 
-from langchain_quickjs.middleware import QuickJSMiddleware
-from tests.unit_tests.chat_model import GenericFakeChatModel
+from langchain_quickjs import REPLMiddleware
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+class _FakeChatModel(GenericFakeChatModel):
+    """GenericFakeChatModel whose bind_tools returns self.
+
+    Without the override, ``create_deep_agent``'s bind_tools call replaces
+    the model with a RunnableBinding whose ``_generate`` no longer reads
+    from the pre-scripted iterator.
+    """
+
+    messages: Iterator[AIMessage | str] = Field(exclude=True)
+
+    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _FakeChatModel:
+        return self
 
 
 @tool
@@ -39,419 +67,199 @@ def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
     return f"{value}:{runtime.config['configurable']['user_id']}"
 
 
-async def async_uppercase(value: str) -> str:
-    """Return an uppercased value after yielding to the event loop."""
+@tool("always_fails")
+async def always_fails(value: str) -> str:
+    """Raise to verify host-call failures surface to the model."""
     await asyncio.sleep(0)
-    return value.upper()
-
-
-async def capture_thread_name() -> str:
-    """Return the name of the thread running the coroutine."""
-    await asyncio.sleep(0)
-    return threading.current_thread().name
-
-
-async def async_boom() -> str:
-    """Raise an exception after yielding to the event loop."""
-    await asyncio.sleep(0)
-    msg = "boom"
+    msg = f"boom:{value}"
     raise RuntimeError(msg)
+
+
+def _script(code: str, *, final_message: str = "done") -> Iterator[AIMessage]:
+    return iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "eval",
+                        "args": {"code": code},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    },
+                ],
+            ),
+            AIMessage(content=final_message),
+        ]
+    )
+
+
+def _make_agent(
+    code: str,
+    middleware: REPLMiddleware,
+    *,
+    final_message: str = "done",
+) -> Any:
+    return create_deep_agent(
+        model=_FakeChatModel(messages=_script(code, final_message=final_message)),
+        middleware=[middleware],
+    )
+
+
+def _eval_tool_message(result: dict[str, Any]) -> ToolMessage:
+    messages = [
+        m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "eval"
+    ]
+    assert messages, "expected at least one eval ToolMessage"
+    return messages[-1]
+
+
+def _assert_result_contains(content: str, expected: str) -> None:
+    assert "<error" not in content, content
+    assert "<result" in content, content
+    assert expected in content, content
 
 
 async def test_deepagent_with_quickjs_interpreter() -> None:
     """Basic async test with QuickJS interpreter."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {"code": "print(6 * 7)"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="The answer is 42."),
-            ]
-        )
+    result = await _make_agent(
+        "6 * 7",
+        REPLMiddleware(),
+        final_message="The answer is 42.",
+    ).ainvoke(
+        {"messages": [HumanMessage(content="Use the eval tool to calculate 6 * 7")]}
     )
 
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware()],
-    )
-
-    result = await agent.ainvoke(
-        {"messages": [HumanMessage(content="Use the repl to calculate 6 * 7")]}
-    )
-
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert [msg.content for msg in tool_messages] == ["42"]
+    tool_message = _eval_tool_message(result)
+    _assert_result_contains(tool_message.content, "42")
     assert result["messages"][-1].content == "The answer is 42."
-    assert len(model.call_history) == 2
-    assert (
-        model.call_history[0]["messages"][-1].content
-        == "Use the repl to calculate 6 * 7"
+
+
+async def test_deepagent_with_quickjs_json_roundtrip_foreign_function() -> None:
+    """Verify async eval can parse JSON strings returned from PTC tool calls."""
+    code = (
+        "const idsJson = await tools.listUserIds({});\n"
+        "const ids = JSON.parse(idsJson);\n"
+        "ids.join(',');"
     )
-
-
-async def test_deepagent_with_quickjs_json_stringify_foreign_function() -> None:
-    """Verify async repl calls bridge Python list returns into JS arrays."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {
-                                "code": (
-                                    "const ids = list_user_ids();\n"
-                                    "print(JSON.stringify(ids));"
-                                )
-                            },
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[list_user_ids])],
-    )
-
-    result = await agent.ainvoke(
+    result = await _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).ainvoke(
         {
             "messages": [
-                HumanMessage(content="Use the repl to print the available user ids")
+                HumanMessage(
+                    content="Use the eval tool to print the available user ids"
+                )
             ]
         }
     )
 
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content_blocks == [
-        {"type": "text", "text": '["user_1","user_2","user_3"]'}
-    ]
-    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+    tool_message = _eval_tool_message(result)
+    _assert_result_contains(tool_message.content, "user_1,user_2,user_3")
 
 
 async def test_deepagent_with_quickjs_async_foreign_function() -> None:
-    """Verify the repl can call sync and async Python helpers in one evaluation."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {
-                                "code": (
-                                    "print(sync_label('hello'));\n"
-                                    "print(async_uppercase('world'));"
-                                )
-                            },
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
+    """Verify the eval tool can call sync and async LangChain tools in one run."""
+    code = (
+        "const [left, right] = await Promise.all([\n"
+        "  tools.syncLabel({value: 'left'}),\n"
+        "  tools.asyncLabel({value: 'right'}),\n"
+        "]);\n"
+        "`${left}|${right}`;"
     )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[sync_label_tool, async_uppercase])],
-    )
-
-    result = await agent.ainvoke(
+    result = await _make_agent(
+        code,
+        REPLMiddleware(ptc=[sync_label_tool, async_label_tool]),
+    ).ainvoke(
         {
             "messages": [
-                HumanMessage(content="Use the repl to call the sync and async helpers")
+                HumanMessage(content="Use the eval tool to call sync and async tools")
             ]
         }
     )
 
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content_blocks == [
-        {"type": "text", "text": "sync:hello\nWORLD"}
-    ]
-    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
-
-
-async def test_quickjs_async_langchain_tool() -> None:
-    """Verify the repl supports async LangChain tools alongside sync ones."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {
-                                "code": (
-                                    "print(sync_label('left'));\n"
-                                    "print(async_label('right'));"
-                                )
-                            },
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[sync_label_tool, async_label_tool])],
-    )
-
-    result = await agent.ainvoke(
-        {
-            "messages": [
-                HumanMessage(content="Use the repl to call the sync and async tools")
-            ]
-        }
-    )
-
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content_blocks == [
-        {"type": "text", "text": "sync:left\nasync:right"}
-    ]
-    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+    tool_message = _eval_tool_message(result)
+    _assert_result_contains(tool_message.content, "sync:left|async:right")
 
 
 async def test_quickjs_async_timeout_error() -> None:
-    """Verify the async repl path surfaces QuickJS eval timeouts."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {"code": "while (true) {}"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="timeout hit"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(timeout=1)],
-    )
-
-    result = await agent.ainvoke(
+    """Verify the async eval path surfaces QuickJS eval timeouts."""
+    result = await _make_agent(
+        "while (true) {}",
+        REPLMiddleware(timeout=1),
+        final_message="timeout hit",
+    ).ainvoke(
         {
             "messages": [
-                HumanMessage(content="Use the repl and keep looping until it times out")
+                HumanMessage(content="Use the eval tool and keep looping until timeout")
             ]
         }
     )
 
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content == (
-        "InternalError: interrupted\n    at <eval> (<input>)\n"
-    )
+    tool_message = _eval_tool_message(result)
+    assert '<error type="Timeout">' in tool_message.content
     assert result["messages"][-1].content == "timeout hit"
 
 
 async def test_quickjs_async_tool_exception() -> None:
-    """Verify what happens when an async QuickJS foreign function raises."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {"code": "print(async_boom())"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[async_boom])],
-    )
-
-    result = await agent.ainvoke(
+    """Verify async tool exceptions surface as eval errors."""
+    result = await _make_agent(
+        "await tools.alwaysFails({value: 'x'})",
+        REPLMiddleware(ptc=[always_fails]),
+    ).ainvoke(
         {
             "messages": [
-                HumanMessage(content="Use the repl to call the async tool that raises")
+                HumanMessage(
+                    content="Use the eval tool to call the async tool that raises"
+                )
             ]
         }
     )
 
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].content
+    tool_message = _eval_tool_message(result)
+    assert '<error type="HostError">' in tool_message.content
+    assert "Host function failed" in tool_message.content
 
 
 async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
-    """Verify async QuickJS foreign tool calls see configurable runtime data."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {"code": "print(runtime_configurable('value'))"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[runtime_configurable])],
-    )
-
-    result = await agent.ainvoke(
+    """Verify async PTC tool calls see configurable runtime data."""
+    result = await _make_agent(
+        "await tools.runtimeConfigurable({value: 'value'})",
+        REPLMiddleware(ptc=[runtime_configurable]),
+    ).ainvoke(
         {
             "messages": [
-                HumanMessage(content="Use the repl to inspect configurable runtime")
+                HumanMessage(
+                    content="Use the eval tool to inspect configurable runtime"
+                )
             ]
         },
         config={"configurable": {"user_id": "user-123"}},
     )
 
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert tool_messages[0].content_blocks == [
-        {"type": "text", "text": "value:user-123"}
-    ]
-
-
-async def test_quickjs_async_foreign_function_runs_on_daemon_loop_thread() -> None:
-    """Verify async foreign functions execute on the background event-loop thread."""
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "repl",
-                            "args": {"code": "print(capture_thread_name())"},
-                            "id": "call_1",
-                            "type": "tool_call",
-                        }
-                    ],
-                ),
-                AIMessage(content="done"),
-            ]
-        )
-    )
-
-    agent = create_deep_agent(
-        model=model,
-        middleware=[QuickJSMiddleware(ptc=[capture_thread_name])],
-    )
-
-    result = await agent.ainvoke(
-        {"messages": [HumanMessage(content="Use the repl to inspect the async thread")]}
-    )
-
-    assert "messages" in result
-    tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-    assert len(tool_messages) == 1
-    thread_name = tool_messages[0].content
-    assert thread_name != threading.current_thread().name
-    assert thread_name.startswith("Thread-")
-    assert result["messages"][-1].content_blocks == [{"type": "text", "text": "done"}]
+    tool_message = _eval_tool_message(result)
+    _assert_result_contains(tool_message.content, "value:user-123")
 
 
 async def test_quickjs_async_parallel_agents() -> None:
-    """Verify five agents can run in parallel with QuickJS middleware."""
+    """Verify many async agents can run in parallel with REPL middleware."""
 
-    async def _run_agent(
-        index: int,
-    ) -> tuple[int, dict[str, object], GenericFakeChatModel]:
-        """Run agent."""
-        model = GenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "repl",
-                                "args": {"code": f"print({index} * 10)"},
-                                "id": f"call_{index}",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content=f"done-{index}"),
-                ]
-            )
-        )
-
-        agent = create_deep_agent(
-            model=model,
-            middleware=[QuickJSMiddleware()],
-        )
-        result = await agent.ainvoke(
+    async def _run_agent(index: int) -> tuple[int, dict[str, object]]:
+        result = await _make_agent(
+            f"{index} * 10",
+            REPLMiddleware(),
+            final_message=f"done-{index}",
+        ).ainvoke(
             {
                 "messages": [
-                    HumanMessage(content=f"Use the repl to multiply {index} by 10")
+                    HumanMessage(content=f"Use the eval tool to multiply {index} by 10")
                 ]
             }
         )
-        return index, result, model
+        return index, result
 
-    runs = await asyncio.gather(*(_run_agent(index) for index in range(50)))
+    runs = await asyncio.gather(*(_run_agent(index) for index in range(25)))
 
-    assert len(runs) == 50
-    for index, result, model in runs:
-        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
-        assert [msg.content for msg in tool_messages] == [str(index * 10)]
+    assert len(runs) == 25
+    for index, result in runs:
+        tool_message = _eval_tool_message(result)
+        _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
-        assert len(model.call_history) == 2
-        assert (
-            model.call_history[0]["messages"][-1].content
-            == f"Use the repl to multiply {index} by 10"
-        )

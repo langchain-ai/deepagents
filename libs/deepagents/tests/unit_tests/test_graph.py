@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
 from deepagents.graph import (
@@ -20,6 +21,7 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
     create_deep_agent,
+    get_default_model,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
@@ -1525,7 +1527,11 @@ class TestModelNoneDeprecationWarning:
         assert "deprecated" in msg
         assert "BaseChatModel | str" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
-        # stacklevel=2 should point at the caller, not inside graph.py
+        # The warning must be a `LangChainDeprecationWarning`, not stdlib —
+        # this is the strongest signal that we routed through `warn_deprecated`.
+        assert deprecations[0].category is LangChainDeprecationWarning
+        # And it should be attributed to the caller frame (this test file),
+        # not to a frame inside `deepagents` itself.
         assert deprecations[0].filename == __file__
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:
@@ -1772,3 +1778,37 @@ class TestHasAnyHarnessProfile:
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+
+class TestBuildDefaultModelContract:
+    """Pin the contract that internal default-model construction does not burn `get_default_model`'s dedupe slot.
+
+    Direct callers of `get_default_model` should still see exactly one warning
+    after `create_deep_agent(model=None)` runs in the same process.
+    """
+
+    def test_create_deep_agent_does_not_consume_get_default_model_dedupe(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            create_deep_agent(model=None)
+            get_default_model()
+
+        get_default_model_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning) and "Relying on the default model" in str(w.message)
+        ]
+        # `create_deep_agent(model=None)` must not consume the
+        # `get_default_model` dedupe slot — the direct caller still gets a
+        # warning.
+        assert len(get_default_model_warnings) == 1
+
+    def test_get_default_model_emits_langchain_deprecation_warning(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            get_default_model()
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        msg = str(deprecations[0].message)
+        assert "deprecated" in msg
+        assert "https://docs.langchain.com/oss/python/deepagents/models" in msg

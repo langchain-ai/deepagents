@@ -270,7 +270,10 @@ def _deploy(
     # LangSmith default x-api-key requirement) so the API is reachable
     # by anyone with the deploy URL.
     is_anonymous = (
-        config.frontend is not None and config.frontend.enabled and config.auth is None
+        config.frontend is not None
+        and config.frontend.enabled
+        and config.auth is not None
+        and config.auth.provider == "anonymous"
     )
     if is_anonymous:
         # ANSI bold-red header + red bullets so this warning is visually

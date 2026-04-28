@@ -97,12 +97,26 @@ def _write_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_frontend_enabled_without_auth_validates_clean(tmp_path, monkeypatch):
-    """[frontend].enabled with no [auth] is valid (anonymous mode)."""
+def test_frontend_enabled_without_auth_errors(tmp_path, monkeypatch):
+    """[frontend].enabled requires an [auth] section (anonymous is explicit)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _write_project(tmp_path)
     cfg = DeployConfig(
         agent=AgentConfig(name="a"),
+        frontend=FrontendConfig(enabled=True),
+    )
+    errors = cfg.validate(tmp_path)
+    assert any("requires [auth]" in e for e in errors), errors
+    assert any('"anonymous"' in e for e in errors), errors
+
+
+def test_frontend_with_anonymous_provider_validates_clean(tmp_path, monkeypatch):
+    """[auth] provider = "anonymous" satisfies the [frontend] validation."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    _write_project(tmp_path)
+    cfg = DeployConfig(
+        agent=AgentConfig(name="a"),
+        auth=AuthConfig(provider="anonymous"),
         frontend=FrontendConfig(enabled=True),
     )
     errors = cfg.validate(tmp_path)

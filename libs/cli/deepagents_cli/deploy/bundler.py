@@ -100,19 +100,24 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
     if config.frontend.prompts is not None:
         payload["prompts"] = list(config.frontend.prompts)
 
+    # Validation guarantees `[auth]` is set whenever `[frontend].enabled`,
+    # so config.auth is non-None here.
     if config.auth is None:
-        payload["auth"] = "anonymous"
+        msg = "runtime config requires [auth] to be configured"
+        raise ValueError(msg)
+    provider = config.auth.provider
+    payload["auth"] = provider
+    if provider == "supabase":
+        payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
+        payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
+    elif provider == "clerk":
+        payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
+    elif provider == "anonymous":
+        # No env vars; payload["auth"] = "anonymous" is enough.
+        pass
     else:
-        provider = config.auth.provider
-        payload["auth"] = provider
-        if provider == "supabase":
-            payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
-            payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
-        elif provider == "clerk":
-            payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
-        else:
-            msg = f"Unknown auth provider for frontend: {provider}"
-            raise ValueError(msg)
+        msg = f"Unknown auth provider for frontend: {provider}"
+        raise ValueError(msg)
 
     # Escape `<` so a hostile or accidental `</script>` inside a string value
     # can't break out of the inline <script> tag.
@@ -213,17 +218,16 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 6. Generate auth.py.
-    # - [auth] configured → use the provider's block.
-    # - [frontend] enabled without [auth] → use the anonymous block,
-    #   which overrides LangSmith Cloud's default x-api-key requirement
-    #   so the bundled frontend can reach /threads etc.
+    # 6. Generate auth.py from the [auth] provider. Validation
+    # guarantees [auth] is set whenever [frontend].enabled, so the
+    # provider field is the single source of truth (including the
+    # anonymous block — its permissive auth.py overrides LangSmith
+    # Cloud's default x-api-key requirement so the bundled frontend
+    # can reach /threads).
     frontend_enabled = config.frontend is not None and config.frontend.enabled
-    auth_provider: str | None = None
-    if config.auth is not None:
-        auth_provider = config.auth.provider
-    elif frontend_enabled:
-        auth_provider = "anonymous"
+    auth_provider: str | None = (
+        config.auth.provider if config.auth is not None else None
+    )
 
     auth_present = auth_provider is not None
     if auth_provider is not None:
@@ -506,9 +510,10 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")
     if config.auth is not None:
-        print(f"  Auth: {config.auth.provider}")
-    elif config.frontend is not None and config.frontend.enabled:
-        print("  Auth: anonymous (API open to anyone)")
+        if config.auth.provider == "anonymous":
+            print("  Auth: anonymous (API open to anyone)")
+        else:
+            print(f"  Auth: {config.auth.provider}")
     else:
         print("  Auth: default (LangSmith API key required)")
 

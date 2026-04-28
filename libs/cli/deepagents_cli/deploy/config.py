@@ -36,8 +36,14 @@ VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
 
 VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
-AuthProvider = Literal["supabase", "clerk"]
-"""Valid auth provider identifiers."""
+AuthProvider = Literal["supabase", "clerk", "anonymous"]
+"""Valid auth provider identifiers.
+
+`"anonymous"` ships a permissive auth handler that overrides LangSmith
+Cloud's default `x-api-key` requirement so the bundled frontend can
+reach `/threads`. The API is open to anyone with the deploy URL —
+per-browser thread scoping is enforced client-side via a UUID cookie.
+"""
 
 VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
 """Valid auth providers for deploy."""
@@ -214,12 +220,15 @@ class DeployConfig:
         if self.auth is not None:
             errors.extend(_validate_auth_credentials(self.auth.provider))
 
-        if (
-            self.frontend is not None
-            and self.frontend.enabled
-            and self.auth is not None
-        ):
-            errors.extend(_validate_frontend_credentials(self.auth.provider))
+        if self.frontend is not None and self.frontend.enabled:
+            if self.auth is None:
+                errors.append(
+                    "[frontend].enabled requires [auth] to be configured. "
+                    'Add an [auth] section with provider = "supabase", '
+                    '"clerk", or "anonymous".'
+                )
+            else:
+                errors.extend(_validate_frontend_credentials(self.auth.provider))
 
         return errors
 

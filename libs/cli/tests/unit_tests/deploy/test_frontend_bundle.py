@@ -161,13 +161,14 @@ def test_bundle_escapes_angle_bracket_in_app_name(
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
-def test_bundle_succeeds_when_frontend_enabled_without_auth(
+def test_bundle_succeeds_with_anonymous_provider(
     project: Path,
     build_dir: Path,
 ) -> None:
-    """[frontend].enabled without [auth] bundles in anonymous mode."""
+    """[auth] provider = "anonymous" with [frontend] bundles cleanly."""
     cfg = DeployConfig(
         agent=AgentConfig(name="my-agent"),
+        auth=AuthConfig(provider="anonymous"),
         frontend=FrontendConfig(enabled=True),
     )
     bundle(cfg, project, build_dir)
@@ -251,7 +252,7 @@ app_name = "My App"
 
 
 def _write_anonymous_project(project: Path) -> None:
-    """Helper: write an [agent]+[frontend] (no [auth]) project at *project*."""
+    """Helper: write an [agent]+[auth anonymous]+[frontend] project at *project*."""
     project.mkdir(exist_ok=True)
     (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
     (project / "deepagents.toml").write_text(
@@ -259,6 +260,9 @@ def _write_anonymous_project(project: Path) -> None:
 [agent]
 name = "my-agent"
 model = "anthropic:claude-sonnet-4-6"
+
+[auth]
+provider = "anonymous"
 
 [frontend]
 enabled = true
@@ -366,14 +370,15 @@ def test_deploy_anonymous_aborts_on_eof(tmp_path, monkeypatch, capsys):
     assert "Aborted." in captured.out
 
 
-def test_build_runtime_config_json_anonymous_mode():
-    """When config.auth is None, the runtime config has auth:'none'."""
+def test_build_runtime_config_json_anonymous_provider():
+    """Provider = 'anonymous' produces a runtime config with auth:'anonymous'."""
     import json
 
     from deepagents_cli.deploy.bundler import _build_runtime_config_json
 
     cfg = DeployConfig(
         agent=AgentConfig(name="my-agent"),
+        auth=AuthConfig(provider="anonymous"),
         frontend=FrontendConfig(enabled=True, app_name="My App"),
     )
     payload_str = _build_runtime_config_json(cfg)
@@ -393,6 +398,7 @@ def test_build_runtime_config_json_includes_subtitle_and_prompts():
 
     cfg = DeployConfig(
         agent=AgentConfig(name="my-agent"),
+        auth=AuthConfig(provider="anonymous"),
         frontend=FrontendConfig(
             enabled=True,
             app_name="My App",
@@ -413,6 +419,7 @@ def test_build_runtime_config_json_omits_subtitle_and_prompts_when_unset():
 
     cfg = DeployConfig(
         agent=AgentConfig(name="my-agent"),
+        auth=AuthConfig(provider="anonymous"),
         frontend=FrontendConfig(enabled=True, app_name="My App"),
     )
     payload = json.loads(_build_runtime_config_json(cfg))

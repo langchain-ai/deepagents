@@ -45,6 +45,26 @@ from deepagents.profiles.provider.provider_profiles import (
 )
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _bootstrap_profile_registries() -> None:
+    """Force the lazy profile bootstrap before any test snapshots the registries.
+
+    Many tests in this module use `original = dict(_PROVIDER_PROFILES)` /
+    `_HARNESS_PROFILES` plus a `finally`-clause `clear` + `update(original)` to
+    restore registry state. That pattern relies on `original` already containing
+    the built-in profiles. When the bootstrap is triggered for the first time
+    *inside* the `try` (via `register_*_profile`), `original` is empty and the
+    `finally` block wipes the registry — leaving `_loaded=True` so subsequent
+    tests on the same xdist worker see an empty registry. Bootstrapping here
+    guarantees `original` captures the post-bootstrap state.
+    """
+    from deepagents.profiles._builtin_profiles import (  # noqa: PLC0415
+        _ensure_builtin_profiles_loaded,
+    )
+
+    _ensure_builtin_profiles_loaded()
+
+
 def _make_model(dump: dict) -> MagicMock:
     """Create a mock BaseChatModel with a given `model_dump` return value."""
     model = MagicMock(spec=BaseChatModel)

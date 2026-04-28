@@ -116,9 +116,22 @@ class GeneralPurposeSubagentProfile:
     """
 
     system_prompt: str | None = None
-    """Override for the default subagent system prompt.
+    """Override for the default general-purpose subagent system prompt.
 
     `None` means keep the default system prompt.
+
+    !!! note "Precedence vs `HarnessProfile.base_system_prompt`"
+
+        When a profile sets *both* this field and
+        `HarnessProfile.base_system_prompt`, this field wins for the
+        general-purpose subagent.
+
+        The reasoning: `general_purpose_subagent.system_prompt` is GP-specific
+        configuration, while `base_system_prompt` is a global override that
+        applies to the main agent. The more-specific intent wins on the GP
+        subagent so a user setting both never sees their GP override
+        silently dropped. The profile's `system_prompt_suffix` still
+        layers on top.
     """
 
     def to_dict(self) -> dict[str, Any]:
@@ -220,16 +233,26 @@ class HarnessProfileConfig:
     """
 
     base_system_prompt: str | None = None
-    """When set, completely replaces `BASE_AGENT_PROMPT` as the base prompt.
+    """`CUSTOM` in the prompt-assembly cheat sheet — completely replaces
+    `BASE_AGENT_PROMPT` as the base prompt when set.
 
-    `None` means use `BASE_AGENT_PROMPT` unchanged.
+    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
 
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
-    suffix is appended to this custom base.
+    suffix is appended to this custom base. A caller-supplied
+    `system_prompt=` is still placed before this base — see
+    `create_deep_agent`'s `system_prompt` parameter for the full
+    assembly cheat sheet.
     """
 
     system_prompt_suffix: str | None = None
-    """Text appended to the assembled base system prompt."""
+    """`SUFFIX` in the prompt-assembly cheat sheet — text appended to
+    the assembled base system prompt.
+
+    Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
+    lands closest to the conversation history. `None` (the default)
+    means no suffix.
+    """
 
     tool_description_overrides: Mapping[str, str] = field(default_factory=dict)
     """Per-tool description replacements keyed by tool name."""
@@ -454,19 +477,38 @@ class HarnessProfile:
     """
 
     base_system_prompt: str | None = None
-    """When set, completely replaces `BASE_AGENT_PROMPT` as the base prompt.
+    """`CUSTOM` in the prompt-assembly cheat sheet — completely replaces
+    `BASE_AGENT_PROMPT` as the base prompt when set.
 
-    `None` means use `BASE_AGENT_PROMPT` unchanged.
+    `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
 
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
-    suffix is appended to this custom base.
+    suffix is appended to this custom base. A caller-supplied
+    `system_prompt=` is still placed before this base — see
+    `create_deep_agent`'s `system_prompt` parameter for the full
+    assembly cheat sheet.
+
+    Most profiles only set `system_prompt_suffix` to layer model-tuning
+    guidance on top of the SDK base.
     """
 
     system_prompt_suffix: str | None = None
-    """Text appended to the assembled base system prompt.
+    """`SUFFIX` in the prompt-assembly cheat sheet — text appended to
+    the assembled base system prompt.
 
-    The suffix is appended to either `BASE_AGENT_PROMPT` or the profile's
-    `base_system_prompt` when set. `None` means no suffix.
+    Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
+    lands closest to the conversation history. `None` (the default)
+    means no suffix.
+
+    Applied uniformly to every assembled stack that consults this
+    profile: the main agent, declarative subagents whose model resolves
+    to this profile, and the auto-added general-purpose subagent. Each
+    stack receives the suffix on top of its own base prompt
+    (`BASE_AGENT_PROMPT`, the subagent's authored prompt, and the GP
+    base respectively).
+
+    See `create_deep_agent`'s `system_prompt` parameter for how `SUFFIX`
+    composes with caller-supplied prompts and `base_system_prompt`.
     """
 
     tool_description_overrides: Mapping[str, str] = field(default_factory=dict)

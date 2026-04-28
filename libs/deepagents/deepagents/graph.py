@@ -96,13 +96,35 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
-"""Default base system prompt for every deep agent.
+"""Default base system prompt for every deep agent (`BASE`).
 
-When a caller passes `system_prompt` to `create_deep_agent`, the custom prompt
-is prepended and this base prompt is appended. When `system_prompt` is `None`,
-this is used as the sole system prompt.
+The final system prompt sent to the model is composed from up to four
+named parts:
 
-Replaceable using `HarnessProfile.base_system_prompt`
+- `USER` — the `system_prompt=` argument to `create_deep_agent` (`str` or
+    `SystemMessage`); when unset, no `USER` segment is included.
+- `BASE` — this constant.
+- `CUSTOM` — `HarnessProfile.base_system_prompt`. When set on a matching
+    profile, replaces `BASE` outright; when unset, `BASE` is used.
+- `SUFFIX` — `HarnessProfile.system_prompt_suffix`. When set on a
+    matching profile, appended last; when unset, no `SUFFIX` segment is
+    included.
+
+The order is always `USER` -> (`BASE` or `CUSTOM`) -> `SUFFIX`, joined by
+blank lines (`\\n\\n`). Two invariants follow:
+
+1. `USER` is always at the front, so caller instructions take precedence
+    over SDK and profile content regardless of which model is selected.
+2. `SUFFIX` is always at the end, so model-tuning guidance sits closest
+    to the conversation history (where the model attends most).
+
+When `USER` is a `SystemMessage`, the right-hand assembly is appended as
+an additional text content block onto the message's existing
+`content_blocks` list, preserving any `cache_control` markers the caller
+set.
+
+See `create_deep_agent`'s `system_prompt` parameter for the full
+assembly cheat sheet.
 """
 
 
@@ -202,7 +224,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     name: str | None = None,
     cache: BaseCache | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
-    """Create a deep agent.
+    r"""Create a deep agent.
 
     !!! warning "Deep agents require a LLM that supports tool calling!"
 
@@ -241,10 +263,23 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
-        system_prompt: Custom system instructions to prepend before the base
-            deep agent prompt.
+        system_prompt: Custom system instructions placed at the front of
+            the system prompt sent to the model.
 
-            If a string, it's concatenated with the base prompt.
+            Whatever you pass here always sits before the SDK's default
+            deep-agent prompt and any model-tuning suffix from a
+            registered `HarnessProfile`. With `system_prompt=None`, the
+            SDK default is used on its own (plus the profile suffix
+            when one applies). Sections are joined by a blank line.
+
+            Passing a `SystemMessage` instead of a string preserves any
+            `cache_control` markers on the message's content blocks —
+            useful for placing explicit Anthropic prompt-cache
+            breakpoints. The same ordering applies (caller's blocks
+            first, SDK content appended as an additional text block).
+
+            See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+            for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 

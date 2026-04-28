@@ -26,8 +26,8 @@ dependencies = [
     "deepagents",
     "quickjs-rs",
     "langchain>=1.2.15,<2.0.0",
-    "langchain-core>=1.3.1,<2.0.0",
     "langgraph>=1.1.10,<2.0.0",
+    "langchain-core",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -41,6 +41,7 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 [dependency-groups]
 test = [
     "pytest>=7.3.0,<10.0.0",
+    "pytest-benchmark",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",
@@ -55,6 +56,7 @@ test = [
 
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
+langchain-core = { path = "../../../../langchain/libs/core", editable = true }
 
 [tool.uv]
 constraint-dependencies = ["urllib3>=2.6.3"]
@@ -102,6 +104,7 @@ markers = [
     "requires: mark tests as requiring a specific library",
     "compile: mark placeholder test used to compile integration tests without running them",
     "scheduled: mark tests to run in scheduled testing",
+    "benchmark: mark wall-time benchmark tests",
 ]
 asyncio_mode = "auto"
 filterwarnings = []

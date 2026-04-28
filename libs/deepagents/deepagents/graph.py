@@ -31,10 +31,9 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -338,9 +337,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
-            override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`. See `interrupt_on` below for inheritance and override
-            behavior.
+            override `tools`, `model`, `middleware`, `interrupt_on`, `skills`,
+            and `permissions`. See `interrupt_on` below for inheritance and
+            override behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -373,6 +372,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Memory is loaded at agent startup and added into the system prompt.
         permissions: List of ``FilesystemPermission`` rules for the main agent
             and its subagents.
+
+            These permissions are enforced at the generated filesystem tool
+            layer, not by the backend itself, so direct backend usage or
+            custom middleware is not expected to enforce them automatically.
 
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.
@@ -478,6 +481,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
+            permissions=permissions,
         ),
         create_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
@@ -493,10 +497,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
     gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-
-    # Permissions must be last so they see all tools from prior middleware
-    if permissions:
-        gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
 
     general_purpose_spec: SubAgent = {  # ty: ignore[missing-typed-dict-key]
         **GENERAL_PURPOSE_SUBAGENT,
@@ -535,6 +535,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -551,9 +552,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-            if subagent_permissions:
-                subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
-
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
 
             # Inherit parent tools unless the subagent declares its own.
@@ -591,6 +589,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
+                permissions=permissions,
             ),
             SubAgentMiddleware(
                 backend=backend,
@@ -634,10 +633,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-    # _PermissionMiddleware must be last so it sees all tools from prior middleware
-    if permissions:
-        deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
-
     # Assemble base prompt: use _profile.base_system_prompt if set, else
     # BASE_AGENT_PROMPT, then append profile suffix if present.
     # Finally prepend user system_prompt (handled below).

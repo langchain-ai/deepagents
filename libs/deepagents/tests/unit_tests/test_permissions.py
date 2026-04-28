@@ -1,4 +1,4 @@
-"""Unit tests for FilesystemPermission and _PermissionMiddleware."""
+"""Unit tests for filesystem permission enforcement in `FilesystemMiddleware`."""
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -6,11 +6,16 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
-from deepagents.backends import StoreBackend
+from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import FilesystemPermission, _check_fs_permission, _filter_paths_by_permission, _PermissionMiddleware
+from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.middleware.filesystem import (
+    FilesystemMiddleware,
+    FilesystemPermission,
+    _all_paths_scoped_to_routes,
+    _check_fs_permission,
+    _filter_paths_by_permission,
+)
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
@@ -30,23 +35,36 @@ def _make_backend(files: dict | None = None) -> StoreBackend:
 
 
 def _invoke_with_permissions(tool, args, rules, tool_call_id="test", backend=None):
-    """Invoke a tool through _PermissionMiddleware, return the content string."""
-    perm = _PermissionMiddleware(rules=rules, backend=backend or _make_backend())
+    """Invoke a FilesystemMiddleware tool configured with permissions."""
+    resolved_backend = backend
+    if resolved_backend is None:
+        parent = getattr(tool, "func", None)
+        if parent is not None:
+            closure = getattr(parent, "__closure__", None) or ()
+            for cell in closure:
+                candidate = getattr(cell, "cell_contents", None)
+                if isinstance(candidate, FilesystemMiddleware):
+                    resolved_backend = candidate.backend
+                    break
+    if resolved_backend is None:
+        resolved_backend = _make_backend()
+    configured_middleware = FilesystemMiddleware(backend=resolved_backend, permissions=rules)
+    configured_tool = next(t for t in configured_middleware.tools if t.name == tool.name)
     runtime = _runtime(tool_call_id)
 
     def handler(_req):
-        raw = tool.invoke({**args, "runtime": runtime})
+        raw = configured_tool.invoke({**args, "runtime": runtime})
         if isinstance(raw, ToolMessage):
             return raw
-        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=tool.name)
+        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=configured_tool.name)
 
     request = ToolCallRequest(
         runtime=runtime,
-        tool_call={"id": tool_call_id, "name": tool.name, "args": args},
+        tool_call={"id": tool_call_id, "name": configured_tool.name, "args": args},
         state={},
-        tool=tool,
+        tool=configured_tool,
     )
-    result = perm.wrap_tool_call(request, handler)
+    result = configured_middleware.wrap_tool_call(request, handler)
     if isinstance(result, ToolMessage):
         return result.content
     return str(result)
@@ -54,22 +72,35 @@ def _invoke_with_permissions(tool, args, rules, tool_call_id="test", backend=Non
 
 async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", backend=None):
     """Async version of _invoke_with_permissions."""
-    perm = _PermissionMiddleware(rules=rules, backend=backend or _make_backend())
+    resolved_backend = backend
+    if resolved_backend is None:
+        parent = getattr(tool, "func", None)
+        if parent is not None:
+            closure = getattr(parent, "__closure__", None) or ()
+            for cell in closure:
+                candidate = getattr(cell, "cell_contents", None)
+                if isinstance(candidate, FilesystemMiddleware):
+                    resolved_backend = candidate.backend
+                    break
+    if resolved_backend is None:
+        resolved_backend = _make_backend()
+    configured_middleware = FilesystemMiddleware(backend=resolved_backend, permissions=rules)
+    configured_tool = next(t for t in configured_middleware.tools if t.name == tool.name)
     runtime = _runtime(tool_call_id)
 
     async def handler(_req):
-        raw = await tool.ainvoke({**args, "runtime": runtime})
+        raw = await configured_tool.ainvoke({**args, "runtime": runtime})
         if isinstance(raw, ToolMessage):
             return raw
-        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=tool.name)
+        return ToolMessage(content=str(raw), tool_call_id=tool_call_id, name=configured_tool.name)
 
     request = ToolCallRequest(
         runtime=runtime,
-        tool_call={"id": tool_call_id, "name": tool.name, "args": args},
+        tool_call={"id": tool_call_id, "name": configured_tool.name, "args": args},
         state={},
-        tool=tool,
+        tool=configured_tool,
     )
-    result = await perm.awrap_tool_call(request, handler)
+    result = await configured_middleware.awrap_tool_call(request, handler)
     if isinstance(result, ToolMessage):
         return result.content
     return str(result)
@@ -131,74 +162,12 @@ class TestFilesystemPermission:
         assert rule.paths == ["/workspace\\sub\\**"]
 
 
-class TestPermissionMiddleware:
+class TestFilesystemMiddlewarePermissionInit:
     def _backend(self):
         return _make_backend()
 
-    def _make_request(self, tool_name: str, args: dict, tool_call_id: str = "tc1"):
-        return ToolCallRequest(
-            runtime=_runtime(tool_call_id),
-            tool_call={"id": tool_call_id, "name": tool_name, "args": args},
-            state={},
-            tool=None,
-        )
-
-    def test_allow_passes_through(self):
-        middleware = _PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])], backend=self._backend())
-        request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
-        expected = ToolMessage(content="ok", tool_call_id="tc1")
-
-        result = middleware.wrap_tool_call(request, lambda _: expected)
-        assert result is expected
-
-    def test_deny_returns_error_message(self):
-        middleware = _PermissionMiddleware(
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend()
-        )
-        request = self._make_request("read_file", {"file_path": "/secrets/key.txt"})
-
-        result = middleware.wrap_tool_call(request, lambda _: ToolMessage(content="should not reach", tool_call_id="tc1"))
-        assert isinstance(result, ToolMessage)
-        assert "permission denied" in result.content
-        assert result.tool_call_id == "tc1"
-        assert result.name == "read_file"
-        assert result.status == "error"
-
-    def test_unrelated_tool_allowed(self):
-        middleware = _PermissionMiddleware(
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")], backend=self._backend()
-        )
-        request = self._make_request("some_other_tool", {"input": "hello"})
-        expected = ToolMessage(content="content", tool_call_id="tc1")
-
-        result = middleware.wrap_tool_call(request, lambda _: expected)
-        assert result is expected
-
-    async def test_async_deny_returns_error_message(self):
-        middleware = _PermissionMiddleware(rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")], backend=self._backend())
-        request = self._make_request("write_file", {"file_path": "/foo.txt", "content": "data"})
-
-        async def async_handler(_):
-            return ToolMessage(content="should not reach", tool_call_id="tc1")
-
-        result = await middleware.awrap_tool_call(request, async_handler)
-        assert isinstance(result, ToolMessage)
-        assert "permission denied" in result.content
-        assert result.status == "error"
-
-    async def test_async_allow_passes_through(self):
-        middleware = _PermissionMiddleware(rules=[FilesystemPermission(operations=["read"], paths=["/workspace/**"])], backend=self._backend())
-        request = self._make_request("read_file", {"file_path": "/workspace/file.txt"})
-        expected = ToolMessage(content="passed", tool_call_id="tc1")
-
-        async def async_handler(_):
-            return expected
-
-        result = await middleware.awrap_tool_call(request, async_handler)
-        assert result is expected
-
     def test_raises_not_implemented_for_sandbox_backend(self):
-        """_PermissionMiddleware rejects backends that support execution."""
+        """FilesystemMiddleware rejects permissions for backends that support execution."""
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -215,13 +184,13 @@ class TestPermissionMiddleware:
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
         with pytest.raises(NotImplementedError, match="execute"):
-            _PermissionMiddleware(
-                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            FilesystemMiddleware(
                 backend=sandbox,
+                permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
             )
 
     def test_raises_not_implemented_for_composite_with_sandbox_default(self):
-        """_PermissionMiddleware rejects CompositeBackend whose default supports execution."""
+        """FilesystemMiddleware rejects CompositeBackend whose default supports execution."""
 
         class MockSandbox(SandboxBackendProtocol, StoreBackend):
             def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -239,19 +208,19 @@ class TestPermissionMiddleware:
         composite = CompositeBackend(default=sandbox, routes={})
 
         with pytest.raises(NotImplementedError, match="execute"):
-            _PermissionMiddleware(
-                rules=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            FilesystemMiddleware(
                 backend=composite,
+                permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
             )
 
     def test_allows_composite_without_sandbox_default(self):
-        """_PermissionMiddleware accepts CompositeBackend whose default does not support execution."""
+        """FilesystemMiddleware accepts CompositeBackend whose default does not support execution."""
         composite = CompositeBackend(default=self._backend(), routes={})
-        middleware = _PermissionMiddleware(
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+        middleware = FilesystemMiddleware(
             backend=composite,
+            permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
         )
-        assert middleware._fs_rules
+        assert middleware._permissions
 
     def test_allows_composite_with_sandbox_route_but_non_sandbox_default(self):
         """CompositeBackend with sandbox in a route but non-sandbox default is allowed.
@@ -274,11 +243,16 @@ class TestPermissionMiddleware:
         mem_store = InMemoryStore()
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
         composite = CompositeBackend(default=self._backend(), routes={"/sandbox/": sandbox})
-        middleware = _PermissionMiddleware(
-            rules=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+        middleware = FilesystemMiddleware(
             backend=composite,
+            permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
         )
-        assert middleware._fs_rules
+        assert middleware._permissions
+
+    def test_all_paths_scoped_to_routes_helper(self):
+        composite = CompositeBackend(default=self._backend(), routes={"/memories/": self._backend()})
+        rules = [FilesystemPermission(operations=["read"], paths=["/memories/**"], mode="deny")]
+        assert _all_paths_scoped_to_routes(rules, composite) is True
 
 
 class TestFilesystemMiddlewarePermissions:
@@ -299,6 +273,53 @@ class TestFilesystemMiddlewarePermissions:
         result = _invoke_with_permissions(read_tool, {"file_path": "/workspace/file.txt"}, rules)
         assert "permission denied" not in result
 
+    def test_read_binary_allowed_on_permitted_path(self):
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/app/screenshot.png"}, rules)
+        assert isinstance(result, list)
+        assert result[0]["type"] == "image"
+        assert result[0]["base64"] == "<base64_data>"
+
+    def test_read_binary_denied_on_restricted_path(self):
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/secrets/screenshot.png"}, rules)
+        assert "permission denied" in result
+        assert "read" in result
+
+    def test_read_backend_error_passthrough_when_allowed(self):
+        class ErrorBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(error="file_not_found")
+
+        middleware = FilesystemMiddleware(backend=ErrorBackend())
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/workspace/missing.txt"}, rules)
+        assert result == "Error: file_not_found"
+
+    def test_read_first_matching_rule_wins_at_tool_level(self):
+        backend = _make_backend({"/secrets/key.txt": "top secret"})
+        middleware = FilesystemMiddleware(backend=backend)
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [
+            FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="allow"),
+        ]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/secrets/key.txt"}, rules)
+        assert "permission denied" in result
+
     def test_write_denied_on_restricted_path(self):
         backend = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
@@ -307,6 +328,29 @@ class TestFilesystemMiddlewarePermissions:
         result = _invoke_with_permissions(write_tool, {"file_path": "/foo.txt", "content": "data"}, rules)
         assert "permission denied" in result
         assert "write" in result
+
+    def test_write_backend_error_passthrough_when_allowed(self):
+        class ErrorBackend(StateBackend):
+            def write(self, path, content):
+
+                return WriteResult(error="disk full", path=path)
+
+        middleware = FilesystemMiddleware(backend=ErrorBackend())
+        write_tool = next(t for t in middleware.tools if t.name == "write_file")
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(write_tool, {"file_path": "/workspace/out.txt", "content": "data"}, rules)
+        assert result == "disk full"
+
+    def test_write_first_matching_rule_wins_at_tool_level(self):
+        backend = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        write_tool = next(t for t in middleware.tools if t.name == "write_file")
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="allow"),
+        ]
+        result = _invoke_with_permissions(write_tool, {"file_path": "/workspace/out.txt", "content": "data"}, rules)
+        assert "permission denied" in result
 
     def test_edit_denied_on_restricted_path(self):
         backend = _make_backend({"/protected/file.txt": "original"})
@@ -317,6 +361,44 @@ class TestFilesystemMiddlewarePermissions:
             edit_tool,
             {
                 "file_path": "/protected/file.txt",
+                "old_string": "original",
+                "new_string": "changed",
+            },
+            rules,
+        )
+        assert "permission denied" in result
+
+    def test_edit_backend_error_passthrough_when_allowed(self):
+        class ErrorBackend(StateBackend):
+            def edit(self, path, old_string, new_string, *, replace_all=False):
+                return EditResult(error="no unique match", path=path, occurrences=0)
+
+        middleware = FilesystemMiddleware(backend=ErrorBackend())
+        edit_tool = next(t for t in middleware.tools if t.name == "edit_file")
+        rules = [FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="deny")]
+        result = _invoke_with_permissions(
+            edit_tool,
+            {
+                "file_path": "/workspace/file.txt",
+                "old_string": "original",
+                "new_string": "changed",
+            },
+            rules,
+        )
+        assert result == "no unique match"
+
+    def test_edit_first_matching_rule_wins_at_tool_level(self):
+        backend = _make_backend({"/workspace/file.txt": "original"})
+        middleware = FilesystemMiddleware(backend=backend)
+        edit_tool = next(t for t in middleware.tools if t.name == "edit_file")
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/workspace/**"], mode="allow"),
+        ]
+        result = _invoke_with_permissions(
+            edit_tool,
+            {
+                "file_path": "/workspace/file.txt",
                 "old_string": "original",
                 "new_string": "changed",
             },
@@ -726,6 +808,30 @@ class TestAsyncFilesystemMiddlewarePermissions:
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         result = await _ainvoke_with_permissions(read_tool, {"file_path": "/workspace/file.txt"}, rules)
         assert "permission denied" not in result
+
+    async def test_read_binary_allowed_async(self):
+        class ImageBackend(StateBackend):
+            async def aread(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(read_tool, {"file_path": "/app/screenshot.png"}, rules)
+        assert isinstance(result, list)
+        assert result[0]["type"] == "image"
+        assert result[0]["base64"] == "<base64_data>"
+
+    async def test_read_backend_error_passthrough_async(self):
+        class ErrorBackend(StateBackend):
+            async def aread(self, path, *, offset=0, limit=100):
+                return ReadResult(error="file_not_found")
+
+        middleware = FilesystemMiddleware(backend=ErrorBackend())
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = await _ainvoke_with_permissions(read_tool, {"file_path": "/workspace/missing.txt"}, rules)
+        assert result == "Error: file_not_found"
 
     async def test_write_denied_async(self):
         backend = _make_backend()

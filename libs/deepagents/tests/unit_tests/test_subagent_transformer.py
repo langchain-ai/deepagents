@@ -1,21 +1,19 @@
 """Unit tests for `SubagentTransformer`.
 
-These tests exercise the transformer in isolation by pushing protocol
-events directly into a `StreamMux` configured with
-`SubagentTransformer` alongside the usual `values` / `messages` /
-`subgraphs` transformers. Mirrors the structure of langgraph's
-`test_stream_subgraph_transformer.py`.
+Pushes synthetic `tasks` protocol events into a `StreamMux` configured
+with `SubagentTransformer` alongside the usual native transformers.
+Mirrors the structure of langgraph's `test_stream_subgraph_transformer.py`.
 
-Covered behaviors:
+The realistic event sequence is:
 
-- Handle promotion for declared subagents via `lifecycle.started`.
-- `cause` augmentation correlating root-scope ``tools.tool-started``
-  events to the subagent's ``lifecycle.started`` by
-  ``subagent_type`` and oldest-first insertion order.
-- Wire-level namespace rewrite that remaps ``tools:<pregel_uuid>``
-  first segments to ``tools:<tool_call_id>`` on every downstream
-  event without mutating the SubgraphTransformer's internal
-  ``_by_ns`` key.
+1. Parent-scope `tasks` start with ``name == "tools"`` and ``input``
+   containing ``task`` tool calls — this is how the transformer learns
+   ``parent_task_id → (subagent_type, tool_call_id)``.
+2. Child-scope `tasks` start at ``["tools:<parent_task_id>"]`` —
+   triggers `_on_started`, which looks up the parent mapping and
+   builds a `SubagentRunStream` if the type is declared.
+3. Parent-scope `tasks` result with the matching ``id`` — closes the
+   child handle.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.stream._event_log import EventLog
 from langgraph.stream._mux import StreamMux
 from langgraph.stream.transformers import (
+    LifecycleTransformer,
     MessagesTransformer,
     SubgraphTransformer,
     ValuesTransformer,
@@ -40,56 +39,103 @@ if TYPE_CHECKING:
 TS = int(time.time() * 1000)
 
 
-def _lifecycle(
-    event: str,
-    *,
-    namespace: list[str] | None = None,
-    graph_name: str | None = None,
-    cause: dict[str, Any] | None = None,
-    error: str | None = None,
-) -> ProtocolEvent:
-    data: dict[str, Any] = {"event": event}
-    if graph_name is not None:
-        data["graph_name"] = graph_name
-    if cause is not None:
-        data["cause"] = cause
-    if error is not None:
-        data["error"] = error
-    return {
-        "type": "event",
-        "method": "lifecycle",
-        "params": {
-            "namespace": namespace or [],
-            "timestamp": TS,
-            "data": data,
-        },
-    }
-
-
-def _tools(
-    event: str,
-    *,
+def _tools_start(
     namespace: list[str],
-    tool_name: str | None = None,
-    tool_call_id: str | None = None,
-    input: dict[str, Any] | None = None,
+    *,
+    parent_task_id: str,
+    subagent_type: str,
+    tool_call_id: str,
 ) -> ProtocolEvent:
-    data: dict[str, Any] = {"event": event}
-    if tool_name is not None:
-        data["tool_name"] = tool_name
-    if tool_call_id is not None:
-        data["tool_call_id"] = tool_call_id
-    if input is not None:
-        data["input"] = input
+    """A parent-scope `tools`-task start that dispatches one `task` tool call."""
     return {
         "type": "event",
-        "method": "tools",
+        "method": "tasks",
         "params": {
             "namespace": namespace,
             "timestamp": TS,
-            "data": data,
+            "data": {
+                "id": parent_task_id,
+                "name": "tools",
+                "input": [
+                    {
+                        "name": "task",
+                        "args": {"subagent_type": subagent_type},
+                        "id": tool_call_id,
+                    }
+                ],
+                "triggers": [],
+            },
         },
     }
+
+
+def _child_tasks_start(
+    namespace: list[str],
+    *,
+    task_id: str = "child-task",
+    name: str = "PatchToolCallsMiddleware.before_agent",
+) -> ProtocolEvent:
+    """A child-scope `tasks` start (any inner node — kicks off the subagent)."""
+    return {
+        "type": "event",
+        "method": "tasks",
+        "params": {
+            "namespace": namespace,
+            "timestamp": TS,
+            "data": {
+                "id": task_id,
+                "name": name,
+                "input": None,
+                "triggers": [],
+            },
+        },
+    }
+
+
+def _parent_tasks_result(
+    namespace: list[str],
+    *,
+    parent_task_id: str,
+    error: str | None = None,
+    interrupts: list[dict[str, Any]] | None = None,
+) -> ProtocolEvent:
+    """A parent-scope `tools`-task result that closes the dispatched subagent."""
+    return {
+        "type": "event",
+        "method": "tasks",
+        "params": {
+            "namespace": namespace,
+            "timestamp": TS,
+            "data": {
+                "id": parent_task_id,
+                "name": "tools",
+                "error": error,
+                "interrupts": interrupts or [],
+                "result": {},
+            },
+        },
+    }
+
+
+def _spawn(
+    mux: StreamMux,
+    *,
+    parent_task_id: str,
+    subagent_type: str,
+    tool_call_id: str,
+    parent_ns: list[str] | None = None,
+) -> None:
+    """Push parent + child start events that mimic a real subagent spawn."""
+    parent_ns = parent_ns or []
+    mux.push(
+        _tools_start(
+            parent_ns,
+            parent_task_id=parent_task_id,
+            subagent_type=subagent_type,
+            tool_call_id=tool_call_id,
+        )
+    )
+    mux.push(_child_tasks_start([*parent_ns, f"tools:{parent_task_id}"]))
 
 
 def _values(payload: dict[str, Any], *, namespace: list[str]) -> ProtocolEvent:
@@ -105,37 +151,24 @@ def _values(payload: dict[str, Any], *, namespace: list[str]) -> ProtocolEvent:
 
 
 def _subscribe(log: EventLog) -> None:
-    """Flip `_subscribed = True` so pushes retain items for test inspection."""
     log._subscribed = True
 
 
 def _pre_subscribe_handle(handle: SubagentRunStream) -> None:
-    """Flip `_subscribed` on every EventLog inside the handle's mini-mux.
-
-    The child mini-mux is built via `make_child` with the full factory
-    list, so `values` / `messages` / `subagents` logs exist as
-    projections. Tests that feed events directly need them subscribed
-    so pushes retain items for `_items` inspection.
-    """
+    """Flip `_subscribed` on every EventLog inside the handle's mini-mux."""
     for value in handle._mux.extensions.values():
         if isinstance(value, EventLog):
             _subscribe(value)
 
 
 def _factories(names: frozenset[str]):
-    """Return a factory list matching DeepAgentStreamer's minimal shape.
-
-    Omits the agent-layer transformers (ToolCall / Middleware) — they
-    don't interact with subagent routing and adding them here would
-    just pull in langchain-side imports.
-    """
-
     def subagent_factory(scope: tuple[str, ...]) -> SubagentTransformer:
         return SubagentTransformer(scope, subagent_names=names)
 
     return [
         ValuesTransformer,
         MessagesTransformer,
+        LifecycleTransformer,
         SubgraphTransformer,
         subagent_factory,
     ]
@@ -163,56 +196,60 @@ class TestSubagentTransformerUnit:
         (handle,) = list(transformer._log._items)
         return handle
 
-    def test_nondeclared_graph_name_is_ignored(self) -> None:
-        """A plain subgraph (graph_name not in declared names) stays off `.subagents`."""
+    def test_nondeclared_subagent_type_is_ignored(self) -> None:
+        """A `task` tool call with a non-declared subagent_type stays off `.subagents`."""
         mux, transformer = self._mux()
-        mux.push(
-            _lifecycle(
-                "started",
-                namespace=["tools:abc"],
-                graph_name="plain_tool_subgraph",
-                cause={"type": "toolCall", "tool_call_id": "abc"},
-            )
+        _spawn(
+            mux,
+            parent_task_id="abc",
+            subagent_type="plain_subagent",
+            tool_call_id="tc-1",
         )
 
         assert list(transformer._log._items) == []
-        assert transformer._by_ns == {}
+        assert transformer._handles == {}
 
-    def test_declared_graph_name_yields_handle(self) -> None:
-        """A `started` event whose graph_name matches a declared name produces a SubagentRunStream."""
+    def test_declared_subagent_yields_handle(self) -> None:
+        """A declared subagent_type produces a `SubagentRunStream` with proper metadata."""
         mux, transformer = self._mux()
-        mux.push(
-            _lifecycle(
-                "started",
-                namespace=["tools:abc"],
-                graph_name="researcher",
-                cause={"type": "toolCall", "tool_call_id": "abc"},
-            )
+        _spawn(
+            mux,
+            parent_task_id="abc",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
         )
 
         handle = self._handle(transformer)
         assert isinstance(handle, SubagentRunStream)
         assert handle.path == ("tools:abc",)
         assert handle.name == "researcher"
-        assert handle.cause == {"type": "toolCall", "tool_call_id": "abc"}
+        assert handle.cause == {"type": "toolCall", "tool_call_id": "tc-1"}
         assert handle.status == "started"
 
     def test_status_transitions(self) -> None:
-        """Started → running → completed updates the handle in place."""
+        """A parent-scope tasks-result closes the subagent and marks completed."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
-        mux.push(_lifecycle("running", namespace=["tools:x"]))
-        mux.push(_lifecycle("completed", namespace=["tools:x"]))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
+        mux.push(_parent_tasks_result([], parent_task_id="x"))
 
         handle = self._handle(transformer)
         assert handle.status == "completed"
-        # Terminal status closes the mini-mux so consumers unblock.
         assert handle._mux.extensions["values"]._closed
 
     def test_failed_stores_error(self) -> None:
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
-        mux.push(_lifecycle("failed", namespace=["tools:x"], error="boom"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
+        mux.push(_parent_tasks_result([], parent_task_id="x", error="boom"))
 
         handle = self._handle(transformer)
         assert handle.status == "failed"
@@ -221,7 +258,12 @@ class TestSubagentTransformerUnit:
     def test_values_routed_into_handle(self) -> None:
         """Values events under the subagent's ns flow into its mini-mux."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
 
         handle = self._handle(transformer)
         _pre_subscribe_handle(handle)
@@ -235,7 +277,12 @@ class TestSubagentTransformerUnit:
     def test_root_values_not_routed(self) -> None:
         """A values event at root ns must not leak into a child handle."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
         handle = self._handle(transformer)
         _pre_subscribe_handle(handle)
 
@@ -243,19 +290,25 @@ class TestSubagentTransformerUnit:
         assert _handle_values_items(handle) == []
 
     def test_nested_subagent_surfaces_under_parent(self) -> None:
-        """A nested subagent under a subagent appears on the parent's `.subagents`."""
+        """A subagent spawned from inside another subagent surfaces on the parent's `.subagents`."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:p"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="p",
+            subagent_type="researcher",
+            tool_call_id="tc-p",
+        )
 
         parent = self._handle(transformer)
         _pre_subscribe_handle(parent)
 
-        mux.push(
-            _lifecycle(
-                "started",
-                namespace=["tools:p", "tools:c"],
-                graph_name="coder",
-            )
+        # Nested spawn: parent ns is the researcher's ns; same `tools`-then-child pattern.
+        _spawn(
+            mux,
+            parent_task_id="c",
+            subagent_type="coder",
+            tool_call_id="tc-c",
+            parent_ns=["tools:p"],
         )
 
         (child,) = _handle_subagents_items(parent)
@@ -263,20 +316,25 @@ class TestSubagentTransformerUnit:
         assert child.path == ("tools:p", "tools:c")
         assert child.name == "coder"
 
-    def test_nested_nondeclared_subgraph_does_not_surface_on_subagents(self) -> None:
-        """A nested plain subgraph (graph_name not declared) does NOT appear on `.subagents`."""
+    def test_nested_nondeclared_does_not_surface_on_subagents(self) -> None:
+        """A nested non-declared subagent_type does NOT appear on `.subagents`."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:p"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="p",
+            subagent_type="researcher",
+            tool_call_id="tc-p",
+        )
 
         parent = self._handle(transformer)
         _pre_subscribe_handle(parent)
 
-        mux.push(
-            _lifecycle(
-                "started",
-                namespace=["tools:p", "tools:c"],
-                graph_name="plain_nested",
-            )
+        _spawn(
+            mux,
+            parent_task_id="c",
+            subagent_type="plain_nested",
+            tool_call_id="tc-c",
+            parent_ns=["tools:p"],
         )
 
         assert _handle_subagents_items(parent) == []
@@ -284,7 +342,12 @@ class TestSubagentTransformerUnit:
     def test_finalize_closes_dangling(self) -> None:
         """A still-open child at finalize time is marked completed and its mux closed."""
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
 
         handle = self._handle(transformer)
         mux.close()
@@ -295,7 +358,12 @@ class TestSubagentTransformerUnit:
 
     def test_fail_with_graph_interrupt_marks_interrupted(self) -> None:
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
         handle = self._handle(transformer)
 
         mux.fail(GraphInterrupt())
@@ -303,354 +371,14 @@ class TestSubagentTransformerUnit:
 
     def test_fail_with_generic_error_marks_failed(self) -> None:
         mux, transformer = self._mux()
-        mux.push(_lifecycle("started", namespace=["tools:x"], graph_name="researcher"))
+        _spawn(
+            mux,
+            parent_task_id="x",
+            subagent_type="researcher",
+            tool_call_id="tc-1",
+        )
         handle = self._handle(transformer)
 
         mux.fail(RuntimeError("kaboom"))
         assert handle.status == "failed"
         assert handle.error == "kaboom"
-
-
-class TestSubagentTransformerCauseAugmentation:
-    """`tool-started` → `lifecycle.started` correlation mutates `cause` in place."""
-
-    NAMES = frozenset({"researcher", "coder"})
-
-    def _mux(self) -> tuple[StreamMux, SubagentTransformer]:
-        mux = StreamMux(factories=_factories(self.NAMES), is_async=False)
-        transformer = mux.transformer_by_key("subagents")
-        assert isinstance(transformer, SubagentTransformer)
-        _subscribe(transformer._log)
-        return mux, transformer
-
-    def test_single_task_populates_cause(self) -> None:
-        """A matching `task` tool call on the parent → `lifecycle.started.cause`."""
-        mux, transformer = self._mux()
-        started = _lifecycle(
-            "started",
-            namespace=["tools:tc1"],
-            graph_name="researcher",
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc1",
-                input={"subagent_type": "researcher", "description": "do a thing"},
-            )
-        )
-        mux.push(started)
-
-        assert started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "tc1",
-        }
-        handle = list(transformer._log._items)[0]
-        assert handle.cause == {"type": "toolCall", "tool_call_id": "tc1"}
-
-    def test_parallel_distinct_types_each_match(self) -> None:
-        """Two tool calls of different subagent types → each paired correctly."""
-        mux, transformer = self._mux()
-        researcher_started = _lifecycle(
-            "started", namespace=["tools:r"], graph_name="researcher"
-        )
-        coder_started = _lifecycle(
-            "started", namespace=["tools:c"], graph_name="coder"
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_r",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_c",
-                input={"subagent_type": "coder"},
-            )
-        )
-        mux.push(researcher_started)
-        mux.push(coder_started)
-
-        assert researcher_started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "tc_r",
-        }
-        assert coder_started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "tc_c",
-        }
-
-    def test_parallel_same_type_oldest_first(self) -> None:
-        """Two tool calls of the same subagent type → oldest-first pairing."""
-        mux, transformer = self._mux()
-        first_started = _lifecycle(
-            "started", namespace=["tools:a"], graph_name="researcher"
-        )
-        second_started = _lifecycle(
-            "started", namespace=["tools:b"], graph_name="researcher"
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_1",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_2",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(first_started)
-        mux.push(second_started)
-
-        assert first_started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "tc_1",
-        }
-        assert second_started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "tc_2",
-        }
-
-    def test_tool_error_cleans_pending(self) -> None:
-        """A `tool-error` before `lifecycle.started` removes the pending entry."""
-        mux, transformer = self._mux()
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_err",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _tools(
-                "tool-error",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_err",
-            )
-        )
-        assert transformer._pending_tool_calls == {}
-
-        started = _lifecycle(
-            "started", namespace=["tools:x"], graph_name="researcher"
-        )
-        mux.push(started)
-        # No pending → no cause augmentation.
-        assert "cause" not in started["params"]["data"]
-
-    def test_non_task_tool_ignored(self) -> None:
-        """A non-`task` tool call is not tracked."""
-        mux, transformer = self._mux()
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="other_tool",
-                tool_call_id="tc_other",
-                input={"some": "payload"},
-            )
-        )
-        assert transformer._pending_tool_calls == {}
-
-    def test_subagent_without_task_no_cause(self) -> None:
-        """A subagent `lifecycle.started` with no matching tool call → no cause emitted."""
-        mux, transformer = self._mux()
-        started = _lifecycle(
-            "started", namespace=["tools:x"], graph_name="researcher"
-        )
-        mux.push(started)
-        assert "cause" not in started["params"]["data"]
-
-
-class TestSubagentTransformerNamespaceRewrite:
-    """Pregel-uuid → tool-call-id namespace rewriting on the wire."""
-
-    NAMES = frozenset({"researcher", "coder"})
-
-    def _mux(self) -> tuple[StreamMux, SubagentTransformer]:
-        mux = StreamMux(factories=_factories(self.NAMES), is_async=False)
-        transformer = mux.transformer_by_key("subagents")
-        assert isinstance(transformer, SubagentTransformer)
-        _subscribe(transformer._log)
-        return mux, transformer
-
-    def test_started_rewrites_pregel_uuid_to_tool_call_id(self) -> None:
-        """A pregel-uuid ns on `lifecycle.started` is rewritten to `tools:<tcid>`."""
-        mux, transformer = self._mux()
-        pregel_seg = "tools:598518b1-67d5-f5d4-716b-d4ab890914d3"
-        started = _lifecycle(
-            "started",
-            namespace=[pregel_seg],
-            graph_name="researcher",
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="toolu_ABC",
-                input={"subagent_type": "researcher", "description": "do"},
-            )
-        )
-        mux.push(started)
-
-        assert started["params"]["namespace"] == ["tools:toolu_ABC"]
-        assert started["params"]["data"]["cause"] == {
-            "type": "toolCall",
-            "tool_call_id": "toolu_ABC",
-        }
-        # The map records the Pregel-assigned segment → tcid rewrite
-        # for later events under the same segment.
-        assert transformer._ns_rewrite == {pregel_seg: "tools:toolu_ABC"}
-
-    def test_subsequent_events_inherit_rewrite(self) -> None:
-        """Values / messages / terminal lifecycle under the pregel ns all get remapped."""
-        mux, transformer = self._mux()
-        pregel_seg = "tools:pregel-uuid-1"
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc1",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _lifecycle(
-                "started", namespace=[pregel_seg], graph_name="researcher"
-            )
-        )
-
-        values = _values({"messages": []}, namespace=[pregel_seg])
-        deep_values = _values({"k": 1}, namespace=[pregel_seg, "model:m1"])
-        completed = _lifecycle("completed", namespace=[pregel_seg])
-
-        mux.push(values)
-        mux.push(deep_values)
-        mux.push(completed)
-
-        assert values["params"]["namespace"] == ["tools:tc1"]
-        assert deep_values["params"]["namespace"] == ["tools:tc1", "model:m1"]
-        assert completed["params"]["namespace"] == ["tools:tc1"]
-
-    def test_unknown_pregel_segment_passes_through(self) -> None:
-        """Events at an un-paired pregel segment are left untouched."""
-        mux, transformer = self._mux()
-        # No `tool-started` preceded, so the transformer has no mapping.
-        values = _values({"k": 1}, namespace=["tools:unknown-uuid"])
-        mux.push(values)
-        assert values["params"]["namespace"] == ["tools:unknown-uuid"]
-        assert transformer._ns_rewrite == {}
-
-    def test_trivial_mapping_not_recorded(self) -> None:
-        """If `lifecycle.started` already arrives at `tools:<tcid>`, no rewrite is stored."""
-        mux, transformer = self._mux()
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc1",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _lifecycle(
-                "started",
-                namespace=["tools:tc1"],
-                graph_name="researcher",
-            )
-        )
-        assert transformer._ns_rewrite == {}
-
-    def test_parallel_subagents_rewrite_independently(self) -> None:
-        """Two concurrently-dispatched subagents each get their own mapping."""
-        mux, transformer = self._mux()
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_a",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_b",
-                input={"subagent_type": "coder"},
-            )
-        )
-        started_a = _lifecycle(
-            "started",
-            namespace=["tools:uuid-a"],
-            graph_name="researcher",
-        )
-        started_b = _lifecycle(
-            "started",
-            namespace=["tools:uuid-b"],
-            graph_name="coder",
-        )
-        mux.push(started_a)
-        mux.push(started_b)
-
-        assert started_a["params"]["namespace"] == ["tools:tc_a"]
-        assert started_b["params"]["namespace"] == ["tools:tc_b"]
-
-        values_a = _values({"k": "a"}, namespace=["tools:uuid-a"])
-        values_b = _values({"k": "b"}, namespace=["tools:uuid-b"])
-        mux.push(values_a)
-        mux.push(values_b)
-
-        assert values_a["params"]["namespace"] == ["tools:tc_a"]
-        assert values_b["params"]["namespace"] == ["tools:tc_b"]
-
-    def test_rewrite_does_not_confuse_subgraph_handle(self) -> None:
-        """SubgraphTransformer still keys `_by_ns` off the pre-rewrite namespace."""
-        mux, transformer = self._mux()
-        pregel_seg = "tools:pregel-uuid-x"
-        mux.push(
-            _tools(
-                "tool-started",
-                namespace=[],
-                tool_name="task",
-                tool_call_id="tc_x",
-                input={"subagent_type": "researcher"},
-            )
-        )
-        mux.push(
-            _lifecycle(
-                "started", namespace=[pregel_seg], graph_name="researcher"
-            )
-        )
-
-        sub_t = mux.transformer_by_key("subgraphs")
-        # SubgraphTransformer saw the event BEFORE the rewrite (its
-        # factory slot precedes SubagentTransformer's), so it keys
-        # off the pre-rewrite pregel_uuid tuple. The Subagent handle
-        # wraps the same SubgraphRunStream.
-        assert (pregel_seg,) in sub_t._by_ns  # type: ignore[attr-defined]
-        (handle,) = list(transformer._log._items)
-        assert handle._subgraph is sub_t._by_ns[(pregel_seg,)]  # type: ignore[attr-defined]

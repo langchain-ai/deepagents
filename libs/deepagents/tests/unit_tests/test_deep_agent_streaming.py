@@ -20,6 +20,7 @@ from langgraph.graph.state import CompiledStateGraph
 from pydantic import Field
 
 from deepagents import (
+    AsyncSubagentRunStream,
     SubagentRunStream,
     create_deep_agent,
 )
@@ -117,7 +118,7 @@ class TestCreateDeepAgentAstreamV2:
         """`run.subagents` / `.messages` / `.tool_calls` / `.middleware` all bound."""
         agent = _build_agent_with_one_subagent()
         run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
-        for attr in ("subagents", "subgraphs", "messages", "tool_calls", "middleware", "values"):
+        for attr in ("subagents", "subgraphs", "messages", "tool_calls", "values"):
             assert hasattr(run, attr), f"missing projection {attr!r}"
 
         # Drain to drive the pump to completion.
@@ -128,9 +129,9 @@ class TestCreateDeepAgentAstreamV2:
         agent = _build_agent_with_one_subagent()
         run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
 
-        handles: list[SubagentRunStream] = []
+        handles: list[AsyncSubagentRunStream] = []
         async for sub in run.subagents:
-            assert isinstance(sub, SubagentRunStream)
+            assert isinstance(sub, AsyncSubagentRunStream)
             handles.append(sub)
             async for _ in sub.messages:
                 pass
@@ -145,8 +146,9 @@ class TestCreateDeepAgentAstreamV2:
         # path is ("tools:<pregel_task_id>",) — the tool node hosting the subagent.
         assert len(sub.path) == 1
         assert sub.path[0].startswith("tools:")
-        assert isinstance(sub.output, dict)
-        assert "messages" in sub.output
+        sub_output = await sub.output()
+        assert isinstance(sub_output, dict)
+        assert "messages" in sub_output
 
     async def test_subagent_tool_calls_surface(self) -> None:
         agent = _build_agent_with_one_subagent()
@@ -220,7 +222,7 @@ class TestCreateDeepAgentStreamV2:
     def test_run_exposes_native_projections_sync(self) -> None:
         agent = _build_agent_with_one_subagent()
         run = agent.stream_v2({"messages": [HumanMessage(content="go")]})
-        for attr in ("subagents", "subgraphs", "messages", "tool_calls", "middleware", "values"):
+        for attr in ("subagents", "subgraphs", "messages", "tool_calls", "values"):
             assert hasattr(run, attr)
 
         # Drain to completion.

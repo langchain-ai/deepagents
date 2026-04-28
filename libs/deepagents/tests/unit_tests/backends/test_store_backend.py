@@ -157,6 +157,7 @@ def test_store_backend_intercept_large_tool_result(file_format):
         tool_call_id="t2",
         store=mem_store,
         stream_writer=lambda _: None,
+        tools=[],
         config={},
     )
     result = middleware._intercept_large_tool_result(tool_message, rt)

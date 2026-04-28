@@ -677,6 +677,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 context=runtime.context,
                 stream_writer=runtime.stream_writer,
                 store=runtime.store,
+                tools=[],
                 config=config,
                 tool_call_id=None,
             )

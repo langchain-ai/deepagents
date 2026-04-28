@@ -230,6 +230,7 @@ def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
         tool_call_id="test_fs",
         store=None,
         stream_writer=lambda _: None,
+        tools=[],
         config={},
     )
 

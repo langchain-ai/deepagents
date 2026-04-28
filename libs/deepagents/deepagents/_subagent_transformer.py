@@ -1,181 +1,80 @@
-"""Project subagent runs as first-class child streams on a parent run.
+"""Surface declared subagents as typed `run.subagents` handles.
 
-`SubagentTransformer` performs three tightly-coupled jobs on events
-flowing through the stream mux:
+Pregel's `tasks` event names a child task by its parent's node name
+(typically `"tools"`) plus a Pregel-assigned task id. The actual
+`subagent_type` and the user-facing `tool_call_id` only live in the
+**parent** task's `input` payload (the list of tool calls). This
+transformer does two things:
 
-1. **Tool-call tracking.** Root-scope ``tools`` events from the
-   parent's ``task`` tool calls are observed to build
-   ``_pending_tool_calls``, keyed by ``tool_call_id``. Entries live
-   from the originating ``tool-started`` until the subagent's
-   ``lifecycle.started`` is correlated or the task errors out.
+1. At parent scope, intercept `tasks` start events whose `name ==
+   "tools"` and `input` is a list containing one or more `task` tool
+   calls. For each such tool call, record
+   ``parent_task_id → (subagent_type, tool_call_id)``.
+2. When a direct-child `tasks` start fires (segment ``"tools:<id>"``),
+   look up `id` in the pending map. If it resolves to a declared
+   subagent name, build a `SubagentRunStream` (or async variant)
+   wrapping a child mini-mux and push it onto the `subagents` log.
+   The handle reports `graph_name` as the subagent's declared type
+   (e.g. ``"researcher"``) and `trigger_call_id` as the user-facing
+   tool call id (e.g. ``"call-parent-1"``).
 
-2. **Subagent handle promotion.** When a ``lifecycle.started`` fires
-   at one level below this transformer's scope, we consult the
-   sibling :class:`~langgraph.stream.transformers.SubgraphTransformer`'s
-   ``_by_ns`` (populated earlier in the same dispatch because the
-   subgraph transformer is registered first in the factory list).
-   If the emitted ``graph_name`` matches a declared subagent name, we
-   wrap the existing :class:`~langgraph.stream.transformers.SubgraphRunStream`
-   in a :class:`SubagentRunStream` so ``run.subagents`` surfaces a
-   typed handle with the standard projections
-   (``.messages`` / ``.values`` / ``.subagents`` / ``.tool_calls``).
-
-3. **Wire-level namespace rewrite.** Pregel schedules each subagent
-   spawned via the ``task`` tool under a UUID-derived namespace like
-   ``tools:<pregel_uuid>``, whereas wire subscribers filter on the
-   client-visible ``tools:<tool_call_id>`` namespace. Rather than
-   mutating ``checkpoint_ns`` in the subagent's config (which would
-   interact with the Pregel scheduler and checkpoint layout) or
-   fabricating synthetic protocol events, the transformer records a
-   ``pregel_segment → tool_call_id`` mapping at the moment the first
-   lifecycle event correlates to a pending ``task`` tool call, then
-   rewrites the first segment of every downstream event's namespace
-   in-place before the mux appends it to the main log. The
-   SubgraphTransformer's ``_by_ns`` still keys off the pre-rewrite
-   namespace (matching Pregel's checkpoint layout); only the
-   wire-visible ``params.namespace`` is remapped.
-
-Consequences of sharing the `SubgraphRunStream`'s mini-mux:
-
-- Events under the subagent's namespace are dispatched *once* (into
-  the shared mini-mux), not twice.
-- `path`, `status`, `error`, `checkpoint`, and `cause` are read from
-  the wrapped handle — no separate tracking in this transformer.
-- `finalize` / `fail` are not needed: `SubgraphTransformer` owns
-  close/fail of the shared mini-mux.
-
-The `_native = True` flag means `run.subagents` auto-binds as a
-direct attribute. A subagent also shows up on `run.subgraphs` — that
-projection is a superset, surfacing every nested subgraph (subagent
-or otherwise) as an untyped handle.
+A subagent therefore shows up on **both** `run.subgraphs` (untyped,
+superset, keyed by the raw Pregel segment) and `run.subagents`
+(typed, declared-only, with user-friendly identifiers).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from langgraph.stream._event_log import EventLog
-from langgraph.stream._types import StreamTransformer
-from langgraph.stream.run_stream import BaseRunStream
-from langgraph.stream.transformers import SubgraphRunStream, SubgraphTransformer
+from langgraph.stream.run_stream import (
+    AsyncSubgraphRunStream,
+    SubgraphRunStream,
+)
+from langgraph.stream.transformers import (
+    SubgraphStatus,
+    ValuesTransformer,
+    _TasksLifecycleBase,
+)
 
 if TYPE_CHECKING:
-    from langchain_protocol.protocol import (
-        CheckpointRef,
-        LifecycleCause,
-        LifecycleData,
-    )
     from langgraph.stream._mux import StreamMux
     from langgraph.stream._types import ProtocolEvent
-    from langgraph.stream.transformers import SubgraphStatus
 
 
-class SubagentRunStream(BaseRunStream):
-    """Typed view of a single subagent execution.
-
-    Wraps the `SubgraphRunStream` that `SubgraphTransformer` already
-    built for this child namespace — shares its mini-mux, so
-    projections (`.messages`, `.tool_calls`, `.middleware`,
-    recursive `.subagents`, `.values`) come from the existing
-    transformer pipeline without a second round of event dispatch.
-
-    Events are driven by the parent run's pump and routed into this
-    handle's mini-mux by `SubgraphTransformer` — a subagent does not
-    own its own pump. Construction therefore bypasses
-    `GraphRunStream.__init__` (which would wire a pump onto the
-    mini-mux, shadowing the parent's) and calls
-    `BaseRunStream.__init__` directly, seeding the pump-related
-    fields so inherited methods that consult them (`output`, `abort`,
-    `__exit__`) degrade to no-ops.
-
-    Exposes `name` (the declared subagent name) as the typed state
-    this layer adds. `path`, `status`, `error`, `checkpoint`, `cause`
-    delegate to the wrapped subgraph handle so subgraph-side state
-    transitions — including terminal close driven by
-    `SubgraphTransformer.finalize` / `fail` — are automatically
-    visible here.
-    """
-
-    def __init__(self, subgraph: SubgraphRunStream, *, name: str) -> None:
-        # Skip `GraphRunStream.__init__` to avoid calling
-        # `mux.bind_pump` on the mini-mux — the parent's pump is
-        # already bound via `make_child` pump inheritance.
-        BaseRunStream.__init__(self, subgraph._mux)
-        # Seed pump-related fields so inherited `output` / `abort` /
-        # `__exit__` treat this stream as already-exhausted (no self
-        # pump to drive). `_values_transformer._latest` still provides
-        # the current snapshot because the parent's pump keeps it
-        # fresh.
-        self._graph_iter = None
-        self._exhausted = True
-        self._subgraph = subgraph
-        self.name: str = name
+class SubagentRunStream(SubgraphRunStream):
+    """Typed sync handle for a declared subagent execution."""
 
     @property
-    def output(self) -> dict[str, Any] | None:
-        """Latest values snapshot from this subagent's mini-mux.
-
-        Unlike root `GraphRunStream.output`, no pump is driven — the
-        parent's pump keeps `_values_transformer._latest` fresh.
-        """
-        vt = self._values_transformer
-        err = vt.error
-        if err is not None:
-            raise err
-        return vt._latest
+    def name(self) -> str | None:
+        return self.graph_name
 
     @property
-    def interrupted(self) -> bool:
-        """True once an interrupt has flowed through this subagent's pipeline."""
-        return self._values_transformer._interrupted
+    def cause(self) -> dict[str, str] | None:
+        if self.trigger_call_id is None:
+            return None
+        return {"type": "toolCall", "tool_call_id": self.trigger_call_id}
+
+
+class AsyncSubagentRunStream(AsyncSubgraphRunStream):
+    """Typed async handle for a declared subagent execution."""
 
     @property
-    def interrupts(self) -> list[Any]:
-        """List of interrupt payloads seen by this subagent."""
-        return list(self._values_transformer._interrupts)
+    def name(self) -> str | None:
+        return self.graph_name
 
     @property
-    def path(self) -> tuple[str, ...]:
-        return self._subgraph.path
-
-    @property
-    def cause(self) -> LifecycleCause | None:
-        return self._subgraph.cause
-
-    @property
-    def status(self) -> SubgraphStatus:
-        return self._subgraph.status
-
-    @property
-    def error(self) -> str | None:
-        return self._subgraph.error
-
-    @property
-    def checkpoint(self) -> CheckpointRef | None:
-        return self._subgraph.checkpoint
+    def cause(self) -> dict[str, str] | None:
+        if self.trigger_call_id is None:
+            return None
+        return {"type": "toolCall", "tool_call_id": self.trigger_call_id}
 
 
-class SubagentTransformer(StreamTransformer):
-    """Promote declared subagents into typed handles on `run.subagents`.
-
-    Requires a `SubgraphTransformer` to be registered earlier in the
-    mux's factory list (it is, via `GraphStreamer.builtin_factories`).
-    This transformer does not own a mini-mux or a lifecycle state
-    machine — it consults `SubgraphTransformer._by_ns` on each
-    `started` event and promotes matching handles.
-
-    `scope_exact = False` so this transformer sees root-scope `tools`
-    events (for tool-call tracking) *and* the promoted subagent's
-    `lifecycle.started` at `scope + 1` namespace (for handle
-    promotion) *and* every deeper event (for namespace rewriting).
-    Events at deeper namespaces flow through `SubgraphTransformer`
-    into the subagent's mini-mux where the standard `messages` /
-    `values` transformers build projections.
-    """
+class SubagentTransformer(_TasksLifecycleBase):
+    """Promote declared subagents into typed handles on `run.subagents`."""
 
     _native: ClassVar[bool] = True
-    scope_exact: ClassVar[bool] = False
-    required_stream_modes: ClassVar[tuple[str, ...]] = ("lifecycle", "tools")
 
     def __init__(
         self,
@@ -185,202 +84,126 @@ class SubagentTransformer(StreamTransformer):
     ) -> None:
         super().__init__(scope)
         self._names = subagent_names
-        self._log: EventLog[SubagentRunStream] = EventLog()
-        self._by_ns: dict[tuple[str, ...], SubagentRunStream] = {}
-        self._subgraph_transformer: SubgraphTransformer | None = None
+        self._log: EventLog[SubagentRunStream | AsyncSubagentRunStream] = EventLog()
+        self._handles: dict[tuple[str, ...], SubagentRunStream | AsyncSubagentRunStream] = {}
         self._mux: StreamMux | None = None
-        # Pending `task` tool calls awaiting a matching `lifecycle.started`.
-        # Keyed by `tool_call_id`; value carries the originating input so
-        # downstream consumers can correlate richer metadata than `cause`
-        # alone conveys.
-        #
-        # Dict insertion order provides oldest-first pairing under
-        # parallel fan-out of the same `subagent_type`, which matches
-        # Pregel's scheduling order for the corresponding subgraph
-        # spawns.
-        self._pending_tool_calls: dict[str, dict[str, str]] = {}
-        # Wire-level namespace rewrite map: Pregel-assigned first
-        # segment (e.g. `"tools:<pregel_uuid>"`) → client-visible first
-        # segment (e.g. `"tools:<tool_call_id>"`). Populated when a
-        # `lifecycle.started` is correlated to a pending `task` tool
-        # call by `graph_name` / `subagent_type`.
-        self._ns_rewrite: dict[str, str] = {}
+        # parent_task_id -> {"subagent_type": ..., "tool_call_id": ...}
+        self._pending: dict[str, dict[str, str]] = {}
 
     def init(self) -> dict[str, Any]:
         return {"subagents": self._log}
 
     def _on_register(self, mux: StreamMux) -> None:
-        """Capture the sibling `SubgraphTransformer` and the enclosing mux.
-
-        Raises at registration time if `SubgraphTransformer` isn't
-        present — failing loudly here is better than silently yielding
-        zero subagent handles at runtime.
-        """
-        sub_t = mux.transformer_by_key("subgraphs")
-        if not isinstance(sub_t, SubgraphTransformer):
-            msg = (
-                "SubagentTransformer requires a SubgraphTransformer to be "
-                "registered earlier in the mux; none was found. Check that "
-                "your streamer's builtin_factories includes SubgraphTransformer "
-                "before SubagentTransformer."
-            )
-            raise TypeError(msg)
-        self._subgraph_transformer = sub_t
         self._mux = mux
 
-    def process(self, event: ProtocolEvent) -> bool:
-        method = event["method"]
-
-        # Root-scope `task` tool observations feed `_pending_tool_calls`
-        # for later correlation. The event passes through unmodified.
-        if method == "tools":
-            self._track_task_tool_call(event)
-            return True
-
-        if method != "lifecycle":
-            # Non-lifecycle events (values, messages, checkpoints,
-            # input, tools at non-root ns) only need the wire-level
-            # namespace rewrite applied.
-            self._rewrite_ns_in_place(event)
-            return True
-
-        ns = tuple(event["params"]["namespace"])
+    def _should_track(self, ns: tuple[str, ...]) -> bool:
         depth = len(self.scope)
+        return len(ns) == depth + 1 and ns[:depth] == self.scope
 
-        # Only depth + 1 lifecycle events are subagent-level; deeper
-        # ones (nested subgraph / model / tool nodes) just need the
-        # rewrite applied.
-        if len(ns) != depth + 1 or ns[:-1] != self.scope:
-            self._rewrite_ns_in_place(event)
-            return True
+    def _capture_pending_from_parent(self, event: ProtocolEvent) -> None:
+        """Record subagent metadata from a parent-scope `tools`-task start.
 
-        data = cast("LifecycleData", event["params"]["data"])
-        if data.get("event") == "started":
-            self._handle_started(ns, data)
-
-        # Rewrite the ns on the way out so downstream wire consumers
-        # see `tools:<tool_call_id>` even though internal state keys
-        # off `tools:<pregel_uuid>`.
-        self._rewrite_ns_in_place(event)
-        return True
-
-    # ─── Tool call tracking ───────────────────────────────────────────
-
-    def _track_task_tool_call(self, event: ProtocolEvent) -> None:
-        """Record / discard pending `task` tool calls observed on `tools`.
-
-        Only `tool_name == "task"` events are tracked — other tool
-        calls don't spawn subagents and would pollute the pending map.
+        Pregel emits a `tasks` start at the parent ns whose `input` is
+        the list of tool calls being dispatched. Each ``task`` tool
+        call carries the user-visible ``tool_call_id`` and the
+        declared ``subagent_type`` we need at child-task time.
         """
         ns = tuple(event["params"]["namespace"])
-        # `tool-started` / `tool-finished` / `tool-error` fire at the
-        # parent namespace, which is exactly `self.scope` for the
-        # subagents we care about (direct children).
         if ns != self.scope:
             return
-        data = cast("dict[str, Any]", event["params"]["data"])
-        phase = data.get("event")
-        if phase == "tool-started":
-            if data.get("tool_name") != "task":
-                return
-            tcid = data.get("tool_call_id")
-            raw_input = data.get("input")
-            if not isinstance(tcid, str) or not isinstance(raw_input, dict):
-                return
-            self._pending_tool_calls[tcid] = {
-                "subagent_type": str(raw_input.get("subagent_type") or ""),
-                "description": str(raw_input.get("description") or ""),
+        data = event["params"]["data"]
+        if "result" in data or data.get("name") != "tools":
+            return
+        parent_task_id = data.get("id")
+        tool_calls = data.get("input")
+        if not isinstance(parent_task_id, str) or not isinstance(tool_calls, list):
+            return
+        for tc in tool_calls:
+            if not isinstance(tc, dict) or tc.get("name") != "task":
+                continue
+            args = tc.get("args") or {}
+            subagent_type = args.get("subagent_type")
+            tool_call_id = tc.get("id")
+            if not isinstance(subagent_type, str):
+                continue
+            self._pending[parent_task_id] = {
+                "subagent_type": subagent_type,
+                "tool_call_id": tool_call_id if isinstance(tool_call_id, str) else "",
             }
-        elif phase in ("tool-finished", "tool-error"):
-            tcid = data.get("tool_call_id")
-            if isinstance(tcid, str):
-                self._pending_tool_calls.pop(tcid, None)
+            # First task-typed call wins; multiple `task` calls under
+            # the same parent task aren't expected in the current
+            # scheduling model.
+            return
 
-    # ─── Started correlation + handle promotion ───────────────────────
-
-    def _handle_started(
-        self, ns: tuple[str, ...], data: LifecycleData
+    def _on_started(
+        self,
+        ns: tuple[str, ...],
+        graph_name: str | None,  # noqa: ARG002
+        trigger_call_id: str | None,
     ) -> None:
-        """Correlate a subagent's `lifecycle.started` with a pending tool call.
-
-        Three things happen here, in order:
-
-        1. If ``data`` has no pre-populated ``cause`` and we have a
-           pending ``task`` tool call whose ``subagent_type`` matches
-           ``graph_name``, pair them. Dict insertion order gives
-           oldest-first pairing under parallel fan-out, matching
-           Pregel's scheduling order.
-        2. If the pairing produces a ``tools:<tcid>`` that differs
-           from the pre-rewrite ``tools:<pregel_seg>``, record a
-           namespace rewrite entry so subsequent events under the
-           same Pregel segment surface on the wire at the
-           tool-call-id namespace.
-        3. If ``graph_name`` is a declared subagent and
-           :class:`SubgraphTransformer` has already created a handle
-           at ``ns``, wrap that handle in a :class:`SubagentRunStream`
-           and push it onto ``self._log``.
-        """
-        graph_name = data.get("graph_name")
-        if not isinstance(graph_name, str):
+        if trigger_call_id is None:
             return
-
-        if "cause" not in data:
-            for tcid, info in self._pending_tool_calls.items():
-                if info["subagent_type"] == graph_name:
-                    cast("dict[str, Any]", data)["cause"] = {
-                        "type": "toolCall",
-                        "tool_call_id": tcid,
-                    }
-                    pregel_seg = ns[-1]
-                    target_seg = f"tools:{tcid}"
-                    if pregel_seg != target_seg:
-                        self._ns_rewrite[pregel_seg] = target_seg
-                    del self._pending_tool_calls[tcid]
-                    break
-
-        if graph_name not in self._names or ns in self._by_ns:
+        info = self._pending.pop(trigger_call_id, None)
+        if info is None:
             return
-
-        # SubgraphTransformer runs before us (factory order), so its
-        # `_by_ns` already has the freshly-created handle for this
-        # namespace. Reuse it — no second mini-mux, no duplicate
-        # dispatch. `_on_register` guarantees `_subgraph_transformer`
-        # is set before any event reaches `process`.
-        sub_t = cast("SubgraphTransformer", self._subgraph_transformer)
-        subgraph_handle = sub_t._by_ns.get(ns)
-        if subgraph_handle is None:
+        subagent_type = info["subagent_type"]
+        if subagent_type not in self._names:
             return
-
-        # Propagate any cause we just augmented onto the SubgraphRunStream
-        # instance too — it was constructed from the `data` payload
-        # before we had a chance to pair a tool_call_id into it, so a
-        # fresh read-back would return `None` without this sync.
-        subgraph_cause = data.get("cause")
-        if subgraph_cause is not None and subgraph_handle.cause is None:
-            subgraph_handle.cause = subgraph_cause
-
-        handle = SubagentRunStream(subgraph_handle, name=graph_name)
-        self._by_ns[ns] = handle
+        if self._mux is None or ns in self._handles:
+            return
+        try:
+            child_mux = self._mux._make_child(ns)
+        except RuntimeError:
+            return
+        values_t = child_mux.transformer_by_key("values")
+        if not isinstance(values_t, ValuesTransformer):
+            return
+        handle_cls = AsyncSubagentRunStream if child_mux.is_async else SubagentRunStream
+        handle = handle_cls(
+            mux=child_mux,
+            values_transformer=values_t,
+            path=ns,
+            graph_name=subagent_type,
+            trigger_call_id=info["tool_call_id"] or None,
+        )
+        self._handles[ns] = handle
         self._log.push(handle)
 
-    # ─── Namespace rewriting ──────────────────────────────────────────
-
-    def _rewrite_ns_in_place(self, event: ProtocolEvent) -> None:
-        """Rewrite `event.params.namespace[0]` using `_ns_rewrite`.
-
-        The namespace list is mutated in place so the mutation is
-        visible to any downstream transformer *and* to the event
-        that ultimately lands in the mux's main log. Only the first
-        segment is rewritten — deeper segments belong to child
-        subgraphs (``model:...``, ``tools:...``) whose naming is
-        already stable.
-        """
-        if not self._ns_rewrite:
+    def _on_terminal(
+        self,
+        ns: tuple[str, ...],
+        status: SubgraphStatus,
+        error: str | None,
+    ) -> None:
+        handle = self._handles.get(ns)
+        if handle is None or handle._seen_terminal:
             return
-        ns_list = event["params"]["namespace"]
-        if not ns_list:
+        handle.status = status
+        if error is not None and handle.error is None:
+            handle.error = error
+        handle._seen_terminal = True
+        if handle._mux is None or handle._mux._events._closed:
             return
-        first = ns_list[0]
-        rewritten = self._ns_rewrite.get(first)
-        if rewritten is not None and rewritten != first:
-            ns_list[0] = rewritten
+        if status == "failed":
+            handle._mux.fail(RuntimeError(error or "Subagent failed"))
+        else:
+            handle._mux.close()
+
+    def _child_mux_for_event(self, event: ProtocolEvent) -> StreamMux | None:
+        ns = tuple(event["params"]["namespace"])
+        depth = len(self.scope)
+        if len(ns) < depth + 1:
+            return None
+        handle = self._handles.get(ns[: depth + 1])
+        if handle is None or handle._mux is None or handle._mux._events._closed:
+            return None
+        return handle._mux
+
+    def process(self, event: ProtocolEvent) -> bool:
+        if event.get("method") == "tasks":
+            self._capture_pending_from_parent(event)
+        keep = super().process(event)
+        child_mux = self._child_mux_for_event(event)
+        if child_mux is not None:
+            child_mux.push(event)
+        return keep

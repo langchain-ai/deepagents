@@ -1,6 +1,10 @@
 """Deep Agents package."""
 
-from deepagents._subagent_transformer import SubagentRunStream, SubagentTransformer
+from deepagents._subagent_transformer import (
+    AsyncSubagentRunStream,
+    SubagentRunStream,
+    SubagentTransformer,
+)
 from deepagents._version import __version__
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -12,6 +16,7 @@ from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgent
 __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "AsyncSubagentRunStream",
     "CompiledSubAgent",
     "FilesystemMiddleware",
     "FilesystemPermission",

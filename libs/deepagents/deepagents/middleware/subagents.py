@@ -13,7 +13,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
@@ -368,7 +368,7 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
-def _build_task_tool(  # noqa: C901
+def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -433,29 +433,26 @@ def _build_task_tool(  # noqa: C901
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
-    def _build_subagent_config(runtime: ToolRuntime) -> dict[str, Any]:
+    def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
         """Derive the subagent's RunnableConfig from the parent's runtime config.
 
-        Forwarding the parent's config is what lets Pregel's streaming
-        callback handlers propagate into the subagent, so its internal
-        lifecycle / values / messages events land on the parent's
-        stream instead of being swallowed by a fresh (detached) config.
+        Only ``callbacks``, ``tags``, and ``configurable`` are forwarded.
+        Callbacks let Pregel's streaming handlers propagate into the
+        subagent so its events land on the parent's stream.  Tags are
+        forwarded for tracing continuity.  ``configurable`` is needed
+        for Pregel to recognize the subagent as a nested subgraph.
 
-        A `ls_tool_call_id` entry is added to ``metadata`` so downstream
-        stream transformers can correlate the subagent's nested
-        ``tools:<pregel_uuid>`` namespace with the originating
-        ``tool_call_id`` without mutating ``checkpoint_ns`` or emitting
-        synthetic events.
+        ``recursion_limit`` and ``metadata`` are intentionally *not*
+        forwarded — the subagent's own bound config must take precedence.
+        Passing ``metadata`` in the invoke config replaces the
+        subagent's bound metadata (e.g. ``lc_agent_name``).
         """
         parent_config = runtime.config or {}
-        parent_metadata = parent_config.get("metadata") or {}
-        return {
-            **parent_config,
-            "metadata": {
-                **parent_metadata,
-                "ls_tool_call_id": runtime.tool_call_id,
-            },
-        }
+        config: RunnableConfig = {}
+        for key in ("callbacks", "tags", "configurable"):
+            if key in parent_config:
+                config[key] = parent_config[key]  # type: ignore[literal-required]
+        return config
 
     def task(
         description: str,

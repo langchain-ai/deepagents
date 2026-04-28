@@ -6,10 +6,8 @@ from collections.abc import (
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_core.outputs import ChatResult
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from pydantic import Field
 from typing_extensions import TypedDict
@@ -19,6 +17,10 @@ from langchain_quickjs import REPLMiddleware
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatResult
 
 
 class UserLookup(TypedDict):

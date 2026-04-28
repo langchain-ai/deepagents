@@ -98,10 +98,10 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
 
 
 def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
+    default_signature = f"async function {fn_name}"
+    default_signature += "(input: Record<string, unknown>): Promise<string>"
     if not schema or not isinstance(schema.get("properties"), dict):
-        return (
-            f"async function {fn_name}(input: Record<string, unknown>): Promise<string>"
-        )
+        return default_signature
     props: dict[str, Any] = schema["properties"]
     required = set(schema.get("required", []))
     fields = []
@@ -112,11 +112,9 @@ def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
         prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     body = "\n".join(fields) if fields else ""
-    return (
-        f"async function {fn_name}(input: {{\n{body}\n}}): Promise<string>"
-        if body
-        else f"async function {fn_name}(input: Record<string, unknown>): Promise<string>"
-    )
+    if not body:
+        return default_signature
+    return f"async function {fn_name}(input: {{\n{body}\n}}): Promise<string>"
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:

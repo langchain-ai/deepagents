@@ -1,22 +1,23 @@
-export interface RuntimeConfigSupabase {
+interface RuntimeConfigBase {
+  appName: string;
+  assistantId: string;
+  subtitle?: string;
+  prompts?: string[];
+}
+
+export interface RuntimeConfigSupabase extends RuntimeConfigBase {
   auth: "supabase";
   supabaseUrl: string;
   supabaseAnonKey: string;
-  appName: string;
-  assistantId: string;
 }
 
-export interface RuntimeConfigClerk {
+export interface RuntimeConfigClerk extends RuntimeConfigBase {
   auth: "clerk";
   clerkPublishableKey: string;
-  appName: string;
-  assistantId: string;
 }
 
-export interface RuntimeConfigAnonymous {
+export interface RuntimeConfigAnonymous extends RuntimeConfigBase {
   auth: "anonymous";
-  appName: string;
-  assistantId: string;
 }
 
 export type RuntimeConfig =
@@ -37,6 +38,12 @@ export function getRuntimeConfig(): RuntimeConfig {
       "window.__DEEPAGENTS_CONFIG__ not injected. Run through `deepagent deploy` or `deepagent dev`.",
     );
   }
+  const base = {
+    appName: cfg.appName ?? "Deep Agent",
+    assistantId: cfg.assistantId ?? "agent",
+    subtitle: cfg.subtitle,
+    prompts: cfg.prompts,
+  };
   if (cfg.auth === "supabase") {
     if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
       throw new Error("Runtime config missing supabaseUrl / supabaseAnonKey.");
@@ -45,8 +52,7 @@ export function getRuntimeConfig(): RuntimeConfig {
       auth: "supabase",
       supabaseUrl: cfg.supabaseUrl,
       supabaseAnonKey: cfg.supabaseAnonKey,
-      appName: cfg.appName ?? "Deep Agent",
-      assistantId: cfg.assistantId ?? "agent",
+      ...base,
     };
   }
   if (cfg.auth === "clerk") {
@@ -56,15 +62,13 @@ export function getRuntimeConfig(): RuntimeConfig {
     return {
       auth: "clerk",
       clerkPublishableKey: cfg.clerkPublishableKey,
-      appName: cfg.appName ?? "Deep Agent",
-      assistantId: cfg.assistantId ?? "agent",
+      ...base,
     };
   }
   if (cfg.auth === "anonymous") {
     return {
       auth: "anonymous",
-      appName: cfg.appName ?? "Deep Agent",
-      assistantId: cfg.assistantId ?? "agent",
+      ...base,
     };
   }
   throw new Error(`Unknown auth provider: ${String(cfg.auth)}`);

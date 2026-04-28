@@ -93,6 +93,12 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
         "appName": app_name,
         "assistantId": "agent",
     }
+    # Optional UI-customization fields — only injected when the user
+    # set them, so the default-bundle case stays small.
+    if config.frontend.subtitle is not None:
+        payload["subtitle"] = config.frontend.subtitle
+    if config.frontend.prompts is not None:
+        payload["prompts"] = list(config.frontend.prompts)
 
     if config.auth is None:
         payload["auth"] = "anonymous"

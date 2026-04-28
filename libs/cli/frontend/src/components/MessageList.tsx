@@ -1,6 +1,6 @@
 import type { FC, RefObject } from "react";
 import { Streamdown } from "streamdown";
-import { APP_NAME } from "../constants";
+import { APP_NAME, APP_SUBTITLE, PROMPTS } from "../constants";
 import {
   getErrorMessage,
   getImageBlocks,
@@ -21,12 +21,6 @@ type MessageListProps = {
   onSuggestionSelect: (prompt: string) => void;
   stream: AgentStream;
 };
-
-const EMPTY_STATE_SUGGESTIONS = [
-  "What can you help me research?",
-  "Research a topic for me",
-  "Help me write a report",
-];
 
 const MessageList: FC<MessageListProps> = ({
   bottomRef,
@@ -57,10 +51,10 @@ const MessageList: FC<MessageListProps> = ({
               {APP_NAME}
             </h2>
             <p className="anim-stagger-2 mt-2 text-[var(--muted-foreground)]">
-              How can I help with your research today?
+              {APP_SUBTITLE}
             </p>
             <div className="anim-stagger-3 mt-6 flex flex-wrap justify-center gap-2">
-              {EMPTY_STATE_SUGGESTIONS.map((suggestion) => (
+              {PROMPTS.map((suggestion) => (
                 <button
                   key={suggestion}
                   onClick={() => onSuggestionSelect(suggestion)}

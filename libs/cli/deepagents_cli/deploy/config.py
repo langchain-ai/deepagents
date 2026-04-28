@@ -133,12 +133,18 @@ class FrontendConfig:
     """`[frontend]` section — bundled default frontend settings.
 
     When `enabled = True`, `deepagent deploy` copies a pre-built React
-    chat UI into the deployment alongside the agent. Requires `[auth]`
-    to be configured (the frontend uses the same JWT).
+    chat UI into the deployment alongside the agent. `[auth]` is
+    optional; omitting it ships in anonymous mode.
     """
 
     enabled: bool = False
     app_name: str | None = None
+    subtitle: str | None = None
+    """Subtitle shown under the app name in the header and on the
+    empty-state hero. Falls back to a generic default when unset."""
+    prompts: tuple[str, ...] | None = None
+    """Suggestion chips shown on the empty-state. Falls back to the
+    bundled defaults when unset."""
 
 
 @dataclass(frozen=True)
@@ -388,7 +394,7 @@ _ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "frontend"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 _ALLOWED_AUTH_KEYS = frozenset({"provider"})
-_ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name"})
+_ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name", "subtitle", "prompts"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -478,6 +484,16 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
         frontend_kwargs: dict[str, Any] = {
             k: frontend_data[k] for k in _ALLOWED_FRONTEND_KEYS if k in frontend_data
         }
+        # FrontendConfig is frozen=True; coerce list -> tuple so the
+        # dataclass stays hashable.
+        if "prompts" in frontend_kwargs:
+            prompts_raw = frontend_kwargs["prompts"]
+            if not isinstance(prompts_raw, list) or not all(
+                isinstance(p, str) for p in prompts_raw
+            ):
+                msg = "[frontend].prompts must be a list of strings"
+                raise ValueError(msg)
+            frontend_kwargs["prompts"] = tuple(prompts_raw)
         frontend = FrontendConfig(**frontend_kwargs)
 
     return DeployConfig(agent=agent, sandbox=sandbox, auth=auth, frontend=frontend)

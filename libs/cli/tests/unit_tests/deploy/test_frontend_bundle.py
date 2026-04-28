@@ -383,3 +383,38 @@ def test_build_runtime_config_json_anonymous_mode():
         "appName": "My App",
         "assistantId": "agent",
     }
+
+
+def test_build_runtime_config_json_includes_subtitle_and_prompts():
+    """Optional UI fields are injected when set."""
+    import json
+
+    from deepagents_cli.deploy.bundler import _build_runtime_config_json
+
+    cfg = DeployConfig(
+        agent=AgentConfig(name="my-agent"),
+        frontend=FrontendConfig(
+            enabled=True,
+            app_name="My App",
+            subtitle="Custom subtitle",
+            prompts=("First", "Second"),
+        ),
+    )
+    payload = json.loads(_build_runtime_config_json(cfg))
+    assert payload["subtitle"] == "Custom subtitle"
+    assert payload["prompts"] == ["First", "Second"]
+
+
+def test_build_runtime_config_json_omits_subtitle_and_prompts_when_unset():
+    """Default-bundle case keeps the payload small."""
+    import json
+
+    from deepagents_cli.deploy.bundler import _build_runtime_config_json
+
+    cfg = DeployConfig(
+        agent=AgentConfig(name="my-agent"),
+        frontend=FrontendConfig(enabled=True, app_name="My App"),
+    )
+    payload = json.loads(_build_runtime_config_json(cfg))
+    assert "subtitle" not in payload
+    assert "prompts" not in payload

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { APP_DESCRIPTION, APP_NAME } from "../constants";
+import { APP_NAME, APP_SUBTITLE } from "../constants";
 import { useTheme } from "../ThemeProvider";
 
 export default function AppHeader({
@@ -28,7 +28,7 @@ export default function AppHeader({
         />
         <div>
           <h1 className="text-sm font-semibold sm:text-lg">{APP_NAME}</h1>
-          <p className="hidden text-xs text-[var(--muted-foreground)] sm:block">{APP_DESCRIPTION}</p>
+          <p className="hidden text-xs text-[var(--muted-foreground)] sm:block">{APP_SUBTITLE}</p>
         </div>
       </div>
       <div className="flex items-center gap-1.5 sm:gap-2">

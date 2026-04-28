@@ -19,6 +19,36 @@ def test_frontend_config_defaults():
     fc = FrontendConfig()
     assert fc.enabled is False
     assert fc.app_name is None
+    assert fc.subtitle is None
+    assert fc.prompts is None
+
+
+def test_frontend_section_parses_subtitle_and_prompts():
+    cfg = _parse_config(
+        {
+            "agent": {"name": "my-agent"},
+            "auth": {"provider": "supabase"},
+            "frontend": {
+                "enabled": True,
+                "subtitle": "Custom subtitle",
+                "prompts": ["one", "two", "three"],
+            },
+        }
+    )
+    assert cfg.frontend is not None
+    assert cfg.frontend.subtitle == "Custom subtitle"
+    # Stored as tuple for hashability of the frozen dataclass.
+    assert cfg.frontend.prompts == ("one", "two", "three")
+
+
+def test_frontend_prompts_must_be_list_of_strings():
+    with pytest.raises(ValueError, match="must be a list of strings"):
+        _parse_config(
+            {
+                "agent": {"name": "my-agent"},
+                "frontend": {"enabled": True, "prompts": [1, 2, 3]},
+            }
+        )
 
 
 def test_frontend_section_parses_enabled_true():

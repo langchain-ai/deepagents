@@ -273,21 +273,25 @@ def _deploy(
         config.frontend is not None and config.frontend.enabled and config.auth is None
     )
     if is_anonymous:
-        # ANSI yellow first line; bullets uncolored.
+        # ANSI bold-red header + red bullets so this warning is visually
+        # distinct from the yellow beta-warning that prints above it
+        # (otherwise the "Continue? [y/N]" prompt looks like it's
+        # confirming the beta line rather than the anonymous-auth line).
         print(
-            "\033[33m⚠ This deploy will use ANONYMOUS auth. "
+            "\033[1;31m⚠ This deploy will use ANONYMOUS auth. "
             "The API is open to anyone with the deploy URL.\033[0m"
         )
         print(
-            "  • Browser UI shows per-browser threads (cookie-scoped UX, not security)."
+            "\033[31m  • Browser UI shows per-browser threads "
+            "(cookie-scoped UX, not security).\033[0m"
         )
         print(
-            "  • Anyone with the URL can call the API directly "
-            "(curl /threads, /runs, etc.) — no auth."
+            "\033[31m  • Anyone with the URL can call the API directly "
+            "(curl /threads, /runs, etc.) — no auth.\033[0m"
         )
         print(
-            "  • For real per-user auth, add an [auth] section "
-            '(provider = "supabase" or "clerk").'
+            "\033[31m  • For real per-user auth, add an [auth] section "
+            '(provider = "supabase" or "clerk").\033[0m'
         )
         # Skip the interactive confirm on dry-run (no real push happens).
         if not dry_run:

@@ -87,6 +87,10 @@ def _invoke_once(middleware: REPLMiddleware | None = None) -> None:
     assert result["messages"][-1].content == "The answer is 2."
 
 
+def _single_echo_program() -> str:
+    return 'echo("hello");'
+
+
 def _echo_program(*, line_count: int = 1000) -> str:
     return "\n".join(['echo("hello");' for _ in range(line_count)])
 
@@ -153,6 +157,13 @@ class TestQuickJSStandaloneReplBenchmark:
     ) -> None:
         _eval_in_fresh_repl(_EXPRESSION, expected_result="2")
         benchmark(lambda: _eval_in_fresh_repl(_EXPRESSION, expected_result="2"))
+
+    def test_single_echo_program_in_fresh_repl(
+        self, benchmark: BenchmarkFixture
+    ) -> None:
+        program = _single_echo_program()
+        _eval_in_fresh_repl(program, expected_result="hello")
+        benchmark(lambda: _eval_in_fresh_repl(program, expected_result="hello"))
 
     def test_thousand_line_program_in_fresh_repl(
         self, benchmark: BenchmarkFixture

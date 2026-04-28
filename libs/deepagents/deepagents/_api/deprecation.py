@@ -1,9 +1,7 @@
 """Adapter for `langchain_core`'s private deprecation helpers.
 
 Centralizes the import surface so an upstream rename or move is a one-file
-change. The underlying module (`langchain_core._api.deprecation`) declares
-itself "for internal use only", so consolidating the dependency here also
-contains the blast radius if upstream changes.
+change.
 
 Re-exports:
 - `deprecated`: decorator for callables, classes, and properties.

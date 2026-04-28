@@ -106,6 +106,11 @@ def test_tool_registered_with_custom_name() -> None:
     assert "eval" not in tools
 
 
+def test_legacy_system_prompt_alias_removed() -> None:
+    mw = REPLMiddleware()
+    assert not hasattr(mw, "system_prompt")
+
+
 def test_system_prompt_injected_once() -> None:
     """wrap_model_call appends exactly one snippet per call, idempotent in content."""
     mw = REPLMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)

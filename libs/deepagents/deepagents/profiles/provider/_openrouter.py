@@ -1,23 +1,28 @@
-"""OpenRouter provider helpers.
+"""Built-in OpenRouter provider profile and helpers.
 
-!!! warning
+Enforces the minimum `langchain-openrouter` version and injects default
+app-attribution headers when the corresponding environment variables are not
+set. Users may layer additional kwargs on top via
+`register_provider_profile("openrouter", ...)`.
 
-    This is an internal API subject to change without deprecation. It is not
-    intended for external use or consumption.
-
-Constants and runtime checks for the OpenRouter integration (version
-enforcement, app-attribution kwargs).
+Registered directly by `_ensure_builtin_profiles_loaded` during the
+first profile-registry access. Not exposed as an
+`importlib.metadata` entry point — built-ins ship with the SDK and
+should not depend on install-time metadata to activate.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
 
-from deepagents.profiles._harness_profiles import _HarnessProfile, _register_harness_profile
+from deepagents.profiles.provider.provider_profiles import ProviderProfile, _register_provider_profile_impl
+
+logger = logging.getLogger(__name__)
 
 OPENROUTER_MIN_VERSION = "0.2.0"  # app attribution support added
 """Minimum required version of `langchain-openrouter`.
@@ -44,13 +49,17 @@ def _openrouter_attribution_kwargs() -> dict[str, Any]:
     when the corresponding env var is **not** set — otherwise the user's env var
     would be overridden.
 
+    An explicitly empty string (`OPENROUTER_APP_URL=""`) is treated as "set"
+    and suppresses the SDK default. This lets a caller opt out of app
+    attribution without unsetting the variable.
+
     Returns:
         Dictionary of attribution kwargs to spread into `init_chat_model`.
     """
     kwargs: dict[str, Any] = {}
-    if not os.environ.get("OPENROUTER_APP_URL"):
+    if os.environ.get("OPENROUTER_APP_URL") is None:
         kwargs["app_url"] = _OPENROUTER_APP_URL
-    if not os.environ.get("OPENROUTER_APP_TITLE"):
+    if os.environ.get("OPENROUTER_APP_TITLE") is None:
         kwargs["app_title"] = _OPENROUTER_APP_TITLE
     return kwargs
 
@@ -71,7 +80,13 @@ def check_openrouter_version() -> None:
     try:
         is_old = Version(installed) < Version(OPENROUTER_MIN_VERSION)
     except InvalidVersion:
-        # Non-PEP-440 version (dev build, fork, etc.) — skip the check
+        # Non-PEP-440 version (dev build, fork, etc.) — skip the check but
+        # leave a breadcrumb so an unexpected downstream failure is traceable.
+        logger.warning(
+            "Skipping langchain-openrouter version check: installed version %r is not PEP 440. Minimum required is %s.",
+            installed,
+            OPENROUTER_MIN_VERSION,
+        )
         return
     if is_old:
         msg = (
@@ -82,10 +97,12 @@ def check_openrouter_version() -> None:
         raise ImportError(msg)
 
 
-_register_harness_profile(
-    "openrouter",
-    _HarnessProfile(
-        pre_init=lambda _spec: check_openrouter_version(),
-        init_kwargs_factory=_openrouter_attribution_kwargs,
-    ),
-)
+def register() -> None:
+    """Register the built-in OpenRouter provider profile."""
+    _register_provider_profile_impl(
+        "openrouter",
+        ProviderProfile(
+            pre_init=lambda _spec: check_openrouter_version(),
+            init_kwargs_factory=_openrouter_attribution_kwargs,
+        ),
+    )

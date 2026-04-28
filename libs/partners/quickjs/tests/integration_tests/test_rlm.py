@@ -1,20 +1,18 @@
 """Integration tests for PTC against real deepagents middlewares.
 
-Uses a real Claude model and a real ``SubAgentMiddleware``-provided
+Uses a real model and a real ``SubAgentMiddleware``-provided
 ``task`` tool. The assertion is coarse — "the subagent actually ran" —
 because the model's phrasing is not deterministic, but the wiring
 between PTC, ``task``, and a spawned subagent graph is covered
 end-to-end.
 
-These tests use ``agent.ainvoke`` rather than ``agent.invoke`` because
-PTC tool bridges are registered as **async host functions** in
-QuickJS. A sync ``eval`` cannot drive an async host call — the QuickJS
-runtime raises ``ConcurrentEvalError`` ("sync eval encountered a
-registered async host function; use ctx.eval_async(...) instead") as
-soon as the model's code hits a ``tools.*`` invocation. Running the
-whole graph through ``ainvoke`` routes the ``eval`` tool through
-``eval_async``, which has the event loop needed to settle Promise
-resolutions from host callbacks.
+Both invocation paths are exercised:
+
+- ``agent.invoke`` (sync path)
+- ``agent.ainvoke`` (async path)
+
+``REPLMiddleware`` routes both paths through async QuickJS eval under
+the hood so PTC host-function bridges work consistently in either mode.
 
 Requires ``ANTHROPIC_API_KEY`` in the environment. Run with
 ``make integration_tests``.
@@ -23,6 +21,7 @@ Requires ``ANTHROPIC_API_KEY`` in the environment. Run with
 from __future__ import annotations
 
 import os
+from typing import Any, Literal
 
 import pytest
 from deepagents.middleware.subagents import SubAgentMiddleware
@@ -39,6 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 
 _MODEL = "claude-sonnet-4-6"
+InvokeMode = Literal["invoke", "ainvoke"]
 
 
 def _researcher_subagent() -> dict:
@@ -64,7 +64,22 @@ def _researcher_subagent() -> dict:
     }
 
 
-async def test_ptc_spawns_subagent_through_eval() -> None:
+async def _invoke_agent(
+    agent: Any,
+    payload: dict[str, Any],
+    invoke_mode: InvokeMode,
+) -> dict[str, Any]:
+    if invoke_mode == "ainvoke":
+        return await agent.ainvoke(payload)
+    return agent.invoke(payload)
+
+
+@pytest.mark.parametrize(
+    "invoke_mode",
+    ["invoke", "ainvoke"],
+    ids=["sync_invoke", "async_ainvoke"],
+)
+async def test_ptc_spawns_subagent_through_eval(invoke_mode: InvokeMode) -> None:
     """A real model, given access to `eval` + PTC(`task`), actually runs a subagent.
 
     We assert on graph-observable effects, not on the model's phrasing:
@@ -94,7 +109,11 @@ async def test_ptc_spawns_subagent_through_eval() -> None:
         "topics 'the moon' and 'the ocean' in parallel via Promise.all, "
         "and returns the joined result. Then summarise what you got."
     )
-    response = await agent.ainvoke({"messages": [HumanMessage(content=prompt)]})
+    response = await _invoke_agent(
+        agent,
+        {"messages": [HumanMessage(content=prompt)]},
+        invoke_mode,
+    )
 
     tool_messages = [m for m in response["messages"] if isinstance(m, ToolMessage)]
     eval_messages = [m for m in tool_messages if m.name == "eval"]
@@ -109,7 +128,12 @@ async def test_ptc_spawns_subagent_through_eval() -> None:
     )
 
 
-async def test_ptc_respects_allowlist_config() -> None:
+@pytest.mark.parametrize(
+    "invoke_mode",
+    ["invoke", "ainvoke"],
+    ids=["sync_invoke", "async_ainvoke"],
+)
+async def test_ptc_respects_allowlist_config(invoke_mode: InvokeMode) -> None:
     """When ptc allowlist omits `task`, the model cannot call it from the REPL.
 
     We give the model both `task` as a regular tool and `eval` with
@@ -127,7 +151,8 @@ async def test_ptc_respects_allowlist_config() -> None:
         ],
     )
 
-    response = await agent.ainvoke(
+    response = await _invoke_agent(
+        agent,
         {
             "messages": [
                 HumanMessage(
@@ -137,7 +162,8 @@ async def test_ptc_respects_allowlist_config() -> None:
                     )
                 )
             ],
-        }
+        },
+        invoke_mode,
     )
 
     tool_messages = [m for m in response["messages"] if isinstance(m, ToolMessage)]

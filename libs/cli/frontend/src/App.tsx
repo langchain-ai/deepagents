@@ -1,6 +1,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Client } from "@langchain/langgraph-sdk";
-import { HumanMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
@@ -188,8 +188,15 @@ function NewChatApp({
     }
 
     setInput("");
+    // The wire protocol expects {type, content} dicts, not langchain-serialized
+    // class instances; cast through BaseMessage so AgentState.messages typing
+    // (BaseMessage[]) is satisfied without sending the lc/id/kwargs envelope.
     await stream.submit(
-      { messages: [new HumanMessage(text)] },
+      {
+        messages: [
+          { type: "human", content: text } as unknown as BaseMessage,
+        ],
+      },
       { streamSubgraphs: true },
     );
   }, [input, isLoading, stream, threadId]);

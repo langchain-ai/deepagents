@@ -275,10 +275,12 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
     prevents a spec like `"openai:"` from silently matching the provider-wide
     `"openai"` registration.
 
-    Most callers should reach for `apply_provider_profile` instead — it
-    composes lookup, `pre_init`, and kwargs merging into one call. Use
-    `get_provider_profile` when you need to inspect what is registered without
-    side effects (e.g. tooling, conditional logic on `pre_init` presence).
+    !!! note "Prefer `apply_provider_profile` for model construction"
+
+        This function is intended for *inspection* (tooling, conditional logic
+        on `pre_init` presence). To actually build a model, reach for
+        `apply_provider_profile` — it composes lookup, `pre_init` invocation,
+        and kwargs merging into a single call.
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
@@ -326,6 +328,14 @@ def apply_provider_profile(
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
+    This is the recommended entry point for honoring `ProviderProfile`
+    registrations when building a chat model — it composes lookup, `pre_init`
+    invocation, and kwargs merging into a single call. `get_provider_profile`
+    only returns the registered object; pair it with this helper (or call
+    this helper directly) any time you intend to actually instantiate a
+    model. Used by `resolve_model` and intended for any harness that layers
+    config-file values on top of SDK defaults.
+
     Looks up the profile via `get_provider_profile`, runs its `pre_init` hook
     (unless suppressed), and returns a fresh dict combining `init_kwargs`,
     `init_kwargs_factory()` output, and `kwargs`. Caller-supplied `kwargs`
@@ -335,10 +345,6 @@ def apply_provider_profile(
 
     When no profile is registered for `spec`, returns a copy of `kwargs`
     unchanged. This keeps the helper safe to call unconditionally.
-
-    Used by `resolve_model` and intended for any harness that needs to honor
-    `ProviderProfile` registrations while building chat models through its own
-    pipeline (e.g. a CLI that layers config-file values on top of SDK defaults).
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model

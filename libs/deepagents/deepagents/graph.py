@@ -123,8 +123,9 @@ an additional text content block onto the message's existing
 `content_blocks` list, preserving any `cache_control` markers the caller
 set.
 
-See `create_deep_agent`'s `system_prompt` parameter for the full
-assembly cheat sheet.
+See `create_deep_agent`'s `system_prompt` parameter or
+[Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+for the full assembly order.
 """
 
 

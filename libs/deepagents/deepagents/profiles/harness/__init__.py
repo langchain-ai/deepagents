@@ -1,8 +1,10 @@
 """Harness profile package: `HarnessProfile` API and built-in registrations.
 
-Individual built-in modules register their profiles as a top-level import side
-effect. The lazy `_builtin_profiles` bootstrap imports them once on first
-profile-registry access.
+Individual built-in modules expose a zero-arg `register()` callable; the lazy
+`_builtin_profiles` bootstrap invokes them once on first profile-registry
+access. Built-ins must not register at module import time — registration runs
+under the bootstrap mutex, so a top-level call would race with concurrent
+lookups and bypass the additive-merge semantics.
 """
 
 from deepagents.profiles.harness.harness_profiles import (

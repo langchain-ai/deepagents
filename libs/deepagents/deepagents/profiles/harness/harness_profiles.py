@@ -95,7 +95,8 @@ class GeneralPurposeSubagentProfile:
     """
 
     enabled: bool | None = None
-    """Whether to auto-add the default general-purpose subagent.
+    """Whether to auto-add the default general-purpose subagent (three-state:
+    `None` inherits / defaults on, `True` forces inclusion, `False` disables).
 
     `None` means inherit from a base profile when merging, or fall back to
     the default of including the subagent. `True` forces inclusion and is
@@ -217,7 +218,7 @@ class HarnessProfileConfig:
     helper converts them to runtime `HarnessProfile` objects automatically.
 
     Example:
-        Register a YAML/JSON-friendly harness profile:
+        Construct a config object directly in Python:
 
         ```python
         from deepagents import HarnessProfileConfig, register_harness_profile
@@ -230,10 +231,30 @@ class HarnessProfileConfig:
             ),
         )
         ```
+
+        Or load the equivalent declarative form from YAML:
+
+        ```yaml
+        # openai-gpt-5.4.yaml
+        system_prompt_suffix: Think step by step.
+        excluded_middleware:
+          - SummarizationMiddleware
+        ```
+
+        ```python
+        import yaml
+        from deepagents import HarnessProfileConfig, register_harness_profile
+
+        with open("openai-gpt-5.4.yaml") as f:
+            register_harness_profile(
+                "openai:gpt-5.4",
+                HarnessProfileConfig.from_dict(yaml.safe_load(f)),
+            )
+        ```
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` in the prompt-assembly cheat sheet — completely replaces
+    """`CUSTOM` slot in the prompt assembly order — completely replaces
     `BASE_AGENT_PROMPT` as the base prompt when set.
 
     `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
@@ -241,12 +262,13 @@ class HarnessProfileConfig:
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
     suffix is appended to this custom base. A caller-supplied
     `system_prompt=` is still placed before this base — see
-    `create_deep_agent`'s `system_prompt` parameter for the full
-    assembly cheat sheet.
+    `create_deep_agent`'s `system_prompt` parameter or
+    [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+    for the full assembly order.
     """
 
     system_prompt_suffix: str | None = None
-    """`SUFFIX` in the prompt-assembly cheat sheet — text appended to
+    """`SUFFIX` slot in the prompt assembly order — text appended to
     the assembled base system prompt.
 
     Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
@@ -276,7 +298,12 @@ class HarnessProfileConfig:
     """
 
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
-    """Edits for the auto-added `general-purpose` subagent."""
+    """Edits for the auto-added `general-purpose` subagent.
+
+    Unset is equivalent to passing a default-constructed
+    `GeneralPurposeSubagentProfile()` — the auto-added subagent runs with
+    its stock description and prompt.
+    """
 
     def __post_init__(self) -> None:
         """Freeze mutable mappings and validate grammar of string entries."""
@@ -344,6 +371,11 @@ class HarnessProfileConfig:
         Raises:
             TypeError: If `data` contains unknown keys or fields of the wrong
                 shape.
+            ValueError: If any `excluded_middleware` entry violates the
+                grammar rules enforced in `__post_init__` (empty/whitespace
+                strings, class-path `module:Class` entries, or
+                underscore-prefixed names), or names required scaffolding
+                middleware.
         """
         unknown = set(data.keys()) - _HARNESS_PROFILE_CONFIG_KEYS
         if unknown:
@@ -464,7 +496,7 @@ class HarnessProfile:
     factory returning a sequence of them.
 
     Example:
-        Append a model-specific system-prompt suffix:
+        Minimal — append a model-specific system-prompt suffix:
 
         ```python
         from deepagents import HarnessProfile, register_harness_profile
@@ -474,10 +506,30 @@ class HarnessProfile:
             HarnessProfile(system_prompt_suffix="Think step by step."),
         )
         ```
+
+        Richer — combine prompt tuning, tool exclusion, and a tweak to the
+        auto-added general-purpose subagent:
+
+        ```python
+        from deepagents import (
+            GeneralPurposeSubagentProfile,
+            HarnessProfile,
+            register_harness_profile,
+        )
+
+        register_harness_profile(
+            "openai:gpt-5.4",
+            HarnessProfile(
+                system_prompt_suffix="Respond in under 100 words.",
+                excluded_tools=frozenset({"execute"}),
+                general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+            ),
+        )
+        ```
     """
 
     base_system_prompt: str | None = None
-    """`CUSTOM` in the prompt-assembly cheat sheet — completely replaces
+    """`CUSTOM` slot in the prompt assembly order — completely replaces
     `BASE_AGENT_PROMPT` as the base prompt when set.
 
     `None` (the default) means use `BASE_AGENT_PROMPT` unchanged.
@@ -485,15 +537,16 @@ class HarnessProfile:
     If both `base_system_prompt` and `system_prompt_suffix` are set, the
     suffix is appended to this custom base. A caller-supplied
     `system_prompt=` is still placed before this base — see
-    `create_deep_agent`'s `system_prompt` parameter for the full
-    assembly cheat sheet.
+    `create_deep_agent`'s `system_prompt` parameter or
+    [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+    for the full assembly order.
 
     Most profiles only set `system_prompt_suffix` to layer model-tuning
     guidance on top of the SDK base.
     """
 
     system_prompt_suffix: str | None = None
-    """`SUFFIX` in the prompt-assembly cheat sheet — text appended to
+    """`SUFFIX` slot in the prompt assembly order — text appended to
     the assembled base system prompt.
 
     Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
@@ -507,8 +560,10 @@ class HarnessProfile:
     (`BASE_AGENT_PROMPT`, the subagent's authored prompt, and the GP
     base respectively).
 
-    See `create_deep_agent`'s `system_prompt` parameter for how `SUFFIX`
-    composes with caller-supplied prompts and `base_system_prompt`.
+    See `create_deep_agent`'s `system_prompt` parameter or
+    [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
+    for how `SUFFIX` composes with caller-supplied prompts and
+    `base_system_prompt`.
     """
 
     tool_description_overrides: Mapping[str, str] = field(default_factory=dict)
@@ -563,12 +618,15 @@ class HarnessProfile:
     Entries may be a middleware *class* (matched by exact type, not subclass —
     consistent with `extra_middleware` slot merging) or a *string* matching
     `AgentMiddleware.name` exactly. `.name` defaults to the class's
-    `__name__` but is overridable, so `{"TodoListMiddleware"}` and
-    `{TodoListMiddleware}` behave identically for stock middleware. String
-    form is useful for YAML/JSON-loaded profiles and for middleware whose
-    class isn't part of the public import surface (e.g.
-    `"SummarizationMiddleware"` drops the private
-    `_DeepAgentsSummarizationMiddleware` via its public alias).
+    `__name__` but is overridable, so `{TodoListMiddleware}` (class form) and
+    `{"TodoListMiddleware"}` (name form) behave identically for stock
+    middleware.
+
+    Prefer class form when the class is importable: typos surface at import
+    time rather than at agent construction. Reserve string form for
+    YAML/JSON-loaded profiles and for middleware whose class isn't part of
+    the public import surface (e.g. `"SummarizationMiddleware"` drops the
+    private `_DeepAgentsSummarizationMiddleware` via its public alias).
 
     The filter runs over the fully assembled stack, so exclusions remove
     middleware regardless of which layer added it — including instances
@@ -626,8 +684,10 @@ class HarnessProfile:
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
     """Edits for the auto-added general-purpose subagent.
 
-    Set `enabled=False` to remove the default `general-purpose` subagent
-    entirely.
+    Unset (default `None`) is equivalent to passing
+    `GeneralPurposeSubagentProfile()` — the auto-added subagent runs with
+    its stock description and prompt. Set `enabled=False` on a populated
+    sub-profile to remove the default `general-purpose` subagent entirely.
     """
 
     def __post_init__(self) -> None:

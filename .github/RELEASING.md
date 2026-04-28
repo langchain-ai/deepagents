@@ -277,6 +277,19 @@ For beta or release candidate stages, use `b` or `rc`: `0.0.35b1`, `0.0.35rc1`.
 
 ## Troubleshooting
 
+### Empty commit fan-out
+
+> [!CAUTION]
+> Never push an empty commit (`git commit --allow-empty`) to `main`. release-please scopes commits to packages by the file paths they touch. An empty commit has no paths, so it falls back to bumping **every** package — producing a release PR for each managed component, not the one you intended.
+
+This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
+
+The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose head commit changes zero files fails fast with a clear error before the release-please action runs.
+
+**If you need to amend a release note for a commit that already merged**, follow [release-please's official guidance](https://github.com/googleapis/release-please#how-can-i-fix-release-notes) — edit the changelog directly in the open release PR, or revert and re-merge the original PR with the corrected title. Do not push empty commits to `main`.
+
+**If a fan-out has already happened** (release PRs opened for packages you didn't change), revert the offending commit on `main`. release-please will reconcile the open release PRs on the next push that actually touches package files; PRs for unaffected packages can be closed manually.
+
 ### Yanking a Release
 
 If you need to yank (retract) a release:

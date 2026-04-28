@@ -18,7 +18,37 @@ permissions:
   contents: read
 
 jobs:
+  # Block empty commits before release-please ever sees them. An empty commit
+  # has no file paths for release-please to scope to, so it falls back to
+  # bumping every package — see the "Empty commit fan-out" entry in
+  # .github/RELEASING.md.
+  guard-empty-commit:
+    name: Block empty commits on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 2
+      - name: Reject empty commits
+        run: |
+          if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
+            echo "Single-commit history; skipping empty-commit guard."
+            exit 0
+          fi
+          CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          if [ -n "$CHANGED" ]; then
+            echo "HEAD touches files; proceeding."
+            exit 0
+          fi
+          COMMIT_MSG=$(git log -1 --format=%s HEAD)
+          SHA=$(git rev-parse HEAD)
+          echo "::error::Empty commit detected on main: $SHA \"$COMMIT_MSG\""
+          echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
+          echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md → \"Empty commit fan-out\"."
+          exit 1
+
   release-please:
+    needs: guard-empty-commit
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -179,7 +209,8 @@ jobs:
   # https://github.com/googleapis/release-please/issues/2561
   update-lockfiles:
     needs: release-please
-    if: needs.release-please.outputs.prs != '[]' && needs.release-please.outputs.prs != ''
+    if: needs.release-please.outputs.prs != '[]' && needs.release-please.outputs.prs
+      != ''
     name: Update lockfiles (${{ matrix.pr.headBranchName }})
     runs-on: ubuntu-latest
     permissions:

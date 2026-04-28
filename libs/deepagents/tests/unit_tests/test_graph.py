@@ -833,10 +833,48 @@ class TestMiddlewareExclusionWiring:
     def test_excluded_middleware_strips_from_declarative_subagent_stack(self) -> None:
         """Declarative `SubAgent` specs built by `create_deep_agent` are filtered too.
 
-        Covers the case where a user-supplied declarative subagent spec resolves to a
-        profile whose `excluded_middleware` removes a class that the same profile
-        also adds via `extra_middleware` — the spec's compiled stack must not
-        contain the excluded class.
+        Pins down which side wins when a profile both adds and excludes the same
+        middleware class: exclusion. This isn't a pattern users would write
+        directly — they'd just omit the entry from `extra_middleware`. It
+        matters because profiles compose across packages via additive
+        re-registration.
+
+        Concrete example. A platform package registers a bundled profile that
+        downstream code cannot edit:
+
+        ```python
+        # acme_platform/profiles.py — owned by the platform team
+        register_harness_profile(
+            "acme-prod",
+            HarnessProfile(
+                extra_middleware=[AuditLogging(), PIIRedaction(), RateLimit()],
+            ),
+        )
+        ```
+
+        A downstream application re-registers under the same key to subtract
+        one piece. Re-registration merges additively rather than replacing
+        (see `test_register_additive_unions_excluded_middleware`):
+
+        ```python
+        # your_app/__init__.py
+        import acme_platform  # triggers the registration above
+
+        register_harness_profile(
+            "acme-prod",
+            HarnessProfile(excluded_middleware=frozenset({AuditLogging})),
+        )
+        ```
+
+        The merged profile now holds `AuditLogging` in *both* `extra_middleware`
+        (from the platform layer) and `excluded_middleware` (from the app
+        layer). The resolved stack for any subagent using `"acme-prod"` must
+        therefore be `[PIIRedaction(), RateLimit()]` — exclusion wins.
+
+        Without this guarantee, the merged profile would silently re-add the
+        very middleware the downstream override was trying to remove, and the
+        "wrap and subtract" pattern would be unusable for declarative
+        subagents.
         """
         provided = _StubMW()
 

@@ -14,7 +14,6 @@ import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 
 from langchain_quickjs._repl import _Registry
-from langchain_quickjs._skills import InvalidSkillScopeError
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -43,6 +42,10 @@ def _write(backend: FilesystemBackend, files: dict[str, str]) -> None:
         assert r.error is None, f"upload of {r.path} failed: {r.error}"
 
 
+def _cache_key(meta: SkillMetadata) -> tuple[str, str, str | None]:
+    return (meta["name"], meta["path"], meta.get("module"))
+
+
 @pytest.fixture
 def registry() -> _Registry:
     reg = _Registry(memory_limit=64 * 1024 * 1024, timeout=5.0, capture_console=True)
@@ -53,7 +56,7 @@ def registry() -> _Registry:
 
 
 async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> None:
-    """Install one skill, then import its export from guest code."""
+    """Eval installs referenced skills, then import resolves in guest code."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "slugify")
     _write(
@@ -70,18 +73,39 @@ async def test_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> 
     meta = _metadata("slugify", path=f"{skill_dir}/SKILL.md", module="index.js")
 
     repl = registry.get("t1")
-    errors = await registry.aensure_skills_installed(
-        frozenset({"slugify"}), {"slugify": meta}, backend, repl
-    )
-    assert errors == []
-
     outcome = await repl.eval_async(
         'const m = await import("@/skills/slugify");\n'
-        "globalThis.r = m.toSlug('Hello World');"
+        "globalThis.r = m.toSlug('Hello World');",
+        skills={"slugify": meta},
+        skills_backend=backend,
     )
     assert outcome.error_type is None
     after = await repl.eval_async("globalThis.r")
     assert after.result == "hello-world"
+
+
+def test_sync_dynamic_import_roundtrip(registry: _Registry, tmp_path: Path) -> None:
+    """Sync eval auto-installs referenced skills when metadata/backend are passed."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_dir = str(tmp_path / "skills" / "sync-skill")
+    _write(
+        backend,
+        {
+            f"{skill_dir}/SKILL.md": "---\nname: sync-skill\ndescription: x\n---\n",
+            f"{skill_dir}/index.js": "export const v = 11;",
+        },
+    )
+    meta = _metadata("sync-skill", path=f"{skill_dir}/SKILL.md", module="index.js")
+
+    repl = registry.get("t1")
+    import_outcome = repl.eval_sync(
+        'const m = await import("@/skills/sync-skill"); globalThis.r = m.v;',
+        skills={"sync-skill": meta},
+        skills_backend=backend,
+    )
+    assert import_outcome.error_type is None
+    after = repl.eval_sync("globalThis.r")
+    assert after.result == "11"
 
 
 async def test_dynamic_import_of_ts_skill_strips_types(
@@ -102,13 +126,10 @@ async def test_dynamic_import_of_ts_skill_strips_types(
     meta = _metadata("ts-skill", path=f"{skill_dir}/SKILL.md", module="index.ts")
 
     repl = registry.get("t1")
-    errors = await registry.aensure_skills_installed(
-        frozenset({"ts-skill"}), {"ts-skill": meta}, backend, repl
-    )
-    assert errors == []
-
     import_outcome = await repl.eval_async(
-        'const m = await import("@/skills/ts-skill"); globalThis.r = m.add(2, 3);'
+        'const m = await import("@/skills/ts-skill"); globalThis.r = m.add(2, 3);',
+        skills={"ts-skill": meta},
+        skills_backend=backend,
     )
     assert import_outcome.error_type is None
     after = await repl.eval_async("globalThis.r")
@@ -135,13 +156,10 @@ async def test_multi_file_skill_relative_import(
     meta = _metadata("multi", path=f"{skill_dir}/SKILL.md", module="index.ts")
 
     repl = registry.get("t1")
-    errors = await registry.aensure_skills_installed(
-        frozenset({"multi"}), {"multi": meta}, backend, repl
-    )
-    assert errors == []
-
     import_outcome = await repl.eval_async(
-        'const m = await import("@/skills/multi"); globalThis.r = m.doubled;'
+        'const m = await import("@/skills/multi"); globalThis.r = m.doubled;',
+        skills={"multi": meta},
+        skills_backend=backend,
     )
     assert import_outcome.error_type is None
     after = await repl.eval_async("globalThis.r")
@@ -151,7 +169,7 @@ async def test_multi_file_skill_relative_import(
 async def test_install_cache_avoids_second_fetch(
     registry: _Registry, tmp_path: Path
 ) -> None:
-    """Second install request for the same skill doesn't re-load."""
+    """Second install request in one thread skips already-installed keys."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "cached")
     _write(
@@ -164,24 +182,74 @@ async def test_install_cache_avoids_second_fetch(
     meta = _metadata("cached", path=f"{skill_dir}/SKILL.md", module="index.js")
 
     repl = registry.get("t1")
-    await registry.aensure_skills_installed(
-        frozenset({"cached"}), {"cached": meta}, backend, repl
+    await repl.eval_async(
+        'await import("@/skills/cached")',
+        skills={"cached": meta},
+        skills_backend=backend,
     )
-    assert "cached" in registry._skill_installs
-    first_loaded = registry._skill_installs["cached"].loaded
+    key = _cache_key(meta)
+    assert key in repl._installed_skills
+    first_count = len(repl._installed_skills)
 
-    # Second pass — no backend I/O, no new install.
-    await registry.aensure_skills_installed(
-        frozenset({"cached"}), {"cached": meta}, backend, repl
+    # Second pass on the same REPL should hit local cache.
+    await repl.eval_async(
+        'await import("@/skills/cached")',
+        skills={"cached": meta},
+        skills_backend=backend,
     )
-    assert registry._skill_installs["cached"].loaded is first_loaded
+    assert key in repl._installed_skills
+    assert len(repl._installed_skills) == first_count
 
 
-async def test_installed_skill_visible_from_second_thread(
+async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> None:
+    """``Registry.evict`` clears the slot-local skill cache for that thread."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        skill_dir = str(tmp_path / "skills" / "persist")
+        _write(
+            backend,
+            {
+                f"{skill_dir}/SKILL.md": "---\nname: persist\ndescription: x\n---\n",
+                f"{skill_dir}/index.js": "export const k = 7;",
+            },
+        )
+        meta = _metadata("persist", path=f"{skill_dir}/SKILL.md", module="index.js")
+
+        repl_a = reg.get("t1")
+        await repl_a.eval_async(
+            'await import("@/skills/persist")',
+            skills={"persist": meta},
+            skills_backend=backend,
+        )
+        key = _cache_key(meta)
+        assert key in repl_a._installed_skills
+
+        reg.evict("t1")
+        repl_a_new = reg.get("t1")
+        assert repl_a_new is not repl_a
+        assert key not in repl_a_new._installed_skills
+
+        # Re-install on the fresh slot and verify import still resolves.
+        await repl_a_new.eval_async(
+            'await import("@/skills/persist")',
+            skills={"persist": meta},
+            skills_backend=backend,
+        )
+        assert key in repl_a_new._installed_skills
+        outcome = await repl_a_new.eval_async(
+            'const m = await import("@/skills/persist"); m.k'
+        )
+        assert outcome.error_type is None
+        assert outcome.result == "7"
+    finally:
+        reg.close()
+
+
+async def test_skill_cache_isolated_across_threads(
     registry: _Registry, tmp_path: Path
 ) -> None:
-    """Install is per-Runtime, not per-Context. Second thread's Context
-    can import the skill without a new install pass."""
+    """Same skill in two threads builds separate slot-local cache entries."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "shared")
     _write(
@@ -194,12 +262,23 @@ async def test_installed_skill_visible_from_second_thread(
     meta = _metadata("shared", path=f"{skill_dir}/SKILL.md", module="index.js")
 
     repl_a = registry.get("thread-a")
-    await registry.aensure_skills_installed(
-        frozenset({"shared"}), {"shared": meta}, backend, repl_a
+    await repl_a.eval_async(
+        'await import("@/skills/shared")',
+        skills={"shared": meta},
+        skills_backend=backend,
     )
+    key = _cache_key(meta)
+    assert key in repl_a._installed_skills
 
-    # Thread B — no new install call — can still import.
     repl_b = registry.get("thread-b")
+    # Thread-b installs independently and gets its own cache entry.
+    await repl_b.eval_async(
+        'await import("@/skills/shared")',
+        skills={"shared": meta},
+        skills_backend=backend,
+    )
+    assert key in repl_b._installed_skills
+
     outcome = await repl_b.eval_async(
         'const m = await import("@/skills/shared"); globalThis.r = m.k;'
     )
@@ -208,25 +287,27 @@ async def test_installed_skill_visible_from_second_thread(
     assert after.result == "99"
 
 
-async def test_unavailable_skill_returns_error(
+async def test_eval_reports_skill_not_available_when_metadata_missing(
     registry: _Registry, tmp_path: Path
 ) -> None:
-    """Referencing a skill that has no metadata entry surfaces as an error."""
+    """Implicit install path surfaces missing metadata as ``SkillNotAvailable``."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     repl = registry.get("t1")
 
-    errors = await registry.aensure_skills_installed(
-        frozenset({"nope"}), {}, backend, repl
+    outcome = await repl.eval_async(
+        'await import("@/skills/nope")',
+        skills={},
+        skills_backend=backend,
     )
-    assert len(errors) == 1
-    assert "nope" in str(errors[0])
-    assert "not available" in str(errors[0])
+    assert outcome.error_type == "SkillNotAvailable"
+    assert "nope" in outcome.error_message
+    assert "not available" in outcome.error_message
 
 
-async def test_broken_skill_failure_is_cached(
+async def test_broken_skill_failure_is_not_tracked_as_installed(
     registry: _Registry, tmp_path: Path
 ) -> None:
-    """A failing install is cached so subsequent references fail fast."""
+    """A failing install does not mark the skill as installed."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
     skill_dir = str(tmp_path / "skills" / "broken")
     _write(
@@ -239,33 +320,28 @@ async def test_broken_skill_failure_is_cached(
     meta = _metadata("broken", path=f"{skill_dir}/SKILL.md", module="missing.ts")
 
     repl = registry.get("t1")
-    errors1 = await registry.aensure_skills_installed(
-        frozenset({"broken"}), {"broken": meta}, backend, repl
+    first = await repl.eval_async(
+        'await import("@/skills/broken")',
+        skills={"broken": meta},
+        skills_backend=backend,
     )
-    assert len(errors1) == 1
-    assert isinstance(errors1[0], InvalidSkillScopeError)
+    assert first.error_type == "SkillNotAvailable"
+    assert "no JS/TS files" in first.error_message
 
-    # Same error comes back on second call — from the cache, not a new
-    # backend load. We can't directly assert "no I/O happened", but we
-    # can confirm the cache entry is populated.
-    errors2 = await registry.aensure_skills_installed(
-        frozenset({"broken"}), {"broken": meta}, backend, repl
+    # Second call still fails and the key remains uninstalled.
+    second = await repl.eval_async(
+        'await import("@/skills/broken")',
+        skills={"broken": meta},
+        skills_backend=backend,
     )
-    assert len(errors2) == 1
-    cached = registry._skill_installs["broken"]
-    assert cached.error is not None
-    assert cached.loaded is None
+    assert second.error_type == "SkillNotAvailable"
+    assert _cache_key(meta) not in repl._installed_skills
 
 
 async def test_unknown_specifier_rejects_at_import(
     registry: _Registry, tmp_path: Path
 ) -> None:
     """If a skill specifier wasn't installed, dynamic import rejects."""
-    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-    # Empty: no skills installed.
-    await registry.aensure_skills_installed(
-        frozenset(), {}, backend, registry.get("t1")
-    )
     repl = registry.get("t1")
     outcome = await repl.eval_async('await import("@/skills/nonexistent")')
     assert outcome.error_type is not None

@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.skills import SkillMetadata
+    from langgraph.runtime import Runtime
 
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import render_repl_system_prompt
@@ -37,7 +38,6 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
-from langchain_quickjs._skills import scan_skill_references
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +212,20 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             code: Annotated[str, code_doc],
         ) -> _EvalToolResult:
             repl = registry.get(_resolve_thread_id(fallback_id))
+            skills = middleware._skills_for_eval(runtime)
             # The sync path doesn't support PTC (host-fn bridges are
             # async); set_outer_runtime is a no-op here.
             repl.set_outer_runtime(runtime)
             try:
-                return _run(repl.eval_sync, code, runtime.tool_call_id)
+                return _run(
+                    lambda c: repl.eval_sync(
+                        c,
+                        skills=skills,
+                        skills_backend=middleware._skills_backend,
+                    ),
+                    code,
+                    runtime.tool_call_id,
+                )
             finally:
                 repl.set_outer_runtime(None)
 
@@ -225,20 +234,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             code: Annotated[str, code_doc],
         ) -> _EvalToolResult:
             repl = registry.get(_resolve_thread_id(fallback_id))
-            # Install any referenced skills before eval. If install
-            # fails (bad skill, unknown name, backend error) we short-
-            # circuit with a formatted error so the model sees a clean
-            # "skill unavailable" message instead of the raw
-            # ReferenceError quickjs-rs's resolver would produce.
-            install_error = await middleware._ensure_skills_for_eval(
-                runtime, code, repl
-            )
-            if install_error is not None:
-                return ToolMessage(
-                    content=install_error,
-                    tool_call_id=runtime.tool_call_id,
-                    name=tool_name,
-                )
+            skills = middleware._skills_for_eval(runtime)
             # Capture the outer runtime so PTC bridges can forward
             # state/store/context into tool calls during this eval. Clear
             # after so a stale runtime can't bleed into a later call on
@@ -246,7 +242,11 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # would otherwise retain a reference past the call.
             repl.set_outer_runtime(runtime)
             try:
-                outcome = await repl.eval_async(code)
+                outcome = await repl.eval_async(
+                    code,
+                    skills=skills,
+                    skills_backend=middleware._skills_backend,
+                )
             finally:
                 repl.set_outer_runtime(None)
             message = ToolMessage(
@@ -273,41 +273,17 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             args_schema=EvalSchema,
         )
 
-    async def _ensure_skills_for_eval(
+    def _skills_for_eval(
         self,
         runtime: ToolRuntime[None, Any],
-        code: str,
-        repl: Any,  # _ThreadREPL — Any to avoid a cross-module type cycle
-    ) -> str | None:
-        """Install any ``@/skills/<name>`` specifiers the code references.
-
-        Returns a preformatted error string if install failed for any
-        referenced skill; ``None`` if everything is ready to eval.
-        Skill install is a no-op when ``skills_backend`` is ``None`` or
-        no literal specifiers appear in the source.
-        """
+    ) -> dict[str, "SkillMetadata"] | None:
+        """Return per-eval skill metadata map."""
         if self._skills_backend is None:
-            return None
-        referenced = scan_skill_references(code)
-        if not referenced:
             return None
         metadata_list = (
             runtime.state.get("skills_metadata", []) if runtime.state else []
         )
-        metadata: dict[str, SkillMetadata] = {m["name"]: m for m in metadata_list}
-        errors = await self._registry.aensure_skills_installed(
-            referenced,
-            metadata,
-            self._skills_backend,
-            repl,
-        )
-        if not errors:
-            return None
-        # Each error is a SkillLoadError subclass with a readable
-        # message. Surface all of them joined so the model sees every
-        # broken skill, not just the first.
-        rendered = "; ".join(str(e) for e in errors)
-        return f'<error type="SkillNotAvailable">{rendered}</error>'
+        return {m["name"]: m for m in metadata_list}
 
     def wrap_model_call(
         self,
@@ -376,6 +352,22 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self, system_message: SystemMessage | None, prompt: str
     ) -> SystemMessage:
         return append_to_system_message(system_message, prompt)
+
+    def after_agent(
+        self,
+        state: Any,  # noqa: ARG002
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> None:
+        """Evict this thread's REPL slot so the next run starts fresh."""
+        self._registry.evict(_resolve_thread_id(self._fallback_thread_id))
+
+    async def aafter_agent(
+        self,
+        state: Any,  # noqa: ARG002
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> None:
+        """Evict this thread's REPL slot so the next run starts fresh."""
+        await self._registry.aevict(_resolve_thread_id(self._fallback_thread_id))
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""

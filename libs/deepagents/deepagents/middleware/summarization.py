@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -212,6 +212,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
+    serialized_name: ClassVar[str] = "SummarizationMiddleware"
+    """Preferred config-file reference for class-form exclusion export."""
+
+    @property
+    def name(self) -> str:
+        """Report the public `SummarizationMiddleware` alias for string-form exclusion.
+
+        The impl class is private (`_DeepAgentsSummarizationMiddleware`) but
+        ships under the public `SummarizationMiddleware` name, so
+        `excluded_middleware={"SummarizationMiddleware"}` targets this class.
+        Subclasses fall back to `type(self).__name__` so user-authored
+        extensions don't silently inherit the alias.
+        """
+        if type(self) is _DeepAgentsSummarizationMiddleware:
+            return "SummarizationMiddleware"
+        return type(self).__name__
 
     def __init__(
         self,
@@ -1107,10 +1123,40 @@ def create_summarization_middleware(
     model: BaseChatModel,
     backend: BACKEND_TYPES,
 ) -> _DeepAgentsSummarizationMiddleware:
-    """Create a `SummarizationMiddleware` with model-aware defaults.
+    """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
-    Computes trigger, keep, and truncation settings from the model's profile
-    (or uses fixed-token fallbacks) and returns a configured middleware.
+    ## Why this exists in `deepagents`
+
+    The Deep Agents `SummarizationMiddleware` wraps
+    `langchain.agents.middleware.SummarizationMiddleware` to add behavior
+    long-running, file-aware agents need. Prefer LangChain's middleware
+    directly if none of the below apply:
+
+    - **Backend offload of evicted history.** Evicted messages are appended
+        to `/conversation_history/{thread_id}.md` (default path) on the
+        configured backend before the summary replaces them, and the
+        summary embeds that path so the agent can re-open it via
+        `read_file` when `FilesystemMiddleware` is registered. LangChain
+        drops evicted messages with no recovery path.
+    - **Pre-summarization tool-arg truncation.** Large `write_file` /
+        `edit_file` arguments in older messages are clipped at a lower
+        threshold than full compaction, often reclaiming enough context
+        to skip summarizing. Configured via `truncate_args_settings`.
+    - **`ContextOverflowError` fallback.** On a provider over-budget
+        rejection the middleware summarizes and retries instead of
+        bubbling the error up.
+    - **Non-mutating message state.** Summarization is tracked in a
+        private `_summarization_event` field via `wrap_model_call`,
+        leaving `state["messages"]` intact. LangChain rewrites it with
+        `RemoveMessage(id=REMOVE_ALL_MESSAGES)` from `before_model`.
+        Preserving the raw log enables replay, evals, and shared state
+        with `SummarizationToolMiddleware`'s `compact_conversation` tool.
+    - **Auto-selected trigger/keep thresholds.** LangChain accepts
+        fraction-based thresholds but defaults to `trigger=None` and
+        `keep=("messages", 20)`. This factory picks fraction-based
+        defaults from the model's profile when `max_input_tokens` is
+        exposed, falling back to fixed counts otherwise — see
+        [`compute_summarization_defaults`][deepagents.middleware.summarization.compute_summarization_defaults].
 
     Args:
         model: Resolved `BaseChatModel` instance.
@@ -1147,12 +1193,33 @@ def create_summarization_tool_middleware(
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
-    Convenience factory that creates a `SummarizationMiddleware` via
-    `create_summarization_middleware` and wraps it in a
-    `SummarizationToolMiddleware`.
+    Convenience factory: builds a `SummarizationMiddleware` via
+    [`create_summarization_middleware`][deepagents.middleware.summarization.create_summarization_middleware]
+    and wraps it in a `SummarizationToolMiddleware`. Saves a step and
+    accepts a model string.
+
+    ## What you get
+
+    Only the tool layer is registered — the wrapped `SummarizationMiddleware`
+    is the engine the tool calls into, not a middleware that runs on its
+    own. The agent gains:
+
+    - A `compact_conversation` tool to compact its own context window
+    - A system-prompt nudge hinting when to call it
+    - An eligibility gate at ~50% of the auto-summarization trigger so
+        the tool refuses to compact too early
+
+    ## Pairing with auto-summarization
+
+    For *automatic* summarization at the trigger threshold, also register
+    a `SummarizationMiddleware`. `create_deep_agent` adds one by default,
+    so dropping `create_summarization_tool_middleware(...)` into its
+    `middleware=[...]` gives you both layers; they share state via the
+    `_summarization_event` key.
 
     Args:
-        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
+        model: Chat model instance, or a model string
+            (e.g. `"anthropic:claude-sonnet-4-6"`).
         backend: Backend instance or factory for persisting conversation history.
 
     Returns:

@@ -44,7 +44,7 @@ jobs:
           SHA=$(git rev-parse HEAD)
           echo "::error::Empty commit detected on main: $SHA \"$COMMIT_MSG\""
           echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
-          echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md → \"Empty commit fan-out\"."
+          echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
           exit 1
 
   release-please:
@@ -260,6 +260,13 @@ jobs:
 
   # Trigger release workflow when CLI release PR is merged
   # GitHub release is created by release.yml AFTER all checks pass
+  #
+  # release-sha pins the release tag to the release-PR merge commit. github.sha
+  # here IS the merge commit because release-please.yml only fires on push events,
+  # and the release PR was just merged. Forwarding it explicitly means release.yml
+  # always reads inputs.release-sha — the auto path and workflow_dispatch retries
+  # share one code path, so neither can silently tag a different commit (see
+  # RELEASING.md -> Manual Release).
   release-deepagents-cli:
     needs: release-please
     if: needs.release-please.outputs.cli-release == 'true'
@@ -267,6 +274,7 @@ jobs:
     with:
       package: deepagents-cli
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -282,6 +290,7 @@ jobs:
     with:
       package: deepagents
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -296,6 +305,7 @@ jobs:
     with:
       package: deepagents-acp
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -310,6 +320,7 @@ jobs:
     with:
       package: langchain-daytona
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -324,6 +335,7 @@ jobs:
     with:
       package: langchain-modal
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -338,6 +350,7 @@ jobs:
     with:
       package: langchain-runloop
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -352,6 +365,7 @@ jobs:
     with:
       package: langchain-quickjs
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write
@@ -366,6 +380,7 @@ jobs:
     with:
       package: langchain-repl
       version: ${{ needs.release-please.outputs.release-version }}
+      release-sha: ${{ github.sha }}
     secrets: inherit
     permissions:
       contents: write

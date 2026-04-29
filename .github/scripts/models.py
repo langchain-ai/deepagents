@@ -54,6 +54,10 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "anthropic:claude-haiku-4-5",
+        frozenset({"eval:anthropic", "harbor:anthropic"}),
+    ),
+    Model(
         "anthropic:claude-sonnet-4-5-20250929",
         frozenset({"eval:set0", "eval:anthropic", "harbor:set0", "harbor:anthropic"}),
     ),
@@ -82,6 +86,21 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "anthropic:claude-opus-4-6",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:anthropic",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:anthropic",
+            }
+        ),
+    ),
+    Model(
+        "anthropic:claude-opus-4-7",
         frozenset(
             {
                 "eval:set0",

@@ -72,6 +72,12 @@
     "runloop": "runloop",
     "sdk": "deepagents"
   },
+  "branchRules": [
+    {
+      "label": "open-swe",
+      "prefix": "open-swe/"
+    }
+  ],
   "fileRules": [
     {
       "label": "deepagents",

@@ -43,8 +43,8 @@ from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
 )
-from deepagents_repl import REPLMiddleware
 from langchain_core.tools import BaseTool, tool
+from langchain_quickjs import REPLMiddleware
 
 _MAX_DEPTH_LIMIT = 8  # guard against typos that would build thousands of agents
 
@@ -182,7 +182,7 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--max-depth", type=int, default=1)
-    parser.add_argument("--model", default=None)
+    parser.add_argument("--model", default="anthropic:claude-haiku-4-5")
     return parser.parse_args()
 
 

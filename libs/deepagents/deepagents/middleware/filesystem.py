@@ -9,6 +9,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
@@ -697,7 +699,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         *,
         backend: BACKEND_TYPES | None = None,
         system_prompt: str | None = None,
-        custom_tool_descriptions: dict[str, str] | None = None,
+        custom_tool_descriptions: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,

@@ -2618,6 +2618,52 @@ class TestStateBackendConfigKeys:
 
         assert result["files"]["/injected.txt"]["content"] == "from middleware"
 
+    def test_state_backend_read_your_writes_within_one_tool_call(self) -> None:
+        """Write + read in the same tool call — read sees the pending write.
+
+        Both operations happen inside a single ToolNode superstep, so the
+        write is still in `task.writes` (not yet committed). `fresh=True`
+        in `_read_files` applies pending writes through the channel reducer,
+        giving read-your-writes semantics.
+        """
+        backend = StateBackend()
+
+        @tool
+        def write_then_read(path: str, content: str) -> str:
+            """Write a file via StateBackend, then immediately read it back."""
+            backend.write(path, content)
+            result = backend.read(path)
+            if result.error:
+                return f"ERROR: {result.error}"
+            file_data = result.file_data or {}
+            return str(file_data.get("content", ""))
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_then_read",
+                                "args": {"path": "/pending.txt", "content": "buffered"},
+                                "id": "call_wr",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[write_then_read])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msg = next(m for m in result["messages"] if m.type == "tool" and m.tool_call_id == "call_wr")
+        assert "buffered" in tool_msg.content
+        assert "ERROR" not in tool_msg.content
+
 
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""

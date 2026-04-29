@@ -206,10 +206,13 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 1. Go to **Actions** > `⚠️ Manual Package Release`
 2. Click **Run workflow**
 3. Select the package to release
-4. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main`)
+4. **Provide `release-sha`**: the SHA of the release-PR merge commit. Look it up with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The workflow validates the commit's subject matches `release(<package>): <version>` and refuses to run otherwise.
+5. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main` — when set, `release-sha` may be left empty and the dispatched HEAD is used instead. Validation is skipped.)
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the standard release-please flow for managed packages. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
+>
+> **Why `release-sha` is required:** when the auto-triggered release fails (e.g., at `pre-release-checks`) and you re-run via `workflow_dispatch`, `github.sha` resolves to whatever HEAD is at dispatch time — *not* the original release commit. Without `release-sha`, the GitHub release tag would land on an unrelated commit, which breaks release-please's tag-anchored changelog generation on the next run. release-please walks history back from the most recent tag for each package; if the tag sits on the wrong commit, the next run either includes commits that already shipped or treats the package as un-released and (incorrectly) regenerates the full changelog. The `setup` job's `Resolve and validate release SHA` step enforces this and refuses to run when the input is missing or doesn't match a `release(<package>): <version>` commit.
 
 ## Alpha / Beta / Pre-release Versions
 
@@ -286,9 +289,32 @@ This most commonly bites when someone tries to "fix up" a merged PR's changelog 
 
 The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose head commit changes zero files fails fast with a clear error before the release-please action runs.
 
-**If you need to amend a release note for a commit that already merged**, follow [release-please's official guidance](https://github.com/googleapis/release-please#how-can-i-fix-release-notes) — edit the changelog directly in the open release PR, or revert and re-merge the original PR with the corrected title. Do not push empty commits to `main`.
+**If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 
 **If a fan-out has already happened** (release PRs opened for packages you didn't change), revert the offending commit on `main`. release-please will reconcile the open release PRs on the next push that actually touches package files; PRs for unaffected packages can be closed manually.
+
+### Overriding a Merged Commit's Changelog Entry
+
+Append a `BEGIN_COMMIT_OVERRIDE` block to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
+
+Two situations call for this:
+
+1. **Wrong type/scope inferred** — e.g. a `feat:` that should have been `refactor:` or `chore:`.
+2. **Parser cannot read the commit body** — `@conventional-commits/parser` (which release-please uses) is grammar-strict and does not honor markdown code fences. Bodies containing function calls split across lines (`name(` followed by a newline), even inside ` ``` ` blocks, throw a parse error and the commit is silently dropped from the changelog. The pre-merge `release_please_parse_check.yml` check catches this before merge; if a commit slipped through, use the override to recover.
+
+```txt
+BEGIN_COMMIT_OVERRIDE
+refactor(scope): corrected description
+END_COMMIT_OVERRIDE
+```
+
+Notes:
+
+- Place the block at the bottom of the PR body, after a horizontal rule.
+- To produce multiple changelog entries from one PR, separate corrected messages by a **blank line** with each starting `type(scope):`, or wrap each in `BEGIN_NESTED_COMMIT`/`END_NESTED_COMMIT` markers — release-please's splitter requires one of these forms; a bare newline between messages is parsed as a single commit's body.
+- Only effective with **squash merges**. release-please attaches the override to the squash commit by matching it to the PR's `merge_commit_sha`; for plain-merge or rebase-merge strategies the per-branch commits have no PR association and the override is ignored.
+- Effect lands when release-please next syncs the open release PR (push to `main` or manual workflow dispatch). Verify the entry moved/disappeared in the corresponding `release(<component>): X.Y.Z` PR.
+- Update via `gh pr edit <num> --body-file <file>` to avoid shell-escaping the multi-line body. (`gh api -f body=@<file>` does **not** work — `-f` writes the literal string `@<file>` rather than reading the file.)
 
 ### Yanking a Release
 

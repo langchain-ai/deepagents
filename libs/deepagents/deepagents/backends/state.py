@@ -112,14 +112,15 @@ class StateBackend(BackendProtocol):
         initialize StateBackend once and fetch state on demand from any
         graph context (tools, middleware nodes, etc.).
 
-        `fresh=False` reads the value as of the *start* of the current
-        superstep (checkpointed value + writes from prior steps). Writes
-        queued during the current step aren't applied until the node boundary,
-        so every call within the same step sees a consistent snapshot.
+        `fresh=True` applies any pending task writes through the channel's
+        reducer before returning, giving read-your-writes semantics within
+        a single superstep — e.g. a tool that writes a file and then reads
+        it back, or a code interpreter that issues multiple sub-tool calls
+        inside one eval.
         """
         config = self._get_config()
         read = config["configurable"][CONFIG_KEY_READ]
-        fresh = False
+        fresh = True
         return read("files", fresh) or {}
 
     def _send_files_update(self, update: dict[str, Any]) -> None:
@@ -136,9 +137,9 @@ class StateBackend(BackendProtocol):
         uses a dict-merge reducer, so we only need to include changed
         files — unchanged ones are preserved by the reducer.
 
-        Writes are not applied until the node boundary, so they won't be
-        visible to other calls in the same step (see `_read_files` and
-        its use of `fresh=False`).
+        Sends are visible to subsequent `_read_files` calls within the
+        same superstep via `fresh=True`; they are committed to state at
+        the node boundary.
         """
         config = self._get_config()
         send = config["configurable"][CONFIG_KEY_SEND]

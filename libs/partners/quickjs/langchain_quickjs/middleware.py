@@ -22,7 +22,6 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
-from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -46,7 +45,6 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
-_EvalToolResult = ToolMessage | list[Command | ToolMessage]
 
 
 class EvalSchema(BaseModel):
@@ -213,16 +211,13 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         def _run(
             outcome_fn: Any, code: str, tool_call_id: str | None
-        ) -> _EvalToolResult:
+        ) -> ToolMessage:
             outcome = outcome_fn(code)
-            message = ToolMessage(
+            return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )
-            if outcome.commands:
-                return [*outcome.commands, message]
-            return message
 
         code_doc = (
             "JavaScript expression or statement(s) to evaluate in the persistent REPL."
@@ -231,7 +226,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> _EvalToolResult:
+        ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
             # The sync path doesn't support PTC (host-fn bridges are
@@ -253,7 +248,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> _EvalToolResult:
+        ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
             # Capture the outer runtime so PTC bridges can forward
@@ -270,14 +265,11 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 )
             finally:
                 repl.set_outer_runtime(None)
-            message = ToolMessage(
+            return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=runtime.tool_call_id,
                 name=tool_name,
             )
-            if outcome.commands:
-                return [*outcome.commands, message]
-            return message
 
         return StructuredTool.from_function(
             name=tool_name,

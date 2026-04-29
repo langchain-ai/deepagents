@@ -16,7 +16,6 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 
-from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -75,7 +74,6 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
-    commands: list[Command] = field(default_factory=list)
 
 
 class _PTCCallBudgetExceededError(RuntimeError):
@@ -105,7 +103,6 @@ class _PTCState:
     """Per-eval PTC state (reset on each eval call)."""
 
     remaining_calls: int | None
-    command_buffer: tuple[Command, ...] = field(default_factory=tuple)
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -122,13 +119,6 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
-
-    def append_commands(self, commands: list[Command]) -> _PTCState:
-        """Return a copy with additional commands captured for this eval."""
-        if not commands:
-            return self
-        return replace(self, command_buffer=(*self.command_buffer, *commands))
-
 
 class _ConsoleBuffer:
     """Accumulates ``console.*`` output between evals.
@@ -182,15 +172,6 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     # schema validation produces an informative error rather than a
     # silent miss.
     return {"input": raw}
-
-
-def _extract_commands(value: Any) -> list[Command]:
-    """Collect LangGraph ``Command`` values from a tool return payload."""
-    if isinstance(value, Command):
-        return [value]
-    if isinstance(value, list):
-        return [entry for entry in value if isinstance(entry, Command)]
-    return []
 
 
 def _synth_tool_call_id(tool_name: str) -> str:
@@ -343,7 +324,7 @@ class _ThreadREPL:
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
         # Mutable per-eval PTC state. Allocated at eval start and cleared
-        # in finally so bridge calls can't leak buffered state across evals.
+        # in finally so bridge calls can't run outside the current eval.
         self._ptc_state: _PTCState | None = None
         # Slot-local skill install cache. Kept on the REPL (not registry)
         # so thread-scoped backends can resolve same-named skills
@@ -490,11 +471,6 @@ class _ThreadREPL:
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
-            ptc_state = self._ptc_state
-            if ptc_state is None:
-                msg = "PTC bridge called outside active eval"
-                raise RuntimeError(msg)
-            self._ptc_state = ptc_state.append_commands(_extract_commands(result))
             return coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -643,9 +619,6 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
         finally:
-            ptc_state = self._ptc_state
-            if ptc_state is not None:
-                outcome.commands.extend(ptc_state.command_buffer)
             self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome

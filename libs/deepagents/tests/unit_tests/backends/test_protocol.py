@@ -218,10 +218,30 @@ class TestMapFileOperationError:
         assert _map_exception_to_standard_error(exc) == expected
 
     def test_unrecognized_returns_none(self) -> None:
-        """Non-stdlib exception types return None regardless of message."""
+        """Non-OS exception types return None regardless of message."""
         assert _map_exception_to_standard_error(RuntimeError("something else")) is None
         assert _map_exception_to_standard_error(RuntimeError("permission denied")) is None
-        assert _map_exception_to_standard_error(OSError("is a directory")) is None
+
+    def test_bare_oserror_maps_to_io_error(self) -> None:
+        """Bare OSError (and errno-only subclasses) map to io_error.
+
+        Errno-only subclasses without a dedicated stdlib class (ELOOP,
+        ENAMETOOLONG, EIO) need a generic catch so callers return a per-path
+        error response instead of re-raising.
+        """
+        assert _map_exception_to_standard_error(OSError("generic")) == "io_error"
+        # ELOOP — what motivated adding io_error in the first place
+        eloop = OSError(62, "Too many levels of symbolic links")
+        assert _map_exception_to_standard_error(eloop) == "io_error"
+
+    def test_pathlib_symlink_loop_runtime_error_maps_to_io_error(self) -> None:
+        """Python 3.12+ pathlib `Symlink loop` RuntimeError also maps to io_error.
+
+        On 3.12+, `Path.resolve()` raises a bare RuntimeError on cycles
+        instead of OSError. Same recoverable failure mode, just a different
+        exception type per Python version.
+        """
+        assert _map_exception_to_standard_error(RuntimeError("Symlink loop from /x")) == "io_error"
 
     def test_value_error_maps_to_invalid_path(self) -> None:
         """All ValueError instances map to invalid_path regardless of message."""

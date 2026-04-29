@@ -386,6 +386,37 @@ def test_filesystem_download_errors(tmp_path: Path):
     assert responses[0].content is None
 
 
+def test_filesystem_download_oserror_returns_io_error(tmp_path: Path):
+    """Bare OSError surfaces as a per-path `io_error` response, not a raise.
+
+    Simulated with a symlink cycle, which makes `Path.resolve()` raise
+    `OSError(ELOOP)` on POSIX systems.
+
+    Regression: previously such errors fell through `_map_exception_to_
+    standard_error` (returned None) and `download_files` re-raised, which
+    in agent contexts surfaced as a generic 'An internal error occurred'
+    that aborted the entire run.
+    """
+    if not hasattr(__import__("os"), "symlink"):
+        pytest.skip("symlinks not available on this platform")
+
+    root = tmp_path
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    # A → B → A (cycle). Path.resolve() raises OSError(ELOOP).
+    a = root / "a.txt"
+    b = root / "b.txt"
+    a.symlink_to(b)
+    b.symlink_to(a)
+
+    responses = be.download_files(["/a.txt"])
+    assert len(responses) == 1
+    assert responses[0].path == "/a.txt"
+    assert responses[0].content is None
+    # Must be a recognized error code, not a raised exception.
+    assert responses[0].error == "io_error"
+
+
 def test_filesystem_upload_errors(tmp_path: Path):
     """Test upload error handling."""
     root = tmp_path

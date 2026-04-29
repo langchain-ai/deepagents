@@ -35,6 +35,7 @@ FileOperationError = Literal[
     "permission_denied",
     "is_directory",
     "invalid_path",
+    "io_error",
 ]
 """Standardized error codes for file upload/download operations.
 
@@ -45,6 +46,10 @@ potentially fix:
 - permission_denied: Access denied for the operation
 - is_directory: Attempted to download a directory as a file
 - invalid_path: Path syntax is malformed or contains invalid characters
+- io_error: Generic OS-level filesystem error (e.g. ELOOP from a symlink
+  targeted by O_NOFOLLOW, ENAMETOOLONG, transient I/O failure). Distinct
+  from invalid_path so callers can tell user-fixable path issues from
+  environment-level failures.
 """
 
 

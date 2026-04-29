@@ -734,7 +734,7 @@ class FilesystemBackend(BackendProtocol):
         return responses
 
 
-def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:
+def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:  # noqa: PLR0911
     """Map a caught exception to a standardized `FileOperationError` code.
 
     Classification is based on exception type only (stdlib hierarchy).
@@ -757,4 +757,17 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
         return "invalid_path"
     if isinstance(exc, ValueError):
         return "invalid_path"
+    # Generic OSError catch-all so that errno cases without a dedicated
+    # subclass (ELOOP, ENAMETOOLONG, EIO, transient FS issues) become a
+    # per-file response instead of bubbling up and tearing down the agent.
+    # In particular, ELOOP fires from `os.open(..., O_NOFOLLOW)` when the
+    # final path component is a symlink — common for skill registries that
+    # point SKILL.md files at a canonical location via symlinks.
+    if isinstance(exc, OSError):
+        return "io_error"
+    # Python 3.12+'s `pathlib.Path.resolve()` raises a bare `RuntimeError`
+    # (not OSError) when it detects a symlink cycle. Same intent: surface
+    # as a recoverable per-file error instead of crashing the caller.
+    if isinstance(exc, RuntimeError) and "symlink loop" in str(exc).lower():
+        return "io_error"
     return None

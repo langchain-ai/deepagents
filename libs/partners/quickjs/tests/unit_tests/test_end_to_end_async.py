@@ -227,11 +227,7 @@ async def test_quickjs_async_host_call_budget_exceeded() -> None:
         "'done'",
         REPLMiddleware(ptc=[sync_label_tool], max_ptc_calls=1),
     ).ainvoke(
-        {
-            "messages": [
-                HumanMessage(content="Use eval and call sync_label twice.")
-            ]
-        }
+        {"messages": [HumanMessage(content="Use eval and call sync_label twice.")]}
     )
     tool_message = _eval_tool_message(result)
     assert '<error type="PTCCallBudgetExceeded">' in tool_message.content

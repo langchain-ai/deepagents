@@ -206,10 +206,13 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 1. Go to **Actions** > `⚠️ Manual Package Release`
 2. Click **Run workflow**
 3. Select the package to release
-4. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main`)
+4. **Provide `release-sha`**: the SHA of the release-PR merge commit. Look it up with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The workflow validates the commit's subject matches `release(<package>): <version>` and refuses to run otherwise.
+5. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main` — when set, `release-sha` may be left empty and the dispatched HEAD is used instead. Validation is skipped.)
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the standard release-please flow for managed packages. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
+>
+> **Why `release-sha` is required:** when the auto-triggered release fails (e.g., at `pre-release-checks`) and you re-run via `workflow_dispatch`, `github.sha` resolves to whatever HEAD is at dispatch time — *not* the original release commit. Without `release-sha`, the GitHub release tag would land on an unrelated commit, which breaks release-please's tag-anchored changelog generation on the next run. release-please walks history back from the most recent tag for each package; if the tag sits on the wrong commit, the next run either includes commits that already shipped or treats the package as un-released and (incorrectly) regenerates the full changelog. The `setup` job's `Resolve and validate release SHA` step enforces this and refuses to run when the input is missing or doesn't match a `release(<package>): <version>` commit.
 
 ## Alpha / Beta / Pre-release Versions
 

@@ -5,7 +5,7 @@
 [![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents)](https://pypistats.org/packages/deepagents)
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
 
-Looking for the JS/TS version? Check out [Deep Agents.js](https://github.com/langchain-ai/deepagentsjs).
+Looking for the JS/TS version? Check out [Deep Agents.js](https://github.com/langchain-ai/deepagentsjs/tree/main/libs/deepagents).
 
 To help you ship LangChain apps to production faster, check out [LangSmith](https://smith.langchain.com).
 LangSmith is a unified developer platform for building, testing, and monitoring LLM applications.

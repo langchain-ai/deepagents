@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -1536,44 +1537,91 @@ base_url = "https://wrong-url.com"
         assert kwargs["base_url"] == "https://correct-url.com"
 
 
+def _make_init_chat_model_mock() -> Mock:
+    """Return a `Mock` shaped like `init_chat_model`'s return value.
+
+    Each `TestCreateModel*` test patches `langchain.chat_models.init_chat_model`
+    and inspects `call_args`; the returned model needs `profile = None` so the
+    downstream context-limit/modality extraction in `create_model` is a no-op.
+    """
+    mock_model = Mock()
+    mock_model.profile = None
+    return mock_model
+
+
+@pytest.fixture
+def _isolate_provider_profiles() -> Iterator[None]:
+    """Snapshot/restore SDK `_PROVIDER_PROFILES` and CLI registration sentinel.
+
+    The provider-profile registry is process-global. Tests that register
+    custom profiles (or that exercise the CLI's lazy OpenRouter registration)
+    must not leak state into other tests in the same session.
+    """
+    from deepagents.profiles.provider import provider_profiles
+
+    from deepagents_cli import config as cli_config
+
+    saved_profiles = dict(provider_profiles._PROVIDER_PROFILES)
+    saved_cli_flag = cli_config._cli_openrouter_profile_registered
+    try:
+        yield
+    finally:
+        provider_profiles._PROVIDER_PROFILES.clear()
+        provider_profiles._PROVIDER_PROFILES.update(saved_profiles)
+        cli_config._cli_openrouter_profile_registered = saved_cli_flag
+
+
 class TestOpenRouterVersionCheck:
-    """Tests for OpenRouter version enforcement via the SDK check."""
+    """Tests for OpenRouter version enforcement via the SDK profile."""
 
     def setup_method(self) -> None:
         """Clear model config cache before each test."""
         clear_caches()
 
-    def test_rejects_old_version(self) -> None:
-        """_get_provider_kwargs raises ImportError for old langchain-openrouter."""
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_rejects_old_version(self, mock_init: Mock) -> None:
+        """`create_model` wraps the version `ImportError` in `ModelConfigError`."""
+        mock_init.return_value = _make_init_chat_model_mock()
         with (
             patch(
                 "deepagents.profiles.provider._openrouter.pkg_version",
                 return_value="0.0.1",
             ),
-            pytest.raises(ImportError, match="langchain-openrouter>="),
+            pytest.raises(ModelConfigError, match="langchain-openrouter>="),
         ):
-            _get_provider_kwargs("openrouter")
+            create_model("openrouter:deepseek/deepseek-chat")
 
-    def test_accepts_sufficient_version(self) -> None:
-        """_get_provider_kwargs succeeds when version meets minimum."""
+    @patch("langchain.chat_models.init_chat_model")
+    def test_accepts_sufficient_version(self, mock_init: Mock) -> None:
+        """`create_model` succeeds when version meets minimum."""
         from deepagents.profiles.provider._openrouter import OPENROUTER_MIN_VERSION
 
+        mock_init.return_value = _make_init_chat_model_mock()
         with patch(
             "deepagents.profiles.provider._openrouter.pkg_version",
             return_value=OPENROUTER_MIN_VERSION,
         ):
-            kwargs = _get_provider_kwargs("openrouter")
+            create_model("openrouter:deepseek/deepseek-chat")
 
-        assert "app_url" in kwargs
+        _, call_kwargs = mock_init.call_args
+        assert "app_url" in call_kwargs
 
-    def test_skipped_for_other_providers(self) -> None:
+    @patch("langchain.chat_models.init_chat_model")
+    def test_skipped_for_other_providers(self, mock_init: Mock) -> None:
         """Version check is not invoked for non-openrouter providers."""
+        mock_init.return_value = _make_init_chat_model_mock()
         with patch(
             "deepagents.profiles.provider._openrouter.check_openrouter_version"
-        ) as mock:
-            _get_provider_kwargs("openai")
+        ) as mock_check:
+            create_model("openai:gpt-5.2")
 
-        mock.assert_not_called()
+        mock_check.assert_not_called()
 
 
 class TestOpenRouterHeaders:
@@ -1583,16 +1631,29 @@ class TestOpenRouterHeaders:
         """Clear model config cache before each test."""
         clear_caches()
 
-    def test_injects_attribution_kwargs(self) -> None:
-        """Injects app_url, app_title, and app_categories for openrouter."""
-        kwargs = _get_provider_kwargs("openrouter")
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
 
-        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
-        assert kwargs["app_title"] == "Deep Agents CLI"
-        assert kwargs["app_categories"] == ["cli-agent"]
+    @patch("langchain.chat_models.init_chat_model")
+    def test_injects_attribution_kwargs(self, mock_init: Mock) -> None:
+        """`create_model` injects `app_url`, `app_title`, `app_categories`."""
+        mock_init.return_value = _make_init_chat_model_mock()
 
-    def test_per_model_attribution_overrides_defaults(self, tmp_path: Path) -> None:
-        """Per-model app_title overrides built-in default."""
+        create_model("openrouter:deepseek/deepseek-chat")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
+        assert call_kwargs["app_title"] == "Deep Agents CLI"
+        assert call_kwargs["app_categories"] == ["cli-agent"]
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_per_model_attribution_overrides_defaults(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """Per-model `app_title` from `config.toml` overrides built-in default."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.openrouter]
@@ -1601,17 +1662,20 @@ models = ["deepseek/deepseek-chat"]
 [models.providers.openrouter.params."deepseek/deepseek-chat"]
 app_title = "My Custom App"
 """)
+        mock_init.return_value = _make_init_chat_model_mock()
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            kwargs = _get_provider_kwargs(
-                "openrouter", model_name="deepseek/deepseek-chat"
-            )
+            create_model("openrouter:deepseek/deepseek-chat")
 
-        assert kwargs["app_title"] == "My Custom App"
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["app_title"] == "My Custom App"
         # Built-in app_url should still be present
-        assert kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
+        assert call_kwargs["app_url"] == "https://pypi.org/project/deepagents-cli/"
 
-    def test_per_model_categories_override(self, tmp_path: Path) -> None:
-        """Per-model app_categories overrides built-in default."""
+    @patch("langchain.chat_models.init_chat_model")
+    def test_per_model_categories_override(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """Per-model `app_categories` from `config.toml` overrides built-in default."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.openrouter]
@@ -1620,19 +1684,243 @@ models = ["deepseek/deepseek-chat"]
 [models.providers.openrouter.params."deepseek/deepseek-chat"]
 app_categories = ["cloud-agent"]
 """)
+        mock_init.return_value = _make_init_chat_model_mock()
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            kwargs = _get_provider_kwargs(
-                "openrouter", model_name="deepseek/deepseek-chat"
-            )
+            create_model("openrouter:deepseek/deepseek-chat")
 
-        assert kwargs["app_categories"] == ["cloud-agent"]
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["app_categories"] == ["cloud-agent"]
 
-    def test_no_attribution_for_other_providers(self) -> None:
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_attribution_for_other_providers(self, mock_init: Mock) -> None:
         """Other providers do not get OpenRouter attribution kwargs."""
-        kwargs = _get_provider_kwargs("openai")
-        assert "app_url" not in kwargs
-        assert "app_title" not in kwargs
-        assert "app_categories" not in kwargs
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openai:gpt-5.2")
+
+        _, call_kwargs = mock_init.call_args
+        assert "app_url" not in call_kwargs
+        assert "app_title" not in call_kwargs
+        assert "app_categories" not in call_kwargs
+
+
+class TestCreateModelForwardsProviderProfile:
+    """Tests that `create_model` forwards profile kwargs to `init_chat_model`.
+
+    Regression coverage for #2959: env-default and explicit OpenAI selections
+    both need `use_responses_api=True` so the CLI's PDF-attachment path (which
+    emits `type: "file"` content blocks) is routed through the Responses API
+    instead of 400'ing against Chat Completions.
+    """
+
+    def setup_method(self) -> None:
+        """Clear model config cache before each test."""
+        clear_caches()
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @patch("deepagents_cli.config._get_default_model_spec")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_env_default_openai_gets_use_responses_api(
+        self, mock_init: Mock, mock_default: Mock
+    ) -> None:
+        """No-spec `create_model()` resolves to OpenAI with `use_responses_api=True`."""
+        mock_default.return_value = "openai:gpt-5.2"
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model()
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_openai_spec_gets_use_responses_api(self, mock_init: Mock) -> None:
+        """Explicit `openai:*` selection also inherits the SDK Responses API default."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openai:gpt-5.2")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_model_params_override_profile_default(self, mock_init: Mock) -> None:
+        """`--model-params` (`extra_kwargs`) wins over profile defaults."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.2",
+            extra_kwargs={"use_responses_api": False},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_config_toml_opt_out_wins_over_profile(
+        self, mock_init: Mock, tmp_path: Path
+    ) -> None:
+        """`use_responses_api=false` in `config.toml` opts out of the default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.openai.params]
+use_responses_api = false
+""")
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            create_model("openai:gpt-5.2")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_anthropic_unaffected(self, mock_init: Mock) -> None:
+        """Anthropic profile currently does not set `use_responses_api`."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-sonnet-4-5")
+
+        _, call_kwargs = mock_init.call_args
+        assert "use_responses_api" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_exact_model_profile_wins_over_provider_profile(
+        self,
+        mock_init: Mock,
+        _isolate_provider_profiles: None,  # noqa: PT019
+    ) -> None:
+        """Per-model profile registration wins over the provider-wide profile.
+
+        Pins the spec construction in `create_model` (`f"{provider}:{model_name}"`).
+        A regression that drops the model-name suffix would silently fall back
+        to the provider-wide registration and bypass exact-model overrides.
+        """
+        from deepagents.profiles.provider import (
+            ProviderProfile,
+            register_provider_profile,
+        )
+
+        register_provider_profile(
+            "openai:gpt-5.2",
+            ProviderProfile(init_kwargs={"temperature": 0.42}),
+        )
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openai:gpt-5.2")
+        _, exact_kwargs = mock_init.call_args
+        assert exact_kwargs.get("temperature") == 0.42
+
+        mock_init.reset_mock()
+        create_model("openai:gpt-4o")
+        _, other_kwargs = mock_init.call_args
+        assert "temperature" not in other_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_init_kwargs_factory_output_forwarded(
+        self,
+        mock_init: Mock,
+        _isolate_provider_profiles: None,  # noqa: PT019
+    ) -> None:
+        """`init_kwargs_factory` output reaches `init_chat_model`.
+
+        Direct coverage for the factory branch in `apply_provider_profile` —
+        previously exercised only transitively via OpenRouter.
+        """
+        from deepagents.profiles.provider import (
+            ProviderProfile,
+            register_provider_profile,
+        )
+
+        register_provider_profile(
+            "anthropic",
+            ProviderProfile(init_kwargs_factory=lambda: {"max_tokens": 4096}),
+        )
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-sonnet-4-5")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("max_tokens") == 4096
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_pre_init_invoked_exactly_once(
+        self,
+        mock_init: Mock,
+        _isolate_provider_profiles: None,  # noqa: PT019
+    ) -> None:
+        """`pre_init` runs once per `create_model` call (not duplicated by CLI path).
+
+        Pins the consolidation: previously the CLI inline-called
+        `check_openrouter_version` *and* the SDK profile's `pre_init` ran the
+        same check, firing it twice. Only the profile path should run it now.
+        """
+        from deepagents.profiles.provider import (
+            ProviderProfile,
+            register_provider_profile,
+        )
+
+        pre_init_calls: list[str] = []
+        register_provider_profile(
+            "anthropic",
+            ProviderProfile(pre_init=lambda spec: pre_init_calls.append(spec)),
+        )
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("anthropic:claude-sonnet-4-5")
+
+        assert pre_init_calls == ["anthropic:claude-sonnet-4-5"]
+
+    @patch("deepagents.profiles.provider.apply_provider_profile")
+    @patch("langchain.chat_models.init_chat_model")
+    def test_no_provider_skips_profile_lookup(
+        self, mock_init: Mock, mock_apply: Mock
+    ) -> None:
+        """Bare model spec with no detected provider skips profile resolution.
+
+        `detect_provider` returns `None` for unrecognized model names; the
+        `if provider:` guard in `create_model` keeps the profile call out of
+        that path so an empty spec is never sent to `apply_provider_profile`.
+        """
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("some-unknown-model-name")
+
+        mock_apply.assert_not_called()
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_profile_pre_init_failure_wrapped_in_model_config_error(
+        self,
+        mock_init: Mock,
+        _isolate_provider_profiles: None,  # noqa: PT019
+    ) -> None:
+        """Arbitrary `pre_init` exceptions surface as `ModelConfigError`.
+
+        Without wrapping, a profile's `pre_init` failure bubbles up as a raw
+        traceback to the user; the CLI's error path expects `ModelConfigError`
+        for actionable rendering.
+        """
+        from deepagents.profiles.provider import (
+            ProviderProfile,
+            register_provider_profile,
+        )
+
+        def _broken_pre_init(_spec: str) -> None:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        register_provider_profile(
+            "anthropic",
+            ProviderProfile(pre_init=_broken_pre_init),
+        )
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        with pytest.raises(ModelConfigError, match="provider profile"):
+            create_model("anthropic:claude-sonnet-4-5")
 
 
 class TestCreateModelFromClass:

@@ -1,0 +1,21 @@
+[agent]
+name = "deepagents-deploy-data-scientist-agent"
+model = "anthropic:claude-sonnet-4-5"
+
+[sandbox]
+provider = "langsmith"
+template = "data-scientist-agent"
+image = "python:3.12"
+scope = "thread"
+
+[auth]
+provider = "anonymous"
+
+[frontend]
+enabled = true
+app_name = "Data Scientist Agent"
+subtitle = "Analyze CSVs, create charts, and write reports from a sandboxed Python environment."
+prompts = [
+  "Analyze the data and provide key insights",
+  "Model the data visually"
+]

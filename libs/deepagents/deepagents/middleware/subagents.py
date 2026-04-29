@@ -11,7 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRe
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -97,6 +97,15 @@ class SubAgent(TypedDict):
     tools on the subagent stack.
     """
 
+    fork_context: NotRequired[bool]
+    """Default context mode for invocations of this subagent.
+
+    When `True`, task calls that omit `fork_context` start this subagent from
+    the parent's current state and message history, with the task description
+    appended as the final human instruction. The `task` tool can still override
+    this per call by passing `fork_context`.
+    """
+
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
     """Structured output response format for the subagent.
 
@@ -165,6 +174,15 @@ class CompiledSubAgent(TypedDict):
     This is required for the subagent to communicate results back to the main agent.
     """
 
+    fork_context: NotRequired[bool]
+    """Default context mode for invocations of this compiled subagent.
+
+    When `True`, task calls that omit `fork_context` start this runnable from
+    the parent's current state and message history, with the task description
+    appended as the final human instruction. The `task` tool can still override
+    this per call by passing `fork_context`.
+    """
+
 
 DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
 
@@ -180,7 +198,45 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 #    be explicitly filtered from runtime.state when invoking a subagent to prevent parent state
 #    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
 #    SkillsMiddleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+# 4. The _summarization_event key is lifecycle bookkeeping for the parent
+#    summarization middleware. Forked subagents copy the concrete parent state
+#    messages instead of the parent model-call summary view, then start with
+#    their own summarization state.
+_SUMMARIZATION_EVENT_KEY = "_summarization_event"
+_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents", _SUMMARIZATION_EVENT_KEY}
+
+
+def _messages_before_current_task_call(messages: list[AnyMessage], tool_call_id: str) -> list[AnyMessage]:
+    """Return the inherited prefix before the parent turn that launched this task.
+
+    Forked subagents should inherit the same prefix the parent model consumed,
+    then append their own task instruction. Removing by prefix keeps prior
+    completed tool calls intact and avoids rewriting earlier history.
+    """
+    if not tool_call_id:
+        return list(messages)
+
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if isinstance(message, AIMessage) and any(tool_call.get("id") == tool_call_id for tool_call in message.tool_calls):
+            return messages[:idx]
+
+    for idx in range(len(messages) - 1, -1, -1):
+        message = messages[idx]
+        if isinstance(message, ToolMessage) and message.tool_call_id == tool_call_id:
+            return messages[:idx]
+
+    return list(messages)
+
+
+def _child_config(runtime: ToolRuntime, *, fork_context: bool) -> RunnableConfig:
+    """Build the config used for a subagent invocation."""
+    configurable = {**runtime.config.get("configurable", {})}
+    if fork_context and runtime.tool_call_id:
+        parent_thread_id = configurable.get("thread_id")
+        configurable["thread_id"] = f"{parent_thread_id}:subagent:{runtime.tool_call_id}" if parent_thread_id else f"subagent:{runtime.tool_call_id}"
+    configurable["ls_agent_type"] = "subagent"
+    return {"configurable": configurable}
 
 
 class TaskToolSchema(BaseModel):
@@ -193,6 +249,13 @@ class TaskToolSchema(BaseModel):
         )
     )
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
+    fork_context: bool | None = Field(
+        default=None,
+        description=(
+            "If true, start the subagent with the current conversation context and normal parent state. "
+            "If false, start with only the task description. If omitted, use the subagent's default."
+        ),
+    )
 
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle complex, multi-step independent tasks with isolated context windows.
@@ -201,15 +264,17 @@ Available agent types and the tools they have access to:
 {available_agents}
 
 When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+By default, subagents start with their configured context mode. Most subagents use a fresh message context containing only your task description. Some subagents may default to forked context. Pass fork_context=true or fork_context=false only when you need to override that default for this call.
 
 ## Usage notes:
 1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
 2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.
 3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
-4. The agent's outputs should generally be trusted
-5. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
-6. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
-7. When only the general-purpose agent is provided, you should use it for all tasks. It is great for isolating context and token usage, and completing specific, complex tasks, as it has all the same capabilities as the main agent.
+4. Use fork_context=true when the subagent needs details that are already present in the current conversation. Use fork_context=false to force isolated execution when the subagent's configured default is forked.
+5. The agent's outputs should generally be trusted
+6. Clearly tell the agent whether you expect it to create content, perform analysis, or just do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent
+7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+8. When only the general-purpose agent is provided, you should use it for all tasks. It is great for isolating context and token usage, and completing specific, complex tasks, as it has all the same capabilities as the main agent.
 
 ### Example usage of the general-purpose agent:
 
@@ -322,6 +387,11 @@ Subagent lifecycle:
 3. **Return** → The subagent provides a single structured result
 4. **Reconcile** → Incorporate or synthesize the result into the main thread
 
+Context modes:
+- By default, the subagent uses its configured context mode. Most subagents start fresh, while some may default to forked context.
+- Set `fork_context=true` when the subagent needs the current conversation context as its starting point.
+- Set `fork_context=false` when you need to force a fresh isolated context for a subagent that defaults to forked context.
+
 When NOT to use the task tool:
 - If you need to see the intermediate reasoning or steps after the subagent has completed (the task tool hides them)
 - If the task is trivial (a few tool calls or simple lookup)
@@ -350,9 +420,10 @@ class _SubagentSpec(TypedDict):
     name: str
     description: str
     runnable: Runnable
+    fork_context: NotRequired[bool]
 
 
-def _build_task_tool(  # noqa: C901
+def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -368,7 +439,14 @@ def _build_task_tool(  # noqa: C901
     """
     # Build the graphs dict and descriptions from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in subagents}
-    subagent_description_str = "\n".join(f"- {s['name']}: {s['description']}" for s in subagents)
+    subagent_fork_context_defaults: dict[str, bool] = {spec["name"]: bool(spec.get("fork_context", False)) for spec in subagents}
+
+    def _format_agent_line(spec: _SubagentSpec) -> str:
+        if spec.get("fork_context"):
+            return f"- {spec['name']} [fork_context default: true]: {spec['description']}"
+        return f"- {spec['name']}: {spec['description']}"
+
+    subagent_description_str = "\n".join(_format_agent_line(spec) for spec in subagents)
 
     # Use custom description if provided, otherwise use default template
     if task_description is None:
@@ -409,18 +487,33 @@ def _build_task_tool(  # noqa: C901
             }
         )
 
-    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime) -> tuple[Runnable, dict]:
+    def _resolve_fork_context(subagent_type: str, *, fork_context: bool | None) -> bool:
+        """Resolve per-call context mode against the subagent's configured default."""
+        if fork_context is not None:
+            return fork_context
+        return subagent_fork_context_defaults.get(subagent_type, False)
+
+    def _validate_and_prepare_state(subagent_type: str, description: str, runtime: ToolRuntime, *, fork_context: bool) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
         subagent = subagent_graphs[subagent_type]
         # Create a new state dict to avoid mutating the original
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        subagent_state["messages"] = [HumanMessage(content=description)]
+        if fork_context:
+            parent_messages = list(runtime.state.get("messages", []))
+            subagent_state["messages"] = [
+                *_messages_before_current_task_call(parent_messages, runtime.tool_call_id or ""),
+                HumanMessage(content=description),
+            ]
+        else:
+            subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
 
     def task(
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        fork_context: bool | None = None,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -428,10 +521,11 @@ def _build_task_tool(  # noqa: C901
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        resolved_fork_context = _resolve_fork_context(subagent_type, fork_context=fork_context)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime, fork_context=resolved_fork_context)
 
         # Don't merge all fields because this will block out manual `.with_config`
-        subagent_config: RunnableConfig = {"configurable": {**runtime.config.get("configurable", {}), "ls_agent_type": "subagent"}}
+        subagent_config = _child_config(runtime, fork_context=resolved_fork_context)
         result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
@@ -439,6 +533,8 @@ def _build_task_tool(  # noqa: C901
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        fork_context: bool | None = None,
     ) -> str | Command:
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -446,9 +542,10 @@ def _build_task_tool(  # noqa: C901
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+        resolved_fork_context = _resolve_fork_context(subagent_type, fork_context=fork_context)
+        subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime, fork_context=resolved_fork_context)
         # Don't merge all fields because this will block out manual `.with_config`
-        subagent_config: RunnableConfig = {"configurable": {**runtime.config.get("configurable", {}), "ls_agent_type": "subagent"}}
+        subagent_config = _child_config(runtime, fork_context=resolved_fork_context)
         result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
@@ -551,7 +648,14 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             if "runnable" in spec:
                 # CompiledSubAgent - use as-is
                 compiled = cast("CompiledSubAgent", spec)
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": compiled["runnable"]})
+                specs.append(
+                    {
+                        "name": compiled["name"],
+                        "description": compiled["description"],
+                        "runnable": compiled["runnable"],
+                        "fork_context": bool(compiled.get("fork_context", False)),
+                    }
+                )
                 continue
 
             # SubAgent - validate required fields
@@ -586,6 +690,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         name=spec["name"],
                         response_format=spec.get("response_format"),
                     ),
+                    "fork_context": bool(spec.get("fork_context", False)),
                 }
             )
 

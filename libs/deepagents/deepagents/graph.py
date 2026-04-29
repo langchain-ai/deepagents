@@ -361,9 +361,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
 
-            `FilesystemMiddleware` enforces these rules directly for the
-            built-in filesystem tools. Subagents inherit the parent rules
-            unless they specify their own `permissions`.
+            `FilesystemMiddleware` applies these permissions at the tool
+            level for its built-in filesystem tools, not at the backend
+            level. Direct backend usage does not currently incorporate
+            `permissions`.
         backend: Optional backend for file storage and execution.
 
             Pass a `Backend` instance (e.g. `StateBackend()`).

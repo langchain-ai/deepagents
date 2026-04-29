@@ -123,8 +123,8 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-    def test_compiled_subagent_name_propagated_to_runnable(self) -> None:
-        """Test that CompiledSubAgent.name is set on the runnable so lc_agent_name is correct."""
+    def _make_echo_graph(self) -> object:
+        """Build a minimal MessagesState graph for use in CompiledSubAgent tests."""
 
         def echo_node(_state: MessagesState) -> dict:
             return {"messages": [AIMessage(content="hello")]}
@@ -132,7 +132,11 @@ class TestSubagentMiddlewareInit:
         builder = StateGraph(MessagesState)
         builder.add_node("echo", echo_node)
         builder.add_edge(START, "echo")
-        graph = builder.compile()  # compiled without a name
+        return builder.compile()
+
+    def test_compiled_subagent_name_propagated_via_config(self) -> None:
+        """CompiledSubAgent.name is forwarded as run_name in config, not via attribute mutation."""
+        graph = self._make_echo_graph()
 
         middleware = SubAgentMiddleware(
             backend=StateBackend(),
@@ -146,7 +150,67 @@ class TestSubagentMiddlewareInit:
         )
 
         specs = middleware._get_subagents()
-        assert specs[0]["runnable"].name == "my-subagent"
+        runnable = specs[0]["runnable"]
+        # run_name must be set in the runnable's config, not via attribute mutation
+        assert runnable.config is not None
+        assert runnable.config.get("run_name") == "my-subagent"
+
+    def test_compiled_subagent_does_not_mutate_original_runnable(self) -> None:
+        """_get_subagents must not mutate the original runnable passed by the caller."""
+        graph = self._make_echo_graph()
+        original_config = getattr(graph, "config", None)
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "my-subagent",
+                    "description": "A custom subagent",
+                    "runnable": graph,
+                }
+            ],
+        )
+
+        middleware._get_subagents()
+
+        # Original graph must be unchanged
+        assert graph.config == original_config, "Original runnable was mutated by _get_subagents(); use with_config instead of attribute assignment"
+
+    def test_same_runnable_reused_across_multiple_subagents(self) -> None:
+        """Same runnable registered under two different names must not cross-contaminate configs."""
+        graph = self._make_echo_graph()
+
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "agent-alpha",
+                    "description": "First binding",
+                    "runnable": graph,
+                },
+                {
+                    "name": "agent-beta",
+                    "description": "Second binding",
+                    "runnable": graph,
+                },
+            ],
+        )
+
+        specs = middleware._get_subagents()
+        assert len(specs) == 2
+
+        alpha_runnable = specs[0]["runnable"]
+        beta_runnable = specs[1]["runnable"]
+
+        # Each wrapped runnable must carry its own declared name
+        assert alpha_runnable.config.get("run_name") == "agent-alpha"
+        assert beta_runnable.config.get("run_name") == "agent-beta"
+
+        # The two wrapped runnables must be distinct objects
+        assert alpha_runnable is not beta_runnable
+
+        # The original runnable must not be mutated
+        assert graph.config is None
 
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""

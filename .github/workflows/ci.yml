@@ -105,6 +105,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             repl:
               - 'libs/repl/**'
@@ -278,6 +279,16 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
+  benchmark-quickjs:
+    name: "⏱️ Benchmark quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      has-memory-benchmarks: true
+    secrets: inherit
+
   # Verify release.yml dropdown options stay in sync with package directories
   check-release-options:
     name: "Validate Release Options"
@@ -315,6 +326,7 @@ jobs:
       - test-repl
       - benchmark-deepagents
       - benchmark-cli
+      - benchmark-quickjs
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

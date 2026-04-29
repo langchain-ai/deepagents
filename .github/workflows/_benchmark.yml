@@ -21,6 +21,11 @@ on:
         # Pin 3.13.11 — CodSpeed walltime segfaults on 3.13.12+
         # https://github.com/CodSpeedHQ/pytest-codspeed/issues/106
         default: "3.13.11"
+      has-memory-benchmarks:
+        description: "Whether the package defines memory_benchmark tests"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -59,3 +64,11 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           run: uv run --no-sync pytest ./tests -m benchmark --codspeed
           mode: walltime
+
+      - name: "Run memory benchmarks"
+        if: ${{ inputs.has-memory-benchmarks }}
+        uses: CodSpeedHQ/action@dfaf2584d705312e4ab4e23a4dd3e2f56b71ef3b # v4
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          run: uv run --no-sync pytest ./tests -m "memory_benchmark" --codspeed
+          mode: memory

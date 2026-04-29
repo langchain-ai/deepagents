@@ -264,13 +264,107 @@ def test_registry_reuses_thread_repl() -> None:
 
 def test_middleware_del_closes_runtime() -> None:
     mw = REPLMiddleware()
-    # Force Runtime creation
+    # Force a slot to exist
     _ = mw._registry.get("t")
-    rt = mw._registry._runtime
-    assert rt is not None
+    slots = list(mw._registry._slots.values())
+    assert len(slots) == 1
+    rt = slots[0].runtime
     with patch.object(rt, "close", wraps=rt.close) as close_spy:
         mw.__del__()
         assert close_spy.called
+
+
+def test_per_thread_slot_has_own_worker_and_runtime() -> None:
+    """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        reg.get("thread-a")
+        reg.get("thread-b")
+        slot_a = reg._slots["thread-a"]
+        slot_b = reg._slots["thread-b"]
+        assert slot_a.worker is not slot_b.worker
+        assert slot_a.runtime is not slot_b.runtime
+        assert slot_a.worker._name == "quickjs-worker-thread-a"
+        assert slot_b.worker._name == "quickjs-worker-thread-b"
+    finally:
+        reg.close()
+
+
+def test_evict_closes_and_removes_slot() -> None:
+    """``evict`` closes the runtime and drops the slot from the registry."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        reg.get("thread-a")
+        rt = reg._slots["thread-a"].runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+            reg.evict("thread-a")
+        assert close_spy.called
+        assert "thread-a" not in reg._slots
+    finally:
+        reg.close()
+
+
+def test_evict_returns_fresh_slot_on_next_get() -> None:
+    """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        first = reg.get("thread-a")
+        first_runtime = reg._slots["thread-a"].runtime
+        reg.evict("thread-a")
+        second = reg.get("thread-a")
+        assert second is not first
+        assert reg._slots["thread-a"].runtime is not first_runtime
+    finally:
+        reg.close()
+
+
+def test_evict_unknown_thread_id_is_noop() -> None:
+    """Evicting a thread_id that was never registered does not raise."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        reg.evict("never-existed")
+        assert reg._slots == {}
+    finally:
+        reg.close()
+
+
+async def test_aevict_closes_and_removes_slot() -> None:
+    """``aevict`` closes the runtime via the worker loop and drops the slot."""
+    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    try:
+        reg.get("thread-a")
+        rt = reg._slots["thread-a"].runtime
+        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+            await reg.aevict("thread-a")
+        assert close_spy.called
+        assert "thread-a" not in reg._slots
+    finally:
+        reg.close()
+
+
+def test_after_agent_evicts_current_thread_slot() -> None:
+    """``after_agent`` evicts the slot for the resolved thread_id."""
+    mw = REPLMiddleware()
+    try:
+        # Force a slot to exist for the middleware's fallback thread id.
+        mw._registry.get(mw._fallback_thread_id)
+        assert mw._fallback_thread_id in mw._registry._slots
+        mw.after_agent(state={}, runtime=MagicMock())
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+async def test_aafter_agent_evicts_current_thread_slot() -> None:
+    """``aafter_agent`` evicts the slot for the resolved thread_id."""
+    mw = REPLMiddleware()
+    try:
+        mw._registry.get(mw._fallback_thread_id)
+        assert mw._fallback_thread_id in mw._registry._slots
+        await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
 
 
 # ---------------------------------------------------------------------------

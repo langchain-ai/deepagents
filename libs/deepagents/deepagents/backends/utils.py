@@ -7,7 +7,6 @@ enable composition without fragile string parsing.
 
 import os
 import re
-import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -15,6 +14,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -87,10 +87,15 @@ def _normalize_content(file_data: FileData) -> str:
     """
     content = file_data["content"]
     if isinstance(content, list):
-        warnings.warn(
-            "FileData with list[str] content is deprecated. Content should be stored as a plain str.",
-            DeprecationWarning,
-            stacklevel=2,
+        warn_deprecated(
+            since="0.5.0",
+            removal="0.7.0",
+            message=(
+                "`FileData` with `list[str]` content is deprecated and will "
+                "be removed in deepagents==0.7.0. Content should be stored "
+                "as a plain `str`."
+            ),
+            package="deepagents",
         )
         return "\n".join(content)
     return content

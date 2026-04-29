@@ -25,7 +25,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
-from deepagents_repl import REPLMiddleware
+from langchain_quickjs import REPLMiddleware
 
 SKILLS_DIR = str(Path(__file__).parent / "skills")
 DEFAULT_MODEL = "claude-sonnet-4-6"

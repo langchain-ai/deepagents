@@ -7,7 +7,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Model groups
 
-### `set0` (35 models)
+### `set0` (36 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-5-20250929`
@@ -15,6 +15,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-1`
 - `anthropic:claude-opus-4-5-20251101`
 - `anthropic:claude-opus-4-6`
+- `anthropic:claude-opus-4-7`
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:moonshotai/Kimi-K2.5`
@@ -45,11 +46,12 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
-### `set1` (14 models)
+### `set1` (15 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-6`
+- `anthropic:claude-opus-4-7`
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `fireworks:fireworks/qwen3-vl-235b-a22b-thinking`
@@ -82,9 +84,10 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-### `frontier` (4 models)
+### `frontier` (5 models)
 
 - `anthropic:claude-opus-4-6`
+- `anthropic:claude-opus-4-7`
 - `google_genai:gemini-3.1-pro-preview`
 - `openai:gpt-5.4`
 - `openai:gpt-5.5`
@@ -108,14 +111,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 
 ## Provider groups
 
-### `anthropic` (6 models)
+### `anthropic` (8 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
+- `anthropic:claude-haiku-4-5`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
 - `anthropic:claude-opus-4-5-20251101`
 - `anthropic:claude-opus-4-6`
+- `anthropic:claude-opus-4-7`
 
 ### `baseten` (6 models)
 
@@ -196,14 +201,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (59 models)
+## `all` (61 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
+- `anthropic:claude-haiku-4-5`
 - `anthropic:claude-sonnet-4-5-20250929`
 - `anthropic:claude-sonnet-4-6`
 - `anthropic:claude-opus-4-1`
 - `anthropic:claude-opus-4-5-20251101`
 - `anthropic:claude-opus-4-6`
+- `anthropic:claude-opus-4-7`
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
 - `baseten:moonshotai/Kimi-K2.5`

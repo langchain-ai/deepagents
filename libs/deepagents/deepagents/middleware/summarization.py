@@ -54,7 +54,7 @@ import logging
 import uuid
 import warnings
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -74,6 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._utils import append_to_system_message
 
@@ -211,6 +212,22 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
     state_schema = SummarizationState
+    serialized_name: ClassVar[str] = "SummarizationMiddleware"
+    """Preferred config-file reference for class-form exclusion export."""
+
+    @property
+    def name(self) -> str:
+        """Report the public `SummarizationMiddleware` alias for string-form exclusion.
+
+        The impl class is private (`_DeepAgentsSummarizationMiddleware`) but
+        ships under the public `SummarizationMiddleware` name, so
+        `excluded_middleware={"SummarizationMiddleware"}` targets this class.
+        Subclasses fall back to `type(self).__name__` so user-authored
+        extensions don't silently inherit the alias.
+        """
+        if type(self) is _DeepAgentsSummarizationMiddleware:
+            return "SummarizationMiddleware"
+        return type(self).__name__
 
     def __init__(
         self,
@@ -269,12 +286,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """
         _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
         if _deprecated_history_prefix is not None:
-            warnings.warn(
-                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
-                " and will be removed in 0.7."
-                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=(
+                    "The argument `history_path_prefix` is deprecated and "
+                    "will be removed in deepagents==0.7.0. Use "
+                    "`CompositeBackend(artifacts_root='/my/root', ...)` "
+                    "instead."
+                ),
+                package="deepagents",
             )
 
         # Initialize langchain helper for core summarization logic

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.43](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.42...deepagents-cli==0.0.43) (2026-04-29)
+
+
+### Features
+
+* **cli:** bundled chat frontend for deepagent deploy ([#2940](https://github.com/langchain-ai/deepagents/issues/2940)) ([9bde0c7](https://github.com/langchain-ai/deepagents/commit/9bde0c7835ded20e80466d8361f40784141d68d8))
+
 ## [0.0.42](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.41...deepagents-cli==0.0.42) (2026-04-29)
 
 ### Features

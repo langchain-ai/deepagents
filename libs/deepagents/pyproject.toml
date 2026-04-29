@@ -20,13 +20,25 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain-core>=1.2.27,<2.0.0",
+    "langchain-core==1.3.2",
     "langsmith>=0.3.0",
-    "langchain>=1.2.15,<2.0.0",
+    "langchain",
+    "langgraph",
     "langchain-anthropic>=1.4.0,<2.0.0",
     "langchain-google-genai>=4.2.1,<5.0.0",
     "wcmatch",
 ]
+
+[tool.uv]
+prerelease = "allow"
+environments = ["python_version >= '3.11' and python_version < '3.14'"]
+override-dependencies = [
+    "langchain-core @ git+https://github.com/langchain-ai/langchain.git@nh/langgraph-api-test-branch#subdirectory=libs/core",
+]
+
+[tool.uv.sources]
+langchain = { git = "https://github.com/langchain-ai/langchain.git", branch = "nh/langgraph-api-test-branch", subdirectory = "libs/langchain_v1" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph.git", branch = "nh/langgraph-api-test-branch", subdirectory = "libs/langgraph" }
 
 
 [project.urls]

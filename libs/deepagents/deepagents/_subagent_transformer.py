@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from langgraph.stream._event_log import EventLog
+from langgraph.stream.stream_channel import StreamChannel as EventLog
 from langgraph.stream.run_stream import (
     AsyncSubgraphRunStream,
     SubgraphRunStream,

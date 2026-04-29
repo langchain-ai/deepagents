@@ -22,7 +22,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphInterrupt
-from langgraph.stream._event_log import EventLog
+from langgraph.stream.stream_channel import StreamChannel as EventLog
 from langgraph.stream._mux import StreamMux
 from langgraph.stream.transformers import (
     LifecycleTransformer,

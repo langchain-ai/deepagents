@@ -2,16 +2,18 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version < '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
-    "python_full_version < '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.13.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*'",
+    "python_full_version < '3.13'",
 ]
+supported-markers = [
+    "python_full_version < '3.14'",
+]
+
+[options]
+prerelease-mode = "allow"
+
+[manifest]
+overrides = [{ name = "langchain-core", git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Fcore&rev=nh%2Flanggraph-api-test-branch" }]
 
 [[package]]
 name = "annotated-types"
@@ -27,14 +29,14 @@ name = "anthropic"
 version = "0.88.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "distro" },
-    { name = "docstring-parser" },
-    { name = "httpx" },
-    { name = "jiter" },
-    { name = "pydantic" },
-    { name = "sniffio" },
-    { name = "typing-extensions" },
+    { name = "anyio", marker = "python_full_version < '3.14'" },
+    { name = "distro", marker = "python_full_version < '3.14'" },
+    { name = "docstring-parser", marker = "python_full_version < '3.14'" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "jiter", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "sniffio", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/86/68/565f13059c0a6a6fd5f96f306f2a0fb478a0e1174ec18a4df16b5fac9379/anthropic-0.88.0.tar.gz", hash = "sha256:f4c7f6863d08c869913516f08d658fe53caaf8bcc4fbea3218df343d2a876c58", size = 596654, upload-time = "2026-04-01T19:59:05.287Z" }
 wheels = [
@@ -46,7 +48,7 @@ name = "anyio"
 version = "4.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "idna" },
+    { name = "idna", marker = "python_full_version < '3.14'" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/96/f0/5eb65b2bb0d09ac6776f2eb54adee6abe8228ea05b20a5ad0e4945de8aac/anyio-4.12.1.tar.gz", hash = "sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703", size = 228685, upload-time = "2026-01-06T11:45:21.246Z" }
@@ -77,9 +79,9 @@ name = "build"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "os_name == 'nt'" },
-    { name = "packaging" },
-    { name = "pyproject-hooks" },
+    { name = "colorama", marker = "python_full_version < '3.14' and os_name == 'nt'" },
+    { name = "packaging", marker = "python_full_version < '3.14'" },
+    { name = "pyproject-hooks", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/18/94eaffda7b329535d91f00fe605ab1f1e5cd68b2074d03f255c7d250687d/build-1.4.0.tar.gz", hash = "sha256:f1b91b925aa322be454f8330c6fb48b465da993d1e7e7e6fa35027ec49f3c936", size = 50054, upload-time = "2026-01-08T16:41:47.696Z" }
 wheels = [
@@ -100,7 +102,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
+    { name = "pycparser", marker = "python_full_version < '3.14' and implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -356,7 +358,7 @@ name = "cryptography"
 version = "46.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "cffi", marker = "python_full_version < '3.14' and platform_python_implementation != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/47/93/ac8f3d5ff04d54bc814e961a43ae5b0b146154c89c61b47bb07557679b18/cryptography-46.0.7.tar.gz", hash = "sha256:e4cfd68c5f3e0bfdad0d38e023239b96a2fe84146481852dffbcca442c245aa5", size = 750652, upload-time = "2026-04-08T01:57:54.692Z" }
 wheels = [
@@ -415,39 +417,41 @@ name = "deepagents"
 version = "0.5.3"
 source = { editable = "." }
 dependencies = [
-    { name = "langchain" },
-    { name = "langchain-anthropic" },
-    { name = "langchain-core" },
-    { name = "langchain-google-genai" },
-    { name = "langsmith" },
-    { name = "wcmatch" },
+    { name = "langchain", marker = "python_full_version < '3.14'" },
+    { name = "langchain-anthropic", marker = "python_full_version < '3.14'" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "langchain-google-genai", marker = "python_full_version < '3.14'" },
+    { name = "langgraph", marker = "python_full_version < '3.14'" },
+    { name = "langsmith", marker = "python_full_version < '3.14'" },
+    { name = "wcmatch", marker = "python_full_version < '3.14'" },
 ]
 
 [package.dev-dependencies]
 test = [
-    { name = "build" },
-    { name = "langchain-openai" },
-    { name = "langchain-tests" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-codspeed" },
-    { name = "pytest-cov" },
-    { name = "pytest-socket" },
-    { name = "pytest-timeout" },
-    { name = "pytest-watcher" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "twine" },
-    { name = "ty" },
+    { name = "build", marker = "python_full_version < '3.14'" },
+    { name = "langchain-openai", marker = "python_full_version < '3.14'" },
+    { name = "langchain-tests", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
+    { name = "pytest-asyncio", marker = "python_full_version < '3.14'" },
+    { name = "pytest-benchmark", marker = "python_full_version < '3.14'" },
+    { name = "pytest-codspeed", marker = "python_full_version < '3.14'" },
+    { name = "pytest-cov", marker = "python_full_version < '3.14'" },
+    { name = "pytest-socket", marker = "python_full_version < '3.14'" },
+    { name = "pytest-timeout", marker = "python_full_version < '3.14'" },
+    { name = "pytest-watcher", marker = "python_full_version < '3.14'" },
+    { name = "pytest-xdist", marker = "python_full_version < '3.14'" },
+    { name = "ruff", marker = "python_full_version < '3.14'" },
+    { name = "twine", marker = "python_full_version < '3.14'" },
+    { name = "ty", marker = "python_full_version < '3.14'" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.15,<2.0.0" },
+    { name = "langchain", git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=nh%2Flanggraph-api-test-branch" },
     { name = "langchain-anthropic", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.2.27,<2.0.0" },
+    { name = "langchain-core", specifier = "==1.3.2" },
     { name = "langchain-google-genai", specifier = ">=4.2.1,<5.0.0" },
+    { name = "langgraph", git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Flanggraph&branch=nh%2Flanggraph-api-test-branch" },
     { name = "langsmith", specifier = ">=0.3.0" },
     { name = "wcmatch" },
 ]
@@ -521,8 +525,8 @@ name = "google-auth"
 version = "2.49.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "pyasn1-modules" },
+    { name = "cryptography", marker = "python_full_version < '3.14'" },
+    { name = "pyasn1-modules", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ea/80/6a696a07d3d3b0a92488933532f03dbefa4a24ab80fb231395b9a2a1be77/google_auth-2.49.1.tar.gz", hash = "sha256:16d40da1c3c5a0533f57d268fe72e0ebb0ae1cc3b567024122651c045d879b64", size = 333825, upload-time = "2026-03-12T19:30:58.135Z" }
 wheels = [
@@ -531,7 +535,7 @@ wheels = [
 
 [package.optional-dependencies]
 requests = [
-    { name = "requests" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
@@ -539,16 +543,16 @@ name = "google-genai"
 version = "1.67.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "distro" },
-    { name = "google-auth", extra = ["requests"] },
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "requests" },
-    { name = "sniffio" },
-    { name = "tenacity" },
-    { name = "typing-extensions" },
-    { name = "websockets" },
+    { name = "anyio", marker = "python_full_version < '3.14'" },
+    { name = "distro", marker = "python_full_version < '3.14'" },
+    { name = "google-auth", extra = ["requests"], marker = "python_full_version < '3.14'" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
+    { name = "sniffio", marker = "python_full_version < '3.14'" },
+    { name = "tenacity", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
+    { name = "websockets", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a2/07/59a498f81f2c7b0649eacda2ea470b7fd8bd7149f20caba22962081bdd51/google_genai-1.67.0.tar.gz", hash = "sha256:897195a6a9742deb6de240b99227189ada8b2d901d61bdfba836c3092021eab6", size = 506972, upload-time = "2026-03-12T20:39:16.241Z" }
 wheels = [
@@ -569,8 +573,8 @@ name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
-    { name = "h11" },
+    { name = "certifi", marker = "python_full_version < '3.14'" },
+    { name = "h11", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8", size = 85484, upload-time = "2025-04-24T22:06:22.219Z" }
 wheels = [
@@ -582,10 +586,10 @@ name = "httpx"
 version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "certifi" },
-    { name = "httpcore" },
-    { name = "idna" },
+    { name = "anyio", marker = "python_full_version < '3.14'" },
+    { name = "certifi", marker = "python_full_version < '3.14'" },
+    { name = "httpcore", marker = "python_full_version < '3.14'" },
+    { name = "idna", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
 wheels = [
@@ -597,7 +601,7 @@ name = "id"
 version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "urllib3" },
+    { name = "urllib3", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/04/c2156091427636080787aac190019dc64096e56a23b7364d3c1764ee3a06/id-1.6.1.tar.gz", hash = "sha256:d0732d624fb46fd4e7bc4e5152f00214450953b9e772c182c1c22964def1a069", size = 18088, upload-time = "2026-02-04T16:19:41.26Z" }
 wheels = [
@@ -639,7 +643,7 @@ name = "jaraco-classes"
 version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "more-itertools" },
+    { name = "more-itertools", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/c0/ed4a27bc5571b99e3cff68f8a9fa5b56ff7df1c2251cc715a652ddd26402/jaraco.classes-3.4.0.tar.gz", hash = "sha256:47a024b51d0239c0dd8c8540c6c7f484be3b8fcf0b2d85c13825780d3b3f3acd", size = 11780, upload-time = "2024-03-31T07:27:36.643Z" }
 wheels = [
@@ -663,7 +667,7 @@ name = "jaraco-functools"
 version = "4.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "more-itertools" },
+    { name = "more-itertools", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/27/056e0638a86749374d6f57d0b0db39f29509cce9313cf91bdc0ac4d91084/jaraco_functools-4.4.0.tar.gz", hash = "sha256:da21933b0417b89515562656547a77b4931f98176eb173644c0d35032a33d6bb", size = 19943, upload-time = "2025-12-21T09:29:43.6Z" }
 wheels = [
@@ -769,7 +773,7 @@ name = "jsonpatch"
 version = "1.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jsonpointer" },
+    { name = "jsonpointer", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699, upload-time = "2023-06-26T12:07:29.144Z" }
 wheels = [
@@ -791,12 +795,12 @@ version = "25.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "importlib-metadata", marker = "python_full_version < '3.12'" },
-    { name = "jaraco-classes" },
-    { name = "jaraco-context" },
-    { name = "jaraco-functools" },
-    { name = "jeepney", marker = "sys_platform == 'linux'" },
-    { name = "pywin32-ctypes", marker = "sys_platform == 'win32'" },
-    { name = "secretstorage", marker = "sys_platform == 'linux'" },
+    { name = "jaraco-classes", marker = "python_full_version < '3.14'" },
+    { name = "jaraco-context", marker = "python_full_version < '3.14'" },
+    { name = "jaraco-functools", marker = "python_full_version < '3.14'" },
+    { name = "jeepney", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
+    { name = "pywin32-ctypes", marker = "python_full_version < '3.14' and sys_platform == 'win32'" },
+    { name = "secretstorage", marker = "python_full_version < '3.14' and sys_platform == 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/4b/674af6ef2f97d56f0ab5153bf0bfa28ccb6c3ed4d1babf4305449668807b/keyring-25.7.0.tar.gz", hash = "sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b", size = 63516, upload-time = "2025-11-16T16:26:09.482Z" }
 wheels = [
@@ -806,15 +810,11 @@ wheels = [
 [[package]]
 name = "langchain"
 version = "1.2.15"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Flangchain_v1&branch=nh%2Flanggraph-api-test-branch#21d113aa86c5b8b3a0dc7259256fe8ab7cc1eb3d" }
 dependencies = [
-    { name = "langchain-core" },
-    { name = "langgraph" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/98/3f/888a7099d2bd2917f8b0c3ffc7e347f1e664cf64267820b0b923c4f339fc/langchain-1.2.15.tar.gz", hash = "sha256:1717b6719daefae90b2728314a5e2a117ff916291e2862595b6c3d6fba33d652", size = 574732, upload-time = "2026-04-03T14:26:03.994Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/e8/a3b8cb0005553f6a876865073c81ef93bd7c5b18381bcb9ba4013af96ebc/langchain-1.2.15-py3-none-any.whl", hash = "sha256:e349db349cb3e9550c4044077cf90a1717691756cc236438404b23500e615874", size = 112714, upload-time = "2026-04-03T14:26:02.557Z" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "langgraph", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
@@ -822,9 +822,9 @@ name = "langchain-anthropic"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anthropic" },
-    { name = "langchain-core" },
-    { name = "pydantic" },
+    { name = "anthropic", marker = "python_full_version < '3.14'" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/98/c7/259d4d805c6ac90c8695714fc15498a4557bb515eb24f692fd611966e383/langchain_anthropic-1.4.0.tar.gz", hash = "sha256:bbf64e99f9149a34ba67813e9582b2160a0968de9e9f54f7ba8d1658f253c2e5", size = 674360, upload-time = "2026-03-17T18:42:20.751Z" }
 wheels = [
@@ -833,21 +833,18 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.3.0"
-source = { registry = "https://pypi.org/simple" }
+version = "1.3.2"
+source = { git = "https://github.com/langchain-ai/langchain.git?subdirectory=libs%2Fcore&rev=nh%2Flanggraph-api-test-branch#21d113aa86c5b8b3a0dc7259256fe8ab7cc1eb3d" }
 dependencies = [
-    { name = "jsonpatch" },
-    { name = "langsmith" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "tenacity" },
-    { name = "typing-extensions" },
-    { name = "uuid-utils" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/92/fe/20190232d9b513242899dbb0c2bb77e31b4d61e343743adbe90ebc2603d2/langchain_core-1.3.0.tar.gz", hash = "sha256:14a39f528bf459aa3aa40d0a7f7f1bae7520d435ef991ae14a4ceb74d8c49046", size = 860755, upload-time = "2026-04-17T14:51:38.298Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/e2/dbfa347aa072a6dc4cd38d6f9ebfc730b4c14c258c47f480f4c5c546f177/langchain_core-1.3.0-py3-none-any.whl", hash = "sha256:baf16ee028475df177b9ab8869a751c79406d64a6f12125b93802991b566cced", size = 515140, upload-time = "2026-04-17T14:51:36.274Z" },
+    { name = "jsonpatch", marker = "python_full_version < '3.14'" },
+    { name = "langchain-protocol", marker = "python_full_version < '3.14'" },
+    { name = "langsmith", marker = "python_full_version < '3.14'" },
+    { name = "packaging", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "pyyaml", marker = "python_full_version < '3.14'" },
+    { name = "tenacity", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
+    { name = "uuid-utils", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
@@ -855,10 +852,10 @@ name = "langchain-google-genai"
 version = "4.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "filetype" },
-    { name = "google-genai" },
-    { name = "langchain-core" },
-    { name = "pydantic" },
+    { name = "filetype", marker = "python_full_version < '3.14'" },
+    { name = "google-genai", marker = "python_full_version < '3.14'" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/14/63/e7d148f903cebfef50109da71378f411166f068d66f79b9e16a62dbacf41/langchain_google_genai-4.2.1.tar.gz", hash = "sha256:7f44487a0337535897e3bba9a1d6605d722629e034f757ffa8755af0aa85daa8", size = 278288, upload-time = "2026-02-19T19:29:19.416Z" }
 wheels = [
@@ -870,9 +867,9 @@ name = "langchain-openai"
 version = "1.1.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "langchain-core" },
-    { name = "openai" },
-    { name = "tiktoken" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "openai", marker = "python_full_version < '3.14'" },
+    { name = "tiktoken", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8e/f5/b1a56f703fb90952b07ff9fb5507123a39df1267d62a7f2bb821c5dbb628/langchain_openai-1.1.14.tar.gz", hash = "sha256:71b4262932fabe506ce79c175dbc956cc48f24d81e20b27662df493147750643", size = 1115195, upload-time = "2026-04-16T14:55:24.696Z" }
 wheels = [
@@ -880,21 +877,33 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain-protocol"
+version = "0.0.14"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/05/bf/efb5e2ed832e4d6d45590e25a9e5191986b291b543bc6a807b48bee070b0/langchain_protocol-0.0.14.tar.gz", hash = "sha256:bc1e8553122e6ede310280462d5813023a172ff2785ccbbdec54d43f3a15e5f2", size = 5862, upload-time = "2026-04-29T16:40:18.657Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c2/e9/06c47ecb2aff08f83dfa30058da3bf86be64862c19569043ed5331bbeecd/langchain_protocol-0.0.14-py3-none-any.whl", hash = "sha256:ffc35089779bd8ca217015180cef5e660fc3b074efdaa0f2e95df73583f1a047", size = 6984, upload-time = "2026-04-29T16:40:17.841Z" },
+]
+
+[[package]]
 name = "langchain-tests"
 version = "1.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpx" },
-    { name = "langchain-core" },
-    { name = "numpy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-codspeed" },
-    { name = "pytest-recording" },
-    { name = "pytest-socket" },
-    { name = "syrupy" },
-    { name = "vcrpy" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "numpy", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
+    { name = "pytest-asyncio", marker = "python_full_version < '3.14'" },
+    { name = "pytest-benchmark", marker = "python_full_version < '3.14'" },
+    { name = "pytest-codspeed", marker = "python_full_version < '3.14'" },
+    { name = "pytest-recording", marker = "python_full_version < '3.14'" },
+    { name = "pytest-socket", marker = "python_full_version < '3.14'" },
+    { name = "syrupy", marker = "python_full_version < '3.14'" },
+    { name = "vcrpy", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c9/af/9520da2413a99c6f2e7799e77d6a7bd1216dc9c4b3026b6987842fee5c54/langchain_tests-1.1.6.tar.gz", hash = "sha256:e352106cf8176da9bd040effa090601bddf375d5b616b98d1c74b2c99b2cb47b", size = 161403, upload-time = "2026-04-08T15:18:24.752Z" }
 wheels = [
@@ -903,58 +912,42 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.1.8"
-source = { registry = "https://pypi.org/simple" }
+version = "1.1.10"
+source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Flanggraph&branch=nh%2Flanggraph-api-test-branch#c19cffefc968a26fe0a69d51e9c8751b8db88ca2" }
 dependencies = [
-    { name = "langchain-core" },
-    { name = "langgraph-checkpoint" },
-    { name = "langgraph-prebuilt" },
-    { name = "langgraph-sdk" },
-    { name = "pydantic" },
-    { name = "xxhash" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/02/196eff4f673fd461f8780930c3bfa7f27d6533a48e4f1104d544e843b093/langgraph-1.1.8.tar.gz", hash = "sha256:a97b8248129f2e007b81eef8277009ad1e1280b75fa2175889ab5aff5dcc4578", size = 560389, upload-time = "2026-04-17T19:45:50.301Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/38/c72e795f6f8fd05a8e7c3be32c04ea8534294decc6785f3b04e0ce932e8a/langgraph-1.1.8-py3-none-any.whl", hash = "sha256:3278c7e335da25eac3327bb474c502d4cab94ae6dcc685fbf93be2bbf7664cd5", size = 173678, upload-time = "2026-04-17T19:45:48.991Z" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "langgraph-checkpoint", marker = "python_full_version < '3.14'" },
+    { name = "langgraph-prebuilt", marker = "python_full_version < '3.14'" },
+    { name = "langgraph-sdk", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "xxhash", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
 name = "langgraph-checkpoint"
-version = "4.0.1"
-source = { registry = "https://pypi.org/simple" }
+version = "4.0.3"
+source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fcheckpoint&branch=nh%2Flanggraph-api-test-branch#c19cffefc968a26fe0a69d51e9c8751b8db88ca2" }
 dependencies = [
-    { name = "langchain-core" },
-    { name = "ormsgpack" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/44/a8df45d1e8b4637e29789fa8bae1db022c953cc7ac80093cfc52e923547e/langgraph_checkpoint-4.0.1.tar.gz", hash = "sha256:b433123735df11ade28829e40ce25b9be614930cd50245ff2af60629234befd9", size = 158135, upload-time = "2026-02-27T21:06:16.092Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/4c/09a4a0c42f5d2fc38d6c4d67884788eff7fd2cfdf367fdf7033de908b4c0/langgraph_checkpoint-4.0.1-py3-none-any.whl", hash = "sha256:e3adcd7a0e0166f3b48b8cf508ce0ea366e7420b5a73aa81289888727769b034", size = 50453, upload-time = "2026-02-27T21:06:14.293Z" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "ormsgpack", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
 name = "langgraph-prebuilt"
-version = "1.0.9"
-source = { registry = "https://pypi.org/simple" }
+version = "1.0.12"
+source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fprebuilt&branch=nh%2Flanggraph-api-test-branch#c19cffefc968a26fe0a69d51e9c8751b8db88ca2" }
 dependencies = [
-    { name = "langchain-core" },
-    { name = "langgraph-checkpoint" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/99/4c/06dac899f4945bedb0c3a1583c19484c2cc894114ea30d9a538dd270086e/langgraph_prebuilt-1.0.9.tar.gz", hash = "sha256:93de7512e9caade4b77ead92428f6215c521fdb71b8ffda8cd55f0ad814e64de", size = 165850, upload-time = "2026-04-03T14:06:37.721Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1d/a2/8368ac187b75e7f9d938ca075d34f116683f5cfc48d924029ee79aea147b/langgraph_prebuilt-1.0.9-py3-none-any.whl", hash = "sha256:776c8e3154a5aef5ad0e5bf3f263f2dcaab3983786cc20014b7f955d99d2d1b2", size = 35958, upload-time = "2026-04-03T14:06:36.58Z" },
+    { name = "langchain-core", marker = "python_full_version < '3.14'" },
+    { name = "langgraph-checkpoint", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.3.11"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.13"
+source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fsdk-py&branch=nh%2Flanggraph-api-test-branch#c19cffefc968a26fe0a69d51e9c8751b8db88ca2" }
 dependencies = [
-    { name = "httpx" },
-    { name = "orjson" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/35/cd/a019f1b1e97c519f2425593f9bccd3ac463a18fb5d2111cff59ce1ef62fe/langgraph_sdk-0.3.11.tar.gz", hash = "sha256:3640134835d89d2c7c8bb7de73bd10673d4b282db3ff0e2fdaf1cee9e50cb1eb", size = 190387, upload-time = "2026-03-11T00:46:45.25Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/c8/b8d15d4b9a320a3f57a851030a371066b91dbd1420f097d3d0338da9adc9/langgraph_sdk-0.3.11-py3-none-any.whl", hash = "sha256:18905fd6248ade98b0995d859a98672d57c811fbfffc0d63d1c107a512351b26", size = 94887, upload-time = "2026-03-11T00:46:43.855Z" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "orjson", marker = "python_full_version < '3.14'" },
 ]
 
 [[package]]
@@ -962,15 +955,15 @@ name = "langsmith"
 version = "0.7.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "httpx" },
-    { name = "orjson", marker = "platform_python_implementation != 'PyPy'" },
-    { name = "packaging" },
-    { name = "pydantic" },
-    { name = "requests" },
-    { name = "requests-toolbelt" },
-    { name = "uuid-utils" },
-    { name = "xxhash" },
-    { name = "zstandard" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "orjson", marker = "python_full_version < '3.14' and platform_python_implementation != 'PyPy'" },
+    { name = "packaging", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
+    { name = "requests-toolbelt", marker = "python_full_version < '3.14'" },
+    { name = "uuid-utils", marker = "python_full_version < '3.14'" },
+    { name = "xxhash", marker = "python_full_version < '3.14'" },
+    { name = "zstandard", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e6/11/696019490992db5c87774dc20515529ef42a01e1d770fb754ed6d9b12fb0/langsmith-0.7.31.tar.gz", hash = "sha256:331ee4f7c26bb5be4022b9859b7d7b122cbf8c9d01d9f530114c1914b0349ffb", size = 1178480, upload-time = "2026-04-14T17:55:41.242Z" }
 wheels = [
@@ -982,7 +975,7 @@ name = "markdown-it-py"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mdurl" },
+    { name = "mdurl", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5b/f5/4ec618ed16cc4f8fb3b701563655a69816155e79e24a17b651541804721d/markdown_it_py-4.0.0.tar.gz", hash = "sha256:cb0a2b4aa34f932c007117b194e945bd74e0ec24133ceb5bac59009cda1cb9f3", size = 73070, upload-time = "2025-08-11T12:57:52.854Z" }
 wheels = [
@@ -1125,14 +1118,14 @@ name = "openai"
 version = "2.28.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio" },
-    { name = "distro" },
-    { name = "httpx" },
-    { name = "jiter" },
-    { name = "pydantic" },
-    { name = "sniffio" },
-    { name = "tqdm" },
-    { name = "typing-extensions" },
+    { name = "anyio", marker = "python_full_version < '3.14'" },
+    { name = "distro", marker = "python_full_version < '3.14'" },
+    { name = "httpx", marker = "python_full_version < '3.14'" },
+    { name = "jiter", marker = "python_full_version < '3.14'" },
+    { name = "pydantic", marker = "python_full_version < '3.14'" },
+    { name = "sniffio", marker = "python_full_version < '3.14'" },
+    { name = "tqdm", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/56/87/eb0abb4ef88ddb95b3c13149384c4c288f584f3be17d6a4f63f8c3e3c226/openai-2.28.0.tar.gz", hash = "sha256:bb7fdff384d2a787fa82e8822d1dd3c02e8cf901d60f1df523b7da03cbb6d48d", size = 670334, upload-time = "2026-03-13T19:56:27.306Z" }
 wheels = [
@@ -1296,7 +1289,7 @@ name = "pyasn1-modules"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyasn1" },
+    { name = "pyasn1", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e9/e6/78ebbb10a8c8e4b61a59249394a4a594c1a7af95593dc933a349c8d00964/pyasn1_modules-0.4.2.tar.gz", hash = "sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6", size = 307892, upload-time = "2025-03-28T02:41:22.17Z" }
 wheels = [
@@ -1317,10 +1310,10 @@ name = "pydantic"
 version = "2.12.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "annotated-types" },
-    { name = "pydantic-core" },
-    { name = "typing-extensions" },
-    { name = "typing-inspection" },
+    { name = "annotated-types", marker = "python_full_version < '3.14'" },
+    { name = "pydantic-core", marker = "python_full_version < '3.14'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
+    { name = "typing-inspection", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/69/44/36f1a6e523abc58ae5f928898e4aca2e0ea509b5aa6f6f392a5d882be928/pydantic-2.12.5.tar.gz", hash = "sha256:4d351024c75c0f085a9febbb665ce8c0c6ec5d30e903bdb6394b7ede26aebb49", size = 821591, upload-time = "2025-11-26T15:11:46.471Z" }
 wheels = [
@@ -1332,7 +1325,7 @@ name = "pydantic-core"
 version = "2.41.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/71/70/23b021c950c2addd24ec408e9ab05d59b035b39d97cdc1130e1bce647bb6/pydantic_core-2.41.5.tar.gz", hash = "sha256:08daa51ea16ad373ffd5e7606252cc32f07bc72b28284b6bc9c6df804816476e", size = 460952, upload-time = "2025-11-04T13:43:49.098Z" }
 wheels = [
@@ -1447,11 +1440,11 @@ name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "iniconfig" },
-    { name = "packaging" },
-    { name = "pluggy" },
-    { name = "pygments" },
+    { name = "colorama", marker = "python_full_version < '3.14' and sys_platform == 'win32'" },
+    { name = "iniconfig", marker = "python_full_version < '3.14'" },
+    { name = "packaging", marker = "python_full_version < '3.14'" },
+    { name = "pluggy", marker = "python_full_version < '3.14'" },
+    { name = "pygments", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
 wheels = [
@@ -1463,7 +1456,7 @@ name = "pytest-asyncio"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
@@ -1476,8 +1469,8 @@ name = "pytest-benchmark"
 version = "5.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "py-cpuinfo" },
-    { name = "pytest" },
+    { name = "py-cpuinfo", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/24/34/9f732b76456d64faffbef6232f1f9dbec7a7c4999ff46282fa418bd1af66/pytest_benchmark-5.2.3.tar.gz", hash = "sha256:deb7317998a23c650fd4ff76e1230066a76cb45dcece0aca5607143c619e7779", size = 341340, upload-time = "2025-11-09T18:48:43.215Z" }
 wheels = [
@@ -1489,9 +1482,9 @@ name = "pytest-codspeed"
 version = "4.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi" },
-    { name = "pytest" },
-    { name = "rich" },
+    { name = "cffi", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
+    { name = "rich", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/98/ab/eca41967d11c95392829a8b4bfa9220a51cffc4a33ec4653358000356918/pytest_codspeed-4.3.0.tar.gz", hash = "sha256:5230d9d65f39063a313ed1820df775166227ec5c20a1122968f85653d5efee48", size = 124745, upload-time = "2026-02-09T15:23:34.745Z" }
 wheels = [
@@ -1513,9 +1506,9 @@ name = "pytest-cov"
 version = "7.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "coverage", extra = ["toml"] },
-    { name = "pluggy" },
-    { name = "pytest" },
+    { name = "coverage", extra = ["toml"], marker = "python_full_version < '3.14'" },
+    { name = "pluggy", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5e/f7/c933acc76f5208b3b00089573cf6a2bc26dc80a8aece8f52bb7d6b1855ca/pytest_cov-7.0.0.tar.gz", hash = "sha256:33c97eda2e049a0c5298e91f519302a1334c26ac65c1a483d6206fd458361af1", size = 54328, upload-time = "2025-09-09T10:57:02.113Z" }
 wheels = [
@@ -1527,8 +1520,8 @@ name = "pytest-recording"
 version = "0.13.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest" },
-    { name = "vcrpy" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
+    { name = "vcrpy", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/32/9c/f4027c5f1693847b06d11caf4b4f6bb09f22c1581ada4663877ec166b8c6/pytest_recording-0.13.4.tar.gz", hash = "sha256:568d64b2a85992eec4ae0a419c855d5fd96782c5fb016784d86f18053792768c", size = 26576, upload-time = "2025-05-08T10:41:11.231Z" }
 wheels = [
@@ -1540,7 +1533,7 @@ name = "pytest-socket"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/05/ff/90c7e1e746baf3d62ce864c479fd53410b534818b9437413903596f81580/pytest_socket-0.7.0.tar.gz", hash = "sha256:71ab048cbbcb085c15a4423b73b619a8b35d6a307f46f78ea46be51b1b7e11b3", size = 12389, upload-time = "2024-01-28T20:17:23.177Z" }
 wheels = [
@@ -1552,7 +1545,7 @@ name = "pytest-timeout"
 version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
 wheels = [
@@ -1564,7 +1557,7 @@ name = "pytest-watcher"
 version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "watchdog" },
+    { name = "watchdog", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e6/d2/80606077b7fa8784417687f494ff801d7ab817d9a17fc94305811d5919bb/pytest_watcher-0.6.3.tar.gz", hash = "sha256:842dc904264df0ad2d5264153a66bb452fccfa46598cd6e0a5ef1d19afed9b13", size = 601878, upload-time = "2026-01-10T23:28:18.805Z" }
 wheels = [
@@ -1576,8 +1569,8 @@ name = "pytest-xdist"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "execnet" },
-    { name = "pytest" },
+    { name = "execnet", marker = "python_full_version < '3.14'" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
 wheels = [
@@ -1653,9 +1646,9 @@ name = "readme-renderer"
 version = "44.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "docutils" },
-    { name = "nh3" },
-    { name = "pygments" },
+    { name = "docutils", marker = "python_full_version < '3.14'" },
+    { name = "nh3", marker = "python_full_version < '3.14'" },
+    { name = "pygments", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/5a/a9/104ec9234c8448c4379768221ea6df01260cd6c2ce13182d4eac531c8342/readme_renderer-44.0.tar.gz", hash = "sha256:8712034eabbfa6805cacf1402b4eeb2a73028f72d1166d6f5cb7f9c047c5d1e1", size = 32056, upload-time = "2024-07-08T15:00:57.805Z" }
 wheels = [
@@ -1771,10 +1764,10 @@ name = "requests"
 version = "2.33.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi" },
-    { name = "charset-normalizer" },
-    { name = "idna" },
-    { name = "urllib3" },
+    { name = "certifi", marker = "python_full_version < '3.14'" },
+    { name = "charset-normalizer", marker = "python_full_version < '3.14'" },
+    { name = "idna", marker = "python_full_version < '3.14'" },
+    { name = "urllib3", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/34/64/8860370b167a9721e8956ae116825caff829224fbca0ca6e7bf8ddef8430/requests-2.33.0.tar.gz", hash = "sha256:c7ebc5e8b0f21837386ad0e1c8fe8b829fa5f544d8df3b2253bff14ef29d7652", size = 134232, upload-time = "2026-03-25T15:10:41.586Z" }
 wheels = [
@@ -1786,7 +1779,7 @@ name = "requests-toolbelt"
 version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "requests" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/61/d7545dafb7ac2230c70d38d31cbfe4cc64f7144dc41f6e4e4b78ecd9f5bb/requests-toolbelt-1.0.0.tar.gz", hash = "sha256:7681a0a3d047012b5bdc0ee37d7f8f07ebe76ab08caeccfc3921ce23c88d5bc6", size = 206888, upload-time = "2023-05-01T04:11:33.229Z" }
 wheels = [
@@ -1807,8 +1800,8 @@ name = "rich"
 version = "14.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown-it-py" },
-    { name = "pygments" },
+    { name = "markdown-it-py", marker = "python_full_version < '3.14'" },
+    { name = "pygments", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b3/c6/f3b320c27991c46f43ee9d856302c70dc2d0fb2dba4842ff739d5f46b393/rich-14.3.3.tar.gz", hash = "sha256:b8daa0b9e4eef54dd8cf7c86c03713f53241884e814f4e2f5fb342fe520f639b", size = 230582, upload-time = "2026-02-19T17:23:12.474Z" }
 wheels = [
@@ -1845,8 +1838,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "cryptography", marker = "python_full_version < '3.14'" },
+    { name = "jeepney", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
@@ -1867,7 +1860,7 @@ name = "syrupy"
 version = "5.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest" },
+    { name = "pytest", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2e/b0/24bca682d6a6337854be37f242d116cceeda9942571d5804c44bc1bdd427/syrupy-5.1.0.tar.gz", hash = "sha256:df543c7aa50d3cf1246e83d58fe490afe5f7dab7b41e74ecc0d8d23ae19bd4b8", size = 50495, upload-time = "2026-01-25T14:53:06.2Z" }
 wheels = [
@@ -1888,8 +1881,8 @@ name = "tiktoken"
 version = "0.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "regex" },
-    { name = "requests" },
+    { name = "regex", marker = "python_full_version < '3.14'" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/ab/4d017d0f76ec3171d469d80fc03dfbb4e48a4bcaddaa831b31d526f05edc/tiktoken-0.12.0.tar.gz", hash = "sha256:b18ba7ee2b093863978fcb14f74b3707cdc8d4d4d3836853ce7ec60772139931", size = 37806, upload-time = "2025-10-06T20:22:45.419Z" }
 wheels = [
@@ -1996,7 +1989,7 @@ name = "tqdm"
 version = "4.67.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "python_full_version < '3.14' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
@@ -2008,15 +2001,15 @@ name = "twine"
 version = "6.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "id" },
-    { name = "keyring", marker = "platform_machine != 'ppc64le' and platform_machine != 's390x'" },
-    { name = "packaging" },
-    { name = "readme-renderer" },
-    { name = "requests" },
-    { name = "requests-toolbelt" },
-    { name = "rfc3986" },
-    { name = "rich" },
-    { name = "urllib3" },
+    { name = "id", marker = "python_full_version < '3.14'" },
+    { name = "keyring", marker = "python_full_version < '3.14' and platform_machine != 'ppc64le' and platform_machine != 's390x'" },
+    { name = "packaging", marker = "python_full_version < '3.14'" },
+    { name = "readme-renderer", marker = "python_full_version < '3.14'" },
+    { name = "requests", marker = "python_full_version < '3.14'" },
+    { name = "requests-toolbelt", marker = "python_full_version < '3.14'" },
+    { name = "rfc3986", marker = "python_full_version < '3.14'" },
+    { name = "rich", marker = "python_full_version < '3.14'" },
+    { name = "urllib3", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e0/a8/949edebe3a82774c1ec34f637f5dd82d1cf22c25e963b7d63771083bbee5/twine-6.2.0.tar.gz", hash = "sha256:e5ed0d2fd70c9959770dce51c8f39c8945c574e18173a7b81802dab51b4b75cf", size = 172262, upload-time = "2025-09-04T15:43:17.255Z" }
 wheels = [
@@ -2061,7 +2054,7 @@ name = "typing-inspection"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464", size = 75949, upload-time = "2025-10-01T02:14:41.687Z" }
 wheels = [
@@ -2111,8 +2104,8 @@ name = "vcrpy"
 version = "8.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyyaml" },
-    { name = "wrapt" },
+    { name = "pyyaml", marker = "python_full_version < '3.14'" },
+    { name = "wrapt", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b3/07/bcfd5ebd7cb308026ab78a353e091bd699593358be49197d39d004e5ad83/vcrpy-8.1.1.tar.gz", hash = "sha256:58e3053e33b423f3594031cb758c3f4d1df931307f1e67928e30cf352df7709f", size = 85770, upload-time = "2026-01-04T19:22:03.886Z" }
 wheels = [
@@ -2151,7 +2144,7 @@ name = "wcmatch"
 version = "10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "bracex" },
+    { name = "bracex", marker = "python_full_version < '3.14'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/79/3e/c0bdc27cf06f4e47680bd5803a07cb3dfd17de84cde92dd217dcb9e05253/wcmatch-10.1.tar.gz", hash = "sha256:f11f94208c8c8484a16f4f48638a85d771d9513f4ab3f37595978801cb9465af", size = 117421, upload-time = "2025-06-22T19:14:02.49Z" }
 wheels = [

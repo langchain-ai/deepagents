@@ -45,7 +45,6 @@ class FakeChatModel(GenericFakeChatModel):
     messages: Iterator[AIMessage | str] = Field(exclude=True)
 
     def bind_tools(self, tools: Sequence[Any], **_: Any) -> FakeChatModel:
-        del tools
         return self
 
 

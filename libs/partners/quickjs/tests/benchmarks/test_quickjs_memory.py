@@ -9,7 +9,6 @@ different thread counts and tool shapes.
 
 from __future__ import annotations
 
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -40,15 +39,12 @@ class TestQuickJSMemoryBenchmarks:
         code: str,
         use_ptc: bool,
     ) -> None:
-        start_barrier = threading.Barrier(thread_count)
-
         def _worker(index: int) -> None:
             middleware = REPLMiddleware(
                 capture_console=True,
                 ptc=[echo_payload] if use_ptc else None,
             )
             agent = make_agent(code=code, middleware=middleware, repeats=1)
-            start_barrier.wait()
             result = agent.invoke(
                 invoke_payload(),
                 config={"configurable": {"thread_id": f"memory-bench-{index}"}},

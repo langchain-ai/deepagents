@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
+_DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 _EvalToolResult = ToolMessage | list[Command | ToolMessage]
@@ -93,6 +94,18 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call wall-clock timeout in seconds. Applied to every
             ``eval`` on every context. Default 5.
+        max_ptc_calls: Maximum number of ``tools.*`` bridge calls allowed
+            during one ``eval`` execution. Exceeding this budget throws
+            from the host-function bridge before invoking the tool.
+            Uncaught overflows surface as ``PTCCallBudgetExceeded``.
+            ``None`` disables the budget (unsafe for untrusted prompts;
+            enables PTC-call DoS patterns). Default 256.
+
+            !!! warning
+                Setting ``max_ptc_calls=None`` disables the call budget and can allow
+                unbounded PTC host-call loops (DoS risk). Only disable in trusted
+                environments.
+
         tool_name: Name of the tool exposed to the model. Default ``eval``.
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
@@ -150,6 +163,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
         timeout: float = _DEFAULT_TIMEOUT,
+        max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
@@ -158,8 +172,12 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
+        if max_ptc_calls is not None and max_ptc_calls < 1:
+            msg = "`max_ptc_calls` must be >= 1 or None"
+            raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
+        self._max_ptc_calls = max_ptc_calls
         self._tool_name = tool_name
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
@@ -170,6 +188,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             timeout=timeout,
             capture_console=capture_console,
             max_stdout_chars=max_result_chars,
+            max_ptc_calls=max_ptc_calls,
         )
         self._base_system_prompt = render_repl_system_prompt(
             tool_name=tool_name,

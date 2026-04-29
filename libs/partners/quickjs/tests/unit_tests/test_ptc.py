@@ -462,6 +462,95 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
     assert outcome2.result == "function"
 
 
+async def test_ptc_host_call_budget_exceeded_surfaces_error(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=2,
+    )
+    limited.install_tools([_greet_tool()])
+    outcome = await limited.eval_async(
+        "await tools.greet({name: 'a'});\n"
+        "await tools.greet({name: 'b'});\n"
+        "await tools.greet({name: 'c'});\n"
+        "'done'"
+    )
+    assert outcome.error_type == "PTCCallBudgetExceeded"
+    assert "limit=2" in outcome.error_message
+    assert "attempted=3" in outcome.error_message
+    assert "function=tools.greet" in outcome.error_message
+
+
+async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=1,
+    )
+    limited.install_tools([_greet_tool()])
+    outcome = await limited.eval_async(
+        "try {\n"
+        "  await tools.greet({name: 'ok'});\n"
+        "  await tools.greet({name: 'overflow'});\n"
+        "  'not-caught';\n"
+        "} catch (e) {\n"
+        "  `${e.name}:${e.message}`;\n"
+        "}"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "HostError:Host function failed"
+
+
+async def test_ptc_host_call_budget_resets_each_eval(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=1,
+    )
+    limited.install_tools([_greet_tool()])
+    first = await limited.eval_async("await tools.greet({name: 'a'})")
+    second = await limited.eval_async("await tools.greet({name: 'b'})")
+    assert first.error_type is None, first.error_message
+    assert second.error_type is None, second.error_message
+
+
+async def test_ptc_host_call_budget_none_disables_limit(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    unlimited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=None,
+    )
+    unlimited.install_tools([_greet_tool()])
+    outcome = await unlimited.eval_async(
+        "await tools.greet({name: 'a'});\n"
+        "await tools.greet({name: 'b'});\n"
+        "await tools.greet({name: 'c'});\n"
+        "'done'"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "done"
+
+
 # ---------------------------------------------------------------------------
 # Middleware integration
 # ---------------------------------------------------------------------------

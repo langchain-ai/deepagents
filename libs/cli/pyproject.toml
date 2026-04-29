@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.41"
+version = "0.0.43"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.3",
+    "deepagents==0.5.4",
     "langchain>=1.2.15,<2.0.0",
     "langgraph>=1.1.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -37,7 +37,7 @@ dependencies = [
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.4.0,<2.0.0",
+    "langchain-anthropic>=1.4.2,<2.0.0",
     "langchain-google-genai>=4.2.1,<5.0.0",
     "langchain-openai>=1.1.12,<2.0.0",
 
@@ -82,7 +82,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.4.0,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.4.2,<2.0.0"]
 baseten = ["langchain-baseten>=0.1.9,<1.0.0"]
 bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
 cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
@@ -151,6 +151,12 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_cli"]
+include = [
+    "deepagents_cli/**/*.py",
+    "deepagents_cli/**/*.md",
+    "deepagents_cli/**/*.tcss",
+    "deepagents_cli/deploy/frontend_dist/**/*",
+]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"

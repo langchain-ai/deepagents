@@ -1,0 +1,294 @@
+# Pre-merge parse check for release-please.
+#
+# Why this exists:
+#   release-please runs every commit message through @conventional-commits/parser
+#   to build the changelog. The parser is grammar-strict and does NOT understand
+#   markdown code fences — function calls split across lines (e.g.
+#   `register_provider_profile(\n  "openai",\n  ...\n)`) are read as malformed
+#   conventional-commit scopes and cause the parser to throw. release-please
+#   catches the throw, logs a debug message, and silently drops the commit from
+#   the release PR. The drop is invisible until someone notices a missing
+#   changelog entry — by which point the commit is already merged.
+#
+#   This check runs the same parser the same way on the would-be squash-merge
+#   message at PR time, blocks merge if it would fail, and posts a sticky
+#   comment with a copy-paste-ready BEGIN_COMMIT_OVERRIDE block so the author
+#   can self-serve the fix.
+#
+# How it stays faithful to release-please:
+#   - Same parser package: @conventional-commits/parser, exact-pinned (NOT semver
+#     range) to match release-please's package.json. Bump in lock-step when
+#     release-please bumps. As of release-please 17.6.0 this is 0.4.1:
+#     https://github.com/googleapis/release-please/blob/v17.6.0/package.json
+#   - Mirrors release-please/src/commit.ts:preprocessCommitMessage — if the body
+#     contains BEGIN_COMMIT_OVERRIDE..END_COMMIT_OVERRIDE, only the override is
+#     parsed (release-please uses it verbatim, ignoring the rest).
+#   - Mirrors release-please/src/commit.ts:splitMessages — release-please splits
+#     on BEGIN_NESTED_COMMIT/END_NESTED_COMMIT and on blank-line + conventional-
+#     commit prefix regex, then parses each sub-message independently. We do the
+#     same and fail if ANY sub-message would fail to parse.
+#   - Mirrors GitHub's default squash-merge format: `<title> (#<number>)\n\n<body>`.
+#     Assumes the repo squash-merge default is "Pull request title and description".
+#
+# Limitations:
+#   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
+#     get the failing check but no auto-comment. Acceptable: external authors
+#     will see the failure and a maintainer can paste the override.
+#   - Faithful to release-please's parse step only. Doesn't catch downstream
+#     issues like wrong-scope inference or path-filter mismatches.
+
+name: "🔍 Release-please parse check"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  parse-check:
+    name: "validate squash-merge message parses"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install @conventional-commits/parser
+        # Exact pin (NOT a semver range) — must equal release-please's
+        # package.json entry. A range would silently drift on minor bumps and
+        # the parsers can diverge — exactly the failure mode this check exists
+        # to prevent.
+        run: |
+          mkdir -p /tmp/parse-check
+          cd /tmp/parse-check
+          npm init -y >/dev/null
+          npm install '@conventional-commits/parser@0.4.1'
+
+      - name: Validate conventional-commit parse
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            // Load the parser FIRST, outside the parse try/catch. A
+            // MODULE_NOT_FOUND here is an infra error (npm install broke or
+            // the package layout changed) — surfacing it as "your commit
+            // cannot be parsed" would mislead the author.
+            let parser;
+            try {
+              parser = require('/tmp/parse-check/node_modules/@conventional-commits/parser');
+            } catch (loadErr) {
+              core.setFailed(`Failed to load @conventional-commits/parser — this is a CI infra error, not a problem with your PR: ${loadErr.message}`);
+              return;
+            }
+
+            const { title, body, number } = context.payload.pull_request;
+            // Normalize line endings — GitHub's API returns whatever the
+            // editor used, and CRLF leaves stray \r chars in offending-line
+            // displays.
+            const fullBody = (body || '').replace(/\r\n/g, '\n');
+            const STICKY_MARKER = '<!-- release-please-parse-check -->';
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            async function postStickyOrSummary(commentBody, summaryHeading) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.updateComment({
+                    ...context.repo,
+                    comment_id: existing.id,
+                    body: commentBody,
+                  });
+                } else {
+                  await github.rest.issues.createComment({
+                    ...context.repo,
+                    issue_number: number,
+                    body: commentBody,
+                  });
+                }
+              } catch (commentErr) {
+                // Comment posting can fail for several reasons: fork PRs run
+                // with restricted tokens, secondary rate limits, transient API
+                // errors, or pagination failures during the lookup. Always
+                // surface the would-be comment to the job summary so a
+                // maintainer can copy-paste the remediation manually.
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                await core.summary
+                  .addHeading(summaryHeading)
+                  .addRaw('Paste the following into the PR as a comment:')
+                  .addCodeBlock(commentBody, 'markdown')
+                  .write();
+              }
+            }
+
+            // Mirror release-please/src/commit.ts:preprocessCommitMessage. If
+            // BEGIN_COMMIT_OVERRIDE..END_COMMIT_OVERRIDE is present in the PR
+            // body, release-please uses only that — the rest is irrelevant.
+            const overrideHalves = fullBody.split('BEGIN_COMMIT_OVERRIDE');
+            const beginMarkerCount = overrideHalves.length - 1;
+
+            // Hard-fail when the body contains more than one literal
+            // `BEGIN_COMMIT_OVERRIDE`. release-please's preprocessCommitMessage
+            // uses `split('BEGIN_COMMIT_OVERRIDE')[1].split('END_COMMIT_OVERRIDE')[0]`
+            // — the FIRST occurrence wins, with no anchoring or escape support.
+            // The common trap: prose that mentions the marker name (even
+            // inside backticks) plus a real override block later — release-
+            // please picks the prose mention, the extracted "override" is
+            // garbage, and the commit is silently dropped from the changelog.
+            // Refuse to guess which occurrence is "real"; ask the author to
+            // dedupe.
+            if (beginMarkerCount > 1) {
+              const multiMarkerBody = [
+                STICKY_MARKER,
+                '⚠️ **Multiple `BEGIN_COMMIT_OVERRIDE` markers found in this PR\'s body.**',
+                '',
+                `Found **${beginMarkerCount}** occurrences. release-please uses the **first** one and treats everything from there to the next \`END_COMMIT_OVERRIDE\` as the changelog message. If the first occurrence is prose (the marker name mentioned in the description, even inside backticks), the extracted override will not parse and your commit will be **silently dropped** from the next release PR.`,
+                '',
+                '### Fix',
+                '',
+                'Keep at most one literal `BEGIN_COMMIT_OVERRIDE` in the PR body — the one inside the actual override block, if any. For the rest:',
+                '',
+                '- Rephrase to avoid the literal string (e.g., "the override marker").',
+                '- Or break the literal: `` `BEGIN_<wbr>COMMIT_OVERRIDE` `` renders the same in markdown but is no longer a single token to release-please\'s splitter.',
+                '',
+                'Save the description; this check will re-run automatically.',
+                '',
+                '📖 [How to override a commit\'s changelog entry](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#overriding-a-merged-commits-changelog-entry)',
+              ].join('\n');
+              await postStickyOrSummary(
+                multiMarkerBody,
+                'Multiple BEGIN_COMMIT_OVERRIDE markers; comment could not be posted',
+              );
+              core.setFailed(`Multiple BEGIN_COMMIT_OVERRIDE markers in PR body (${beginMarkerCount}); release-please uses the first occurrence.`);
+              return;
+            }
+
+            const overrideMessage = beginMarkerCount === 1
+              ? overrideHalves[1].split('END_COMMIT_OVERRIDE')[0].trim()
+              : '';
+
+            // Mirror release-please/src/commit.ts:splitMessages. release-please
+            // splits the preprocessed message into sub-messages and parses each
+            // independently — a body that splits into N pieces where one
+            // piece fails is rejected by release-please for that piece, even
+            // if the whole-message parse would have looked OK.
+            function splitMessages(message) {
+              const parts = message.split('BEGIN_NESTED_COMMIT');
+              const messages = [parts.shift()];
+              for (const part of parts) {
+                const [newMessage, ...rest] = part.split('END_NESTED_COMMIT');
+                messages.push(newMessage);
+                messages[0] = messages[0] + rest.join('END_NESTED_COMMIT');
+              }
+              const conventionalCommits = messages[0]
+                .split(/\r?\n\r?\n(?=(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\(.*?\))?: )/)
+                .filter(Boolean);
+              return [...conventionalCommits, ...messages.slice(1)];
+            }
+
+            const squashMessage = overrideMessage
+              ? overrideMessage
+              : `${title} (#${number})\n\n${fullBody}`;
+            const subMessages = splitMessages(squashMessage);
+
+            // Try parsing each sub-message; first failure wins.
+            let parseError = null;
+            let failingSubMessage = null;
+            let failingIndex = -1;
+            for (let i = 0; i < subMessages.length; i++) {
+              try {
+                parser.parser(subMessages[i]);
+              } catch (err) {
+                parseError = err;
+                failingSubMessage = subMessages[i];
+                failingIndex = i;
+                break;
+              }
+            }
+
+            if (parseError === null) {
+              core.info(overrideMessage
+                ? `Parse OK (using BEGIN_COMMIT_OVERRIDE block; ${subMessages.length} sub-message(s))`
+                : `Parse OK (${subMessages.length} sub-message(s))`);
+              // Clean up any prior failure comment. Wrapped in try/catch
+              // because a transient API failure during cleanup must NOT turn
+              // a green parse into a red check.
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    ...context.repo,
+                    comment_id: existing.id,
+                  });
+                }
+              } catch (cleanupErr) {
+                core.warning(`Parse passed but could not clean up prior failure comment: ${cleanupErr.message}`);
+              }
+              return;
+            }
+
+            const errMessage = parseError.message || String(parseError);
+            const positionMatch = errMessage.match(/at (\d+):(\d+)/);
+            if (!positionMatch) {
+              core.warning('Could not extract line:col from parser error — parser error format may have changed. Check failure remains correct, but the offending-line callout in the PR comment will be omitted.');
+            }
+            const line = positionMatch ? parseInt(positionMatch[1], 10) : null;
+            const col = positionMatch ? parseInt(positionMatch[2], 10) : null;
+            const failingLines = (failingSubMessage || '').split(/\r?\n/);
+            const offending = (line && failingLines[line - 1] !== undefined)
+              ? failingLines[line - 1]
+              : null;
+
+            const suggested = [
+              '<!-- release-please override: parser-safe message used by release-please for changelog generation; the rest of the body is unaffected -->',
+              'BEGIN_COMMIT_OVERRIDE',
+              `${title} (#${number})`,
+              '',
+              '<one-paragraph description here, no `name(` followed by a newline>',
+              'END_COMMIT_OVERRIDE',
+            ].join('\n');
+
+            const sourceLabel = overrideMessage
+              ? 'BEGIN_COMMIT_OVERRIDE block in the PR description'
+              : `\`<title> (#${number})\\n\\n<body>\` (the would-be squash-merge message)`;
+
+            const subMessageLabel = subMessages.length > 1
+              ? ` (sub-message ${failingIndex + 1} of ${subMessages.length} after splitMessages)`
+              : '';
+
+            const offendingSection = (line && offending !== null)
+              ? `**Offending region** (line ${line}, col ${col} of ${sourceLabel}${subMessageLabel}):\n\n\`\`\`\n${offending}\n\`\`\`\n\n`
+              : '';
+
+            const overrideAdvice = overrideMessage
+              ? 'Your PR already has a `BEGIN_COMMIT_OVERRIDE` block, but the content inside it does not parse. Edit the override content to be a valid conventional commit message.'
+              : `The parser does **not** honor markdown code fences — content inside \` \`\`\` \` blocks is parsed the same as anything else. Bare function calls split across lines (\`name(\` followed by a newline) are a common trigger.\n\n### Fix options\n\n**(a) Reformat the offending content** — collapse multi-line function calls to one line, or trim the example out. Quickest if the rich body is not load-bearing.\n\n**(b) Add a release-please override block** at the end of this PR description. Release-please will use the clean message inside it for changelog generation and ignore the rest. Paste:\n\n\`\`\`\`\n${suggested}\n\`\`\`\`\n\nSave the description; this check will re-run automatically.`;
+
+            const commentBody = [
+              STICKY_MARKER,
+              '⚠️ **Release-please parser cannot parse this PR\'s would-be squash-merge message.**',
+              '',
+              'If this PR is merged as-is, the commit will be **silently dropped** from the next release PR — release-please skips commits whose bodies its parser rejects, with no error surfaced until the changelog entry is missing.',
+              '',
+              '**Parse error:**',
+              '```',
+              errMessage,
+              '```',
+              '',
+              offendingSection + overrideAdvice,
+              '',
+              '📖 [How to override a commit\'s changelog entry](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#overriding-a-merged-commits-changelog-entry)',
+            ].join('\n');
+
+            await postStickyOrSummary(
+              commentBody,
+              'Parse check failed; comment could not be posted',
+            );
+            // Use only the first line of the parser error in the failure
+            // signal — GitHub renders multi-line ::error:: messages with
+            // literal %0A escapes in the check summary.
+            core.setFailed(errMessage.split('\n')[0]);

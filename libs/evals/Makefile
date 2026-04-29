@@ -13,8 +13,12 @@ PYTEST_EXTRA ?=
 test: ## Run unit tests
 	uv run --group test pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
-evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short $(PYTEST_EXTRA)
+evals: ## Run evals (set MODEL=<id>; required)
+	@if [ -z "$(MODEL)" ]; then \
+		echo "ERROR: MODEL is required. Example: make evals MODEL=claude-opus-4-7" >&2; \
+		exit 1; \
+	fi
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short --model $(MODEL) $(PYTEST_EXTRA)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

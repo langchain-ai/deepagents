@@ -7,7 +7,8 @@
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
 name: "⚠️ Manual Package Release"
-run-name: "release(${{ inputs.package-override || inputs.package }}):${{ inputs.version && format(' {0}', inputs.version) || '' }}"
+run-name: "release(${{ inputs.package-override || inputs.package }}):${{
+  inputs.version && format(' {0}', inputs.version) || '' }}"
 on:
   workflow_call:
     inputs:
@@ -20,12 +21,20 @@ on:
         type: string
         default: ""
         description: "Version being released (used in run name)"
+      release-sha:
+        required: true
+        type: string
+        description: "Release-PR merge commit SHA. Pinned to the GitHub release tag
+          and used to look up the release PR for label updates. Auto-passed by
+          release-please.yml."
   workflow_dispatch:
     inputs:
       package:
         required: true
         type: choice
-        description: "Package to release (⚠️ release-please by default; manual is exception-only — see .github/RELEASING.md) (ignored when override is set)"
+        description: "Package to release (⚠️ release-please by default; manual is
+          exception-only — see .github/RELEASING.md) (ignored when override is
+          set)"
         options:
           - deepagents
           - deepagents-cli
@@ -47,16 +56,26 @@ on:
         type: string
         default: ""
         description: "Version string — does NOT control the released version"
+      release-sha:
+        required: false
+        type: string
+        default: ""
+        description: "Merge commit SHA of the release PR. Find it with:
+          gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid.
+          Required unless you're running an alpha/hotfix release with
+          dangerous-nonmain-release=true. See .github/RELEASING.md > Manual Release."
       dangerous-nonmain-release:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-main branch (danger!) - Only use for backports and hotfixes"
+        description: "Release from a non-main branch (danger!) - Only use for backports
+          and hotfixes"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean
         default: false
-        description: "(CLI only) Skip SDK pin validation (danger!) - Only use when intentionally pinning an older SDK"
+        description: "(CLI only) Skip SDK pin validation (danger!) - Only use when
+          intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -67,12 +86,13 @@ permissions:
   contents: read # Job-level overrides grant write only where needed
 
 jobs:
-  # Determine working directory from package input
+  # Determine working directory from package input and resolve the release SHA
   setup:
     runs-on: ubuntu-latest
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
+      release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
         id: parse
@@ -123,6 +143,77 @@ jobs:
               exit 1
               ;;
           esac
+
+      # Pin the GitHub release tag to the release-PR merge commit, not github.sha.
+      # github.sha is whatever commit triggered the workflow — fine for the auto path,
+      # but workflow_dispatch retries (e.g. after a pre-release-checks failure) point
+      # at later commits, leaving the tag on an unrelated commit. release-please then
+      # treats the package as un-released and rebuilds the changelog from scratch.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate release SHA
+        id: resolve-sha
+        env:
+          INPUT_SHA: ${{ inputs.release-sha }}
+          IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
+          PACKAGE: ${{ steps.parse.outputs.package }}
+          GITHUB_SHA_FALLBACK: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Reject malformed boolean values up-front. A typo (e.g. "True", "1") would
+          # otherwise silently fall into the strict-validation branch — safe today,
+          # but a future polarity flip would silently skip validation.
+          case "$IS_DANGEROUS" in
+            true|false|"") ;;
+            *)
+              echo "::error::dangerous-nonmain-release must be 'true' or 'false', got: $IS_DANGEROUS"
+              exit 1
+              ;;
+          esac
+
+          if [ -z "$INPUT_SHA" ]; then
+            if [ "$IS_DANGEROUS" = "true" ]; then
+              # Alpha/hotfix branches don't have a "release(pkg): X.Y.Z" commit; fall
+              # back to the dispatched HEAD. See RELEASING.md > Alpha / Beta / Pre-release.
+              SHA="$GITHUB_SHA_FALLBACK"
+              echo "release-sha unset; dangerous-nonmain-release=true -> using github.sha=$SHA"
+            else
+              echo "::error::release-sha input is required for non-alpha releases."
+              echo "::error::Look it up with: gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid"
+              exit 1
+            fi
+          else
+            SHA="$INPUT_SHA"
+          fi
+
+          if ! err=$(git cat-file -e "${SHA}^{commit}" 2>&1); then
+            echo "::error::release-sha $SHA does not resolve to a commit in this repository: $err"
+            exit 1
+          fi
+
+          # Skip the message check on dangerous-nonmain-release: those branches use
+          # "hotfix(scope): alpha release ..." commits, not release-please commits.
+          if [ "$IS_DANGEROUS" != "true" ]; then
+            if ! COMMIT_MSG=$(git log -1 --format=%s "$SHA" 2>&1); then
+              echo "::error::cannot read commit $SHA: $COMMIT_MSG"
+              exit 1
+            fi
+            EXPECTED="^release\(${PACKAGE}\): "
+            if ! printf '%s\n' "$COMMIT_MSG" | grep -qE "$EXPECTED"; then
+              echo "::error::Commit $SHA has subject: $COMMIT_MSG"
+              echo "::error::Expected subject matching: $EXPECTED"
+              echo "::error::Pass the SHA of the release PR's merge commit (gh pr view ... --json mergeCommit)."
+              exit 1
+            fi
+            echo "Validated release-sha $SHA -> $COMMIT_MSG"
+          else
+            echo "Using release-sha $SHA (validation skipped: dangerous-nonmain-release)"
+          fi
+
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
@@ -589,7 +680,8 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Verify CLI pins latest SDK version
-        if: needs.build.outputs.pkg-name == 'deepagents-cli' && !inputs.dangerous-skip-sdk-pin-check
+        if: needs.build.outputs.pkg-name == 'deepagents-cli' &&
+          !inputs.dangerous-skip-sdk-pin-check
         run: |
           SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [ -z "$SDK_VERSION" ]; then
@@ -656,7 +748,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
-        if: false  # Disabled: integration tests are not run during releases
+        if: false # Disabled: integration tests are not run during releases
         env:
           # deepagents SDK: subagent middleware tests
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -739,7 +831,8 @@ jobs:
       - test-pypi-publish
       - pre-release-checks
       - publish
-    if: always() && needs.pre-release-checks.result == 'success' && needs.publish.result == 'success'
+    if: always() && needs.pre-release-checks.result == 'success' &&
+      needs.publish.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       # This permission is needed by `ncipollo/release-action` to
@@ -775,9 +868,10 @@ jobs:
           generateReleaseNotes: false
           tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
-          commit: ${{ github.sha }}
+          commit: ${{ needs.setup.outputs.release-sha }}
           prerelease: ${{ needs.build.outputs.is-prerelease == 'true' }}
-          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' && needs.build.outputs.is-prerelease != 'true' }}
+          makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' &&
+            needs.build.outputs.is-prerelease != 'true' }}
           draft: false
 
       # Mark the release PR as tagged so release-please knows it's been released
@@ -786,48 +880,96 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
         run: |
+          set -euo pipefail
+
           UPDATED=false
 
-          # Try 1: find PR associated with this commit
-          PR_NUMBER=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty' 2>/dev/null) || PR_NUMBER=""
-          if [ -n "$PR_NUMBER" ]; then
-            HAS_PENDING=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q "autorelease: pending" && echo "true" || echo "false")
-            if [ "$HAS_PENDING" = "true" ]; then
-              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
-              if gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; then
-                UPDATED=true
+          # Surface a manual-fix instruction on the run summary so a human reviewer
+          # sees it without scrolling through step logs.
+          fail_summary() {
+            local pr="$1"
+            {
+              echo "### ⚠️ Release PR label not updated"
+              echo ""
+              echo "Package: \`$PKG_NAME\`"
+              echo "Release SHA: \`$RELEASE_SHA\`"
+              if [ -n "$pr" ]; then
+                echo "PR: #$pr"
+                echo ""
+                echo "Manual fix:"
+                echo ""
+                echo "\`\`\`"
+                echo "gh pr edit $pr --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+                echo "\`\`\`"
               else
-                echo "::warning::Failed to update labels on PR #$PR_NUMBER via commit lookup. Falling through to label search..."
+                echo ""
+                echo "No release PR was found. Inspect open PRs with the \`autorelease: pending\` label."
               fi
-            else
-              echo "PR #$PR_NUMBER (from commit lookup) is not the release PR, falling through to label search..."
-            fi
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          # Try 1: find PR associated with the release commit. Distinguish "no PR
+          # for this commit" (alpha/hotfix path, eventual-consistency on fresh
+          # merges) from a real API failure — the latter must not silently fall
+          # through to label search, which could match an unrelated stale PR.
+          if API_OUT=$(gh api "/repos/${{ github.repository }}/commits/${RELEASE_SHA}/pulls" 2>&1); then
+            PR_NUMBER=$(printf '%s' "$API_OUT" | jq -r '.[0].number // empty')
           else
-            echo "No PR found via commit ${{ github.sha }}, falling through to label search..."
+            echo "::warning::commit-pulls API call failed: $API_OUT"
+            echo "Falling through to label search."
+            PR_NUMBER=""
           fi
 
-          # Try 2: fallback label search when commit-based lookup didn't find the release PR.
-          # This handles manual dispatch where github.sha may not be the merge commit
-          # (e.g., other commits landed on main between the merge and the manual trigger).
+          if [ -n "$PR_NUMBER" ]; then
+            if ! LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>&1); then
+              echo "::warning::gh pr view #$PR_NUMBER failed: $LABELS"
+              echo "Falling through to label search."
+            elif printf '%s\n' "$LABELS" | grep -qFx "autorelease: pending"; then
+              echo "Found release PR #$PR_NUMBER with 'autorelease: pending', updating labels..."
+              if EDIT_ERR=$(gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" 2>&1); then
+                UPDATED=true
+              else
+                echo "::warning::gh pr edit #$PR_NUMBER failed: $EDIT_ERR"
+                echo "Falling through to label search."
+              fi
+            else
+              # Idempotent re-run: the PR is already tagged, or RELEASE_SHA pointed
+              # at something other than a release-please merge. Either way, no-op
+              # here and let the label search confirm there's nothing pending.
+              echo "::notice::PR #$PR_NUMBER lacks 'autorelease: pending'. Either already tagged or RELEASE_SHA is not the release PR merge."
+            fi
+          else
+            echo "No PR found via commit ${RELEASE_SHA}."
+          fi
+
+          # Try 2: fallback label search. Used when Try 1 returns no PR — alpha/hotfix
+          # releases (release-sha falls back to github.sha, no merge PR) or fresh
+          # merges where GitHub's commit-to-PR index hasn't caught up yet.
           if [ "$UPDATED" = "false" ]; then
-            PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" \
+            if ! LIST_OUT=$(gh pr list --repo "${{ github.repository }}" \
               --state merged \
               --label "autorelease: pending" \
               --label "release" \
               --search "\"release($PKG_NAME)\" in:title" \
-              --json number --jq '.[0].number // empty') || {
-              echo "::warning::gh pr list failed. Label swap could not be performed automatically."
-              echo "Manual fix: gh pr edit <PR_NUMBER> --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
-              exit 0
-            }
+              --json number --jq '.[0].number // empty' 2>&1); then
+              echo "::error::gh pr list failed: $LIST_OUT"
+              fail_summary ""
+              exit 1
+            fi
+            PR_NUMBER="$LIST_OUT"
             if [ -n "$PR_NUMBER" ]; then
               echo "Found release PR #$PR_NUMBER via label search, updating labels..."
-              if ! gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged"; then
-                echo "::warning::Failed to update labels on PR #$PR_NUMBER. Manual fix required."
-                echo "Run: gh pr edit $PR_NUMBER --remove-label 'autorelease: pending' --add-label 'autorelease: tagged'"
+              if EDIT_ERR=$(gh pr edit "$PR_NUMBER" --remove-label "autorelease: pending" --add-label "autorelease: tagged" 2>&1); then
+                UPDATED=true
+              else
+                echo "::error::gh pr edit #$PR_NUMBER failed: $EDIT_ERR"
+                fail_summary "$PR_NUMBER"
+                exit 1
               fi
             else
-              echo "::warning::No release PR with 'autorelease: pending' found for $PKG_NAME. Manual label update may be required."
+              echo "::warning::No release PR with 'autorelease: pending' found for $PKG_NAME."
+              fail_summary ""
             fi
           fi

@@ -34,7 +34,12 @@ jobs:
     # or when "missing-issue-link" is removed (triggers maintainer override check).
     # Skip entirely when the PR already carries "trusted-contributor" or
     # "bypass-issue-check".
+    # Skip merged PRs: editing the title/body or relabeling a merged PR must
+    # not re-fire enforcement (label, comment, "close" no-op, failed check).
+    # Closed-but-not-merged PRs still flow through so contributors editing the
+    # body to add a `Fixes #N` link will be reopened.
     if: >-
+      github.event.pull_request.merged == false &&
       !contains(github.event.pull_request.labels.*.name, 'trusted-contributor') &&
       !contains(github.event.pull_request.labels.*.name, 'bypass-issue-check') &&
       (

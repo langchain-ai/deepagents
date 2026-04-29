@@ -4,6 +4,7 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -40,6 +41,7 @@ from deepagents.middleware.skills import (
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
+    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -211,6 +213,103 @@ No YAML frontmatter here.
 
     result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
+
+
+def test_validate_module_path_absent() -> None:
+    """Missing key returns None — the vast majority of skills have no module."""
+    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_valid_bare() -> None:
+    """A bare filename with a supported extension passes through unchanged."""
+    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_strips_dot_slash() -> None:
+    """./index.ts → index.ts so the stored path matches how the loader keys files."""
+    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_nested() -> None:
+    """Subdirectory paths are fine as long as they stay inside the skill dir."""
+    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
+
+
+def test_validate_module_path_all_supported_extensions() -> None:
+    """Every quickjs-rs-accepted extension is accepted here too."""
+    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
+        path = f"index.{ext}"
+        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
+
+
+def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
+    """Non-string values log a warning and return None — don't crash the parse."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
+    assert "non-string 'module'" in caplog.text
+
+
+def test_validate_module_path_rejects_empty_string() -> None:
+    """An empty / whitespace-only value is equivalent to absent."""
+    assert _validate_module_path("", "/skills/x/SKILL.md") is None
+    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
+    """Absolute paths could reach outside the skill dir — reject with a warning."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
+    assert "absolute" in caplog.text
+
+
+def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
+    """Any form of `..` traversal is rejected so skills can't read each other's code."""
+    caplog.set_level(logging.WARNING)
+    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
+        caplog.clear()
+        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
+        assert "escapes" in caplog.text
+
+
+def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
+    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
+    assert "extension" in caplog.text
+
+
+def test_parse_skill_metadata_with_module() -> None:
+    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
+    content = """---
+name: pdf-extract
+description: Parse PDFs
+module: ./index.ts
+---
+
+# PDF extract
+"""
+    result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
+    assert result is not None
+    assert result["module"] == "index.ts"
+
+
+def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
+    """An invalid `module` value must not drop the skill.
+
+    The prose is still useful; we just drop the module surface.
+    """
+    content = """---
+name: bad-module
+description: has a bad module path
+module: /etc/passwd
+---
+
+# Bad module
+"""
+    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
+    assert result is not None
+    assert "module" not in result
+    assert result["name"] == "bad-module"
 
 
 def test_parse_skill_metadata_invalid_yaml() -> None:

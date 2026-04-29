@@ -88,6 +88,11 @@ jobs:
                   labels.add(label);
                 }
 
+                // Branch-name labels
+                for (const label of h.matchBranchLabels(pr.head?.ref)) {
+                  labels.add(label);
+                }
+
                 // Title labels
                 const { labels: titleLabels } = h.matchTitleLabels(pr.title ?? '');
                 for (const tl of titleLabels) labels.add(tl);

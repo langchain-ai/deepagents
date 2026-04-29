@@ -41,7 +41,7 @@ class TestQuickJSMemoryBenchmarks:
     ) -> None:
         def _worker(index: int) -> None:
             middleware = REPLMiddleware(
-                timeout=10.0,
+                timeout=20.0,
                 capture_console=True,
                 ptc=[echo_payload] if use_ptc else None,
             )

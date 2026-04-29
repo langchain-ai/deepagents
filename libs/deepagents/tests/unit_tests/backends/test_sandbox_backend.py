@@ -657,6 +657,23 @@ def test_sandbox_grep_literal_search() -> None:
     assert "grep -rHnF" in sandbox.last_command
 
 
+def test_sandbox_grep_quotes_include_glob() -> None:
+    """Test that grep shell-quotes the include glob pattern."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox.execute = mock_execute
+
+    sandbox.grep("needle", path="/test", glob="x' ; echo injected ; #")
+
+    assert sandbox.last_command is not None
+    assert "--include='x'\"'\"' ; echo injected ; #'" in sandbox.last_command
+    assert "--include='x'\"'\"' ; echo injected ; #' -e needle /test" in sandbox.last_command
+
+
 # -- upload/download failure tests --------------------------------------------
 
 

@@ -348,6 +348,14 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     script for small payloads and uploads old/new strings as temp files with
     a server-side replace for large ones.
 
+    !!! note
+
+        `BaseSandbox` does not reduce or partition the trust boundary of
+        `execute()`. Its helper methods are convenience wrappers built on top of
+        the subclass-provided command-execution primitive and assume callers who
+        can use `BaseSandbox` already have whatever shell-execution capability
+        that backend exposes.
+
     Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
     and the `id` property.
     """
@@ -703,7 +711,7 @@ except PermissionError:
         # Add glob pattern if specified
         glob_pattern = ""
         if glob:
-            glob_pattern = f"--include='{glob}'"
+            glob_pattern = f"--include={shlex.quote(glob)}"
 
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)

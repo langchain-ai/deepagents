@@ -151,6 +151,12 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_cli"]
+include = [
+    "deepagents_cli/**/*.py",
+    "deepagents_cli/**/*.md",
+    "deepagents_cli/**/*.tcss",
+    "deepagents_cli/deploy/frontend_dist/**/*",
+]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"

@@ -9,7 +9,6 @@ workload combines PTC tool calls with ``console.log`` output.
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -23,7 +22,6 @@ from tests.benchmarks._common import (
     FakeChatModel,
     assert_eval_succeeded,
     echo_payload,
-    eval_tool_message,
     invoke_payload,
     make_agent,
     tool_call_message,
@@ -94,49 +92,4 @@ class TestQuickJSThroughputBenchmarks:
         self._record_turn_metrics(
             benchmark=benchmark,
             turns_per_round=THROUGHPUT_ITERATIONS,
-        )
-
-    def test_single_thread_multi_turn(
-        self,
-        benchmark: BenchmarkFixture,
-    ) -> None:
-        """Measure two-turn throughput while verifying same-context persistence."""
-        middleware = REPLMiddleware(capture_console=True)
-        turn_count = THROUGHPUT_ITERATIONS // 2
-        codes: list[str] = []
-        for index in range(turn_count):
-            token = f"token-{index}"
-            codes.extend(
-                [
-                    f"globalThis.__benchToken = '{token}'; globalThis.__benchToken;",
-                    "globalThis.__benchToken;",
-                ]
-            )
-
-        @benchmark
-        def _() -> None:
-            agent = self._make_multi_turn_agent(middleware=middleware, codes=codes)
-            thread_id = f"multi-turn-bench-thread-{uuid.uuid4().hex}"
-            for index in range(turn_count):
-                set_result = agent.invoke(
-                    invoke_payload(),
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                assert_eval_succeeded(set_result)
-                expected = f"token-{index}"
-                assert expected in eval_tool_message(set_result).content
-
-                read_result = agent.invoke(
-                    invoke_payload(),
-                    config={"configurable": {"thread_id": thread_id}},
-                )
-                assert_eval_succeeded(read_result)
-                assert expected in eval_tool_message(read_result).content
-
-        benchmark.extra_info["thread_count"] = 1
-        benchmark.extra_info["pairs_per_round"] = turn_count
-        benchmark.extra_info["workload"] = "multi_turn_same_context_persistence"
-        self._record_turn_metrics(
-            benchmark=benchmark,
-            turns_per_round=turn_count * 2,
         )

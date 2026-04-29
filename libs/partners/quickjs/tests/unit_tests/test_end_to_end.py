@@ -74,6 +74,14 @@ async def async_label_tool(value: str) -> str:
     return f"async:{value}"
 
 
+@tool("runtime_marker")
+def runtime_marker(value: str, runtime: ToolRuntime) -> str:
+    """Return runtime metadata for testing ToolRuntime injection."""
+    return (
+        f"{value}:{runtime.tool_call_id}:{runtime.config['metadata']['langgraph_node']}"
+    )
+
+
 @tool("runtime_configurable")
 def runtime_configurable(value: str, runtime: ToolRuntime) -> str:
     """Return configurable runtime data for testing ToolRuntime context propagation."""
@@ -241,6 +249,21 @@ def test_quickjs_sync_tool_exception() -> None:
     tool_message = _eval_tool_message(result)
     assert '<error type="HostError">' in tool_message.content
     assert "Host function failed" in tool_message.content
+
+
+def test_quickjs_sync_toolruntime_foreign_function() -> None:
+    """Verify sync PTC tool calls inherit eval ToolRuntime metadata."""
+    result = _make_agent(
+        "await tools.runtimeMarker({value: 'foo'})",
+        REPLMiddleware(ptc=[runtime_marker]),
+    ).invoke(
+        {"messages": [HumanMessage(content="Use the eval tool to inspect the runtime")]}
+    )
+
+    tool_message = _eval_tool_message(result)
+    assert tool_message.content.startswith("<result>foo:ptc_runtime_marker_")
+    assert tool_message.content.endswith(":tools</result>")
+
 
 
 def test_quickjs_sync_toolruntime_configurable_foreign_function() -> None:

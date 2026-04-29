@@ -69,6 +69,7 @@ class EvalOutcome:
     """
 
     stdout: str = ""
+    stdout_truncated_chars: int = 0
     result: str | None = None
     result_kind: str | None = None  # "handle" when marshaling fell back
     error_type: str | None = None
@@ -86,19 +87,31 @@ class _ConsoleBuffer:
     smaller.
     """
 
-    def __init__(self) -> None:
-        self._lines: list[str] = []
+    def __init__(self, max_chars: int) -> None:
+        self._max_chars = max(0, max_chars)
+        self._stdout = ""
+        self._dropped_chars = 0
 
     def append(self, level: str, args: tuple[Any, ...]) -> None:
         del level  # flattened; see class docstring
-        self._lines.append(" ".join(stringify(a) for a in args))
+        line = " ".join(stringify(a) for a in args)
+        chunk = line if not self._stdout else f"\n{line}"
+        remaining = self._max_chars - len(self._stdout)
+        if remaining <= 0:
+            self._dropped_chars += len(chunk)
+            return
+        kept = chunk[:remaining]
+        self._stdout += kept
+        self._dropped_chars += len(chunk) - len(kept)
 
-    def drain(self) -> str:
-        if not self._lines:
-            return ""
-        out = "\n".join(self._lines)
-        self._lines.clear()
-        return out
+    def drain(self) -> tuple[str, int]:
+        if not self._stdout and self._dropped_chars == 0:
+            return "", 0
+        out = self._stdout
+        dropped = self._dropped_chars
+        self._stdout = ""
+        self._dropped_chars = 0
+        return out, dropped
 
 
 def _normalize_tool_input(raw: Any) -> dict[str, Any]:
@@ -242,6 +255,7 @@ class _ThreadREPL:
         *,
         timeout: float,
         capture_console: bool,
+        max_stdout_chars: int,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -251,7 +265,7 @@ class _ThreadREPL:
         # and what we describe in the system prompt.
         self._per_call_timeout = timeout
         self._capture_console = capture_console
-        self._console = _ConsoleBuffer()
+        self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. ``_registered_tools`` tracks which camel-case names
         # have already had their host-function bridge installed on the
@@ -527,7 +541,10 @@ class _ThreadREPL:
                 if errors:
                     outcome.error_type = "SkillNotAvailable"
                     outcome.error_message = "; ".join(str(error) for error in errors)
-                    outcome.stdout = self._console.drain()
+                    (
+                        outcome.stdout,
+                        outcome.stdout_truncated_chars,
+                    ) = self._console.drain()
                     return outcome
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
@@ -562,7 +579,7 @@ class _ThreadREPL:
         finally:
             outcome.commands.extend(self._ptc_command_buffer)
             self._ptc_command_buffer.clear()
-            outcome.stdout = self._console.drain()
+            outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
@@ -638,6 +655,7 @@ class _Registry:
     memory_limit: int
     timeout: float
     capture_console: bool
+    max_stdout_chars: int
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -672,6 +690,7 @@ class _Registry:
             runtime,
             timeout=self.timeout,
             capture_console=self.capture_console,
+            max_stdout_chars=self.max_stdout_chars,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

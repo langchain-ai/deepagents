@@ -96,7 +96,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         tool_name: Name of the tool exposed to the model. Default ``eval``.
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
-            the model. Default 4000.
+            the model. Console buffering is also bounded to this value
+            during collection. Default 4000.
         capture_console: If ``True``, install a ``console`` object that
             buffers ``console.log/warn/error`` calls and emits them in
             ``<stdout>`` blocks alongside the result. Default ``True``.
@@ -168,6 +169,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             memory_limit=memory_limit,
             timeout=timeout,
             capture_console=capture_console,
+            max_stdout_chars=max_result_chars,
         )
         self._base_system_prompt = render_repl_system_prompt(
             tool_name=tool_name,

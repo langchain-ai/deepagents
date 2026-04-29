@@ -16,7 +16,7 @@ from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _Registry, _ThreadREPL
+from langchain_quickjs._repl import _Registry, _ThreadREPL, _clear_exception_references
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -274,6 +274,26 @@ def test_middleware_del_closes_runtime() -> None:
         assert close_spy.called
 
 
+def test_clear_exception_references_removes_traceback_links() -> None:
+    """Clears traceback/context/cause to avoid cross-thread GC cycles."""
+    first = RuntimeError("first")
+    try:
+        raise ValueError("outer")
+    except ValueError:
+        try:
+            raise first
+        except RuntimeError as caught:
+            second = RuntimeError("second")
+            caught.__cause__ = second
+            assert caught.__traceback__ is not None
+            assert caught.__context__ is not None
+            assert caught.__cause__ is not None
+            _clear_exception_references(caught)
+            assert caught.__traceback__ is None
+            assert caught.__context__ is None
+            assert caught.__cause__ is None
+
+
 def test_per_thread_slot_has_own_worker_and_runtime() -> None:
     """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
     reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
@@ -296,8 +316,13 @@ def test_evict_closes_and_removes_slot() -> None:
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime
-        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+        repl = reg._slots["thread-a"].repl
+        with (
+            patch.object(repl, "close", wraps=repl.close) as repl_close_spy,
+            patch.object(rt, "close", wraps=rt.close) as close_spy,
+        ):
             reg.evict("thread-a")
+        assert repl_close_spy.called
         assert close_spy.called
         assert "thread-a" not in reg._slots
     finally:
@@ -334,8 +359,13 @@ async def test_aevict_closes_and_removes_slot() -> None:
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime
-        with patch.object(rt, "close", wraps=rt.close) as close_spy:
+        repl = reg._slots["thread-a"].repl
+        with (
+            patch.object(repl, "_aclose", wraps=repl._aclose) as repl_close_spy,
+            patch.object(rt, "close", wraps=rt.close) as close_spy,
+        ):
             await reg.aevict("thread-a")
+        assert repl_close_spy.called
         assert close_spy.called
         assert "thread-a" not in reg._slots
     finally:

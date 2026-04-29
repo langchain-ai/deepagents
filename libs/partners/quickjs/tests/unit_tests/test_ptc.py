@@ -188,7 +188,13 @@ def runtime(worker: ThreadWorker) -> Runtime:
 
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    return _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
 
 
 # ---------------------------------------------------------------------------

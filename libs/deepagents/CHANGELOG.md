@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.3...deepagents==0.5.4) (2026-04-29)
+
+
+### Features
+
+* **harbor,sdk:** migrate LangSmith env from templates to snapshots ([#2888](https://github.com/langchain-ai/deepagents/issues/2888)) ([082b900](https://github.com/langchain-ai/deepagents/commit/082b9008d14882be83a437d0c1155005e2f1e722))
+* **sdk:** `ls_agent_type` configurable tag on subagent runs ([#2788](https://github.com/langchain-ai/deepagents/issues/2788)) ([3bcc51a](https://github.com/langchain-ai/deepagents/commit/3bcc51a95da80094cfc8bc4bcaf25dc1e2ad8f44))
+* **sdk:** add optional module field to skill frontmatter ([#2976](https://github.com/langchain-ai/deepagents/issues/2976)) ([2a9cd44](https://github.com/langchain-ai/deepagents/commit/2a9cd44f61c6c15bf74c63dff0f3478cdee18d11))
+
+
+### Bug Fixes
+
+* **deepagents:** remove old integration tests ([#2728](https://github.com/langchain-ai/deepagents/issues/2728)) ([6653197](https://github.com/langchain-ai/deepagents/commit/6653197b6cbec6dd1ca23d9f90bc1439ca26e6e5))
+* **sdk:** normalize Windows backslash paths before PurePosixPath processing ([#1859](https://github.com/langchain-ai/deepagents/issues/1859)) ([e1c1d50](https://github.com/langchain-ai/deepagents/commit/e1c1d5024729f5205eaa42bf6a9bc1c93a30d043))
+* **sdk:** preserve CRLF line endings in sandbox edit ([#2899](https://github.com/langchain-ai/deepagents/issues/2899)) ([291aebe](https://github.com/langchain-ai/deepagents/commit/291aebe21f8a53604a2bf47daa120761dace2536))
+* **sdk:** support read-your-writes in StateBackend ([#2991](https://github.com/langchain-ai/deepagents/issues/2991)) ([0924869](https://github.com/langchain-ai/deepagents/commit/0924869bc3d946577e7c3cbc79a86e4aaf522edd))
+* **sdk:** Use configurable directly instead of tracing context for subagent tagging ([#2845](https://github.com/langchain-ai/deepagents/issues/2845)) ([bd6ec6b](https://github.com/langchain-ai/deepagents/commit/bd6ec6bcebcdcc26f6b79e2c55611074b0e01631))
+
+
+### Performance Improvements
+
+* **sdk:** add cache breakpoint to `MemoryMiddleware` ([#2713](https://github.com/langchain-ai/deepagents/issues/2713)) ([1699f3a](https://github.com/langchain-ai/deepagents/commit/1699f3aea710985087b16318bb8e6f6e80e02a1b))
+
 ## [0.5.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.2...deepagents==0.5.3) (2026-04-14)
 
 

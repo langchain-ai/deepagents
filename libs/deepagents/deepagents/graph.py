@@ -211,6 +211,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
+    propagate_middleware_to_general_purpose: bool = False,
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
@@ -315,6 +316,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `ValueError`, as does excluding scaffolding classes
             (`FilesystemMiddleware`, `SubAgentMiddleware`,
             `_PermissionMiddleware`).
+        propagate_middleware_to_general_purpose: Whether to add the
+            caller-provided `middleware` sequence to the auto-added
+            `general-purpose` subagent.
+
+            This is opt-in for backwards compatibility. When enabled, the
+            middleware is inserted into the default `general-purpose` stack at
+            the same relative position used by the main agent: after the base
+            Deep Agents middleware (including `SkillsMiddleware`, when
+            configured) and before harness-profile extras, prompt caching, and
+            permission middleware. If `interrupt_on` is inherited by the
+            subagent, `SubAgentMiddleware` still applies human-in-the-loop
+            handling after this assembled stack.
+
+            This option only affects the default `general-purpose` subagent
+            that `create_deep_agent` adds automatically. If `subagents`
+            includes a synchronous or compiled subagent named
+            `general-purpose`, that explicit spec remains the override and
+            only uses the middleware declared on that spec.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -582,6 +601,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ]
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+
+        if propagate_middleware_to_general_purpose and middleware:
+            gp_middleware.extend(middleware)
 
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())

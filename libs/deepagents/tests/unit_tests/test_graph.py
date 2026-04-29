@@ -38,7 +38,7 @@ from deepagents.profiles.harness.harness_profiles import (
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from langchain.agents.middleware.types import ModelRequest
 
@@ -705,6 +705,81 @@ class _OtherStubMW(AgentMiddleware[Any, Any, Any]):
 
 class _StubSubMW(_StubMW):
     """Subclass of `_StubMW` used to verify exact-type (not isinstance) exclusion."""
+
+
+class TestGeneralPurposeMiddlewarePropagation:
+    """Tests for opt-in user middleware propagation to the default general-purpose subagent."""
+
+    def _capture_main_and_general_purpose_stacks(
+        self,
+        *,
+        middleware: Sequence[AgentMiddleware[Any, Any, Any]],
+        **kwargs: Any,
+    ) -> tuple[list[AgentMiddleware[Any, Any, Any]], list[AgentMiddleware[Any, Any, Any]]]:
+        """Run `create_deep_agent` and return the main and default GP middleware stacks."""
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(
+                model="testprov:some-model",
+                middleware=middleware,
+                **kwargs,
+            )
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        return main_stack, general_purpose["middleware"]
+
+    def test_general_purpose_does_not_inherit_user_middleware_by_default(self) -> None:
+        """Caller middleware remains parent-only unless propagation is explicitly enabled."""
+        custom = _StubMW()
+
+        main_stack, gp_stack = self._capture_main_and_general_purpose_stacks(
+            middleware=[custom],
+        )
+
+        assert any(m is custom for m in main_stack), "caller middleware missing from main stack"
+        assert not any(m is custom for m in gp_stack), "caller middleware leaked into default general-purpose stack"
+
+    def test_general_purpose_inherits_user_middleware_when_enabled(self) -> None:
+        """The opt-in flag adds caller middleware to the auto-added general-purpose subagent."""
+        custom = _StubMW()
+
+        main_stack, gp_stack = self._capture_main_and_general_purpose_stacks(
+            middleware=[custom],
+            propagate_middleware_to_general_purpose=True,
+        )
+
+        assert any(m is custom for m in main_stack), "caller middleware missing from main stack"
+        assert any(m is custom for m in gp_stack), "caller middleware missing from default general-purpose stack"
+
+    def test_explicit_general_purpose_subagent_is_not_augmented(self) -> None:
+        """An explicit `general-purpose` spec remains the override path."""
+        parent_middleware = _StubMW()
+        explicit_middleware = _OtherStubMW()
+
+        _, gp_stack = self._capture_main_and_general_purpose_stacks(
+            middleware=[parent_middleware],
+            propagate_middleware_to_general_purpose=True,
+            subagents=[
+                {
+                    "name": "general-purpose",
+                    "description": "Caller-owned general-purpose subagent.",
+                    "system_prompt": "Handle delegated work.",
+                    "middleware": [explicit_middleware],
+                }
+            ],
+        )
+
+        assert any(m is explicit_middleware for m in gp_stack), "explicit subagent middleware was not preserved"
+        assert not any(m is parent_middleware for m in gp_stack), "parent middleware was added to an explicit general-purpose spec"
 
 
 class TestMiddlewareExclusionWiring:

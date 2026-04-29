@@ -1111,7 +1111,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "." }
 dependencies = [
     { name = "daytona" },

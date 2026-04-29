@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.0.42](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.41...deepagents-cli==0.0.42) (2026-04-29)
+
+
+### Features
+
+* **cli:** `shift+enter` newline on kitty-capable terminals ([#2869](https://github.com/langchain-ai/deepagents/issues/2869)) ([34e6614](https://github.com/langchain-ai/deepagents/commit/34e6614a2c6e6a7e33f763ac5b527c13b324a690))
+* **cli:** hint `Enter` behavior in `/model` empty state ([#2933](https://github.com/langchain-ai/deepagents/issues/2933)) ([7cffa16](https://github.com/langchain-ai/deepagents/commit/7cffa16a072bc77def78e4cda09c2e5a2cf8ca39))
+* **sdk:** add optional module field to skill frontmatter ([#2976](https://github.com/langchain-ai/deepagents/issues/2976)) ([2a9cd44](https://github.com/langchain-ai/deepagents/commit/2a9cd44f61c6c15bf74c63dff0f3478cdee18d11))
+
+
+### Bug Fixes
+
+* **cli:** queue `/model` switches during server startup ([#2895](https://github.com/langchain-ai/deepagents/issues/2895)) ([6ed7b65](https://github.com/langchain-ai/deepagents/commit/6ed7b65a40ac5bd926e94edd944bd552e8d6b5b4))
+
 ## [0.0.41](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.40...deepagents-cli==0.0.41) (2026-04-21)
 
 ### Features

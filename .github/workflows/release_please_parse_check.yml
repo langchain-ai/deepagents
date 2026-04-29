@@ -85,16 +85,91 @@ jobs:
             const fullBody = (body || '').replace(/\r\n/g, '\n');
             const STICKY_MARKER = '<!-- release-please-parse-check -->';
 
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            async function postStickyOrSummary(commentBody, summaryHeading) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.updateComment({
+                    ...context.repo,
+                    comment_id: existing.id,
+                    body: commentBody,
+                  });
+                } else {
+                  await github.rest.issues.createComment({
+                    ...context.repo,
+                    issue_number: number,
+                    body: commentBody,
+                  });
+                }
+              } catch (commentErr) {
+                // Comment posting can fail for several reasons: fork PRs run
+                // with restricted tokens, secondary rate limits, transient API
+                // errors, or pagination failures during the lookup. Always
+                // surface the would-be comment to the job summary so a
+                // maintainer can copy-paste the remediation manually.
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                await core.summary
+                  .addHeading(summaryHeading)
+                  .addRaw('Paste the following into the PR as a comment:')
+                  .addCodeBlock(commentBody, 'markdown')
+                  .write();
+              }
+            }
+
             // Mirror release-please/src/commit.ts:preprocessCommitMessage. If
             // BEGIN_COMMIT_OVERRIDE..END_COMMIT_OVERRIDE is present in the PR
             // body, release-please uses only that — the rest is irrelevant.
             const overrideHalves = fullBody.split('BEGIN_COMMIT_OVERRIDE');
-            const overrideMessage = overrideHalves.length > 1
+            const beginMarkerCount = overrideHalves.length - 1;
+
+            // Hard-fail when the body contains more than one literal
+            // `BEGIN_COMMIT_OVERRIDE`. release-please's preprocessCommitMessage
+            // uses `split('BEGIN_COMMIT_OVERRIDE')[1].split('END_COMMIT_OVERRIDE')[0]`
+            // — the FIRST occurrence wins, with no anchoring or escape support.
+            // The common trap: prose that mentions the marker name (even
+            // inside backticks) plus a real override block later — release-
+            // please picks the prose mention, the extracted "override" is
+            // garbage, and the commit is silently dropped from the changelog.
+            // Refuse to guess which occurrence is "real"; ask the author to
+            // dedupe.
+            if (beginMarkerCount > 1) {
+              const multiMarkerBody = [
+                STICKY_MARKER,
+                '⚠️ **Multiple `BEGIN_COMMIT_OVERRIDE` markers found in this PR\'s body.**',
+                '',
+                `Found **${beginMarkerCount}** occurrences. release-please uses the **first** one and treats everything from there to the next \`END_COMMIT_OVERRIDE\` as the changelog message. If the first occurrence is prose (the marker name mentioned in the description, even inside backticks), the extracted override will not parse and your commit will be **silently dropped** from the next release PR.`,
+                '',
+                '### Fix',
+                '',
+                'Keep at most one literal `BEGIN_COMMIT_OVERRIDE` in the PR body — the one inside the actual override block, if any. For the rest:',
+                '',
+                '- Rephrase to avoid the literal string (e.g., "the override marker").',
+                '- Or break the literal: `` `BEGIN_<wbr>COMMIT_OVERRIDE` `` renders the same in markdown but is no longer a single token to release-please\'s splitter.',
+                '',
+                'Save the description; this check will re-run automatically.',
+                '',
+                '📖 [How to override a commit\'s changelog entry](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#overriding-a-merged-commits-changelog-entry)',
+              ].join('\n');
+              await postStickyOrSummary(
+                multiMarkerBody,
+                'Multiple BEGIN_COMMIT_OVERRIDE markers; comment could not be posted',
+              );
+              core.setFailed(`Multiple BEGIN_COMMIT_OVERRIDE markers in PR body (${beginMarkerCount}); release-please uses the first occurrence.`);
+              return;
+            }
+
+            const overrideMessage = beginMarkerCount === 1
               ? overrideHalves[1].split('END_COMMIT_OVERRIDE')[0].trim()
               : '';
-            if (overrideHalves.length > 2) {
-              core.warning('Multiple BEGIN_COMMIT_OVERRIDE blocks found; only the first is honored (matches release-please behavior).');
-            }
 
             // Mirror release-please/src/commit.ts:splitMessages. release-please
             // splits the preprocessed message into sub-messages and parses each
@@ -119,15 +194,6 @@ jobs:
               ? overrideMessage
               : `${title} (#${number})\n\n${fullBody}`;
             const subMessages = splitMessages(squashMessage);
-
-            async function findStickyComment() {
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                ...context.repo,
-                issue_number: number,
-                per_page: 100,
-              });
-              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
-            }
 
             // Try parsing each sub-message; first failure wins.
             let parseError = null;
@@ -215,37 +281,13 @@ jobs:
               '',
               offendingSection + overrideAdvice,
               '',
-              '📖 [release-please override docs](https://github.com/googleapis/release-please/blob/main/docs/customizing.md#overriding-commit-messages)',
+              '📖 [How to override a commit\'s changelog entry](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#overriding-a-merged-commits-changelog-entry)',
             ].join('\n');
 
-            try {
-              const existing = await findStickyComment();
-              if (existing) {
-                await github.rest.issues.updateComment({
-                  ...context.repo,
-                  comment_id: existing.id,
-                  body: commentBody,
-                });
-              } else {
-                await github.rest.issues.createComment({
-                  ...context.repo,
-                  issue_number: number,
-                  body: commentBody,
-                });
-              }
-            } catch (commentErr) {
-              // Comment posting can fail for several reasons: fork PRs run
-              // with restricted tokens, secondary rate limits, transient API
-              // errors, or pagination failures during the lookup. Always
-              // surface the would-be comment to the job summary so a
-              // maintainer can copy-paste the remediation manually.
-              core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
-              await core.summary
-                .addHeading('Parse check failed; comment could not be posted')
-                .addRaw('Paste the following into the PR as a comment:')
-                .addCodeBlock(commentBody, 'markdown')
-                .write();
-            }
+            await postStickyOrSummary(
+              commentBody,
+              'Parse check failed; comment could not be posted',
+            );
             // Use only the first line of the parser error in the failure
             // signal — GitHub renders multi-line ::error:: messages with
             // literal %0A escapes in the check summary.

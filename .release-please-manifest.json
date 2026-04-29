@@ -5,6 +5,6 @@
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
-  "libs/partners/quickjs": "0.0.1",
+  "libs/partners/quickjs": "0.1.0",
   "libs/repl": "0.0.1"
 }

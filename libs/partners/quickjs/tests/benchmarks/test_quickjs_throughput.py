@@ -9,6 +9,7 @@ workload combines PTC tool calls with ``console.log`` output.
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -115,10 +116,11 @@ class TestQuickJSThroughputBenchmarks:
         @benchmark
         def _() -> None:
             agent = self._make_multi_turn_agent(middleware=middleware, codes=codes)
+            thread_id = f"multi-turn-bench-thread-{uuid.uuid4().hex}"
             for index in range(turn_count):
                 set_result = agent.invoke(
                     invoke_payload(),
-                    config={"configurable": {"thread_id": "multi-turn-bench-thread"}},
+                    config={"configurable": {"thread_id": thread_id}},
                 )
                 assert_eval_succeeded(set_result)
                 expected = f"token-{index}"
@@ -126,7 +128,7 @@ class TestQuickJSThroughputBenchmarks:
 
                 read_result = agent.invoke(
                     invoke_payload(),
-                    config={"configurable": {"thread_id": "multi-turn-bench-thread"}},
+                    config={"configurable": {"thread_id": thread_id}},
                 )
                 assert_eval_succeeded(read_result)
                 assert expected in eval_tool_message(read_result).content

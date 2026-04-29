@@ -14,6 +14,34 @@ function formatResult(result: unknown): string | null {
   return JSON.stringify(result, null, 2);
 }
 
+type ImagePreview = {
+  url: string;
+  mimeType: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function imagePreviewsFromResult(result: unknown): ImagePreview[] {
+  const content = isRecord(result) ? result.content : result;
+  if (!Array.isArray(content)) return [];
+
+  return content.flatMap((block) => {
+    if (!isRecord(block) || block.type !== "image") return [];
+    if (typeof block.base64 !== "string") return [];
+
+    const mimeType = typeof block.mime_type === "string"
+      ? block.mime_type
+      : "image/png";
+
+    return [{
+      url: `data:${mimeType};base64,${block.base64}`,
+      mimeType,
+    }];
+  });
+}
+
 const MAX_PREVIEW_LINES = 20;
 
 const CodePreview: FC<{ content: string; label?: string }> = ({ content, label }) => {
@@ -50,6 +78,7 @@ const FileToolCard: FC<ToolRendererProps> = ({ toolCall, expanded }) => {
   const oldStr = (args.old_str ?? args.old_string ?? "") as string;
   const newStr = (args.new_str ?? args.new_string ?? "") as string;
   const result = formatResult(toolCall.result);
+  const imagePreviews = imagePreviewsFromResult(toolCall.result);
 
   if (!expanded) return null;
 
@@ -93,7 +122,22 @@ const FileToolCard: FC<ToolRendererProps> = ({ toolCall, expanded }) => {
             {fileName}
           </div>
         )}
-        {result ? (
+        {imagePreviews.length > 0 ? (
+          <div className="space-y-2">
+            {imagePreviews.map((image, index) => (
+              <div
+                key={`${image.mimeType}-${index}`}
+                className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--background)]"
+              >
+                <img
+                  src={image.url}
+                  alt={fileName ? `Preview of ${fileName}` : "Read file preview"}
+                  className="max-h-96 w-auto object-contain"
+                />
+              </div>
+            ))}
+          </div>
+        ) : result ? (
           <CodePreview content={result} />
         ) : (
           <div className="text-[11px] text-[var(--muted-foreground)]">Reading...</div>

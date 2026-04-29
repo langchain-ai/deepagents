@@ -191,6 +191,12 @@ jobs:
               }
             }
 
+            // ── Branch-name-based labels ──
+            // Branch ref doesn't change for an existing PR, so no removal logic.
+            for (const label of h.matchBranchLabels(pr.head?.ref)) {
+              toAdd.add(label);
+            }
+
             // ── Title-based labels ──
             // Use renamed title if the scope-rename step rewrote it,
             // since pr.title still reflects the pre-update value.

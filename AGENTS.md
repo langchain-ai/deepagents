@@ -324,9 +324,15 @@ The release pipeline: build → unit tests against built package → publish to 
 
 See `.github/RELEASING.md` for the full workflow (version bumping, pre-releases, troubleshooting failed releases, and label management).
 
+#### Overriding a merged commit's changelog entry
+
+See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overriding-a-merged-commits-changelog-entry) in `RELEASING.md` for the workflow (when to use it, the block format, and the squash-merge caveats).
+
 ### PR labeling and linting
 
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
+
+**Release-please parse check** (`.github/workflows/release_please_parse_check.yml`) – Runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)\n\n<body>`) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. Mirrors release-please's `preprocessCommitMessage` and `splitMessages` so per-sub-message parse failures are caught the same way release-please catches them. The parser is exact-pinned (not a semver range) and must stay in lock-step with `release-please/package.json`.
 
 **Auto-labeling:**
 

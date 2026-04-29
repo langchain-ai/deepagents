@@ -6,8 +6,7 @@ import concurrent.futures
 import contextvars
 import mimetypes
 import uuid
-import warnings
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
@@ -32,6 +31,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
@@ -577,7 +577,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         *,
         backend: BACKEND_TYPES | None = None,
         system_prompt: str | None = None,
-        custom_tool_descriptions: dict[str, str] | None = None,
+        custom_tool_descriptions: Mapping[str, str] | None = None,
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
@@ -639,12 +639,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Resolved backend instance.
         """
         if callable(self.backend):
-            warnings.warn(
-                "Passing a callable (factory) as `backend` is deprecated and "
-                "will be removed in v0.7. Pass a `BackendProtocol` instance "
-                "directly instead (e.g. `StateBackend()`).",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.7.0",
+                message=(
+                    "Passing a callable (factory) as `backend` is deprecated "
+                    "and will be removed in deepagents==0.7.0. Pass a "
+                    "`BackendProtocol` instance directly instead "
+                    "(e.g. `StateBackend()`)."
+                ),
+                package="deepagents",
             )
             return self.backend(runtime)  # ty: ignore[call-top-callable]
         return self.backend
@@ -732,12 +736,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int,
         ) -> ToolMessage | str:
             if isinstance(read_result, str):
-                warnings.warn(
-                    "Returning a plain `str` from `backend.read()` is deprecated. "
-                    "Return a `ReadResult` instead. Returning `str` will not be "
-                    "supported in v0.7.",
-                    DeprecationWarning,
-                    stacklevel=2,
+                warn_deprecated(
+                    since="0.5.0",
+                    removal="0.7.0",
+                    message=(
+                        "Returning a plain `str` from `backend.read()` is "
+                        "deprecated and will be removed in deepagents==0.7.0. "
+                        "Return a `ReadResult` instead."
+                    ),
+                    package="deepagents",
                 )
                 # Legacy backends already format with line numbers
                 return _truncate(read_result, validated_path, limit)

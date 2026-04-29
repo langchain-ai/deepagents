@@ -4,6 +4,7 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -40,6 +41,7 @@ from deepagents.middleware.skills import (
     _parse_skill_metadata,
     _skill_metadata_from_response,
     _validate_metadata,
+    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -211,6 +213,103 @@ No YAML frontmatter here.
 
     result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
+
+
+def test_validate_module_path_absent() -> None:
+    """Missing key returns None — the vast majority of skills have no module."""
+    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_valid_bare() -> None:
+    """A bare filename with a supported extension passes through unchanged."""
+    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_strips_dot_slash() -> None:
+    """./index.ts → index.ts so the stored path matches how the loader keys files."""
+    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_nested() -> None:
+    """Subdirectory paths are fine as long as they stay inside the skill dir."""
+    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
+
+
+def test_validate_module_path_all_supported_extensions() -> None:
+    """Every quickjs-rs-accepted extension is accepted here too."""
+    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
+        path = f"index.{ext}"
+        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
+
+
+def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
+    """Non-string values log a warning and return None — don't crash the parse."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
+    assert "non-string 'module'" in caplog.text
+
+
+def test_validate_module_path_rejects_empty_string() -> None:
+    """An empty / whitespace-only value is equivalent to absent."""
+    assert _validate_module_path("", "/skills/x/SKILL.md") is None
+    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
+    """Absolute paths could reach outside the skill dir — reject with a warning."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
+    assert "absolute" in caplog.text
+
+
+def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
+    """Any form of `..` traversal is rejected so skills can't read each other's code."""
+    caplog.set_level(logging.WARNING)
+    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
+        caplog.clear()
+        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
+        assert "escapes" in caplog.text
+
+
+def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
+    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
+    assert "extension" in caplog.text
+
+
+def test_parse_skill_metadata_with_module() -> None:
+    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
+    content = """---
+name: pdf-extract
+description: Parse PDFs
+module: ./index.ts
+---
+
+# PDF extract
+"""
+    result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
+    assert result is not None
+    assert result["module"] == "index.ts"
+
+
+def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
+    """An invalid `module` value must not drop the skill.
+
+    The prose is still useful; we just drop the module surface.
+    """
+    content = """---
+name: bad-module
+description: has a bad module path
+module: /etc/passwd
+---
+
+# Bad module
+"""
+    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
+    assert result is not None
+    assert "module" not in result
+    assert result["name"] == "bad-module"
 
 
 def test_parse_skill_metadata_invalid_yaml() -> None:
@@ -840,21 +939,23 @@ class TestSkillMetadataFromResponseLogging:
 
 
 @pytest.mark.parametrize(
-    "source_path",
+    ("source_path", "expected_label"),
     [
-        "C:\\Users\\project\\skills\\",
-        "C:\\Users\\project\\skills",
-        "\\\\server\\share\\skills\\",
+        ("C:\\Users\\project\\skills\\", "Project"),
+        ("C:\\Users\\project\\skills", "Project"),
+        ("\\\\server\\share\\skills\\", "Share"),
     ],
     ids=["trailing-backslash", "no-trailing-sep", "unc-path"],
 )
-def test_format_skills_locations_with_windows_path(source_path: str) -> None:
-    r"""Derive the trailing directory name from Windows-style source paths.
+def test_format_skills_locations_with_windows_path(source_path: str, expected_label: str) -> None:
+    r"""Derive a sensible label from Windows-style source paths.
 
     Without backslash normalization, `.name` on the resulting `PurePosixPath`
     returns the raw backslashed string (or the empty string for UNC paths
     where `\\\\server\\share\\skills` has no POSIX-delimited final component),
-    not the intended directory label.
+    not the intended directory label. A leaf of literal `skills` climbs one
+    level so the label reflects the scope (`project`, `share`) rather than
+    collapsing to the generic "Skills Skills" duplicate.
     """
     middleware = SkillsMiddleware(
         backend=None,  # type: ignore[arg-type]
@@ -862,10 +963,148 @@ def test_format_skills_locations_with_windows_path(source_path: str) -> None:
     )
 
     result = middleware._format_skills_locations()
-    # Pin the full marker so either a silently wrong directory name or a
-    # capitalization regression trips the assertion.
-    assert "**Skills Skills**:" in result
+    assert f"**{expected_label} Skills**:" in result
+    assert "**Skills Skills**:" not in result
     assert source_path in result
+
+
+def test_format_skills_locations_builtin_leaf() -> None:
+    """`built_in_skills` collapses to `Built-in Skills` rather than the raw leaf."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/pkg/deepagents_cli/built_in_skills"],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Built-in Skills**:" in result
+
+
+def test_format_skills_locations_skills_leaf_climbs_to_parent() -> None:
+    """A leaf of literal `skills` derives its label from the parent dir."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            "/home/me/.claude/skills",
+            "/home/me/.agents/skills/",
+            "/home/me/.deepagents/skills",
+        ],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Claude Skills**:" in result
+    assert "**Agents Skills**:" in result
+    assert "**Deepagents Skills**:" in result
+    assert "**Skills Skills**:" not in result
+
+
+def test_format_skills_locations_explicit_label_tuples() -> None:
+    """`(path, label)` tuples use the supplied label verbatim."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            ("/home/me/.claude/skills", "User Claude"),
+            ("/repo/.claude/skills", "Project Claude"),
+        ],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**User Claude Skills**: `/home/me/.claude/skills`" in result
+    assert "**Project Claude Skills**: `/repo/.claude/skills`" in result
+    # Higher-priority marker belongs to the last entry.
+    assert result.rstrip().endswith("(higher priority)")
+    assert "Project Claude" in result.split("(higher priority)")[0]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "expected_label"),
+    [
+        ("/skills", "Skills"),
+        ("/skills/", "Skills"),
+        ("skills", "Skills"),
+        ("/foo/my_custom", "My_custom"),
+        ("/foo/my-skills", "My-skills"),
+    ],
+    ids=[
+        "root-anchored-skills",
+        "root-anchored-skills-trailing",
+        "bare-skills",
+        "underscore-leaf-capitalize-fallback",
+        "hyphen-leaf-capitalize-fallback",
+    ],
+)
+def test_format_skills_locations_fallback_capitalize(source_path: str, expected_label: str) -> None:
+    """Bare paths without a special leaf fall back to `.capitalize()`.
+
+    Preserves the historical labelling for existing callers: a leaf like
+    `my_custom` renders as `My_custom` (single-capital) rather than the
+    more aggressive `My Custom` title-casing. Root-anchored and bare
+    `skills` inputs cannot climb and fall back to `Skills`.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[source_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert f"**{expected_label} Skills**:" in result
+
+
+@pytest.mark.parametrize(
+    "empty_path",
+    ["", "/"],
+    ids=["empty-string", "root-only"],
+)
+def test_format_skills_locations_empty_path_fallback(empty_path: str) -> None:
+    """Empty/`/` inputs fall back to `Unnamed` without crashing render."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[empty_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Unnamed Skills**:" in result
+
+
+@pytest.mark.parametrize(
+    "bad_source",
+    [
+        ("/only-one-element",),
+        ("/one", "two", "three"),
+        ("/path", 42),
+        (None, "label"),
+    ],
+    ids=["one-tuple", "three-tuple", "non-string-label", "non-string-path"],
+)
+def test_malformed_tuple_source_raises_type_error(bad_source: object) -> None:
+    """Malformed tuple sources raise `TypeError` at construction time.
+
+    Fails close to the caller rather than surfacing later as an
+    `IndexError` in the middleware or a silently-coerced non-string path
+    downstream.
+    """
+    with pytest.raises(TypeError, match=r"expected str or \(str, str\) tuple"):
+        SkillsMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=[bad_source],  # type: ignore[list-item]
+        )
+
+
+def test_sources_attribute_is_paths_only() -> None:
+    """`middleware.sources` exposes paths only; labels live on `source_labels`.
+
+    Backwards-compat: callers that inspected `middleware.sources` before
+    the tuple-form API was added continue to see a plain `list[str]`.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            "/skills/user/",
+            ("/home/me/.claude/skills", "User Claude"),
+        ],
+    )
+
+    assert middleware.sources == ["/skills/user/", "/home/me/.claude/skills"]
+    assert middleware.source_labels == ["User", "User Claude"]
 
 
 def test_format_skills_locations_single_registry() -> None:

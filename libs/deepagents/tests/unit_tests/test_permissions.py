@@ -48,7 +48,7 @@ def _invoke_with_permissions(tool, args, rules, tool_call_id="test", backend=Non
                     break
     if resolved_backend is None:
         resolved_backend = _make_backend()
-    configured_middleware = FilesystemMiddleware(backend=resolved_backend, permissions=rules)
+    configured_middleware = FilesystemMiddleware(backend=resolved_backend, _permissions=rules)
     configured_tool = next(t for t in configured_middleware.tools if t.name == tool.name)
     runtime = _runtime(tool_call_id)
 
@@ -84,7 +84,7 @@ async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", back
                     break
     if resolved_backend is None:
         resolved_backend = _make_backend()
-    configured_middleware = FilesystemMiddleware(backend=resolved_backend, permissions=rules)
+    configured_middleware = FilesystemMiddleware(backend=resolved_backend, _permissions=rules)
     configured_tool = next(t for t in configured_middleware.tools if t.name == tool.name)
     runtime = _runtime(tool_call_id)
 
@@ -186,7 +186,7 @@ class TestFilesystemMiddlewarePermissionInit:
         with pytest.raises(NotImplementedError, match="execute"):
             FilesystemMiddleware(
                 backend=sandbox,
-                permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+                _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
             )
 
     def test_raises_not_implemented_for_composite_with_sandbox_default(self):
@@ -210,7 +210,7 @@ class TestFilesystemMiddlewarePermissionInit:
         with pytest.raises(NotImplementedError, match="execute"):
             FilesystemMiddleware(
                 backend=composite,
-                permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+                _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
             )
 
     def test_allows_composite_without_sandbox_default(self):
@@ -218,7 +218,7 @@ class TestFilesystemMiddlewarePermissionInit:
         composite = CompositeBackend(default=self._backend(), routes={})
         middleware = FilesystemMiddleware(
             backend=composite,
-            permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
         )
         assert middleware._permissions
 
@@ -245,7 +245,7 @@ class TestFilesystemMiddlewarePermissionInit:
         composite = CompositeBackend(default=self._backend(), routes={"/sandbox/": sandbox})
         middleware = FilesystemMiddleware(
             backend=composite,
-            permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")],
         )
         assert middleware._permissions
 

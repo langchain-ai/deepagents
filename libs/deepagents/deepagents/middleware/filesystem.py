@@ -701,7 +701,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
-        permissions: list[FilesystemPermission] | None = None,
+        _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -718,8 +718,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            permissions: Optional filesystem permission rules enforced directly
+            _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
+
+                Marked private for now because this is an internal
+                implementation detail and may move to the backend layer in a
+                future change.
         """
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
@@ -727,10 +731,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
         if (
-            permissions
+            _permissions
             and isinstance(self.backend, BackendProtocol)
             and supports_execution(self.backend)
-            and not _all_paths_scoped_to_routes(permissions, self.backend)
+            and not _all_paths_scoped_to_routes(_permissions, self.backend)
         ):
             msg = (
                 "FilesystemMiddleware does not yet support permissions with backends that "
@@ -751,7 +755,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
-        self._permissions = list(permissions or [])
+        self._permissions = list(_permissions or [])
 
         self.tools = [
             self._create_ls_tool(),

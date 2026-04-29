@@ -498,7 +498,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    permissions=subagent_permissions,
+                    _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -625,7 +625,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            permissions=permissions,
+            _permissions=permissions,
         )
     )
     if inline_subagents:

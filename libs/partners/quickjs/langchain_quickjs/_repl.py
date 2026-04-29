@@ -13,7 +13,7 @@ import json
 import logging
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from langgraph.types import Command
@@ -76,6 +76,58 @@ class EvalOutcome:
     error_message: str = ""
     error_stack: str | None = None
     commands: list[Command] = field(default_factory=list)
+
+
+class _PTCCallBudgetExceededError(RuntimeError):
+    """Raised when one eval exceeds its configured PTC call budget."""
+
+    def __init__(self, *, limit: int, attempted: int, function_name: str) -> None:
+        self.limit = limit
+        self.attempted = attempted
+        self.function_name = function_name
+        msg = (
+            "PTC call budget exceeded "
+            f"(limit={limit}, attempted={attempted}, "
+            f"function={function_name})"
+        )
+        super().__init__(msg)
+
+    def render_message(self) -> str:
+        return (
+            "PTC call budget exceeded "
+            f"(limit={self.limit}, attempted={self.attempted}, "
+            f"function={self.function_name})"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _PTCState:
+    """Per-eval PTC state (reset on each eval call)."""
+
+    remaining_calls: int | None
+    command_buffer: tuple[Command, ...] = field(default_factory=tuple)
+
+    def consume_call_budget(
+        self, *, function_name: str, max_ptc_calls: int | None
+    ) -> _PTCState:
+        """Count one PTC bridge call and enforce the per-eval limit."""
+        if self.remaining_calls is None:
+            return self
+        if self.remaining_calls > 0:
+            return replace(self, remaining_calls=self.remaining_calls - 1)
+
+        normalized_limit = max_ptc_calls if max_ptc_calls is not None else 0
+        raise _PTCCallBudgetExceededError(
+            limit=normalized_limit,
+            attempted=normalized_limit + 1,
+            function_name=function_name,
+        )
+
+    def append_commands(self, commands: list[Command]) -> _PTCState:
+        """Return a copy with additional commands captured for this eval."""
+        if not commands:
+            return self
+        return replace(self, command_buffer=(*self.command_buffer, *commands))
 
 
 class _ConsoleBuffer:
@@ -256,6 +308,7 @@ class _ThreadREPL:
         timeout: float,
         capture_console: bool,
         max_stdout_chars: int,
+        max_ptc_calls: int | None = 256,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -265,6 +318,8 @@ class _ThreadREPL:
         # and what we describe in the system prompt.
         self._per_call_timeout = timeout
         self._capture_console = capture_console
+        # Static budget config; mutable counters live in ``_ptc_state``.
+        self._max_ptc_calls = max_ptc_calls
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. ``_registered_tools`` tracks which camel-case names
@@ -287,9 +342,9 @@ class _ThreadREPL:
         # graph state, store, context, etc. Set via ``set_outer_runtime``
         # from the middleware's tool handler immediately before eval.
         self._outer_runtime: ToolRuntime | None = None
-        # ``Command`` values emitted by PTC-invoked tools during the
-        # currently-running eval call. Drained into ``EvalOutcome``.
-        self._ptc_command_buffer: list[Command] = []
+        # Mutable per-eval PTC state. Allocated at eval start and cleared
+        # in finally so bridge calls can't leak buffered state across evals.
+        self._ptc_state: _PTCState | None = None
         # Slot-local skill install cache. Kept on the REPL (not registry)
         # so thread-scoped backends can resolve same-named skills
         # differently across threads.
@@ -418,6 +473,13 @@ class _ThreadREPL:
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
                 raise RuntimeError(msg)
+            if self._ptc_state is None:
+                msg = "PTC bridge called outside active eval"
+                raise RuntimeError(msg)
+            self._ptc_state = self._ptc_state.consume_call_budget(
+                function_name=f"tools.{camel}",
+                max_ptc_calls=self._max_ptc_calls,
+            )
             payload = _normalize_tool_input(raw_input)
             call_id = _synth_tool_call_id(tool.name)
             # Build a ToolCall-shaped input so InjectedToolCallId and the
@@ -428,7 +490,11 @@ class _ThreadREPL:
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
-            self._ptc_command_buffer.extend(_extract_commands(result))
+            ptc_state = self._ptc_state
+            if ptc_state is None:
+                msg = "PTC bridge called outside active eval"
+                raise RuntimeError(msg)
+            self._ptc_state = ptc_state.append_commands(_extract_commands(result))
             return coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -531,7 +597,6 @@ class _ThreadREPL:
         """
         ctx = cast("Context", self._ctx)
         outcome = EvalOutcome()
-        self._ptc_command_buffer.clear()
         if skills_backend is not None:
             referenced = scan_skill_references(code)
             if referenced:
@@ -546,6 +611,7 @@ class _ThreadREPL:
                         outcome.stdout_truncated_chars,
                     ) = self._console.drain()
                     return outcome
+        self._ptc_state = _PTCState(remaining_calls=self._max_ptc_calls)
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)
@@ -577,8 +643,10 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
         finally:
-            outcome.commands.extend(self._ptc_command_buffer)
-            self._ptc_command_buffer.clear()
+            ptc_state = self._ptc_state
+            if ptc_state is not None:
+                outcome.commands.extend(ptc_state.command_buffer)
+            self._ptc_state = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
 
@@ -587,7 +655,13 @@ class _ThreadREPL:
         # so operators can distinguish a bug in our console bridge
         # from a user-code error.
         if isinstance(e, HostError):
-            logger.warning("console-bridge host error", exc_info=e.__cause__)
+            cause = e.__cause__
+            if isinstance(cause, _PTCCallBudgetExceededError):
+                outcome.error_type = "PTCCallBudgetExceeded"
+                outcome.error_message = cause.render_message()
+                outcome.error_stack = None
+                return
+            logger.warning("console-bridge host error", exc_info=cause)
             outcome.error_type = "HostError"
         else:
             outcome.error_type = e.name
@@ -656,6 +730,7 @@ class _Registry:
     timeout: float
     capture_console: bool
     max_stdout_chars: int
+    max_ptc_calls: int | None = 256
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -691,6 +766,7 @@ class _Registry:
             timeout=self.timeout,
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
+            max_ptc_calls=self.max_ptc_calls,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

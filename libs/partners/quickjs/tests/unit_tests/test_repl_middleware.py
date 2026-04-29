@@ -117,6 +117,11 @@ def test_legacy_system_prompt_alias_removed() -> None:
     assert not hasattr(mw, "system_prompt")
 
 
+def test_rejects_invalid_max_ptc_calls() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        REPLMiddleware(max_ptc_calls=0)
+
+
 def test_system_prompt_injected_once() -> None:
     """wrap_model_call appends exactly one snippet per call, idempotent in content."""
     mw = REPLMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)

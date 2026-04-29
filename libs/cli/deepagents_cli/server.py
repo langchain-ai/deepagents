@@ -352,6 +352,28 @@ class ServerProcess:
             )
             return ""
 
+    def tail_log(self, n_lines: int = 80) -> str:
+        r"""Return the last `n_lines` of the server log (best-effort).
+
+        Useful for surfacing the actual server-side traceback after a
+        `RemoteException` reaches the client with a sanitized message such
+        as `'An internal error occurred'` — `langgraph_api` strips messages
+        for exception types outside its serialization whitelist, so the
+        client otherwise sees only the type name.
+
+        Args:
+            n_lines: Maximum number of trailing lines to return.
+
+        Returns:
+            Up to `n_lines` lines from the end of the log, joined by `\n`.
+            Empty string if the log file is unavailable or unreadable.
+        """
+        raw = self._read_log_file()
+        if not raw:
+            return ""
+        lines = raw.splitlines()
+        return "\n".join(lines[-n_lines:])
+
     async def start(
         self,
         *,

@@ -977,7 +977,7 @@ async def run_non_interactive(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=False,
-        ) as (agent, _server_proc):
+        ) as (agent, server_proc):
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:
                 try:
@@ -997,17 +997,43 @@ async def run_non_interactive(
 
             file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 
-            await _run_agent_loop(
-                agent,
-                message,
-                config,
-                console,
-                file_op_tracker,
-                quiet=quiet,
-                stream=stream,
-                message_kwargs=message_kwargs,
-                thread_url_lookup=thread_url_lookup,
-            )
+            try:
+                await _run_agent_loop(
+                    agent,
+                    message,
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=quiet,
+                    stream=stream,
+                    message_kwargs=message_kwargs,
+                    thread_url_lookup=thread_url_lookup,
+                )
+            except BaseException:
+                # Surface server-side log tail before the server context
+                # exits and the log file may be cleaned up. Without this,
+                # `langgraph_api` errors reach the client as a generic
+                # "An internal error occurred" because the wire format
+                # strips messages for types outside its whitelist (OSError,
+                # ImportError, etc.) — the real cause sits in the server
+                # log only. Best-effort: any failure to read the log is
+                # silently swallowed so the original exception propagates
+                # cleanly to the outer handlers, which decide the exit
+                # code.
+                if server_proc is not None:
+                    try:
+                        log_tail = server_proc.tail_log()
+                    except Exception:  # noqa: BLE001
+                        log_tail = ""
+                    if log_tail.strip():
+                        console.print(
+                            "\n[dim]── server log (last lines) ──[/dim]"
+                        )
+                        console.print(escape_markup(log_tail), highlight=False)
+                        console.print(
+                            "[dim]── end server log ──[/dim]\n"
+                        )
+                raise
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")

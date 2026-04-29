@@ -286,3 +286,58 @@ class TestServerProcess:
         assert os.environ.get("DEEPAGENTS_CLI_SERVER_MODEL") == old_value
         # Overrides NOT cleared (available for retry)
         assert "DEEPAGENTS_CLI_SERVER_MODEL" in server._env_overrides
+
+
+class TestServerProcessTailLog:
+    """`tail_log` surfaces the trailing portion of the server log file.
+
+    This is what `non_interactive` prints when `RemoteException` reaches the
+    client with a sanitized `'An internal error occurred'` message — without
+    it, the actual server-side traceback is invisible to the user.
+    """
+
+    def _server_with_log_file(self, tmp_path: Path, content: str) -> ServerProcess:
+        log_path = tmp_path / "server.log"
+        log_path.write_text(content)
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+        log_file.flush = MagicMock()
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._log_file = log_file
+        return server
+
+    def test_returns_last_n_lines(self, tmp_path: Path) -> None:
+        content = "\n".join(f"line {i}" for i in range(1, 200))
+        server = self._server_with_log_file(tmp_path, content)
+
+        out = server.tail_log(n_lines=10)
+
+        lines = out.splitlines()
+        assert len(lines) == 10
+        assert lines[0] == "line 190"
+        assert lines[-1] == "line 199"
+
+    def test_returns_full_log_when_shorter_than_n_lines(self, tmp_path: Path) -> None:
+        server = self._server_with_log_file(tmp_path, "only one line")
+        assert server.tail_log(n_lines=80) == "only one line"
+
+    def test_returns_empty_when_no_log_file(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._log_file = None
+        assert server.tail_log() == ""
+
+    def test_returns_empty_on_read_error(self, tmp_path: Path) -> None:
+        log_file = MagicMock()
+        log_file.name = "/no/such/path/that/exists.log"
+        log_file.flush = MagicMock()
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._log_file = log_file
+        # Read fails internally; tail_log returns "" without raising.
+        assert server.tail_log() == ""

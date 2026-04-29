@@ -129,6 +129,23 @@ asyncio_mode = "auto"
 addopts = "-m 'not benchmark'"
 filterwarnings = [
     "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+    # Tests intentionally exercise the legacy `list[str]` store content format
+    # for backwards-compat coverage; the deprecation fires from internal code.
+    "ignore:Store item with `list\\[str\\]` content is deprecated:DeprecationWarning",
+    # `files_update` is exercised by middleware tests verifying internal handling.
+    "ignore:`files_update` was deprecated:DeprecationWarning",
+    # Legacy `FileData` `list[str]` content shape, exercised for compat coverage.
+    "ignore:`FileData` with `list\\[str\\]` content is deprecated:DeprecationWarning",
+    # Filesystem middleware tests still exercise the factory/runtime backend path.
+    "ignore:Passing a callable \\(factory\\) as `backend` is deprecated:DeprecationWarning",
+    "ignore:Passing `runtime` to `StateBackend` is deprecated:DeprecationWarning",
+    # `virtual_mode` default-change notice; tests assert legacy behavior explicitly.
+    "ignore:`LocalShellBackend` `virtual_mode` default will change:DeprecationWarning",
+    "ignore:`FilesystemBackend` `virtual_mode` default will change:DeprecationWarning",
+    # `langsmith.sandbox` is alpha upstream; the FutureWarning fires on import.
+    "ignore:langsmith.sandbox is in alpha:FutureWarning",
+    # pytest-cov complains when invoked with `--no-cov` (used for fast runs).
+    "ignore::pytest_cov.plugin.CovDisabledWarning",
 ]
 markers = [
     "benchmark: wall-time benchmarks for construction performance",

@@ -83,9 +83,17 @@ _FRONTEND_PLACEHOLDER_RE = re.compile(
 
 
 def _build_runtime_config_json(config: DeployConfig) -> str:
-    """Build the JSON value injected into `window.__DEEPAGENTS_CONFIG__`."""
+    """Build the JSON value injected into `window.__DEEPAGENTS_CONFIG__`.
+
+    Only reached when `[frontend].enabled` and `[auth]` is set —
+    validation guarantees both. The `is None` guards below exist so
+    the optional fields narrow for type-checkers.
+    """
     if config.frontend is None:
         msg = "runtime config requires [frontend] to be configured"
+        raise ValueError(msg)
+    if config.auth is None:
+        msg = "runtime config requires [auth] to be configured"
         raise ValueError(msg)
 
     app_name = config.frontend.app_name or config.agent.name
@@ -100,11 +108,6 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
     if config.frontend.prompts is not None:
         payload["prompts"] = list(config.frontend.prompts)
 
-    # Validation guarantees `[auth]` is set whenever `[frontend].enabled`,
-    # so config.auth is non-None here.
-    if config.auth is None:
-        msg = "runtime config requires [auth] to be configured"
-        raise ValueError(msg)
     provider = config.auth.provider
     payload["auth"] = provider
     if provider == "supabase":
@@ -218,12 +221,12 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 6. Generate auth.py from the [auth] provider. Validation
-    # guarantees [auth] is set whenever [frontend].enabled, so the
-    # provider field is the single source of truth (including the
-    # anonymous block — its permissive auth.py overrides LangSmith
-    # Cloud's default x-api-key requirement so the bundled frontend
-    # can reach /threads).
+    # 6. Generate auth.py from the [auth] provider, if any. Skipped
+    # entirely when [auth] is omitted — in that case LangSmith Cloud's
+    # default x-api-key auth applies. Validation guarantees [auth] is
+    # set whenever [frontend].enabled, so auth.py is always present
+    # for frontend deploys (including the "anonymous" provider, whose
+    # permissive handler lets the bundled UI reach /threads).
     frontend_enabled = config.frontend is not None and config.frontend.enabled
     auth_provider: str | None = (
         config.auth.provider if config.auth is not None else None
@@ -515,7 +518,7 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
         else:
             print(f"  Auth: {config.auth.provider}")
     else:
-        print("  Auth: default (LangSmith API key required)")
+        print("  Auth: none (LangSmith API key required to call the API)")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

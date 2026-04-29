@@ -290,7 +290,7 @@ def test_deploy_dry_run_anonymous_prints_warning(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
 def test_deploy_default_summary_label(tmp_path, monkeypatch, capsys):
-    """No [auth] and no [frontend] prints the 'Auth: default' summary line."""
+    """No [auth] and no [frontend] prints the 'Auth: none' summary line."""
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
@@ -309,7 +309,7 @@ model = "anthropic:claude-sonnet-4-6"
     _deploy(config_path=str(project / "deepagents.toml"), dry_run=True)
 
     captured = capsys.readouterr()
-    assert "Auth: default (LangSmith API key required)" in captured.out
+    assert "Auth: none (LangSmith API key required to call the API)" in captured.out
     # No anonymous warning fires for the default case.
     assert "ANONYMOUS auth" not in captured.out
 

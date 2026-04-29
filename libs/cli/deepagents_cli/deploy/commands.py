@@ -265,7 +265,7 @@ def _deploy(
             print(f"  - {err}")
         raise SystemExit(1)
 
-    # Warn + confirm if shipping the frontend without [auth]. The
+    # Warn + confirm if the frontend was set to anonymous mode. The
     # generated auth.py for this case is permissive (overrides the
     # LangSmith default x-api-key requirement) so the API is reachable
     # by anyone with the deploy URL.

@@ -372,7 +372,7 @@ async def get_current_user(
 AUTH_BLOCK_ANONYMOUS = '''\
 """Anonymous-mode auth for LangGraph deploy.
 
-Generated when [frontend] is enabled without [auth]. Overrides
+Generated when [auth].provider = "anonymous". Overrides
 LangSmith Cloud\'s default x-api-key requirement so the bundled
 frontend can reach /threads etc.
 
@@ -400,11 +400,7 @@ AUTH_BLOCKS: dict[str, tuple[str, str | None]] = {
     "clerk": (AUTH_BLOCK_CLERK, "pyjwt"),
     "anonymous": (AUTH_BLOCK_ANONYMOUS, None),
 }
-"""Map of auth provider -> (auth_block_template, optional_pip_dependency).
-
-`"anonymous"` is an internal-only key used when `[frontend]` is enabled
-without `[auth]`. It is NOT a user-facing provider name.
-"""
+"""Map of auth provider -> (auth_block_template, optional_pip_dependency)."""
 
 
 # ---------------------------------------------------------------------------

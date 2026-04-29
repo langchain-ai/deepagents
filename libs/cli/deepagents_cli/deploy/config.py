@@ -127,8 +127,12 @@ class SandboxConfig:
 class AuthConfig:
     """`[auth]` section — authentication provider settings.
 
-    The whole section is optional. When omitted, the deployed agent has
-    no authentication and all requests are anonymous.
+    The whole section is optional. When omitted, no `auth.py` is
+    generated and LangSmith Cloud's default `x-api-key` auth applies
+    (callers still need a LangSmith API key to reach the deployment).
+    To make the API genuinely open — e.g., to expose the bundled
+    `[frontend]` without sign-in — set `provider = "anonymous"`
+    explicitly.
     """
 
     provider: AuthProvider
@@ -139,8 +143,10 @@ class FrontendConfig:
     """`[frontend]` section — bundled default frontend settings.
 
     When `enabled = True`, `deepagent deploy` copies a pre-built React
-    chat UI into the deployment alongside the agent. `[auth]` is
-    optional; omitting it ships in anonymous mode.
+    chat UI into the deployment alongside the agent. An `[auth]`
+    section is required in this case — pick `"supabase"` or `"clerk"`
+    for real per-user auth, or set `provider = "anonymous"` explicitly
+    to ship the UI with an open API.
     """
 
     enabled: bool = False
@@ -648,17 +654,16 @@ model = "anthropic:claude-sonnet-4-6"
 
 # [auth] is optional. Add to enable user authentication.
 # [auth]
-# provider = "supabase"   # supabase | clerk
+# provider = "supabase"   # supabase | clerk | anonymous
 
 # [frontend] is optional. Add to ship a bundled chat UI on the same
-# deployment as the agent. Pair with [auth] for authenticated deploys; see below.
+# deployment as the agent. Requires [auth] — pick "supabase" or
+# "clerk" for real per-user auth, or set provider = "anonymous" to
+# leave the API open to anyone with the deploy URL (private/dev
+# deploys only).
 # [frontend]
 # enabled = true
 # app_name = "My Agent"
-
-# [frontend] without [auth] runs the UI in anonymous mode — anyone
-# with the deploy URL can use the agent. Use only for private/dev
-# deploys; add [auth] for any user-facing deployment.
 """
 
 

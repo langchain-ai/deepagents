@@ -1,5 +1,5 @@
 {
-  "libs/cli": "0.0.43",
+  "libs/cli": "0.0.44",
   "libs/deepagents": "0.5.4",
   "libs/acp": "0.0.6",
   "libs/partners/daytona": "0.0.5",

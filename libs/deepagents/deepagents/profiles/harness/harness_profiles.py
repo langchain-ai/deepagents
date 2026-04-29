@@ -652,9 +652,9 @@ class HarnessProfile:
             Class-path (`module:Class`) entries are not currently supported
             and may be added in a future revision; pass the class itself
             through the runtime `HarnessProfile` instead.
-        - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`,
-            `_PermissionMiddleware`) cannot be excluded as class or as their
-            `.name` string. The check fires at `HarnessProfile` construction,
+        - Scaffolding classes (`FilesystemMiddleware`, `SubAgentMiddleware`)
+            cannot be excluded as class or as their `.name` string. The check
+            fires at `HarnessProfile` construction,
             so register-site typos fail fast rather than waiting until
             `create_deep_agent` resolves the profile.
         - Entries that match no middleware in the assembled stack are

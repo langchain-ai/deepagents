@@ -93,7 +93,8 @@ class SubAgent(TypedDict):
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    ``_PermissionMiddleware`` is appended last in the middleware stack.
+    `FilesystemMiddleware` enforces these rules for the built-in filesystem
+    tools on the subagent stack.
     """
 
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]

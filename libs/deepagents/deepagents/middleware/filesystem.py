@@ -6,11 +6,9 @@ import concurrent.futures
 import contextvars
 import mimetypes
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from collections.abc import Awaitable, Callable, Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:

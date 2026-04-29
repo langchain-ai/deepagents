@@ -232,7 +232,7 @@ files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
-import os, sys, base64, json
+import codecs, os, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
@@ -266,9 +266,16 @@ if file_type != 'text':
 with open(path, 'rb') as f:
     raw_prefix = f.read(8192)
 
+# The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
+# emoji is 4); the incremental decoder buffers a trailing partial sequence
+# instead of raising, so legitimate text isn't misclassified as binary.
+is_binary = False
 try:
-    raw_prefix.decode('utf-8')
+    codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
 except UnicodeDecodeError:
+    is_binary = True
+
+if is_binary:
     with open(path, 'rb') as f:
         raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))

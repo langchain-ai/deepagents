@@ -609,6 +609,9 @@ class _ThreadREPL:
     def close(self) -> None:
         self._worker.run_sync(self._aclose())
 
+    async def aclose(self) -> None:
+        await self._worker.run_async(self._aclose())
+
     async def _aclose(self) -> None:
         if self._ctx is not None:
             self._ctx.close()
@@ -706,7 +709,7 @@ class _Registry:
 
     async def _aclose_slot(self, slot: _Slot) -> None:
         with contextlib.suppress(Exception):
-            await slot.worker.run_async(slot.repl._aclose())
+            await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
         slot.worker.close()

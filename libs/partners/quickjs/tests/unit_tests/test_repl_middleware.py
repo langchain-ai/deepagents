@@ -16,7 +16,7 @@ from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import REPLMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _Registry, _ThreadREPL, _clear_exception_references
+from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -276,22 +276,29 @@ def test_middleware_del_closes_runtime() -> None:
 
 def test_clear_exception_references_removes_traceback_links() -> None:
     """Clears traceback/context/cause to avoid cross-thread GC cycles."""
-    first = RuntimeError("first")
-    try:
-        raise ValueError("outer")
-    except ValueError:
+    outer_msg = "outer"
+    first_msg = "first"
+    second_msg = "second"
+
+    def _raise_outer() -> None:
+        raise ValueError(outer_msg)
+
+    def _raise_with_links() -> None:
         try:
-            raise first
-        except RuntimeError as caught:
-            second = RuntimeError("second")
-            caught.__cause__ = second
-            assert caught.__traceback__ is not None
-            assert caught.__context__ is not None
-            assert caught.__cause__ is not None
-            _clear_exception_references(caught)
-            assert caught.__traceback__ is None
-            assert caught.__context__ is None
-            assert caught.__cause__ is None
+            _raise_outer()
+        except ValueError:
+            raise RuntimeError(first_msg) from RuntimeError(second_msg)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _raise_with_links()
+    caught = exc_info.value
+    assert caught.__traceback__ is not None
+    assert caught.__context__ is not None
+    assert caught.__cause__ is not None
+    _clear_exception_references(caught)
+    assert caught.__traceback__ is None
+    assert caught.__context__ is None
+    assert caught.__cause__ is None
 
 
 def test_per_thread_slot_has_own_worker_and_runtime() -> None:
@@ -361,7 +368,7 @@ async def test_aevict_closes_and_removes_slot() -> None:
         rt = reg._slots["thread-a"].runtime
         repl = reg._slots["thread-a"].repl
         with (
-            patch.object(repl, "_aclose", wraps=repl._aclose) as repl_close_spy,
+            patch.object(repl, "aclose", wraps=repl.aclose) as repl_close_spy,
             patch.object(rt, "close", wraps=rt.close) as close_spy,
         ):
             await reg.aevict("thread-a")

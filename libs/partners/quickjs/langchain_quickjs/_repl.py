@@ -13,7 +13,7 @@ import json
 import logging
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from langgraph.types import Command
@@ -95,27 +95,21 @@ class _PTCCallBudgetExceededError(RuntimeError):
         )
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class _PTCState:
-    """Mutable per-eval PTC state (reset on each eval call)."""
+    """Per-eval PTC state (reset on each eval call)."""
 
     remaining_calls: int | None
-    command_buffer: list[Command] = field(default_factory=list)
-
-    @classmethod
-    def create(cls, *, max_ptc_calls: int | None) -> _PTCState:
-        """Build a fresh per-eval state object from static budget config."""
-        return cls(remaining_calls=max_ptc_calls)
+    command_buffer: tuple[Command, ...] = field(default_factory=tuple)
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
-    ) -> None:
+    ) -> _PTCState:
         """Count one PTC bridge call and enforce the per-eval limit."""
         if self.remaining_calls is None:
-            return
+            return self
         if self.remaining_calls > 0:
-            self.remaining_calls -= 1
-            return
+            return replace(self, remaining_calls=self.remaining_calls - 1)
 
         normalized_limit = max_ptc_calls if max_ptc_calls is not None else 0
         raise _PTCCallBudgetExceededError(
@@ -123,6 +117,12 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
+
+    def append_commands(self, commands: list[Command]) -> _PTCState:
+        """Return a copy with additional commands captured for this eval."""
+        if not commands:
+            return self
+        return replace(self, command_buffer=(*self.command_buffer, *commands))
 
 
 class _ConsoleBuffer:
@@ -471,7 +471,7 @@ class _ThreadREPL:
             if self._ptc_state is None:
                 msg = "PTC bridge called outside active eval"
                 raise RuntimeError(msg)
-            self._ptc_state.consume_call_budget(
+            self._ptc_state = self._ptc_state.consume_call_budget(
                 function_name=f"tools.{camel}",
                 max_ptc_calls=self._max_ptc_calls,
             )
@@ -485,7 +485,11 @@ class _ThreadREPL:
             result = await tool.ainvoke(
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
             )
-            self._ptc_state.command_buffer.extend(_extract_commands(result))
+            ptc_state = self._ptc_state
+            if ptc_state is None:
+                msg = "PTC bridge called outside active eval"
+                raise RuntimeError(msg)
+            self._ptc_state = ptc_state.append_commands(_extract_commands(result))
             return coerce_tool_output(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -602,7 +606,7 @@ class _ThreadREPL:
                         outcome.stdout_truncated_chars,
                     ) = self._console.drain()
                     return outcome
-        self._ptc_state = _PTCState.create(max_ptc_calls=self._max_ptc_calls)
+        self._ptc_state = _PTCState(remaining_calls=self._max_ptc_calls)
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)

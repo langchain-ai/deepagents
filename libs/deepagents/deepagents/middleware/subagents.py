@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.permissions import FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemPermission
 
 
 class SubAgent(TypedDict):
@@ -54,6 +54,12 @@ class SubAgent(TypedDict):
         skills: Skill source paths for SkillsMiddleware.
 
             List of paths to skill directories (e.g., `["/skills/user/", "/skills/project/"]`).
+        permissions: Filesystem permission rules for this subagent.
+
+            If omitted, inherits the parent agent's permissions. If provided,
+            replaces the parent agent's rules entirely for this subagent.
+
+            Rules are evaluated in declaration order; the first match wins.
     """
 
     name: str
@@ -87,7 +93,8 @@ class SubAgent(TypedDict):
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    ``_PermissionMiddleware`` is appended last in the middleware stack.
+    `FilesystemMiddleware` enforces these rules for the built-in filesystem
+    tools on the subagent stack.
     """
 
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]

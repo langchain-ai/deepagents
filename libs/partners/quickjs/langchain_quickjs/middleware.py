@@ -209,9 +209,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         fallback_id = self._fallback_thread_id
         middleware = self
 
-        def _run(
-            outcome_fn: Any, code: str, tool_call_id: str | None
-        ) -> ToolMessage:
+        def _run(outcome_fn: Any, code: str, tool_call_id: str | None) -> ToolMessage:
             outcome = outcome_fn(code)
             return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),

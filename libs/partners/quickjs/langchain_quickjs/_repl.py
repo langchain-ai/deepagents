@@ -120,6 +120,7 @@ class _PTCState:
             function_name=function_name,
         )
 
+
 class _ConsoleBuffer:
     """Accumulates ``console.*`` output between evals.
 

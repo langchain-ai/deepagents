@@ -983,7 +983,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -992,7 +992,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return f"Error: permission denied for write on {validated_path}"
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="write_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
@@ -1002,7 +1007,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -1011,7 +1016,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return f"Error: permission denied for write on {validated_path}"
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="write_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
@@ -1037,7 +1047,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -1046,7 +1056,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return f"Error: permission denied for write on {validated_path}"
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -1059,7 +1074,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -1068,7 +1083,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return f"Error: {e}"
 
             if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
-                return f"Error: permission denied for write on {validated_path}"
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error

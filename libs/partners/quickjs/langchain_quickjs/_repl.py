@@ -85,7 +85,12 @@ class _PTCCallBudgetExceededError(RuntimeError):
         self.limit = limit
         self.attempted = attempted
         self.function_name = function_name
-        super().__init__(self.render_message())
+        msg = (
+            "PTC call budget exceeded "
+            f"(limit={limit}, attempted={attempted}, "
+            f"function={function_name})"
+        )
+        super().__init__(msg)
 
     def render_message(self) -> str:
         return (

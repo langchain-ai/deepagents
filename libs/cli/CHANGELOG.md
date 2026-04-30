@@ -2,17 +2,10 @@
 
 ## [0.0.45](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.44...deepagents-cli==0.0.45) (2026-04-30)
 
-
 ### Bug Fixes
 
-* **cli:** broken filesystem permissions import ([#3033](https://github.com/langchain-ai/deepagents/issues/3033)) ([8d3e684](https://github.com/langchain-ai/deepagents/commit/8d3e684b5d104c6b1eb784357fc768f4db20a0bb))
-* **cli:** reject out-of-tree symlinked project `AGENTS.md` ([#3039](https://github.com/langchain-ai/deepagents/issues/3039)) ([4618098](https://github.com/langchain-ai/deepagents/commit/4618098e59c8c8d1d3f91354e4f4163a9582f710))
-* **cli:** support modified backspace word deletion ([#3037](https://github.com/langchain-ai/deepagents/issues/3037)) ([bc3d019](https://github.com/langchain-ai/deepagents/commit/bc3d01916d2ba34be07d56c9eb9b813008c1584c))
-
-
-### Reverted Changes
-
-* **cli:** broken filesystem permissions import ([#3040](https://github.com/langchain-ai/deepagents/issues/3040)) ([00699be](https://github.com/langchain-ai/deepagents/commit/00699bee9d26c753b629a1b73f439987082af047))
+* Reject out-of-tree symlinked project `AGENTS.md` ([#3039](https://github.com/langchain-ai/deepagents/issues/3039)) ([4618098](https://github.com/langchain-ai/deepagents/commit/4618098e59c8c8d1d3f91354e4f4163a9582f710))
+* Support modified backspace word deletion ([#3037](https://github.com/langchain-ai/deepagents/issues/3037)) ([bc3d019](https://github.com/langchain-ai/deepagents/commit/bc3d01916d2ba34be07d56c9eb9b813008c1584c))
 
 ## [0.0.44](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.43...deepagents-cli==0.0.44) (2026-04-29)
 

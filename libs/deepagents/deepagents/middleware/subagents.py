@@ -406,6 +406,8 @@ def _build_task_tool(  # noqa: C901
                 content = json.dumps(dataclasses.asdict(structured))
             else:
                 content = json.dumps(structured)
+        elif not result["messages"]:
+            content = ""
         else:
             # Strip trailing whitespace to prevent API errors with Anthropic
             content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""

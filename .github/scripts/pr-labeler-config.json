@@ -50,18 +50,36 @@
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
+    "code": "deepagents-code",
     "daytona": "daytona",
     "deepagents": "deepagents",
+    "deepagents-acp": "acp",
     "deepagents-cli": "cli",
+    "deepagents-code": "deepagents-code",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
     "examples": "examples",
-    "harbor": "evals",
+    "harbor": "harbor",
     "infra": "infra",
+    "langchain-daytona": "daytona",
+    "langchain-modal": "modal",
+    "langchain-quickjs": "quickjs",
+    "langchain-repl": "repl",
+    "langchain-runloop": "runloop",
+    "langsmith-sandbox": "langsmith-sandbox",
+    "modal": "modal",
     "quickjs": "quickjs",
+    "repl": "repl",
+    "runloop": "runloop",
     "sdk": "deepagents"
   },
+  "branchRules": [
+    {
+      "label": "open-swe",
+      "prefix": "open-swe/"
+    }
+  ],
   "fileRules": [
     {
       "label": "deepagents",
@@ -79,8 +97,43 @@
       "skipExcludedFiles": true
     },
     {
+      "label": "deepagents-code",
+      "prefix": "libs/code/",
+      "skipExcludedFiles": true
+    },
+    {
       "label": "evals",
       "prefix": "libs/evals/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "daytona",
+      "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "modal",
+      "prefix": "libs/partners/modal/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "quickjs",
+      "prefix": "libs/partners/quickjs/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "repl",
+      "prefix": "libs/repl/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "runloop",
+      "prefix": "libs/partners/runloop/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "harbor",
+      "prefix": "libs/harbor/",
       "skipExcludedFiles": true
     },
     {

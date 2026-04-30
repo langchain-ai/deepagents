@@ -6,13 +6,17 @@ import logging
 import os
 import re
 import subprocess
-import warnings
 from datetime import datetime
 from pathlib import Path
 
 import wcmatch.glob as wcglob
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     BackendProtocol,
     EditResult,
     FileData,
@@ -125,15 +129,21 @@ class FilesystemBackend(BackendProtocol):
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         if virtual_mode is None:
-            warnings.warn(
-                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
-                "please specify virtual_mode explicitly. "
-                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
-                "it does not provide sandboxing or process isolation. "
-                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
-                "Consult the API reference for details.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=(
+                    "`FilesystemBackend` `virtual_mode` default will change "
+                    "in deepagents==0.6.0; please specify `virtual_mode` "
+                    "explicitly. Note: `virtual_mode` is for virtual path "
+                    "semantics (e.g., `CompositeBackend` routing) and "
+                    "optional path-based guardrails; it does not provide "
+                    "sandboxing or process isolation. Security note: leaving "
+                    "`virtual_mode=False` allows absolute paths and `'..'` "
+                    "to bypass `root_dir`. Consult the API reference for "
+                    "details."
+                ),
+                package="deepagents",
             )
             virtual_mode = False
         self.virtual_mode = virtual_mode
@@ -334,15 +344,18 @@ class FilesystemBackend(BackendProtocol):
             if empty_msg:
                 return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
-            lines = content.splitlines()
+            # `splitlines(keepends=True)` preserves whether the final line
+            # has a terminator; joining with `""` round-trips the file's
+            # trailing-newline state. Required so `edit()` can detect
+            # EOF-newline mismatches in the model's `old_string`.
+            lines = content.splitlines(keepends=True)
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
-            selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
+            return ReadResult(file_data=FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
@@ -375,7 +388,9 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags, 0o644)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # newline="" disables Windows CRLF translation so callers that
+            # pass LF-only content get LF-only bytes on disk.
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(content)
 
             return WriteResult(path=file_path)
@@ -434,7 +449,7 @@ class FilesystemBackend(BackendProtocol):
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
             fd = os.open(resolved_path, flags)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
             return EditResult(path=file_path, occurrences=int(occurrences))
@@ -505,7 +520,7 @@ class FilesystemBackend(BackendProtocol):
                 timeout=30,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -720,6 +735,9 @@ class FilesystemBackend(BackendProtocol):
         for path in paths:
             try:
                 resolved_path = self._resolve_path(path)
+                if resolved_path.is_dir():
+                    responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
+                    continue
                 # Use flags to optionally prevent symlink following if
                 # supported by the OS
                 fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -748,13 +766,13 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
         A `FileOperationError` literal, or `None` if unrecognized.
     """
     if isinstance(exc, FileNotFoundError):
-        return "file_not_found"
+        return FILE_NOT_FOUND
     if isinstance(exc, PermissionError):
-        return "permission_denied"
+        return PERMISSION_DENIED
     if isinstance(exc, IsADirectoryError):
-        return "is_directory"
+        return IS_DIRECTORY
     if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return "invalid_path"
+        return INVALID_PATH
     if isinstance(exc, ValueError):
-        return "invalid_path"
+        return INVALID_PATH
     return None

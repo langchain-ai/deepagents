@@ -1,6 +1,7 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -118,7 +119,7 @@ class TestModelSwitchNoOp:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -157,7 +158,7 @@ class TestModelSwitchErrorHandling:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
@@ -192,14 +193,14 @@ class TestModelSwitchErrorHandling:
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
 
-        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_err(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_err_init(self, message, **kwargs)
 
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
@@ -235,7 +236,7 @@ class TestModelSwitchErrorHandling:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -332,7 +333,7 @@ class TestModelSwitchConcurrencyGuard:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -361,6 +362,86 @@ class TestModelSwitchConcurrencyGuard:
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
+        assert app._model_switching is False
+
+
+class TestModelSwitchSessionReadiness:
+    """Tests for gating model switch on server-backed session readiness."""
+
+    async def test_defers_switch_while_connecting(self) -> None:
+        """A direct /model switch fired before `ServerReady` is queued, not failed."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = True
+
+        await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert len(app._deferred_actions) == 1
+        action = app._deferred_actions[0]
+        assert action.kind == "model_switch"
+        notify_mock.assert_called_once()
+        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        # Guard flag cleared so the deferred retry isn't a no-op.
+        assert app._model_switching is False
+
+    async def test_errors_when_agent_missing_and_not_connecting(self) -> None:
+        """Server-startup failure (no agent, not connecting) still errors."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert app._deferred_actions == []
+        notify_mock.assert_not_called()
+        assert any("server-backed session" in msg for msg in captured_errors)
+
+    async def test_deferred_switch_completes_after_server_ready(self) -> None:
+        """End-to-end: defer during connect, drain after ready, switch completes."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = True
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+            assert len(app._deferred_actions) == 1
+
+            # Simulate `ServerReady`: agent arrives, connecting flips off, drain runs.
+            app._agent = _make_remote_agent()
+            app._connecting = False
+            await app._maybe_drain_deferred()
+
+        assert app._deferred_actions == []
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
         assert app._model_switching is False
 
 
@@ -393,7 +474,7 @@ api_key_env = "FIREWORKS_API_KEY"
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
@@ -435,7 +516,7 @@ api_key_env = "FIREWORKS_API_KEY"
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
 
-        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_err(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_err_init(self, message, **kwargs)
 
@@ -468,7 +549,7 @@ models = ["llama3"]
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
@@ -503,7 +584,7 @@ class TestModelSwitchBareModelName:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -538,7 +619,7 @@ class TestModelSwitchBareModelName:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
@@ -573,7 +654,7 @@ class TestModelSwitchBareModelName:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -689,7 +770,7 @@ class TestModelCommandIntegration:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
@@ -708,7 +789,7 @@ class TestModelCommandIntegration:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 

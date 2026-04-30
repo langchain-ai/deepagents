@@ -15,6 +15,7 @@ from acp import (
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
     run_agent as run_acp_agent,
+    schema as _acp_schema,
     start_edit_tool_call,
     start_tool_call,
     text_block,
@@ -38,7 +39,7 @@ from acp.schema import (
     PlanEntry,
     PromptCapabilities,
     ResourceContentBlock,
-    SessionConfigOption,
+    SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
     SessionConfigSelectOption,
     SessionModeState,
@@ -54,14 +55,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from acp.interfaces import Client
-    from deepagents.graph import Checkpointer
-    from langchain_core.runnables import RunnableConfig
-
 from deepagents_acp.utils import (
+    contains_dangerous_patterns,
     convert_audio_block_to_content_blocks,
     convert_embedded_resource_block_to_content_blocks,
     convert_image_block_to_content_blocks,
@@ -71,6 +66,18 @@ from deepagents_acp.utils import (
     format_execute_result,
     truncate_execute_command_for_display,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from acp.interfaces import Client
+    from deepagents.graph import Checkpointer
+    from langchain_core.runnables import RunnableConfig
+
+# agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
+# options are now bare SessionConfigOptionSelect instances. Resolve dynamically
+# so the module imports cleanly under both v0.8.x and v0.9+.
+SessionConfigOption: Any = getattr(_acp_schema, "SessionConfigOption", None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,14 +141,17 @@ class AgentServerACP(ACPAgent):
         """Store the client connection for sending session updates."""
         self._conn = conn
 
-    def _build_config_options(self, session_id: str) -> list[SessionConfigOption]:
+    def _build_config_options(
+        self,
+        session_id: str,
+    ) -> list[SessionConfigOptionSelect | SessionConfigOptionBoolean]:
         """Build the list of session configuration options.
 
         Returns a list combining mode and model selectors if available.
         Modes are mapped to config options with category='mode'.
         Models are exposed as config options with category='model'.
         """
-        config_options: list[SessionConfigOption] = []
+        config_options: list[SessionConfigOptionSelect | SessionConfigOptionBoolean] = []
 
         # Add mode selector if modes are configured
         if self._modes is not None:
@@ -155,18 +165,18 @@ class AgentServerACP(ACPAgent):
                 for mode in self._modes.available_modes
             ]
 
-            mode_config = SessionConfigOption(
-                root=SessionConfigOptionSelect(
-                    id="mode",
-                    name="Session Mode",
-                    description="Controls how the agent requests permission",
-                    category="mode",
-                    type="select",
-                    current_value=current_mode,
-                    options=mode_options,
-                )
+            mode_select = SessionConfigOptionSelect(
+                id="mode",
+                name="Session Mode",
+                description="Controls how the agent requests permission",
+                category="mode",
+                type="select",
+                current_value=current_mode,
+                options=mode_options,
             )
-            config_options.append(mode_config)
+            config_options.append(
+                SessionConfigOption(root=mode_select) if SessionConfigOption else mode_select,
+            )
 
         # Add model selector if models are configured
         if self._models is not None and len(self._models) > 0:
@@ -180,18 +190,18 @@ class AgentServerACP(ACPAgent):
                 for model in self._models
             ]
 
-            model_config = SessionConfigOption(
-                root=SessionConfigOptionSelect(
-                    id="model",
-                    name="Model",
-                    description="The LLM model to use for this session",
-                    category="model",
-                    type="select",
-                    current_value=current_model,
-                    options=model_options,
-                )
+            model_select = SessionConfigOptionSelect(
+                id="model",
+                name="Model",
+                description="The LLM model to use for this session",
+                category="model",
+                type="select",
+                current_value=current_model,
+                options=model_options,
             )
-            config_options.append(model_config)
+            config_options.append(
+                SessionConfigOption(root=model_select) if SessionConfigOption else model_select,
+            )
 
         return config_options
 
@@ -265,7 +275,7 @@ class AgentServerACP(ACPAgent):
         self,
         config_id: str,
         session_id: str,
-        value: str,
+        value: str | bool,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> SetSessionConfigOptionResponse:
         """Update a configuration option for the session.
@@ -273,6 +283,11 @@ class AgentServerACP(ACPAgent):
         Handles both mode and model switching. When switching models,
         the agent is reset to use the new model.
         """
+        # Only select-type options (mode, model) are supported; reject boolean values.
+        if not isinstance(value, str):
+            msg = f"Config option {config_id!r} expects a string value, got {type(value).__name__}"
+            raise RequestError(-32602, msg)
+
         if config_id == "mode":
             # Handle mode switching
             if self._modes is not None and session_id in self._session_mode_states:
@@ -582,20 +597,19 @@ class AgentServerACP(ACPAgent):
             | EmbeddedResourceContentBlock
         ],
         session_id: str,
+        message_id: str | None = None,  # noqa: ARG002  # ACP protocol interface parameter
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
         """Process a user prompt and stream the agent response."""
         if self._agent is None:
             self._reset_agent(session_id)
 
-            if getattr(self._agent, "checkpointer", None) is None:
-                self._agent.checkpointer = (
-                    MemorySaver()
-                )  # ty: ignore[unresolved-attribute]  # Guarded by getattr check above
-
         if self._agent is None:
             msg = "Agent initialization failed"
             raise RuntimeError(msg)
+
+        if getattr(self._agent, "checkpointer", None) is None:
+            self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
         agent = self._agent
 
         # Reset cancellation flag for new prompt
@@ -809,18 +823,26 @@ class AgentServerACP(ACPAgent):
                     if session_id in self._allowed_command_types:
                         if tool_name == "execute" and isinstance(tool_args, dict):
                             command = tool_args.get("command", "")
-                            command_types = extract_command_types(command)
 
-                            if command_types:
-                                # Check if ALL command types are already allowed for this session
-                                all_allowed = all(
-                                    ("execute", cmd_type) in self._allowed_command_types[session_id]
-                                    for cmd_type in command_types
-                                )
-                                if all_allowed:
-                                    # Auto-approve this command
-                                    user_decisions.append({"type": "approve"})
-                                    continue
+                            # Never auto-approve commands that contain
+                            # dangerous shell metacharacters (e.g. $(),
+                            # backticks, ;, redirects).  These can smuggle
+                            # arbitrary execution inside an otherwise-safe
+                            # command that the user previously approved.
+                            if not contains_dangerous_patterns(command):
+                                command_types = extract_command_types(command)
+
+                                if command_types:
+                                    # Check if ALL command types are already allowed
+                                    all_allowed = all(
+                                        ("execute", cmd_type)
+                                        in self._allowed_command_types[session_id]
+                                        for cmd_type in command_types
+                                    )
+                                    if all_allowed:
+                                        # Auto-approve this command
+                                        user_decisions.append({"type": "approve"})
+                                        continue
                         elif (tool_name, None) in self._allowed_command_types[session_id]:
                             user_decisions.append({"type": "approve"})
                             continue

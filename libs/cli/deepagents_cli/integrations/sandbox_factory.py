@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
-    from langsmith.sandbox import SandboxTemplate
 
 
 def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) -> None:
@@ -205,17 +204,21 @@ def _import_provider_module(
         raise ImportError(msg) from exc
 
 
-_LANGSMITH_DEFAULT_TEMPLATE = "deepagents-cli"
-"""Default LangSmith sandbox template name used when no template is specified."""
+_LANGSMITH_DEFAULT_SNAPSHOT = "deepagents-cli"
+"""Default LangSmith sandbox snapshot name used when none is specified."""
 
 _LANGSMITH_DEFAULT_IMAGE = "python:3"
-"""Default Docker image for LangSmith sandboxes when no image is provided."""
+"""Default Docker image for LangSmith sandbox snapshots when none is provided."""
+
+_LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
+"""Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
 
 
 class _LangSmithProvider(SandboxProvider):
     """LangSmith sandbox provider implementation.
 
-    Manages LangSmith sandbox lifecycle using the LangSmith SDK.
+    Manages LangSmith sandbox lifecycle using the LangSmith SDK, booting
+    sandboxes from snapshots built from a Docker image.
     """
 
     def __init__(self, api_key: str | None = None) -> None:
@@ -232,15 +235,19 @@ class _LangSmithProvider(SandboxProvider):
 
         from deepagents_cli.model_config import resolve_env_var
 
-        self._api_key = (
+        sandbox_key = resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
+        if sandbox_key:
+            logger.debug("Using LangSmith API key from LANGSMITH_SANDBOX_API_KEY")
+        self._api_key: str | None = (
             api_key
-            or resolve_env_var("LANGSMITH_SANDBOX_API_KEY")
+            or sandbox_key
             or resolve_env_var("LANGSMITH_API_KEY")
+            or resolve_env_var("LANGCHAIN_API_KEY")
         )
         if not self._api_key:
             msg = (
                 "No LangSmith sandbox API key found. Set "
-                "LANGSMITH_SANDBOX_API_KEY or LANGSMITH_API_KEY "
+                "LANGSMITH_API_KEY, LANGCHAIN_API_KEY, or LANGSMITH_SANDBOX_API_KEY "
                 "(or the DEEPAGENTS_CLI_-prefixed equivalents)."
             )
             raise ValueError(msg)
@@ -251,27 +258,37 @@ class _LangSmithProvider(SandboxProvider):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        template: str | None = None,
-        template_image: str | None = None,
+        snapshot: str | None = None,
+        snapshot_image: str | None = None,
+        fs_capacity_bytes: int | None = None,
         **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get existing or create new LangSmith sandbox.
 
         Args:
-            sandbox_id: Optional existing sandbox name to reuse
-            timeout: Timeout in seconds for sandbox startup
-            template: Template name for the sandbox
-            template_image: Docker image for the template
-            **kwargs: Additional LangSmith-specific parameters
+            sandbox_id: Optional existing sandbox name to reuse.
+            timeout: Timeout in seconds for sandbox startup.
+            snapshot: Snapshot name to boot from.
+
+                Resolved to a snapshot ID, creating the snapshot from
+                `snapshot_image` if missing. Overridden by the env vars
+                `LANGSMITH_SANDBOX_SNAPSHOT_ID` (ID, wins over everything)
+                and `LANGSMITH_SANDBOX_SNAPSHOT_NAME` (name, wins over this
+                kwarg).
+            snapshot_image: Docker image used when building the snapshot.
+            fs_capacity_bytes: Filesystem capacity when building the snapshot.
+            **kwargs: Additional LangSmith-specific parameters.
 
         Returns:
-            `LangSmithSandbox` instance
+            `LangSmithSandbox` instance.
 
         Raises:
-            RuntimeError: If sandbox connection or startup fails
-            TypeError: If unsupported keyword arguments are provided
+            RuntimeError: If sandbox connection or startup fails.
+            TypeError: If unsupported keyword arguments are provided.
         """
         from deepagents.backends.langsmith import LangSmithSandbox
+
+        from deepagents_cli.model_config import resolve_env_var
 
         if kwargs:
             msg = f"Received unsupported arguments: {list(kwargs.keys())}"
@@ -285,22 +302,24 @@ class _LangSmithProvider(SandboxProvider):
                 raise RuntimeError(msg) from e
             return LangSmithSandbox(sandbox)
 
-        resolved_template_name, resolved_image_name = self._resolve_template(
-            template, template_image
-        )
-
-        # Create new sandbox - ensure template exists first
-        self._ensure_template(resolved_template_name, resolved_image_name)
+        # Explicit snapshot ID wins — skip name lookup and auto-build.
+        env_snapshot_id = resolve_env_var("LANGSMITH_SANDBOX_SNAPSHOT_ID")
+        if env_snapshot_id:
+            snapshot_id = env_snapshot_id
+            snapshot_name = env_snapshot_id
+        else:
+            env_snapshot_name = resolve_env_var("LANGSMITH_SANDBOX_SNAPSHOT_NAME")
+            snapshot_name = snapshot or env_snapshot_name or _LANGSMITH_DEFAULT_SNAPSHOT
+            image = snapshot_image or _LANGSMITH_DEFAULT_IMAGE
+            capacity = fs_capacity_bytes or _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES
+            snapshot_id = self._ensure_snapshot(snapshot_name, image, capacity)
 
         try:
             sandbox = self._client.create_sandbox(
-                template_name=resolved_template_name, timeout=timeout
+                snapshot_id=snapshot_id, timeout=timeout
             )
         except Exception as e:
-            msg = (
-                f"Failed to create sandbox from template "
-                f"'{resolved_template_name}': {e}"
-            )
+            msg = f"Failed to create sandbox from snapshot '{snapshot_name}': {e}"
             raise RuntimeError(msg) from e
 
         # Verify sandbox is ready by polling
@@ -330,55 +349,62 @@ class _LangSmithProvider(SandboxProvider):
         """
         self._client.delete_sandbox(sandbox_id)
 
-    @staticmethod
-    def _resolve_template(
-        template: SandboxTemplate | str | None,
-        template_image: str | None = None,
-    ) -> tuple[str, str]:
-        """Resolve template name and image from kwargs.
+    def _ensure_snapshot(
+        self,
+        snapshot_name: str,
+        image: str,
+        fs_capacity_bytes: int,
+    ) -> str:
+        """Resolve a snapshot by name, building it from `image` if missing.
+
+        The LangSmith API exposes snapshots by ID, so we list and filter by
+        name. Only snapshots with `status == "ready"` are returned; a
+        matching-name snapshot in a non-ready state (`"building"`,
+        `"failed"`, etc.) raises rather than triggering a duplicate build,
+        which would mask the in-flight/failed snapshot.
+
+        When no matching snapshot exists at all, we build one with
+        `create_snapshot`, which blocks until the snapshot is ready.
 
         Returns:
-            Tuple of `(template_name, template_image)`.
-
-                Always returns values, using defaults if not provided.
-        """
-        resolved_image = template_image or _LANGSMITH_DEFAULT_IMAGE
-        if template is None:
-            return _LANGSMITH_DEFAULT_TEMPLATE, resolved_image
-        if isinstance(template, str):
-            return template, resolved_image
-        # SandboxTemplate object - extract image if not provided
-        if template_image is None and template.image:
-            resolved_image = template.image
-        return template.name, resolved_image
-
-    def _ensure_template(
-        self,
-        template_name: str,
-        template_image: str,
-    ) -> None:
-        """Ensure template exists, creating it if needed.
+            The snapshot ID ready to be passed to `create_sandbox`.
 
         Raises:
-            RuntimeError: If template check or creation fails
+            RuntimeError: If listing or building the snapshot fails, or if
+                a matching-name snapshot exists but is not ready.
         """
-        from langsmith.sandbox import ResourceNotFoundError
+        try:
+            snapshots = self._client.list_snapshots()
+        except Exception as e:
+            msg = f"Failed to list snapshots: {e}"
+            raise RuntimeError(msg) from e
+
+        non_ready_status: str | None = None
+        for snap in snapshots:
+            if snap.name != snapshot_name:
+                continue
+            if snap.status == "ready":
+                return snap.id
+            non_ready_status = snap.status
+
+        if non_ready_status is not None:
+            msg = (
+                f"Snapshot '{snapshot_name}' exists but is in state "
+                f"'{non_ready_status}'. Wait for it to finish building, or "
+                f"delete it to rebuild."
+            )
+            raise RuntimeError(msg)
 
         try:
-            self._client.get_template(template_name)
-        except ResourceNotFoundError as e:
-            if e.resource_type != "template":
-                msg = f"Unexpected resource not found: {e}"
-                raise RuntimeError(msg) from e
-            # Template doesn't exist, create it
-            try:
-                self._client.create_template(name=template_name, image=template_image)
-            except Exception as create_err:
-                msg = f"Failed to create template '{template_name}': {create_err}"
-                raise RuntimeError(msg) from create_err
-        except Exception as e:
-            msg = f"Failed to check template '{template_name}': {e}"
-            raise RuntimeError(msg) from e
+            snapshot = self._client.create_snapshot(
+                name=snapshot_name,
+                docker_image=image,
+                fs_capacity_bytes=fs_capacity_bytes,
+            )
+        except Exception as create_err:
+            msg = f"Failed to build snapshot '{snapshot_name}': {create_err}"
+            raise RuntimeError(msg) from create_err
+        return snapshot.id
 
 
 class _DaytonaProvider(SandboxProvider):

@@ -11,9 +11,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.constants import CONF
+from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -25,6 +31,26 @@ from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
+    """Namespace factory: scope by assistant_id when running under LangGraph server."""
+    assistant_id = rt.server_info.assistant_id if rt.server_info else None
+    if assistant_id:
+        return (assistant_id, "filesystem")
+    return ("filesystem",)
+
+
+@contextmanager
+def _runtime_context(assistant_id: str | None = None):
+    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
+    runtime = Runtime(server_info=server_info)
+    token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 def make_memory_content(title: str, content: str) -> str:
@@ -41,16 +67,6 @@ def make_memory_content(title: str, content: str) -> str:
 
 {content}
 """
-
-
-@contextmanager
-def _config_context(config: dict):
-    """Set a LangGraph config context so get_config() works in tests."""
-    token = var_child_runnable_config.set(config)
-    try:
-        yield
-    finally:
-        var_child_runnable_config.reset(token)
 
 
 def create_store_memory_item(content: str) -> dict:
@@ -614,7 +630,7 @@ def test_memory_middleware_with_store_backend_instance() -> None:
     store = InMemoryStore()
     sources: list[str] = ["/memory/AGENTS.md"]
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=sources,
     )
 
@@ -628,7 +644,7 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -642,18 +658,16 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-123 can read its own memory
-    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    with _config_context(config_1):
-        result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert "/memory/AGENTS.md" in result_1["memory_contents"]
     assert "Context for assistant 1" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-456 cannot see assistant-123's memory (different namespace)
-    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with _config_context(config_2):
-        result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
     assert result_2 is not None
     assert len(result_2["memory_contents"]) == 0
 
@@ -666,8 +680,8 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-456 can read its own memory
-    with _config_context(config_2):
-        result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_3 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert "/memory/AGENTS.md" in result_3["memory_contents"]
@@ -675,8 +689,8 @@ def test_memory_middleware_with_store_backend_assistant_id() -> None:
     assert "Context for assistant 1" not in result_3["memory_contents"]["/memory/AGENTS.md"]
 
     # Test: assistant-123 still only sees its own memory (no cross-contamination)
-    with _config_context(config_1):
-        result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_4 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert "/memory/AGENTS.md" in result_4["memory_contents"]
@@ -689,7 +703,7 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
     # Setup
     store = InMemoryStore()
     middleware = MemoryMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/memory/AGENTS.md"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -702,18 +716,17 @@ def test_memory_middleware_with_store_backend_no_assistant_id() -> None:
         create_store_memory_item(shared_content),
     )
 
-    # Test: empty config accesses default namespace
-    with _config_context({}):
+    # Test: runtime without server_info accesses default namespace
+    with _runtime_context(None):
         result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert "/memory/AGENTS.md" in result_1["memory_contents"]
     assert "Default namespace context" in result_1["memory_contents"]["/memory/AGENTS.md"]
 
-    # Test: config with metadata but no assistant_id also uses default namespace
-    config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
-    with _config_context(config_with_other_metadata):
-        result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
+    # Test: runtime with server_info but empty assistant_id also uses default namespace
+    with _runtime_context(""):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert "/memory/AGENTS.md" in result_2["memory_contents"]
@@ -909,3 +922,111 @@ def test_before_agent_batch_skips_missing_keeps_found(tmp_path: Path) -> None:
     assert existing_path in result["memory_contents"]
     assert missing_path not in result["memory_contents"]
     assert backend.download_files_call_count == 1
+
+
+def _build_model_request(model: BaseChatModel, system_message: SystemMessage | None) -> ModelRequest:
+    """Construct a minimal `ModelRequest` for direct `modify_request` tests."""
+    return ModelRequest(
+        model=model,
+        messages=[HumanMessage(content="hi")],
+        system_message=system_message,
+        state={"messages": [], "memory_contents": {}},  # type: ignore[typeddict-unknown-key]
+    )
+
+
+def _fake_anthropic() -> ChatAnthropic:
+    """Build a `ChatAnthropic` instance with a dummy key."""
+    return ChatAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="fake")  # type: ignore[call-arg]
+
+
+def _system_blocks(message: SystemMessage | None) -> list:
+    """Extract content blocks from a required system message; fails test if absent."""
+    assert message is not None, "modify_request must return a SystemMessage"
+    return list(message.content_blocks)
+
+
+def test_modify_request_tags_last_block_when_enabled_and_anthropic() -> None:
+    """Cache breakpoint is applied when flag is on and request model is Anthropic."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert blocks[-1].get("cache_control") == {"type": "ephemeral"}
+    assert all("cache_control" not in block for block in blocks[:-1])
+
+
+def test_modify_request_no_tag_when_add_cache_control_false() -> None:
+    """Default (flag off) leaves content blocks untouched."""
+    middleware = MemoryMiddleware(backend=StateBackend(), sources=[])
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert all("cache_control" not in block for block in blocks)
+
+
+def test_modify_request_skips_tagging_on_non_anthropic_model() -> None:
+    """Flag on + non-Anthropic model silently no-ops (avoids shipping Anthropic-only key)."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    request = _build_model_request(fake_model, SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert all("cache_control" not in block for block in blocks)
+
+
+def test_modify_request_preserves_existing_block_fields() -> None:
+    """Merging cache_control preserves the existing block's type/text keys."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="important base prompt"))
+
+    result = middleware.modify_request(request)
+    last = _system_blocks(result.system_message)[-1]
+
+    assert last.get("type") == "text"
+    assert "agent_memory" in last.get("text", "")
+    assert last.get("cache_control") == {"type": "ephemeral"}
+
+
+def test_create_deep_agent_wires_cache_control_for_anthropic_memory(tmp_path: Path) -> None:
+    """`create_deep_agent(memory=[...])` produces a cache breakpoint on the memory block for Anthropic."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    backend.upload_files([(memory_path, b"# Memory\nBe concise.")])
+
+    captured_system_messages: list[SystemMessage] = []
+
+    class _FakeAnthropic(ChatAnthropic):
+        def _generate(self, messages: list, *args: object, **kwargs: object) -> ChatResult:
+            captured_system_messages.extend(m for m in messages if isinstance(m, SystemMessage))
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    fake_anthropic = _FakeAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="fake")  # type: ignore[call-arg]
+
+    agent = create_deep_agent(
+        backend=backend,
+        memory=[memory_path],
+        model=fake_anthropic,
+    )
+    agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+    assert captured_system_messages, "Model never received a SystemMessage"
+    last_block = captured_system_messages[0].content_blocks[-1]
+    assert last_block.get("cache_control") == {"type": "ephemeral"}

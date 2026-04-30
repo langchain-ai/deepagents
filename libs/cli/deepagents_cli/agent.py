@@ -16,6 +16,18 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
+# Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
+# `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
+# that permits `(path, label)` tuples. The `skills` module is already
+# loaded by the `SkillsMiddleware` import above, so the extra lookup
+# here adds no startup cost.
+try:
+    from deepagents.middleware.skills import SkillSource as _SkillSource  # noqa: F401
+except ImportError:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = False
+else:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = True
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
@@ -257,6 +269,45 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+def get_available_agent_names() -> list[str]:
+    """Return a sorted list of available agent names from `~/.deepagents/`.
+
+    Scans the user's `.deepagents` directory and returns each real
+    subdirectory found there. Symlinks excluded so a dangling link does not
+    masquerade as an agent.
+
+    Filesystem errors (missing parent, permission denied, broken entries) are
+    logged and surfaced as an empty list rather than raised — the caller shows
+    an empty modal instead of crashing mid-render.
+
+    Returns:
+        Sorted list of agent names. Empty when no agents exist yet or the
+            directory is unreadable (see log for the underlying cause).
+    """
+    agents_dir = settings.user_deepagents_dir
+    try:
+        entries = list(agents_dir.iterdir())
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.warning("Could not list agents in %s", agents_dir, exc_info=True)
+        return []
+
+    names: list[str] = []
+    for entry in entries:
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                names.append(entry.name)
+        except OSError:
+            logger.debug(
+                "Skipping unreadable entry in %s: %s",
+                agents_dir,
+                entry.name,
+                exc_info=True,
+            )
+    return sorted(names)
+
+
 def list_agents(*, output_format: OutputFormat = "text") -> None:
     """List all available agents.
 
@@ -480,7 +531,8 @@ def get_system_prompt(
 
     Loads the base system prompt template from `system_prompt.md` and
     interpolates dynamic sections (model identity, working directory,
-    skills path, execution mode).
+    skills path, execution mode, and todo-list guidance for
+    interactive vs headless).
 
     Args:
         assistant_id: The agent identifier for path references
@@ -520,6 +572,15 @@ def get_system_prompt(
             "- If the request is ambiguous, ask questions before acting.\n"
             "- If asked how to approach something, explain first, then act."
         )
+        todo_guidance = (
+            "6. When first creating a todo list for a task, ALWAYS ask the user if "
+            "the plan looks good before starting work\n"
+            '   - Create the todos, then ask: "Does this plan '
+            'look good?" or similar\n'
+            "   - Wait for the user's response before marking the first todo as "
+            "in_progress\n"
+            "7. Update todo status promptly as you complete each item"
+        )
     else:
         mode_description = (
             "non-interactive (headless) mode — there is no human operator "
@@ -541,6 +602,15 @@ def get_system_prompt(
             "`npm init`, `apt-get install -y` not `apt-get install`, "
             "`yes |` or `--no-input`/`--non-interactive` flags where "
             "available. Never run commands that block waiting for stdin."
+        )
+        todo_guidance = (
+            "6. There is no human operator in this mode — do NOT ask the user to "
+            "approve your plan or wait for a reply.\n"
+            "   After you create todos for a multi-step task, mark the first item "
+            "`in_progress` immediately and start work.\n"
+            "   If the plan needs adjustment, revise the todo list yourself; do "
+            "not block on human confirmation.\n"
+            "7. Update todo status promptly as you complete each item"
         )
 
     model_identity_section = build_model_identity_section(
@@ -598,6 +668,7 @@ def get_system_prompt(
         template.replace("{mode_description}", mode_description)
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
+        .replace("{todo_guidance}", todo_guidance)
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
@@ -1057,25 +1128,40 @@ def create_cli_agent(
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
         # -> user .claude (experimental) -> project .claude (experimental)
-        sources = [str(settings.get_built_in_skills_dir())]
-        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
+        # Labels disambiguate user- vs project-scoped sources that share a
+        # `.../skills` leaf; the middleware would otherwise derive identical
+        # labels from the parent directory name.
+        sources: list[tuple[str, str]] = [
+            (str(settings.get_built_in_skills_dir()), "Built-in"),
+            (str(skills_dir), "User Deepagents"),
+            (str(user_agent_skills_dir), "User Agents"),
+        ]
         if project_skills_dir:
-            sources.append(str(project_skills_dir))
+            sources.append((str(project_skills_dir), "Project Deepagents"))
         if project_agent_skills_dir:
-            sources.append(str(project_agent_skills_dir))
+            sources.append((str(project_agent_skills_dir), "Project Agents"))
 
         # Experimental: Claude Code skill directories
         user_claude_skills_dir = settings.get_user_claude_skills_dir()
         if user_claude_skills_dir.exists():
-            sources.append(str(user_claude_skills_dir))
+            sources.append((str(user_claude_skills_dir), "User Claude"))
         project_claude_skills_dir = settings.get_project_claude_skills_dir()
         if project_claude_skills_dir:
-            sources.append(str(project_claude_skills_dir))
+            sources.append((str(project_claude_skills_dir), "Project Claude"))
+
+        # Backwards-compat: strip labels when the installed SDK is too old
+        # to accept `(path, label)` tuples. Label-based disambiguation
+        # regresses to the pre-alias behavior (user- and project-scoped
+        # `.claude/skills` collapse to the same label), but functionality
+        # is preserved.
+        middleware_sources: Sequence[str | tuple[str, str]] = (
+            sources if _SUPPORTS_SKILL_SOURCE_TUPLES else [path for path, _ in sources]
+        )
 
         agent_middleware.append(
             SkillsMiddleware(
                 backend=FilesystemBackend(),
-                sources=sources,
+                sources=middleware_sources,
             )
         )
 

@@ -105,9 +105,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
-        Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("j", "move_down", "Down", show=False, priority=True),
         Binding("tab", "tab_complete", "Tab complete", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
@@ -115,6 +113,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
+    """Key bindings for model navigation, selection, defaulting, and cancel.
+
+    Arrows move the cursor, Page Up/Down jump by a visual page, Tab copies
+    the highlighted spec into the filter input, Enter selects, Ctrl+S
+    toggles the default model, and Esc dismisses. All bindings use
+    `priority=True` so they take precedence over the embedded `Input`;
+    vim-style `j`/`k` bindings are deliberately omitted because they would
+    prevent typing those letters into the always-focused filter input.
+    """
 
     CSS = """
     ModelSelectorScreen {
@@ -203,6 +210,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         margin-top: 1;
     }
     """
+    """Styling for the modal shell, filter input, provider-grouped list, detail
+    footer, and help text."""
 
     def __init__(
         self,
@@ -462,8 +471,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._option_widgets = []
 
         if not self._filtered_models:
-            msg = "Loading models…" if not self._loaded else "No matching models"
-            await self._options_container.mount(Static(Content.styled(msg, "dim")))
+            if not self._loaded:
+                empty_content: Content = Content.styled("Loading models…", "dim")
+            else:
+                typed = self._filter_text.strip()
+                if typed and ":" in typed:
+                    empty_content = Content.assemble(
+                        ("No matching models — press ", "dim"),
+                        ("Enter", "bold"),
+                        (" to use ", "dim"),
+                        (typed, "bold"),
+                        (" as a custom provider:model spec", "dim"),
+                    )
+                elif typed:
+                    empty_content = Content.assemble(
+                        ("No matching models — press ", "dim"),
+                        ("Enter", "bold"),
+                        (" to use ", "dim"),
+                        (typed, "bold"),
+                        (" as a custom model spec (no provider prefix)", "dim"),
+                    )
+                else:
+                    empty_content = Content.styled("No matching models", "dim")
+            await self._options_container.mount(Static(empty_content))
             self._update_footer()
             return
 
@@ -603,16 +633,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         colors = theme.get_theme_colors()
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
+        # When selected, skip the inline primary color — CSS already flips the
+        # row to ($primary bg, $background fg). Keep `bold` so the default
+        # emphasis survives both states.
         if not has_creds:
             spec = Content.styled(model_spec, colors.warning)
+        elif is_default and selected:
+            spec = Content.styled(model_spec, "bold")
         elif is_default:
-            spec = Content.styled(model_spec, colors.primary)
+            spec = Content.styled(model_spec, f"bold {colors.primary}")
         else:
             spec = Content(model_spec)
         suffix = Content.styled(" (current)", "dim") if current else Content("")
-        default_suffix = (
-            Content.styled(" (default)", colors.primary) if is_default else Content("")
-        )
+        if is_default and selected:
+            default_suffix = Content.styled(" (default)", "bold")
+        elif is_default:
+            default_suffix = Content.styled(" (default)", f"bold {colors.primary}")
+        else:
+            default_suffix = Content("")
         if status == "deprecated":
             status_suffix = Content.styled(" (deprecated)", colors.error)
         elif status:

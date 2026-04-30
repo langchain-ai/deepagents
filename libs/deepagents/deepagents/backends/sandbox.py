@@ -101,7 +101,23 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling (issue #2880): the read template normalizes
+# CRLF to LF for the LLM, so old_string arrives LF-only even when the
+# file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
+# variant. The first match reveals the file line-ending style in that
+# region; apply the same transform to new so the file style is preserved.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -109,7 +125,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(path, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -118,6 +134,9 @@ print(json.dumps({{'count': count}}))
 {payload_b64}
 __DEEPAGENTS_EDIT_EOF__
 """
+# Make sure to maintain a new line at the end of DEEPAGENTS_EDIT_EOF to denote end of
+# feed. This may not matter for some integrations.
+
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
@@ -173,7 +192,19 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -181,7 +212,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(target, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -201,7 +232,15 @@ files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
-import os, sys, base64, json
+import codecs, os, sys, base64, json
+
+MAX_OUTPUT_BYTES = 500 * 1024
+MAX_BINARY_BYTES = 500 * 1024
+TRUNCATION_MSG = '\\n\\n' + (
+    '[Output was truncated due to size limits. '
+    'This paginated read result exceeded the sandbox stdout limit. '
+    'Continue reading with a larger offset or smaller limit to inspect the rest of the file.]'
+)
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
 
@@ -213,24 +252,77 @@ if os.path.getsize(path) == 0:
     print(json.dumps({{'encoding': 'utf-8', 'content': 'System reminder: File exists but has empty contents'}}))
     sys.exit(0)
 
-with open(path, 'rb') as f:
-    raw = f.read()
-
-try:
-    text = raw.decode('utf-8')
-except UnicodeDecodeError:
+file_type = '{file_type}'
+if file_type != 'text':
+    file_size = os.path.getsize(path)
+    if file_size > MAX_BINARY_BYTES:
+        print(json.dumps({{'error': 'Binary file exceeds maximum preview size of ' + str(MAX_BINARY_BYTES) + ' bytes'}}))
+        sys.exit(0)
+    with open(path, 'rb') as f:
+        raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
     sys.exit(0)
 
-file_type = '{file_type}'
-if file_type == 'text':
-    lines = text.splitlines()
-    offset = {offset}
-    limit = {limit}
-    if offset >= len(lines):
-        print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(len(lines)) + ' lines)'}}))
-        sys.exit(0)
-    text = chr(10).join(lines[offset:offset + limit])
+with open(path, 'rb') as f:
+    raw_prefix = f.read(8192)
+
+# The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
+# emoji is 4); the incremental decoder buffers a trailing partial sequence
+# instead of raising, so legitimate text isn't misclassified as binary.
+is_binary = False
+try:
+    codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
+except UnicodeDecodeError:
+    is_binary = True
+
+if is_binary:
+    with open(path, 'rb') as f:
+        raw = f.read()
+    print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
+    sys.exit(0)
+
+offset = {offset}
+limit = {limit}
+line_count = 0
+returned_lines = 0
+truncated = False
+parts = []
+current_bytes = 0
+msg_bytes = len(TRUNCATION_MSG.encode('utf-8'))
+effective_limit = MAX_OUTPUT_BYTES - msg_bytes
+
+with open(path, 'r', encoding='utf-8', newline=None) as f:
+    for raw_line in f:
+        line_count += 1
+        if line_count <= offset:
+            continue
+        if returned_lines >= limit:
+            break
+
+        line = raw_line.rstrip('\\n').rstrip('\\r')
+        piece = line if returned_lines == 0 else '\\n' + line
+        piece_bytes = len(piece.encode('utf-8'))
+        if current_bytes + piece_bytes > effective_limit:
+            truncated = True
+            remaining_bytes = effective_limit - current_bytes
+            if remaining_bytes > 0:
+                prefix = piece.encode('utf-8')[:remaining_bytes].decode('utf-8', errors='ignore')
+                if prefix:
+                    parts.append(prefix)
+                    current_bytes += len(prefix.encode('utf-8'))
+            break
+
+        parts.append(piece)
+        current_bytes += piece_bytes
+        returned_lines += 1
+
+if returned_lines == 0 and not truncated:
+    print(json.dumps({{'error': 'Line offset ' + str(offset) + ' exceeds file length (' + str(line_count) + ' lines)'}}))
+    sys.exit(0)
+
+text = ''.join(parts)
+if truncated:
+    text += TRUNCATION_MSG
 
 print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
 " 2>&1"""
@@ -255,6 +347,14 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     delegates content transfer to `upload_files()`. Edit uses a server-side
     script for small payloads and uploads old/new strings as temp files with
     a server-side replace for large ones.
+
+    !!! note
+
+        `BaseSandbox` does not reduce or partition the trust boundary of
+        `execute()`. Its helper methods are convenience wrappers built on top of
+        the subclass-provided command-execution primitive and assume callers who
+        can use `BaseSandbox` already have whatever shell-execution capability
+        that backend exposes.
 
     Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
     and the `id` property.
@@ -327,7 +427,11 @@ except PermissionError:
 
         Runs a Python script on the sandbox via `execute()` that reads the
         file, detects encoding, and applies offset/limit pagination for text
-        files.  Only the requested page is returned over the wire.
+        files. Only the requested page is returned over the wire, and text
+        output is capped to about 500 KiB to avoid backend stdout/log transport
+        failures. When that cap is exceeded, the returned content is truncated
+        with guidance to continue pagination using a different `offset` or
+        smaller `limit`.
 
         Binary files (non-UTF-8) are returned base64-encoded without
         pagination.
@@ -384,9 +488,6 @@ except PermissionError:
     ) -> WriteResult:
         """Create a new file, failing if it already exists.
 
-        Runs a small preflight command to check existence and create parent
-        directories, then transfers content via `upload_files()`.
-
         Args:
             file_path: Absolute path for the new file.
             content: UTF-8 text content to write.
@@ -395,31 +496,23 @@ except PermissionError:
             `WriteResult` with `path` on success or `error` on failure.
         """
         # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below — a concurrent process could create the file in
+        # and the upload below - a concurrent process could create the file in
         # between. This is an inherent limitation of splitting the operation;
-        # the risk is minimal in single-agent sandbox environments.
         path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
         check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        try:
-            result = self.execute(check_cmd)
-        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass execute()
-            msg = f"Failed to write file '{file_path}': {exc}"
-            return WriteResult(error=msg)
-
+        result = self.execute(check_cmd)
         if result.exit_code != 0 or "Error:" in result.output:
             error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
             return WriteResult(error=error_msg)
 
-        # Transfer content via upload_files()
-        try:
-            responses = self.upload_files([(file_path, content.encode("utf-8"))])
-        except Exception as exc:  # noqa: BLE001  # defense-in-depth for buggy subclass upload_files()
-            msg = f"Failed to write file '{file_path}': {exc}"
-            return WriteResult(error=msg)
+        responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
-            return WriteResult(error=f"Failed to write file '{file_path}': upload returned no response")
-        if responses[0].error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
+            # An unreachable condition was reached
+            msg = f"Responses was expected to return 1 result, but it returned {len(responses)} with type {type(responses)}"
+            raise AssertionError(msg)
+        response = responses[0]
+        if response.error:
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
 
         return WriteResult(path=file_path)
 
@@ -437,6 +530,14 @@ except PermissionError:
         no file transfer.  For larger payloads, uploads old/new strings as
         temp files and runs a server-side replace script — the source file
         never leaves the sandbox.
+
+        `read()` normalizes CRLF to LF for the LLM, so `old_string` is
+        typically LF-only. The server-side script tries `old_string` as-is
+        first, then CRLF- and LF-normalized variants, and applies the same
+        transform to `new_string` so the file's line-ending style is
+        preserved on write. On mixed-ending files, `replace_all=True` only
+        touches occurrences in the first matching style — subsequent edits
+        can replace the rest.
 
         Args:
             file_path: Absolute path to the file to edit.
@@ -610,7 +711,7 @@ except PermissionError:
         # Add glob pattern if specified
         glob_pattern = ""
         if glob:
-            glob_pattern = f"--include='{glob}'"
+            glob_pattern = f"--include={shlex.quote(glob)}"
 
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)
@@ -678,6 +779,9 @@ except PermissionError:
 
         Implementations must support partial success - catch exceptions per-file
         and return errors in `FileUploadResponse` objects rather than raising.
+
+        Upload files is responsible for ensuring that the parent path exists
+        (if user permissions allow the user to write to the given directory)
         """
 
     @abstractmethod

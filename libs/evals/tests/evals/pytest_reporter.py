@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 import sys
@@ -12,9 +13,10 @@ if TYPE_CHECKING:
     import pytest
 
 from deepagents._version import __version__
-from deepagents.graph import get_default_model
 
 import tests.evals.utils as _evals_utils
+
+logger = logging.getLogger(__name__)
 
 _RESULTS: dict[str, int] = {
     "passed": 0,
@@ -38,6 +40,12 @@ _CATEGORY_RESULTS: dict[str, dict[str, int]] = {}
 
 _EXPERIMENT_LINKS: list[dict[str, str]] = []
 """LangSmith experiment link dicts with "name", "url", and optional "public_url" keys, collected at session teardown."""
+
+_FAILURES: list[dict[str, str]] = []
+"""Per-test failure details (`test_name`, `category`, `failure_message`) for post-run analysis."""
+
+_MAX_FAILURE_MSG_LEN = 30_000
+"""Truncate failure messages beyond this length (~7500 tokens) to stay within LLM context limits."""
 
 
 def _micro_step_ratio() -> float | None:
@@ -140,10 +148,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         client = ls_client.Client()
         dataset = _get_test_suite(client, test_suite_name)
 
-        model_opt = session.config.getoption("--model", default=None)
-        model_name = model_opt or str(get_default_model().model)
         experiment_metadata = {
-            "model": model_name,
+            "model": session.config.getoption("--model"),
             "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
             "deepagents_version": __version__,
         }
@@ -231,6 +237,18 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     outcome = report.outcome
     if outcome in {"passed", "failed", "skipped"}:
         _RESULTS[outcome] += 1
+
+    if outcome == "failed":
+        msg = report.longreprtext
+        if len(msg) > _MAX_FAILURE_MSG_LEN:
+            msg = msg[:_MAX_FAILURE_MSG_LEN] + "\n\n... [truncated]"
+        _FAILURES.append(
+            {
+                "test_name": report.nodeid,
+                "category": _NODEID_TO_CATEGORY.get(report.nodeid, ""),
+                "failure_message": msg,
+            }
+        )
 
     category = _NODEID_TO_CATEGORY.get(report.nodeid)
     if category and outcome in {"passed", "failed"}:
@@ -327,7 +345,16 @@ def _collect_experiment_links() -> list[dict[str, str]]:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     _ = exitstatus
-    if session.exitstatus == 1:
+    # Test failures alone shouldn't fail the CI step — aggregation/reporting
+    # steps need to run even when some evals regress. But if no tests ran, the
+    # session is either misconfigured (e.g. unknown `--eval-category` value) or
+    # crashed before collection; preserve the non-zero exit so the step fails
+    # loudly instead of silently producing an empty report. `_RESULTS["total"]`
+    # is incremented only on the `call` phase, so marked-skip runs (setup-only
+    # reports) also leave `total == 0` and are treated as "no tests ran".
+    # Non-1 exit codes (interrupt, internal error, usage error, no-tests-
+    # collected) are never rewritten.
+    if session.exitstatus == 1 and _RESULTS["total"] > 0:
         session.exitstatus = 0
 
     if not _EXPERIMENT_LINKS:
@@ -347,9 +374,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     payload: dict[str, object] = {
         "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
         "sdk_version": __version__,
-        "model": session.config.getoption("--model")
-        or str(session.config._inicache.get("model", ""))
-        or str(get_default_model().model),
+        "model": session.config.getoption("--model"),
         **_RESULTS,
         "correctness": correctness,
         "category_scores": category_scores,
@@ -359,6 +384,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "median_duration_s": median_duration_s,
         "experiment_urls": [link["url"] for link in _EXPERIMENT_LINKS],
         "experiment_links": _EXPERIMENT_LINKS,
+        "failures": _FAILURES,
     }
 
     terminal_reporter = session.config.pluginmanager.getplugin("terminalreporter")
@@ -398,6 +424,15 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
     report_path_opt = session.config.getoption("--evals-report-file")
     if not report_path_opt:
+        return
+
+    # Don't clobber an existing report with a `model: null` payload when the
+    # session aborted before `--model` validation in `pytest_configure`.
+    if not payload["model"]:
+        logger.warning(
+            "Skipping report write to %s: session aborted before --model validation.",
+            report_path_opt,
+        )
         return
 
     report_path = Path(str(report_path_opt))

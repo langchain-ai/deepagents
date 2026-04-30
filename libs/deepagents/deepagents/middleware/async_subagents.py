@@ -1,9 +1,12 @@
-"""Middleware for async subagents running on remote LangGraph servers.
+"""Middleware for async subagents running on remote Agent Protocol servers.
 
 Async subagents use the LangGraph SDK to launch background runs on remote
-LangGraph deployments. Unlike synchronous subagents (which block until
-completion), async subagents return a task ID immediately, allowing the main
-agent to monitor progress and send updates while the subagent works.
+[Agent Protocol](https://github.com/langchain-ai/agent-protocol) servers.
+Unlike synchronous subagents (which block until completion), async subagents
+return a task ID immediately, allowing the main agent to monitor progress and
+send updates while the subagent works.
+
+Compatible with LangGraph Platform (managed) and self-hosted servers.
 """
 
 import asyncio
@@ -29,14 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncSubAgent(TypedDict):
-    """Specification for an async subagent running on a remote LangGraph server.
+    """Specification for an async subagent running on a remote Agent Protocol server.
 
-    Async subagents connect to LangGraph deployments via the LangGraph SDK.
-    They run as background tasks that the main agent can monitor and update.
+    Async subagents connect to any Agent Protocol-compliant server via the
+    LangGraph SDK. They run as background tasks that the main agent can
+    monitor and update.
 
-    Authentication is handled via environment variables (`LANGGRAPH_API_KEY`,
-    `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY`), which the LangGraph SDK
-    reads automatically.
+    Compatible with LangGraph Platform (managed) and self-hosted servers.
+    Authentication for LangGraph Platform is handled automatically by the SDK
+    via environment variables (`LANGGRAPH_API_KEY`, `LANGSMITH_API_KEY`, or
+    `LANGCHAIN_API_KEY`). For self-hosted servers, pass custom auth via
+    `headers`.
     """
 
     name: str
@@ -52,9 +58,10 @@ class AsyncSubAgent(TypedDict):
     """The graph name or assistant ID on the remote server."""
 
     url: NotRequired[str]
-    """URL of the LangGraph server (e.g., `"https://my-deployment.langsmith.dev"`).
+    """URL of the Agent Protocol server.
 
-    Omit to use ASGI transport for local LangGraph servers.
+    Defaults to the LangGraph SDK's default endpoint. Omit to use ASGI
+    transport for local servers.
     """
 
     headers: NotRequired[dict[str, str]]
@@ -71,10 +78,10 @@ class AsyncTask(TypedDict):
     """Name of the async subagent type that is running."""
 
     thread_id: str
-    """LangGraph thread ID for the remote run."""
+    """Thread ID on the remote server."""
 
     run_id: str
-    """LangGraph run ID for the current execution on the thread."""
+    """Run ID for the current execution on the thread."""
 
     status: str
     """Current task status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
@@ -154,7 +161,7 @@ class ListAsyncTasksSchema(BaseModel):
     )
 
 
-ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent on a remote LangGraph server. The subagent runs in the background and returns a task ID immediately.
+ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
 
 Available async agent types:
 {available_agents}
@@ -164,7 +171,7 @@ Available async agent types:
 2. Use `check_async_task` only when the user asks for a status update or result.
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
-5. The subagent runs on a remote LangGraph server, so it has its own tools and capabilities."""  # noqa: E501
+5. The subagent runs on a remote server, so it has its own tools and capabilities."""  # noqa: E501
 
 ASYNC_TASK_SYSTEM_PROMPT = """## Async subagents (remote LangGraph servers)
 
@@ -205,7 +212,12 @@ You have access to async subagent tools that launch background tasks on remote L
 
 
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
-    """Build headers for a remote LangGraph server, including auth scheme."""
+    """Build headers for a remote Agent Protocol server.
+
+    Adds `x-auth-scheme: langsmith` by default unless already provided.
+    For self-hosted servers that don't require this header, it is typically
+    ignored. Override via the `headers` field on the `AsyncSubAgent` config.
+    """
     headers: dict[str, str] = dict(spec.get("headers") or {})
     if "x-auth-scheme" not in headers:
         headers["x-auth-scheme"] = "langsmith"
@@ -213,7 +225,7 @@ def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
 
 
 class _ClientCache:
-    """Lazily-created, cached LangGraph SDK clients keyed by (url, headers)."""
+    """Lazily-created, cached Agent Protocol clients keyed by (url, headers)."""
 
     def __init__(self, agents: dict[str, AsyncSubAgent]) -> None:
         self._agents = agents
@@ -848,12 +860,16 @@ def _build_async_subagent_tools(
 
 
 class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
-    """Middleware for async subagents running on remote LangGraph servers.
+    """Middleware for async subagents running on remote Agent Protocol servers.
 
     This middleware adds tools for launching, monitoring, and updating
-    background tasks on remote LangGraph deployments. Unlike the synchronous
+    background tasks on remote Agent Protocol servers. Unlike the synchronous
     `SubAgentMiddleware`, async subagents return immediately with a task ID,
     allowing the main agent to continue working while subagents execute.
+
+    Works with any Agent Protocol-compliant server — LangGraph Platform
+    (managed) or self-hosted (e.g. a FastAPI server implementing the Agent
+    Protocol spec).
 
     Task IDs are persisted in the agent state under `async_tasks` so they
     survive context compaction/offloading and can be accessed programmatically.
@@ -862,8 +878,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async_subagents: List of async subagent specifications.
 
             Each must include `name`, `description`, and `graph_id`. `url` is
-            optional — omit it to use ASGI transport for local
-            LangGraph servers.
+            optional — omit it to use ASGI transport for local servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
 

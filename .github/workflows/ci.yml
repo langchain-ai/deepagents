@@ -36,14 +36,16 @@ jobs:
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
+      code: ${{ steps.filter.outputs.code }}
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
+      repl: ${{ steps.filter.outputs.repl }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
 
@@ -75,6 +77,12 @@ jobs:
               - '.github/workflows/_test.yml'
               - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
+            code:
+              - 'libs/code/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             evals:
               - 'libs/evals/**'
               - '.github/workflows/ci.yml'
@@ -105,6 +113,12 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            repl:
+              - 'libs/repl/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
 
   # Run linting on changed packages
   lint-deepagents:
@@ -123,6 +137,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/cli"
+      python-version: "3.11"
+
+  lint-code:
+    name: "🧹 Lint code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/code"
       python-version: "3.11"
 
   lint-evals:
@@ -161,6 +184,15 @@ jobs:
       working-directory: "libs/partners/runloop"
       python-version: "3.11"
 
+  lint-repl:
+    name: "🧹 Lint repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/repl"
+      python-version: "3.11"
+
   lint-quickjs:
     name: "🧹 Lint quickjs"
     needs: changes
@@ -175,85 +207,82 @@ jobs:
     name: "🧪 Test deepagents"
     needs: changes
     if: needs.changes.outputs.deepagents == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
+      coverage-python-version: "3.12"
 
   test-cli:
     name: "🧪 Test cli"
     needs: changes
     if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/cli"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-code:
+    name: "🧪 Test deepagents-code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/code"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-evals:
     name: "🧪 Test evals"
     needs: changes
     if: needs.changes.outputs.evals == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-daytona:
     name: "🧪 Test daytona"
     needs: changes
     if: needs.changes.outputs.daytona == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-modal:
     name: "🧪 Test modal"
     needs: changes
     if: needs.changes.outputs.modal == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/modal"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   test-runloop:
     name: "🧪 Test runloop"
     needs: changes
     if: needs.changes.outputs.runloop == 'true' || github.event_name == 'push'
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-      fail-fast: false
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
-      python-version: ${{ matrix.python-version }}
-      coverage: ${{ matrix.python-version == '3.12' }}
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-repl:
+    name: "🧪 Test repl"
+    needs: changes
+    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/repl"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
 
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
@@ -275,6 +304,21 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
+  # Verify release.yml dropdown options stay in sync with package directories
+  check-release-options:
+    name: "Validate Release Options"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+      - name: "📦 Install Dependencies"
+        run: python -m pip install pyyaml pytest
+      - name: "🔍 Check release dropdown matches packages"
+        run: python -m pytest .github/scripts/test_release_options.py -v
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -282,32 +326,50 @@ jobs:
       - changes
       - lint-deepagents
       - lint-cli
+      - lint-code
       - lint-evals
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-repl
       - lint-quickjs
       - test-deepagents
       - test-cli
+      - test-code
       - test-evals
       - test-daytona
       - test-modal
       - test-runloop
+      - test-repl
       - benchmark-deepagents
       - benchmark-cli
+      - check-release-options
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: "🎉 All Checks Passed"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Get all job results (excluding 'changes' which always succeeds)
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"
 
-          # Check for failures or cancellations
-          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
-            echo "Some jobs failed or were cancelled"
+          if echo "$results" | grep -q '"failure"'; then
+            echo "Some jobs failed"
             exit 1
+          fi
+
+          # On main pushes, concurrency preemption routinely cancels
+          # in-flight jobs when a newer commit arrives — the next run will
+          # validate the latest state, so don't flag those as failures.
+          # On PRs and merge_group runs, a cancellation is almost always a
+          # human action or a real problem, so keep the gate strict.
+          if [ "$EVENT_NAME" != "push" ]; then
+            if echo "$results" | grep -q '"cancelled"'; then
+              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs)"
+              exit 1
+            fi
           fi
 
           echo "All required checks passed (skipped jobs are OK)"

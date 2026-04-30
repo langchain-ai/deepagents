@@ -1,9 +1,11 @@
+import warnings
 from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -29,7 +31,7 @@ def test_filesystem_backend_normal_mode(tmp_path: Path):
     paths = {i["path"] for i in infos}
     assert str(f1) in paths  # File in root should be listed
     assert str(f2) not in paths  # File in subdirectory should NOT be listed
-    assert (str(root) + "/dir/") in paths  # Directory should be listed
+    assert (str(root / "dir") + "/") in paths  # Directory should be listed
 
     # read, edit, write
     read_result = be.read(str(f1))
@@ -681,3 +683,78 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+class TestVirtualModeDefaultDeprecation:
+    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+
+    def test_omitted_virtual_mode_warns(self, tmp_path: Path) -> None:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            be = FilesystemBackend(root_dir=str(tmp_path))
+
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert "virtual_mode" in str(deprecations[0].message)
+        # Default falls back to `False` for backwards compatibility.
+        assert be.virtual_mode is False
+
+    def test_explicit_virtual_mode_does_not_warn(self, tmp_path: Path) -> None:
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+            FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []
+
+
+class TestReadTrailingNewlineRoundtrip:
+    """`FilesystemBackend.read` must round-trip the file's trailing-newline state.
+
+    That state feeds `perform_string_replacement`'s EOF-mismatch detection.
+    Dropping it here re-introduces the silent-failure loop from #2856.
+    """
+
+    def test_preserves_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "with_newline.txt"
+        target.write_text("foo\nbar\n")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar\n"
+
+    def test_preserves_no_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "no_newline.txt"
+        target.write_text("foo\nbar")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar"
+
+    def test_read_then_edit_eof_mismatch_surfaces_hint(self, tmp_path: Path) -> None:
+        """End-to-end: read+edit on an unterminated file emits the EOF hint.
+
+        Pins the #2856 fix at the boundary that matters — the model-facing
+        flow — not just the inner predicate.
+        """
+        target = tmp_path / "memory.md"
+        target.write_text("# Agent Role:\nyou are an assistant")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.edit(
+            str(target),
+            "# Agent Role:\nyou are an assistant\n",
+            "# Agent Role:\nyou are an assistant\nYou can do anything\n",
+        )
+
+        assert result.error is not None
+        assert "old_string ends with a newline" in result.error
+        assert target.read_text() == "# Agent Role:\nyou are an assistant"

@@ -62,6 +62,8 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
+            if val:
+                logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 
@@ -185,7 +187,12 @@ class ProviderConfig(TypedDict, total=False):
     """List of model identifiers available from this provider."""
 
     api_key_env: str
-    """Environment variable name containing the API key."""
+    """Name of the environment variable that holds the API key.
+
+    This is the env var *name* (e.g., `"OPENAI_API_KEY"`), not the secret
+    itself. The CLI resolves it at startup to verify credentials before model
+    creation.
+    """
 
     base_url: str
     """Custom base URL."""
@@ -206,6 +213,10 @@ class ProviderConfig(TypedDict, total=False):
     every model from this provider. Model-keyed sub-tables (e.g.,
     `[params."qwen3:4b"]`) override individual values for that model only;
     the merge is shallow (model wins on conflict).
+
+    Do not set `api_key` here — the early credential check runs before
+    `params` are read, so the CLI will reject the model before it sees the key.
+    Use `api_key_env` to point at an environment variable instead.
     """
 
     profile: dict[str, Any]
@@ -253,6 +264,14 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+"""Providers that support implicit auth (e.g., ADC, local servers).
+
+These providers can authenticate without the env var listed in
+`PROVIDER_API_KEY_ENV`, so a missing env var should not be treated as a hard
+credential failure. Used by `create_model` to skip the early credential check.
 """
 
 
@@ -707,25 +726,36 @@ def get_model_profiles(
 def has_provider_credentials(provider: str) -> bool | None:
     """Check if credentials are available for a provider.
 
-    Resolution order:
+    Combines two credential sources to decide whether a provider's API key
+    is present *before* attempting model creation:
 
-    1. Config-file providers (`config.toml`) with `api_key_env` — takes
-        priority so user overrides are respected.
-    2. Config-file providers with `class_path` but no `api_key_env` —
-        assumed to manage their own auth (e.g., custom headers, JWT, mTLS).
-    3. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    4. For any other provider (e.g., third-party langchain provider
-        packages), credential status is unknown — the provider itself will
-        report auth failures at model-creation time.
+    1. **Config-file providers** (`config.toml` `[providers.<name>]`):
+        - If the section declares `api_key_env`, that env var is checked
+            via `resolve_env_var()` (which honors `DEEPAGENTS_CLI_` prefixes).
+
+            Returns `True`/`False` accordingly.
+        - If the section has `class_path` but no `api_key_env`, the provider is
+            assumed to manage its own auth (e.g., custom headers, JWT, mTLS) and
+            `True` is returned.
+        - If neither `api_key_env` nor `class_path` is set, falls through
+            to step 2.
+    2. **Hardcoded registry** (`PROVIDER_API_KEY_ENV`): a module-level dict
+        mapping 18 well-known provider names to their canonical env var
+        (e.g., `"anthropic"` → `"ANTHROPIC_API_KEY"`). The env var is checked
+        via `resolve_env_var()`.
+    3. **Unknown providers** not present in either source: returns `None` so
+        callers can decide whether to block or defer to the provider SDK's own
+        auth handling.
 
     Args:
-        provider: Provider name.
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
 
     Returns:
-        True if credentials are confirmed available or the provider is
-            expected to manage its own auth (e.g., `class_path` providers),
-            False if confirmed missing, or None if credential status cannot
-            be determined.
+        `True` if credentials are confirmed available or the provider is
+            expected to manage its own auth (e.g., `class_path` providers).
+        `False` if the required env var is known but not set.
+        `None` if credential status cannot be determined (provider not in
+            config or `PROVIDER_API_KEY_ENV`).
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
@@ -1082,14 +1112,18 @@ class ModelConfig:
         return result
 
 
-def _save_model_field(
-    field: str, model_spec: str, config_path: Path | None = None
+def _save_toml_field(
+    section: str,
+    field: str,
+    value: str,
+    config_path: Path | None = None,
 ) -> bool:
-    """Read-modify-write a `[models].<field>` key in the config file.
+    """Read-modify-write a `[section].<field>` key in the config file.
 
     Args:
-        field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
-        model_spec: The model to save in `provider:model` format.
+        section: TOML table name (e.g., `'models'`, `'agents'`).
+        field: Key within the table (e.g., `'default'`, `'recent'`).
+        value: String value to persist.
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -1110,9 +1144,9 @@ def _save_model_field(
         else:
             data = {}
 
-        if "models" not in data:
-            data["models"] = {}
-        data["models"][field] = model_spec
+        if section not in data:
+            data[section] = {}
+        data[section][field] = value
 
         # Write to temp file then rename to prevent corruption if write is interrupted
         fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
@@ -1126,13 +1160,33 @@ def _save_model_field(
                 Path(tmp_path).unlink()
             raise
     except (OSError, tomllib.TOMLDecodeError):
-        logger.exception("Could not save %s model preference", field)
+        logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
+
+
+def _save_model_field(
+    field: str, model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Read-modify-write a `[models].<field>` key in the config file.
+
+    Thin wrapper around `_save_toml_field` for the `[models]` section.
+
+    Args:
+        field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
+        model_spec: The model to save in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("models", field, model_spec, config_path)
 
 
 def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:
@@ -1277,7 +1331,14 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
         if "warnings" not in data:
             data["warnings"] = {}
-        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        suppress_list = data["warnings"].get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            suppress_list = []
         if key not in suppress_list:
             suppress_list.append(key)
         data["warnings"]["suppress"] = suppress_list
@@ -1293,6 +1354,61 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
+def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Remove a warning key from the suppression list in the config file.
+
+    Reads existing config (if any), removes `key` from `[warnings].suppress`,
+    and writes back using atomic temp-file rename. No-op if the key is not
+    present or the file does not exist.
+
+    Args:
+        key: Warning identifier to unsuppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return True  # nothing to remove
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        suppress_list = data.get("warnings", {}).get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            return True  # treat as nothing to remove
+        if key not in suppress_list:
+            return True  # already unsuppressed
+
+        suppress_list.remove(key)
+        data.setdefault("warnings", {})["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     return True
 
@@ -1618,3 +1734,51 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
         This function does not preserve comments in the config file.
     """
     return _save_model_field("recent", model_spec, config_path)
+
+
+def save_recent_agent(agent_name: str, config_path: Path | None = None) -> bool:
+    """Update the recently used agent in config file.
+
+    Writes to `[agents].recent` so a later bare `deepagents` launch (no
+    `-a`) can bring the user back to their last agent instead of the
+    default.
+
+    Args:
+        agent_name: The agent directory name (e.g., `'coder'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("agents", "recent", agent_name, config_path)
+
+
+def load_recent_agent(config_path: Path | None = None) -> str | None:
+    """Read `[agents].recent` from the config file.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved agent name, or `None` if the file or key is missing or
+        the file is unreadable.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        return None
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning("Could not read recent agent from config", exc_info=True)
+        return None
+    agents_section = data.get("agents", {})
+    recent = agents_section.get("recent")
+    if isinstance(recent, str) and recent.strip():
+        return recent.strip()
+    return None

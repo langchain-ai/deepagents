@@ -610,12 +610,15 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
+    max_turns: int | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
-    The loop processes at most `_MAX_HITL_ITERATIONS` rounds to prevent
-    runaway retries (e.g. the agent repeatedly attempting rejected commands).
+    The loop is capped at `max_turns` when set,
+    otherwise `_MAX_HITL_ITERATIONS`, to prevent runaway retries
+    (e.g. the agent repeatedly attempting rejected commands).
 
     Args:
         agent: The agent (Pregel or RemoteAgent).
@@ -628,17 +631,24 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        message_kwargs: Extra fields merged into the initial HumanMessage
+            dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
             a fast-follow LangSmith thread link.
+        max_turns: Optional cap on total agentic turns (initial response plus
+            HITL resumes).
+
+            When `None`, falls back to `_MAX_HITL_ITERATIONS`.
 
     Raises:
-        HITLIterationLimitError: If the HITL iteration limit is exceeded.
+        HITLIterationLimitError: If the effective turn limit is exceeded.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
     state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
-    stream_input: dict[str, Any] | Command = {
-        "messages": [{"role": "user", "content": message}]
-    }
+    user_msg: dict[str, Any] = {"role": "user", "content": message}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
     await dispatch_hook("session.start", {"thread_id": thread_id})
@@ -648,16 +658,28 @@ async def _run_agent_loop(
     # Initial stream
     await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
 
-    # Handle HITL interrupts
-    iterations = 0
+    # The internal default applies when --max-turns is omitted, guarding
+    # against unbounded runaway loops in scripts that forgot to set one.
+    effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
+
+    # The initial stream above counts as turn 1; each HITL resume is a further
+    # turn. Raise before starting a resume that would exceed the budget so the
+    # user-facing count matches the flag's semantics.
+    turns = 1
     while state.interrupt_occurred:
-        iterations += 1
-        if iterations > _MAX_HITL_ITERATIONS:
+        if turns >= effective_limit:
+            limit_source = (
+                f"--max-turns {max_turns}"
+                if max_turns is not None
+                else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
+            )
             msg = (
-                f"Exceeded {_MAX_HITL_ITERATIONS} HITL interrupt rounds. "
-                "The agent may be stuck retrying rejected commands."
+                f"Exceeded {effective_limit} agentic turns ({limit_source}). "
+                "The agent may be stuck retrying rejected commands. "
+                "Increase --max-turns or break the task into smaller steps."
             )
             raise HITLIterationLimitError(msg)
+        turns += 1
         state.interrupt_occurred = False
         state.hitl_response.clear()
         _process_hitl_interrupts(state, console)
@@ -739,6 +761,134 @@ def _build_non_interactive_header(
     return Text.assemble(*parts)
 
 
+async def _run_startup_command(
+    command: str,
+    console: Console,
+    *,
+    quiet: bool,
+) -> None:
+    """Run the `--startup-cmd` shell command before the agent loop.
+
+    Stdout and stderr are routed through `console`. In `--quiet` mode the
+    caller wires `console` to stderr so agent output on stdout stays clean;
+    otherwise both streams land on stdout alongside the agent's response.
+    Non-zero exits and timeouts emit a yellow warning but do not abort the
+    session — the non-zero exit code is logged, not propagated.
+
+    Args:
+        command: Shell command to execute (subject to shell expansion).
+        console: Rich console for status messages. Respects `quiet`.
+        quiet: When `True`, suppresses the "Running startup command" header
+            so piped output stays minimal; warnings still appear (on stderr
+            when the caller wired the console there).
+    """
+    import asyncio
+    import sys
+
+    if not quiet:
+        console.print(Text(f"Running startup command: {command}", style="dim"))
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=(sys.platform != "win32"),
+        )
+    except OSError as e:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command failed to launch: "
+            f"{escape_markup(str(e))}"
+        )
+        return
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=60
+        )
+    except TimeoutError:
+        if proc.returncode is None:
+            try:
+                if sys.platform != "win32":
+                    import os
+                    import signal
+
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                else:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
+            except OSError:
+                logger.warning(
+                    "Failed to terminate startup command (pid=%s)",
+                    proc.pid,
+                    exc_info=True,
+                )
+            else:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except TimeoutError:
+                    logger.warning(
+                        "Startup command (pid=%s) did not exit after termination; "
+                        "sending SIGKILL",
+                        proc.pid,
+                    )
+                    try:
+                        if sys.platform != "win32":
+                            import os
+                            import signal
+
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        else:
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Failed to SIGKILL startup command (pid=%s); "
+                            "process may leak",
+                            proc.pid,
+                            exc_info=True,
+                        )
+                    try:
+                        await proc.wait()
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        logger.warning(
+                            "Failed to reap startup command (pid=%s) after SIGKILL",
+                            proc.pid,
+                            exc_info=True,
+                        )
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    logger.warning(
+                        "Failed to wait on startup command (pid=%s) after SIGTERM; "
+                        "process may leak",
+                        proc.pid,
+                        exc_info=True,
+                    )
+        console.print("[yellow]Warning:[/yellow] startup command timed out (60s limit)")
+        return
+
+    stdout_text = (stdout_bytes or b"").decode(errors="replace").rstrip("\n")
+    stderr_text = (stderr_bytes or b"").decode(errors="replace").rstrip("\n")
+    if stdout_text:
+        # Wrap in `Text` so Rich treats the shell output as literal — otherwise
+        # brackets in tool output (e.g. `[INFO]`, `[1/3]`) would be parsed as
+        # markup and either silently stripped or raise `MarkupError`.
+        console.print(Text(stdout_text), highlight=False)
+    if stderr_text:
+        console.print(Text(stderr_text, style="dim"), highlight=False)
+
+    if proc.returncode:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command exited with code "
+            f"{proc.returncode} — continuing anyway"
+        )
+
+
 async def run_non_interactive(
     message: str,
     assistant_id: str = "agent",
@@ -748,12 +898,15 @@ async def run_non_interactive(
     sandbox_id: str | None = None,
     sandbox_setup: str | None = None,
     *,
+    initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
+    max_turns: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -784,6 +937,13 @@ async def run_non_interactive(
         sandbox_id: Optional existing sandbox ID to reuse.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
+        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
+            the user message before sending it to the agent.
+        startup_cmd: Shell command to run at startup, before the agent runs.
+
+            Output follows the same console routing as other CLI messages:
+            stdout by default, stderr when `-q` is set. Non-zero exits and
+            timeouts warn but do not abort the task.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -801,13 +961,99 @@ async def run_non_interactive(
         trust_project_mcp: When `True`, allow project-level stdio MCP
             servers. When `False` (default), project stdio servers are
             silently skipped.
+        max_turns: Optional cap on total agentic turns. When `None`, the
+            internal safety default applies.
 
     Returns:
-        Exit code: 0 for success, 1 for error, 130 for keyboard interrupt.
+        Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
+            budget was exceeded (matching GNU `timeout`), 130 for keyboard
+            interrupt.
     """
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
+
+    if startup_cmd and startup_cmd.strip():
+        await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
+
+    message_kwargs: dict[str, Any] | None = None
+    if initial_skill and initial_skill.strip():
+        from deepagents_cli.skills.invocation import (
+            build_skill_invocation_envelope,
+            discover_skills_and_roots,
+        )
+        from deepagents_cli.skills.load import load_skill_content
+
+        normalized_skill = initial_skill.strip().lower()
+        try:
+            skills, allowed_roots = discover_skills_and_roots(assistant_id)
+            skill = next((s for s in skills if s["name"] == normalized_skill), None)
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+
+        if skill is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill not found: {escape_markup(normalized_skill)}"
+            )
+            return 1
+
+        try:
+            content = load_skill_content(
+                str(skill["path"]),
+                allowed_roots=allowed_roots,
+            )
+        except PermissionError as e:
+            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
+            return 1
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+        if content is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
+            )
+            return 1
+
+        if not content.strip():
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill '{escape_markup(normalized_skill)}' has an empty "
+                "SKILL.md file. "
+                "Add instructions to the file before invoking."
+            )
+            return 1
+
+        envelope = build_skill_invocation_envelope(skill, content, message)
+        message = envelope.prompt
+        message_kwargs = envelope.message_kwargs
+
     try:
         result = create_model(
             model_name,
@@ -919,7 +1165,9 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
+                max_turns=max_turns,
             )
 
     except KeyboardInterrupt:
@@ -932,7 +1180,9 @@ async def run_non_interactive(
             "that are not in the allow-list. Consider expanding the "
             "--shell-allow-list or adjusting the task.[/yellow]"
         )
-        return 1
+        # Dedicated exit code (matches GNU `timeout`) so CI can distinguish
+        # a turn-budget hit from a generic failure that also returns 1.
+        return 124
     except (ValueError, OSError) as e:
         logger.exception("Error during non-interactive execution")
         console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")

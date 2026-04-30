@@ -54,8 +54,8 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "anthropic:claude-sonnet-4-20250514",
-        frozenset({"eval:set0", "eval:anthropic", "harbor:set0", "harbor:anthropic"}),
+        "anthropic:claude-haiku-4-5",
+        frozenset({"eval:anthropic", "harbor:anthropic"}),
     ),
     Model(
         "anthropic:claude-sonnet-4-5-20250929",
@@ -86,6 +86,21 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "anthropic:claude-opus-4-6",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:anthropic",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:anthropic",
+            }
+        ),
+    ),
+    Model(
+        "anthropic:claude-opus-4-7",
         frozenset(
             {
                 "eval:set0",
@@ -130,6 +145,10 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "baseten:moonshotai/Kimi-K2.5",
+        frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
+    ),
+    Model(
+        "baseten:moonshotai/Kimi-K2.6",
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
     Model(
@@ -249,11 +268,22 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:nvidia", "harbor:nvidia"}),
+        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(
         "ollama:glm-5",
+        frozenset(
+            {
+                "eval:set2",
+                "eval:ollama",
+                "harbor:set2",
+                "harbor:ollama",
+            }
+        ),
+    ),
+    Model(
+        "ollama:glm-5.1",
         frozenset(
             {
                 "eval:set2",
@@ -387,6 +417,19 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "openai:gpt-5.3-codex",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
         "openai:gpt-5.4",
         frozenset(
             {
@@ -398,6 +441,30 @@ REGISTRY: tuple[Model, ...] = (
                 "harbor:set1",
                 "harbor:frontier",
                 "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5-pro",
+        frozenset(
+            {
+                "eval:mega",
+                "harbor:mega",
             }
         ),
     ),
@@ -425,12 +492,39 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "openrouter:nvidia/nemotron-3-super-120b-a12b",
+        "openrouter:moonshotai/kimi-k2.5",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.6",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:z-ai/glm-5.1",
         frozenset(
             {
                 "eval:open",
                 "eval:openrouter",
                 "harbor:open",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:nvidia/nemotron-3-super-120b-a12b",
+        frozenset(
+            {
+                "eval:openrouter",
                 "harbor:openrouter",
             }
         ),
@@ -457,29 +551,39 @@ REGISTRY: tuple[Model, ...] = (
 #                            (i.e. the "all" preset).
 # ---------------------------------------------------------------------------
 _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
-    ("Model groups", [
-        ("set0", "set0"),
-        ("set1", "set1"),
-        ("set2", "set2"),
-        ("frontier", "frontier"),
-        ("fast", "fast"),
-        ("open", "open"),
-    ]),
-    ("Provider groups", [
-        ("anthropic", "anthropic"),
-        ("baseten", "baseten"),
-        ("fireworks", "fireworks"),
-        ("google_genai", "google_genai"),
-        ("groq", "groq"),
-        ("nvidia", "nvidia"),
-        ("ollama", "ollama"),
-        ("openai", "openai"),
-        ("openrouter", "openrouter"),
-        ("xai", "xai"),
-    ]),
-    (None, [
-        ("all", None),
-    ]),
+    (
+        "Model groups",
+        [
+            ("set0", "set0"),
+            ("set1", "set1"),
+            ("set2", "set2"),
+            ("frontier", "frontier"),
+            ("mega", "mega"),
+            ("fast", "fast"),
+            ("open", "open"),
+        ],
+    ),
+    (
+        "Provider groups",
+        [
+            ("anthropic", "anthropic"),
+            ("baseten", "baseten"),
+            ("fireworks", "fireworks"),
+            ("google_genai", "google_genai"),
+            ("groq", "groq"),
+            ("nvidia", "nvidia"),
+            ("ollama", "ollama"),
+            ("openai", "openai"),
+            ("openrouter", "openrouter"),
+            ("xai", "xai"),
+        ],
+    ),
+    (
+        None,
+        [
+            ("all", None),
+        ],
+    ),
 ]
 
 
@@ -556,9 +660,7 @@ def main() -> None:
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
     matrix = {
-        "include": [
-            {"model": m, "provider": m.split(":")[0]} for m in models
-        ],
+        "include": [{"model": m, "provider": m.split(":")[0]} for m in models],
     }
 
     github_output = os.environ.get("GITHUB_OUTPUT")

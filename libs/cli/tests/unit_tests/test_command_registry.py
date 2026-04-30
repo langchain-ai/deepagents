@@ -10,10 +10,12 @@ from deepagents_cli.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
+    HIDDEN_DEBUG,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
     SLASH_COMMANDS,
+    CommandEntry,
 )
 
 
@@ -67,6 +69,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
+            | HIDDEN_DEBUG
         )
 
     def test_aliases_in_correct_tier(self) -> None:
@@ -88,23 +91,48 @@ class TestSlashCommands:
     def test_length_matches_commands(self) -> None:
         assert len(SLASH_COMMANDS) == len(COMMANDS)
 
-    def test_tuple_format(self) -> None:
+    def test_entry_format(self) -> None:
         for entry in SLASH_COMMANDS:
-            assert isinstance(entry, tuple)
-            assert len(entry) == 3
-            name, desc, keywords = entry
-            assert isinstance(name, str)
-            assert name.startswith("/")
-            assert isinstance(desc, str)
-            assert isinstance(keywords, str)
+            assert isinstance(entry, CommandEntry)
+            assert isinstance(entry.name, str)
+            assert entry.name.startswith("/")
+            assert isinstance(entry.description, str)
+            assert isinstance(entry.hidden_keywords, str)
+            assert isinstance(entry.argument_hint, str)
 
     def test_excludes_aliases(self) -> None:
-        names = {entry[0] for entry in SLASH_COMMANDS}
+        names = {entry.name for entry in SLASH_COMMANDS}
         for cmd in COMMANDS:
             for alias in cmd.aliases:
                 assert alias not in names, (
                     f"Alias {alias!r} should not appear in autocomplete"
                 )
+
+    def test_to_entry_matches_slash_commands(self) -> None:
+        """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
+        for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
+            assert cmd.to_entry() == entry
+
+
+class TestAgentsCommand:
+    """Validate the `/agents` entry specifically.
+
+    The `/agents` command is reachable via fuzzy hidden-keyword matches
+    (`switch`, `profile`, `persona`). Dropping any of those would silently
+    regress discoverability.
+    """
+
+    def test_agents_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/agents" in names
+
+    def test_agents_hidden_keywords(self) -> None:
+        agents_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/agents")
+        keywords = agents_cmd.hidden_keywords.split()
+        assert set(keywords) >= {"switch", "profile", "persona"}
+
+    def test_agents_classified_as_immediate_ui(self) -> None:
+        assert "/agents" in IMMEDIATE_UI
 
 
 class TestHelpBodyDrift:

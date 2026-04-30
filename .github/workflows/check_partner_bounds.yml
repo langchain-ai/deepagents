@@ -1,0 +1,207 @@
+# Advisory check: posts a comment on SDK release PRs when the new SDK version
+# would fall outside a partner package's upper-bound constraint on `deepagents`.
+# Does not block merge — it's a reminder to bump partner bounds in a follow-up.
+# Updates or removes the comment on subsequent runs.
+
+name: "📦 Check Partner Bounds"
+
+on:
+  pull_request:
+    paths:
+      # Also trigger on partner toml changes so re-runs pick up bound bumps
+      # within the same PR.
+      - "libs/deepagents/pyproject.toml"
+      - "libs/partners/*/pyproject.toml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-partner-bounds:
+    if: github.head_ref == 'release-please--branches--main--components--deepagents'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Check partner upper bounds
+        id: check
+        run: |
+          set -euo pipefail
+
+          SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
+          if [[ -z "$SDK_VERSION" ]]; then
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version"
+            exit 1
+          fi
+          echo "sdk_version=$SDK_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Normalize a semver triple to a comparable integer (e.g. 0.6.1 → 000006001).
+          version_num() {
+            echo "$1" | awk -F. '{ printf "%d%03d%03d", $1, $2, $3 }'
+          }
+          sdk_num=$(version_num "$SDK_VERSION")
+
+          shopt -s nullglob
+          toml_files=(libs/partners/*/pyproject.toml)
+          if [[ ${#toml_files[@]} -eq 0 ]]; then
+            echo "::warning::No partner pyproject.toml files found — nothing to check."
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          stale=""
+          for toml in "${toml_files[@]}"; do
+            partner=$(echo "$toml" | sed 's|libs/partners/\(.*\)/pyproject.toml|\1|')
+
+            # Extract upper bound: deepagents>=X.Y.Z,<A.B.C → A.B.C
+            upper=$(sed -nE 's/.*"deepagents[^"]*<([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' "$toml" | head -1)
+            if [[ -z "$upper" ]]; then
+              # No upper bound constraint — skip.
+              continue
+            fi
+
+            upper_num=$(version_num "$upper")
+
+            # SDK version is excluded when upper bound <= SDK version.
+            # e.g. SDK=0.6.0, upper=<0.6.0 → 0.6.0 is NOT < 0.6.0 → excluded.
+            if [[ "$upper_num" -le "$sdk_num" ]]; then
+              stale+="${partner}|<${upper}|${toml}"$'\n'
+            fi
+          done
+
+          if [[ -n "$stale" ]]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "partners<<STALE_EOF"
+              printf '%s' "$stale"
+              echo "STALE_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Manage PR comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
+          STALE: ${{ steps.check.outputs.stale }}
+          PARTNERS: ${{ steps.check.outputs.partners }}
+        with:
+          script: |
+            const marker = '<!-- partner-bounds-check -->';
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            const sdkVersion = process.env.SDK_VERSION;
+            if (!sdkVersion || !/^\d+\.\d+\.\d+$/.test(sdkVersion)) {
+              core.setFailed(
+                `SDK version extraction returned invalid value: "${sdkVersion}". ` +
+                'Check that libs/deepagents/pyproject.toml has the expected format.'
+              );
+              return;
+            }
+
+            let comments;
+            try {
+              comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+            } catch (error) {
+              core.setFailed(
+                `Failed to list PR comments (status ${error.status}): ${error.message}`
+              );
+              return;
+            }
+            const existing = comments.find(c => c.body?.includes(marker));
+
+            const stale = process.env.STALE === 'true';
+
+            if (!stale && existing) {
+              try {
+                await github.rest.issues.deleteComment({
+                  owner, repo,
+                  comment_id: existing.id,
+                });
+                core.info('Bounds resolved — removed stale warning comment.');
+              } catch (error) {
+                if (error.status === 404) {
+                  core.info('Stale comment already deleted.');
+                } else {
+                  core.warning(
+                    `Failed to delete stale comment #${existing.id} (${error.status}): ${error.message}. ` +
+                    'Please delete it manually.'
+                  );
+                }
+              }
+            } else if (!stale) {
+              core.info('All partner upper bounds accommodate the new SDK version.');
+            } else {
+              if (!process.env.PARTNERS || !process.env.PARTNERS.trim()) {
+                core.setFailed('STALE is true but PARTNERS output is empty — this is a bug in the check step.');
+                return;
+              }
+
+              const rows = process.env.PARTNERS.trim().split('\n')
+                .filter(line => line.trim().length > 0)
+                .map(line => {
+                  const parts = line.split('|');
+                  if (parts.length !== 3) {
+                    core.warning(`Malformed partner line (expected 3 pipe-delimited fields): "${line}"`);
+                    return null;
+                  }
+                  const [name, bound, path] = parts;
+                  return `> | \`${name}\` | \`${bound}\` | \`${path}\` |`;
+                })
+                .filter(row => row !== null)
+                .join('\n');
+
+              const [major, minor] = sdkVersion.split('.').map(n => parseInt(n, 10));
+              const suggestedUpper = `${major}.${minor + 1}.0`;
+
+              const body = [
+                marker,
+                '> [!WARNING]',
+                `> **Partner upper-bound mismatch** — this release bumps \`deepagents\` to \`${sdkVersion}\`, but the following partner packages have an upper bound that would exclude it:`,
+                '>',
+                '> | Partner | Current bound | File |',
+                '> |---|---|---|',
+                rows,
+                '>',
+                `> **To fix:** update each partner's \`pyproject.toml\` to \`deepagents>=${sdkVersion},<${suggestedUpper}\`, run \`uv lock\` in each directory, and open follow-up PRs (or include the bumps in this release).`,
+                '>',
+                '> **If intentional:** no action needed — existing published partner versions will continue to work with the older SDK range. New partner releases will need the bump.',
+              ].join('\n');
+
+              try {
+                if (existing) {
+                  await github.rest.issues.updateComment({
+                    owner, repo,
+                    comment_id: existing.id,
+                    body,
+                  });
+                  core.info('Updated existing warning comment.');
+                } else {
+                  await github.rest.issues.createComment({
+                    owner, repo,
+                    issue_number: prNumber,
+                    body,
+                  });
+                }
+              } catch (error) {
+                core.warning(
+                  `Could not post/update PR comment (status ${error.status}): ${error.message}.`
+                );
+              }
+              core.warning(
+                `Partner packages have upper bounds that exclude deepagents==${sdkVersion}`
+              );
+            }

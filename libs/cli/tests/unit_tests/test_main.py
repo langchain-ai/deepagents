@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,9 +14,9 @@ from deepagents_cli.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_cli.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_cli.main import (
     _ripgrep_install_hint,
+    build_missing_tool_notification,
     check_optional_tools,
     format_tool_warning_cli,
-    format_tool_warning_tui,
     run_textual_cli_async,
 )
 
@@ -286,6 +287,15 @@ class TestServerCleanupLifecycle:
 class TestCheckOptionalTools:
     """Tests for check_optional_tools() function."""
 
+    @pytest.fixture(autouse=True)
+    def _tavily_available(self) -> Iterator[None]:
+        """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
+        with patch(
+            "deepagents_cli.config.settings",
+            SimpleNamespace(has_tavily=True),
+        ):
+            yield
+
     def test_returns_tool_name_when_rg_not_found(self) -> None:
         """Returns `['ripgrep']` when `rg` is not on PATH."""
         with patch("deepagents_cli.main.shutil.which", return_value=None):
@@ -339,6 +349,42 @@ class TestCheckOptionalTools:
             missing = check_optional_tools(config_path=config_path)
 
         assert missing == ["ripgrep"]
+
+    def test_returns_tavily_when_key_missing(self) -> None:
+        """Returns `'tavily'` when TAVILY_API_KEY is not set."""
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools()
+
+        assert missing == ["tavily"]
+
+    def test_omits_tavily_when_key_present(self) -> None:
+        """Does not include `'tavily'` when TAVILY_API_KEY is set."""
+        with patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"):
+            missing = check_optional_tools()
+
+        assert "tavily" not in missing
+
+    def test_tavily_warning_suppressed_via_config(self, tmp_path: Path) -> None:
+        """Returns empty list when tavily warning is suppressed in config."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["tavily"]\n')
+
+        with (
+            patch("deepagents_cli.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_cli.config.settings",
+                SimpleNamespace(has_tavily=False),
+            ),
+        ):
+            missing = check_optional_tools(config_path=config_path)
+
+        assert missing == []
 
 
 class TestRipgrepInstallHint:
@@ -554,18 +600,7 @@ class TestRipgrepInstallHint:
 
 
 class TestFormatToolWarnings:
-    """Tests for TUI and CLI warning formatters."""
-
-    def test_tui_format_contains_install_hint(self) -> None:
-        """TUI format includes a platform-specific install hint."""
-        hint_patch = patch(
-            "deepagents_cli.main._ripgrep_install_hint",
-            return_value="brew install ripgrep",
-        )
-        with hint_patch:
-            msg = format_tool_warning_tui("ripgrep")
-        assert "brew install ripgrep" in msg
-        assert "[link=" not in msg
+    """Tests for the CLI warning formatter and the notification builder."""
 
     def test_cli_format_contains_install_hint(self) -> None:
         """CLI format includes a platform-specific install hint."""
@@ -589,18 +624,100 @@ class TestFormatToolWarnings:
         assert f"[link={url}]" in msg
         assert "[/link]" in msg
 
-    def test_both_formats_contain_suppress_hint(self) -> None:
-        """Both formats include the config suppression hint."""
-        formatters = (format_tool_warning_tui, format_tool_warning_cli)
-        for fmt in formatters:
-            msg = fmt("ripgrep")
-            assert "\\[warnings]" in msg
-            assert 'suppress = \\["ripgrep"]' in msg
+    def test_cli_format_contains_config_hint(self) -> None:
+        """CLI format references config.toml for suppression."""
+        msg = format_tool_warning_cli("ripgrep")
+        assert "config.toml" in msg
+        assert 'suppress = \\["ripgrep"]' in msg
 
-    def test_unknown_tool_fallback(self) -> None:
-        """Unknown tools get a generic message."""
-        assert format_tool_warning_tui("foo") == "foo is not installed."
+    def test_cli_format_unknown_tool_fallback(self) -> None:
+        """Unknown tools get a generic CLI message."""
         assert format_tool_warning_cli("foo") == "foo is not installed."
+
+    def test_cli_format_tavily_contains_env_hint(self) -> None:
+        """CLI format for tavily mentions the env var with Rich link."""
+        msg = format_tool_warning_cli("tavily")
+        assert "TAVILY_API_KEY" in msg
+        assert "[link=https://tavily.com]" in msg
+
+    def test_cli_format_tavily_contains_config_hint(self) -> None:
+        """CLI tavily format references config.toml for suppression."""
+        msg = format_tool_warning_cli("tavily")
+        assert "config.toml" in msg
+        assert 'suppress = \\["tavily"]' in msg
+
+
+class TestBuildMissingToolNotification:
+    """Tests for `build_missing_tool_notification` registry factory."""
+
+    def test_ripgrep_with_package_manager_hint(self) -> None:
+        """Ripgrep with install command offers copy + open-website + suppress."""
+        from deepagents_cli.main import _RIPGREP_URL
+        from deepagents_cli.notifications import ActionId, MissingDepPayload
+
+        with patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value="brew install ripgrep",
+        ):
+            entry = build_missing_tool_notification("ripgrep")
+        assert entry.key == "dep:ripgrep"
+        assert isinstance(entry.payload, MissingDepPayload)
+        assert entry.payload.tool == "ripgrep"
+        assert entry.payload.install_command == "brew install ripgrep"
+        assert entry.payload.url == _RIPGREP_URL
+        action_ids = [a.action_id for a in entry.actions]
+        assert action_ids == [
+            ActionId.COPY_INSTALL,
+            ActionId.OPEN_WEBSITE,
+            ActionId.SUPPRESS,
+        ]
+        assert entry.actions[0].primary is True
+
+    def test_ripgrep_url_fallback_opens_website(self) -> None:
+        """Ripgrep with URL fallback offers open-website + suppress."""
+        from deepagents_cli.notifications import ActionId, MissingDepPayload
+
+        url = "https://github.com/BurntSushi/ripgrep#installation"
+        with patch(
+            "deepagents_cli.main._ripgrep_install_hint",
+            return_value=url,
+        ):
+            entry = build_missing_tool_notification("ripgrep")
+        assert isinstance(entry.payload, MissingDepPayload)
+        assert entry.payload.url == url
+        assert entry.payload.install_command is None
+        action_ids = [a.action_id for a in entry.actions]
+        assert action_ids == [ActionId.OPEN_WEBSITE, ActionId.SUPPRESS]
+
+    def test_tavily_offers_website_and_suppress(self) -> None:
+        """Tavily entry links to tavily.com and offers suppression."""
+        from deepagents_cli.notifications import ActionId, MissingDepPayload
+
+        entry = build_missing_tool_notification("tavily")
+        assert entry.key == "dep:tavily"
+        assert isinstance(entry.payload, MissingDepPayload)
+        assert entry.payload.tool == "tavily"
+        assert entry.payload.url == "https://tavily.com"
+        assert entry.payload.install_command is None
+        action_ids = [a.action_id for a in entry.actions]
+        assert action_ids == [ActionId.OPEN_WEBSITE, ActionId.SUPPRESS]
+        assert "TAVILY_API_KEY" in entry.body
+
+    def test_unknown_tool_only_suppresses_and_logs(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unknown tools fall back to a bare suppress action and log a warning."""
+        import logging
+
+        from deepagents_cli.notifications import ActionId, MissingDepPayload
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.main"):
+            entry = build_missing_tool_notification("foo")
+        assert entry.key == "dep:foo"
+        assert isinstance(entry.payload, MissingDepPayload)
+        assert entry.payload.tool == "foo"
+        assert [a.action_id for a in entry.actions] == [ActionId.SUPPRESS]
+        assert any("No install hint" in record.message for record in caplog.records)
 
 
 class TestRunTextualCliAsyncModelConfigError:

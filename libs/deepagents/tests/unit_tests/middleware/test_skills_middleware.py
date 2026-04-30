@@ -4,23 +4,29 @@ This module tests the skills middleware and helper functions using temporary
 directories and the FilesystemBackend in normal (non-virtual) mode.
 """
 
+import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.constants import CONF
+from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
@@ -33,16 +39,28 @@ from deepagents.middleware.skills import (
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
+    _skill_metadata_from_response,
     _validate_metadata,
+    _validate_module_path,
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
+def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
+    """Namespace factory: scope by assistant_id when running under LangGraph server."""
+    assistant_id = rt.server_info.assistant_id if rt.server_info else None
+    if assistant_id:
+        return (assistant_id, "filesystem")
+    return ("filesystem",)
+
+
 @contextmanager
-def _config_context(config: dict):
-    """Set a LangGraph config context so get_config() works in tests."""
-    token = var_child_runnable_config.set(config)
+def _runtime_context(assistant_id: str | None = None):
+    """Set a LangGraph Runtime in the current context so ``get_runtime()`` resolves."""
+    server_info = ServerInfo(assistant_id=assistant_id, graph_id="test") if assistant_id is not None else None
+    runtime = Runtime(server_info=server_info)
+    token = var_child_runnable_config.set({CONF: {CONFIG_KEY_RUNTIME: runtime}})
     try:
         yield
     finally:
@@ -195,6 +213,103 @@ No YAML frontmatter here.
 
     result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test")
     assert result is None
+
+
+def test_validate_module_path_absent() -> None:
+    """Missing key returns None — the vast majority of skills have no module."""
+    assert _validate_module_path(None, "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_valid_bare() -> None:
+    """A bare filename with a supported extension passes through unchanged."""
+    assert _validate_module_path("index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_strips_dot_slash() -> None:
+    """./index.ts → index.ts so the stored path matches how the loader keys files."""
+    assert _validate_module_path("./index.ts", "/skills/x/SKILL.md") == "index.ts"
+
+
+def test_validate_module_path_nested() -> None:
+    """Subdirectory paths are fine as long as they stay inside the skill dir."""
+    assert _validate_module_path("lib/entry.js", "/skills/x/SKILL.md") == "lib/entry.js"
+
+
+def test_validate_module_path_all_supported_extensions() -> None:
+    """Every quickjs-rs-accepted extension is accepted here too."""
+    for ext in ("js", "mjs", "cjs", "ts", "mts", "cts", "jsx", "tsx"):
+        path = f"index.{ext}"
+        assert _validate_module_path(path, "/skills/x/SKILL.md") == path
+
+
+def test_validate_module_path_rejects_non_string(caplog: pytest.LogCaptureFixture) -> None:
+    """Non-string values log a warning and return None — don't crash the parse."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path(42, "/skills/x/SKILL.md") is None
+    assert "non-string 'module'" in caplog.text
+
+
+def test_validate_module_path_rejects_empty_string() -> None:
+    """An empty / whitespace-only value is equivalent to absent."""
+    assert _validate_module_path("", "/skills/x/SKILL.md") is None
+    assert _validate_module_path("   ", "/skills/x/SKILL.md") is None
+
+
+def test_validate_module_path_rejects_absolute(caplog: pytest.LogCaptureFixture) -> None:
+    """Absolute paths could reach outside the skill dir — reject with a warning."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("/etc/passwd", "/skills/x/SKILL.md") is None
+    assert "absolute" in caplog.text
+
+
+def test_validate_module_path_rejects_parent_traversal(caplog: pytest.LogCaptureFixture) -> None:
+    """Any form of `..` traversal is rejected so skills can't read each other's code."""
+    caplog.set_level(logging.WARNING)
+    for bad in ("../other/index.js", "./../other/index.js", "lib/../../outside.js", ".."):
+        caplog.clear()
+        assert _validate_module_path(bad, "/skills/x/SKILL.md") is None
+        assert "escapes" in caplog.text
+
+
+def test_validate_module_path_rejects_unknown_extension(caplog: pytest.LogCaptureFixture) -> None:
+    """Only JS/TS extensions quickjs-rs understands are valid entrypoints."""
+    caplog.set_level(logging.WARNING)
+    assert _validate_module_path("index.py", "/skills/x/SKILL.md") is None
+    assert "extension" in caplog.text
+
+
+def test_parse_skill_metadata_with_module() -> None:
+    """End-to-end: a `module` frontmatter key lands on the returned metadata."""
+    content = """---
+name: pdf-extract
+description: Parse PDFs
+module: ./index.ts
+---
+
+# PDF extract
+"""
+    result = _parse_skill_metadata(content, "/skills/user/pdf-extract/SKILL.md", "pdf-extract")
+    assert result is not None
+    assert result["module"] == "index.ts"
+
+
+def test_parse_skill_metadata_with_invalid_module_degrades_gracefully() -> None:
+    """An invalid `module` value must not drop the skill.
+
+    The prose is still useful; we just drop the module surface.
+    """
+    content = """---
+name: bad-module
+description: has a bad module path
+module: /etc/passwd
+---
+
+# Bad module
+"""
+    result = _parse_skill_metadata(content, "/skills/user/bad-module/SKILL.md", "bad-module")
+    assert result is not None
+    assert "module" not in result
+    assert result["name"] == "bad-module"
 
 
 def test_parse_skill_metadata_invalid_yaml() -> None:
@@ -534,14 +649,14 @@ def test_list_skills_from_backend_single_skill(tmp_path: Path) -> None:
 
     # Create skill using backend's upload_files interface
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
     skill_content = make_skill_content("my-skill", "My test skill")
 
     responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -617,8 +732,8 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
 
     # Create a valid skill and an invalid one (missing SKILL.md)
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_dir_file = str(skills_dir / "invalid-skill" / "readme.txt")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_dir_file = (skills_dir / "invalid-skill" / "readme.txt").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
@@ -630,7 +745,7 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     )
 
     # List skills - should only get the valid one
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -650,8 +765,8 @@ def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_skill_path = str(skills_dir / "invalid-skill" / "SKILL.md")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_skill_path = (skills_dir / "invalid-skill" / "SKILL.md").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
     invalid_content = """---
@@ -670,7 +785,7 @@ Content
     )
 
     # Should only get the valid skill
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -691,8 +806,8 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
 
     # Create a skill with helper files
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
-    helper_path = str(skills_dir / "my-skill" / "helper.py")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
+    helper_path = (skills_dir / "my-skill" / "helper.py").as_posix()
 
     skill_content = make_skill_content("my-skill", "My test skill")
     helper_content = "def helper(): pass"
@@ -705,7 +820,7 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
     )
 
     # List skills - should find the skill and not be confused by helper files
-    skills = _list_skills(backend, str(skills_dir))
+    skills = _list_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -718,6 +833,278 @@ def test_list_skills_from_backend_with_helper_files(tmp_path: Path) -> None:
             "allowed_tools": [],
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("skill_dir_path", "source_path"),
+    [
+        ("C:\\Users\\project\\skills\\my-skill\\", "C:\\Users\\project\\skills\\"),
+        ("C:\\Users\\project\\skills\\my-skill", "C:\\Users\\project\\skills"),
+        ("C:\\Users\\project\\skills\\my-skill/", "C:\\Users\\project\\skills/"),
+        ("\\\\server\\share\\skills\\my-skill\\", "\\\\server\\share\\skills\\"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "mixed-separators", "unc-path"],
+)
+def test_list_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
+    r"""Skills load correctly when the backend returns Windows-style paths.
+
+    Regression: `PurePosixPath` treats `\` as a literal filename char, so
+    `_list_skills` must normalize before extracting the directory name and
+    appending `SKILL.md`. Without normalization, the requested download
+    path would be e.g. `C:\...\my-skill\SKILL.md\SKILL.md` (or would fail
+    name validation entirely).
+    """
+    skill_content = make_skill_content("my-skill", "My test skill")
+    expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
+
+    backend = MagicMock()
+    backend.ls = MagicMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
+    backend.download_files = MagicMock(
+        return_value=[
+            FileDownloadResponse(
+                path=expected_skill_md_path,
+                content=skill_content.encode("utf-8"),
+                error=None,
+            )
+        ]
+    )
+
+    skills = _list_skills(backend, source_path)
+
+    # Pins the whole fix: the normalized POSIX path must be what gets requested.
+    backend.download_files.assert_called_once_with([expected_skill_md_path])
+    assert len(skills) == 1
+    assert skills[0]["name"] == "my-skill"
+    assert skills[0]["description"] == "My test skill"
+    assert skills[0]["path"] == expected_skill_md_path
+
+
+class TestSkillMetadataFromResponseLogging:
+    """`_skill_metadata_from_response` must warn on non-`file_not_found` errors.
+
+    `file_not_found` is the expected miss when a subdirectory isn't a skill,
+    so it stays silent. Every other error (most importantly `is_directory`
+    from `FilesystemBackend.download_files` for a path that happens to be a
+    directory) must surface in logs so operators can debug missing skills
+    without resorting to backend introspection.
+    """
+
+    def test_is_directory_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/my-skill/SKILL.md",
+            content=None,
+            error="is_directory",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/my-skill",
+                skill_md_path="/skills/my-skill/SKILL.md",
+            )
+        assert result is None
+        assert any(
+            record.levelname == "WARNING" and "is_directory" in record.getMessage() and "/skills/my-skill/SKILL.md" in record.getMessage()
+            for record in caplog.records
+        ), f"Expected is_directory warning, got records: {[r.getMessage() for r in caplog.records]}"
+
+    def test_file_not_found_error_is_silent(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/not-a-skill/SKILL.md",
+            content=None,
+            error="file_not_found",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/not-a-skill",
+                skill_md_path="/skills/not-a-skill/SKILL.md",
+            )
+        assert result is None
+        assert caplog.records == []
+
+    def test_permission_denied_error_emits_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        response = FileDownloadResponse(
+            path="/skills/locked/SKILL.md",
+            content=None,
+            error="permission_denied",
+        )
+        with caplog.at_level("WARNING", logger="deepagents.middleware.skills"):
+            result = _skill_metadata_from_response(
+                response,
+                skill_dir_path="/skills/locked",
+                skill_md_path="/skills/locked/SKILL.md",
+            )
+        assert result is None
+        assert any("permission_denied" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("source_path", "expected_label"),
+    [
+        ("C:\\Users\\project\\skills\\", "Project"),
+        ("C:\\Users\\project\\skills", "Project"),
+        ("\\\\server\\share\\skills\\", "Share"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "unc-path"],
+)
+def test_format_skills_locations_with_windows_path(source_path: str, expected_label: str) -> None:
+    r"""Derive a sensible label from Windows-style source paths.
+
+    Without backslash normalization, `.name` on the resulting `PurePosixPath`
+    returns the raw backslashed string (or the empty string for UNC paths
+    where `\\\\server\\share\\skills` has no POSIX-delimited final component),
+    not the intended directory label. A leaf of literal `skills` climbs one
+    level so the label reflects the scope (`project`, `share`) rather than
+    collapsing to the generic "Skills Skills" duplicate.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[source_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert f"**{expected_label} Skills**:" in result
+    assert "**Skills Skills**:" not in result
+    assert source_path in result
+
+
+def test_format_skills_locations_builtin_leaf() -> None:
+    """`built_in_skills` collapses to `Built-in Skills` rather than the raw leaf."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/pkg/deepagents_cli/built_in_skills"],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Built-in Skills**:" in result
+
+
+def test_format_skills_locations_skills_leaf_climbs_to_parent() -> None:
+    """A leaf of literal `skills` derives its label from the parent dir."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            "/home/me/.claude/skills",
+            "/home/me/.agents/skills/",
+            "/home/me/.deepagents/skills",
+        ],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Claude Skills**:" in result
+    assert "**Agents Skills**:" in result
+    assert "**Deepagents Skills**:" in result
+    assert "**Skills Skills**:" not in result
+
+
+def test_format_skills_locations_explicit_label_tuples() -> None:
+    """`(path, label)` tuples use the supplied label verbatim."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            ("/home/me/.claude/skills", "User Claude"),
+            ("/repo/.claude/skills", "Project Claude"),
+        ],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**User Claude Skills**: `/home/me/.claude/skills`" in result
+    assert "**Project Claude Skills**: `/repo/.claude/skills`" in result
+    # Higher-priority marker belongs to the last entry.
+    assert result.rstrip().endswith("(higher priority)")
+    assert "Project Claude" in result.split("(higher priority)")[0]
+
+
+@pytest.mark.parametrize(
+    ("source_path", "expected_label"),
+    [
+        ("/skills", "Skills"),
+        ("/skills/", "Skills"),
+        ("skills", "Skills"),
+        ("/foo/my_custom", "My_custom"),
+        ("/foo/my-skills", "My-skills"),
+    ],
+    ids=[
+        "root-anchored-skills",
+        "root-anchored-skills-trailing",
+        "bare-skills",
+        "underscore-leaf-capitalize-fallback",
+        "hyphen-leaf-capitalize-fallback",
+    ],
+)
+def test_format_skills_locations_fallback_capitalize(source_path: str, expected_label: str) -> None:
+    """Bare paths without a special leaf fall back to `.capitalize()`.
+
+    Preserves the historical labelling for existing callers: a leaf like
+    `my_custom` renders as `My_custom` (single-capital) rather than the
+    more aggressive `My Custom` title-casing. Root-anchored and bare
+    `skills` inputs cannot climb and fall back to `Skills`.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[source_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert f"**{expected_label} Skills**:" in result
+
+
+@pytest.mark.parametrize(
+    "empty_path",
+    ["", "/"],
+    ids=["empty-string", "root-only"],
+)
+def test_format_skills_locations_empty_path_fallback(empty_path: str) -> None:
+    """Empty/`/` inputs fall back to `Unnamed` without crashing render."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[empty_path],
+    )
+
+    result = middleware._format_skills_locations()
+    assert "**Unnamed Skills**:" in result
+
+
+@pytest.mark.parametrize(
+    "bad_source",
+    [
+        ("/only-one-element",),
+        ("/one", "two", "three"),
+        ("/path", 42),
+        (None, "label"),
+    ],
+    ids=["one-tuple", "three-tuple", "non-string-label", "non-string-path"],
+)
+def test_malformed_tuple_source_raises_type_error(bad_source: object) -> None:
+    """Malformed tuple sources raise `TypeError` at construction time.
+
+    Fails close to the caller rather than surfacing later as an
+    `IndexError` in the middleware or a silently-coerced non-string path
+    downstream.
+    """
+    with pytest.raises(TypeError, match=r"expected str or \(str, str\) tuple"):
+        SkillsMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=[bad_source],  # type: ignore[list-item]
+        )
+
+
+def test_sources_attribute_is_paths_only() -> None:
+    """`middleware.sources` exposes paths only; labels live on `source_labels`.
+
+    Backwards-compat: callers that inspected `middleware.sources` before
+    the tuple-form API was added continue to see a plain `list[str]`.
+    """
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=[
+            "/skills/user/",
+            ("/home/me/.claude/skills", "User Claude"),
+        ],
+    )
+
+    assert middleware.sources == ["/skills/user/", "/home/me/.claude/skills"]
+    assert middleware.source_labels == ["User", "User Claude"]
 
 
 def test_format_skills_locations_single_registry() -> None:
@@ -981,8 +1368,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
-    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
-    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+    base_skill_path = (base_dir / "shared-skill" / "SKILL.md").as_posix()
+    user_skill_path = (user_dir / "shared-skill" / "SKILL.md").as_posix()
 
     base_content = make_skill_content("shared-skill", "Base description")
     user_content = make_skill_content("shared-skill", "User description")
@@ -995,8 +1382,8 @@ def test_before_agent_skill_override(tmp_path: Path) -> None:
     )
 
     sources = [
-        str(base_dir),
-        str(user_dir),
+        base_dir.as_posix(),
+        user_dir.as_posix(),
     ]
     middleware = SkillsMiddleware(
         backend=backend,
@@ -1123,7 +1510,7 @@ def test_skills_middleware_with_store_backend_instance() -> None:
     store = InMemoryStore()
     sources = ["/skills/user"]
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=sources,
     )
 
@@ -1445,7 +1832,7 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own skills namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -1459,9 +1846,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-123 can read its own skill
-    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    with _config_context(config_1):
-        result_1 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1469,9 +1855,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     assert result_1["skills_metadata"][0]["description"] == "Skill for assistant 1"
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
-    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with _config_context(config_2):
-        result_2 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1485,8 +1870,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     )
 
     # Test: assistant-456 can read its own skill
-    with _config_context(config_2):
-        result_3 = middleware.before_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_3 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1494,8 +1879,8 @@ def test_skills_middleware_with_store_backend_assistant_id() -> None:
     assert result_3["skills_metadata"][0]["description"] == "Skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    with _config_context(config_1):
-        result_4 = middleware.before_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_4 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1
@@ -1507,7 +1892,7 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     """Test default namespace: when no assistant_id is provided, uses (filesystem,) namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -1520,8 +1905,8 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
         create_store_skill_item(shared_skill),
     )
 
-    # Test: empty config accesses default namespace
-    with _config_context({}):
+    # Test: runtime without server_info accesses default namespace
+    with _runtime_context(None):
         result_1 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
@@ -1529,10 +1914,9 @@ def test_skills_middleware_with_store_backend_no_assistant_id() -> None:
     assert result_1["skills_metadata"][0]["name"] == "shared-skill"
     assert result_1["skills_metadata"][0]["description"] == "Shared namespace skill"
 
-    # Test: config with metadata but no assistant_id also uses default namespace
-    config_with_other_metadata = {"metadata": {"some_other_key": "value"}}
-    with _config_context(config_with_other_metadata):
-        result_2 = middleware.before_agent({}, runtime, config_with_other_metadata)  # type: ignore[arg-type]
+    # Test: runtime with server_info but empty assistant_id also uses default namespace
+    with _runtime_context(""):
+        result_2 = middleware.before_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 1
@@ -1544,7 +1928,7 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     """Test namespace isolation with async: each assistant_id gets its own skills namespace."""
     store = InMemoryStore()
     middleware = SkillsMiddleware(
-        backend=StoreBackend(store=store),
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
         sources=["/skills/user"],
     )
     runtime = SimpleNamespace(context=None, store=store, stream_writer=lambda _: None)
@@ -1558,9 +1942,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     )
 
     # Test: assistant-123 can read its own skill
-    config_1 = {"metadata": {"assistant_id": "assistant-123"}}
-    with _config_context(config_1):
-        result_1 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_1 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_1 is not None
     assert len(result_1["skills_metadata"]) == 1
@@ -1568,9 +1951,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_1["skills_metadata"][0]["description"] == "Async skill for assistant 1"
 
     # Test: assistant-456 cannot see assistant-123's skill (different namespace)
-    config_2 = {"metadata": {"assistant_id": "assistant-456"}}
-    with _config_context(config_2):
-        result_2 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_2 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_2 is not None
     assert len(result_2["skills_metadata"]) == 0  # No skills in assistant-456's namespace yet
@@ -1584,8 +1966,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     )
 
     # Test: assistant-456 can read its own skill
-    with _config_context(config_2):
-        result_3 = await middleware.abefore_agent({}, runtime, config_2)  # type: ignore[arg-type]
+    with _runtime_context("assistant-456"):
+        result_3 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_3 is not None
     assert len(result_3["skills_metadata"]) == 1
@@ -1593,8 +1975,8 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert result_3["skills_metadata"][0]["description"] == "Async skill for assistant 2"
 
     # Test: assistant-123 still only sees its own skill (no cross-contamination)
-    with _config_context(config_1):
-        result_4 = await middleware.abefore_agent({}, runtime, config_1)  # type: ignore[arg-type]
+    with _runtime_context("assistant-123"):
+        result_4 = await middleware.abefore_agent({}, runtime, {})  # type: ignore[arg-type]
 
     assert result_4 is not None
     assert len(result_4["skills_metadata"]) == 1

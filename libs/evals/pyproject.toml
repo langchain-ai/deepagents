@@ -25,11 +25,12 @@ dependencies = [
     # Harbor runtime
     "harbor>=0.1.12",
     # LangSmith for observability
-    "langsmith>=0.4.0",
+    "langsmith>=0.7.34",
     # Sandbox runtimes
+    "dockerfile-parse>=2.0.1",
     "modal>=0.64.0",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.0.0",
+    "langchain-anthropic>=1.4.2",
     "langchain-baseten>=0.2.0",
     "langchain-deepseek>=1.0.0",
     "langchain-fireworks>=1.0.0",
@@ -38,7 +39,7 @@ dependencies = [
     "langchain-mistralai>=1.0.0",
     "langchain-nvidia-ai-endpoints>=1.0.0",
     "langchain-ollama>=1.0.0",
-    "langchain-openai>=1.0.0",
+    "langchain-openai>=1.1.14",
     "langchain-openrouter>=0.1.0",
     "langchain-xai>=1.0.0",
     # Eval-specific dependencies
@@ -46,6 +47,8 @@ dependencies = [
     "nltk>=3.9.0",
     "openevals>=0.1.3",
     "tiktoken>=0.8.0",
+    "langchain-repl",
+    "langchain-quickjs",
 ]
 
 [project.optional-dependencies]
@@ -55,7 +58,7 @@ charts = [
 
 [dependency-groups]
 test = [
-    "pytest>=8.4.2",
+    "pytest>=9.0.3",
     "pytest-asyncio>=1.2.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.8.0",
@@ -71,7 +74,7 @@ Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
@@ -103,6 +106,8 @@ override-dependencies = [
 [tool.uv.sources]
 deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
+langchain-repl = { path = "../repl", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

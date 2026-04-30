@@ -9,6 +9,11 @@ correctly.
 import base64
 import json
 import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
@@ -236,6 +241,30 @@ def test_read_handles_non_dict_json_output() -> None:
 
     assert result.error is not None
     assert "unexpected server response" in result.error
+
+
+def test_read_allows_truncated_paginated_output() -> None:
+    """Test that read() accepts truncated paginated content returned by the server."""
+    sandbox = MockSandbox()
+    truncated_content = (
+        "line one\n\n"
+        "[Output was truncated due to size limits. Continue reading with a larger "
+        "offset or smaller limit to inspect the rest of the file.]"
+    )
+    sandbox._next_output = json.dumps(
+        {
+            "encoding": "utf-8",
+            "content": truncated_content,
+        }
+    )
+
+    result = sandbox.read("/test/file.txt")
+
+    assert result.error is None
+    assert result.file_data == {
+        "encoding": "utf-8",
+        "content": truncated_content,
+    }
 
 
 # -- write tests --------------------------------------------------------------
@@ -628,6 +657,23 @@ def test_sandbox_grep_literal_search() -> None:
     assert "grep -rHnF" in sandbox.last_command
 
 
+def test_sandbox_grep_quotes_include_glob() -> None:
+    """Test that grep shell-quotes the include glob pattern."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox.execute = mock_execute
+
+    sandbox.grep("needle", path="/test", glob="x' ; echo injected ; #")
+
+    assert sandbox.last_command is not None
+    assert "--include='x'\"'\"' ; echo injected ; #'" in sandbox.last_command
+    assert "--include='x'\"'\"' ; echo injected ; #' -e needle /test" in sandbox.last_command
+
+
 # -- upload/download failure tests --------------------------------------------
 
 
@@ -688,17 +734,7 @@ def test_sandbox_write_returns_correct_result_on_success() -> None:
 
     assert result.error is None
     assert result.path == "/test/file.txt"
-
-
-def test_sandbox_write_returns_error_on_empty_upload_response() -> None:
-    """Test that write() handles upload_files returning an empty list."""
-    sandbox = MockSandbox()
-    sandbox.upload_files = lambda _files: []  # type: ignore[assignment]
-
-    result = sandbox.write("/test/file.txt", "content")
-
-    assert result.error is not None
-    assert "no response" in result.error
+    assert result.files_update is None
 
 
 def test_sandbox_edit_upload_returns_error_on_empty_upload_response() -> None:
@@ -800,3 +836,79 @@ def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
     assert "unexpected server response" in result.error
     assert len(cleanup_commands) == 1
     assert ".deepagents_edit_" in cleanup_commands[0]
+
+
+# -- read script binary-detection behavior -----------------------------------
+# Direct execution of the formatted _READ_COMMAND_TEMPLATE script via
+# subprocess. Exercises the binary-vs-text classification logic that
+# _FakeSandbox-style tests cannot reach because they stub execute() output.
+
+
+def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000) -> dict:
+    cmd = _READ_COMMAND_TEMPLATE.format(
+        path_b64=base64.b64encode(str(target).encode("utf-8")).decode("ascii"),
+        file_type=file_type,
+        offset=offset,
+        limit=limit,
+    )
+    _, _, tail = cmd.partition('python3 -c "')
+    script, _, _ = tail.rpartition('" 2>&1')
+    proc = subprocess.run(  # noqa: S603  # script is the project's own _READ_COMMAND_TEMPLATE, not user input
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(proc.stdout.strip())
+
+
+def test_read_script_cjk_at_prefix_boundary(tmp_path: Path) -> None:
+    """3-byte CJK char straddling byte 8192 must classify as text, not binary."""
+    target = tmp_path / "cjk.md"
+    target.write_bytes((b"a" * 8190) + "가나다".encode())
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"
+    assert result["content"].endswith("가나다")
+
+
+@pytest.mark.parametrize("pad", [8189, 8190, 8191])
+def test_read_script_emoji_at_prefix_boundary(tmp_path: Path, pad: int) -> None:
+    """4-byte emoji at any sub-boundary offset must classify as text."""
+    target = tmp_path / f"emoji_{pad}.md"
+    target.write_bytes((b"a" * pad) + "😀tail".encode())
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"
+    assert "😀tail" in result["content"]
+
+
+def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
+    target = tmp_path / "bin.dat"
+    target.write_bytes(b"\x00\x01\x02\xff\xfe" * 2000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "base64"
+
+
+def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
+    """Corruption inside the prefix must still route to base64 (not swallowed)."""
+    target = tmp_path / "midbad.dat"
+    target.write_bytes(b"a" * 100 + b"\xff\xff" + b"a" * 9000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "base64"
+
+
+def test_read_script_ascii_larger_than_prefix(tmp_path: Path) -> None:
+    """Pure-ASCII control: file >8192 bytes must classify as text."""
+    target = tmp_path / "ascii.txt"
+    target.write_bytes(b"hello\n" * 2000)
+
+    result = _run_read_script(target)
+
+    assert result["encoding"] == "utf-8"

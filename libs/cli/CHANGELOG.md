@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.47](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.46...deepagents-cli==0.0.47) (2026-04-30)
+
+
+### Bug Fixes
+
+* **cli:** recover from failed server startup via `/model` ([#3056](https://github.com/langchain-ai/deepagents/issues/3056)) ([6ee375e](https://github.com/langchain-ai/deepagents/commit/6ee375e979b672cd1d172669f0e5a7a665431d7c))
+
 ## [0.0.46](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.45...deepagents-cli==0.0.46) (2026-04-30)
 
 ### Features

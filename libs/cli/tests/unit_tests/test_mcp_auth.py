@@ -153,6 +153,29 @@ class TestFileTokenStorage:
         assert got_beta is not None
         assert got_beta.access_token == "beta-token"
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "../escape",
+            "../../etc/cron.d/evil",
+            "name/with/slashes",
+            "name\\with\\backslashes",
+            "name with spaces",
+            "name\x00null",
+            "..",
+            ".",
+            "",
+        ],
+    )
+    def test_unsafe_server_name_rejected(self, name: str) -> None:
+        """Names that could traverse out of the tokens dir are rejected.
+
+        Guards against path traversal via attacker-controlled `mcpServers`
+        keys (Corridor finding d5d5b0c1).
+        """
+        with pytest.raises(ValueError, match="Invalid MCP server name"):
+            FileTokenStorage(name)
+
 
 class TestFindReauthRequired:
     """Tests for unwrapping nested re-auth errors."""

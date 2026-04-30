@@ -662,17 +662,41 @@ def extract_stdio_server_commands(
     return results
 
 
-def _filter_project_stdio_servers(config: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of `config` with stdio servers removed."""
+def extract_project_server_summaries(
+    config: dict[str, Any],
+) -> list[tuple[str, str, str]]:
+    """Return `(name, kind, summary)` for every server in a project config.
+
+    Used by the trust prompt and the untrusted-config skip warning so that
+    both stdio servers (which spawn local commands) and remote servers
+    (which can SSRF or exfiltrate environment variables via interpolated
+    headers when an attacker controls `.mcp.json`) are gated identically.
+
+    Args:
+        config: Parsed MCP config dictionary.
+
+    Returns:
+        List of `(server_name, kind, summary)`. `kind` is `"stdio"`,
+            `"http"`, `"sse"`, or `"unknown"`. `summary` is `"<command> <args>"`
+            for stdio entries and the URL for remote entries.
+    """
+    results: list[tuple[str, str, str]] = []
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
-        return config
-    filtered = {
-        name: server
-        for name, server in servers.items()
-        if isinstance(server, dict) and _resolve_server_type(server) != "stdio"
-    }
-    return {"mcpServers": filtered}
+        return results
+    for name, server in servers.items():
+        if not isinstance(server, dict):
+            continue
+        kind = _resolve_server_type(server)
+        if kind == "stdio":
+            args = server.get("args") or []
+            summary = f"{server.get('command', '')} {' '.join(args)}".strip()
+        elif kind in _SUPPORTED_REMOTE_TYPES:
+            summary = str(server.get("url", ""))
+        else:
+            summary = ""
+        results.append((name, kind, summary))
+    return results
 
 
 def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1255,6 +1279,7 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
+    project_trusted: bool | None = None
     for path in project_configs:
         config, error = load_mcp_config_with_error(path)
         if error is not None:
@@ -1262,25 +1287,16 @@ async def resolve_and_load_mcp_tools(
         if config is None:
             continue
 
-        stdio_servers = extract_stdio_server_commands(config)
-        if not stdio_servers:
+        project_servers = extract_project_server_summaries(config)
+        if not project_servers:
             configs.append(config)
             continue
 
         if trust_project_mcp is True:
             configs.append(config)
-        elif trust_project_mcp is False:
-            filtered = _filter_project_stdio_servers(config)
-            if filtered.get("mcpServers"):
-                configs.append(filtered)
-            skipped = [
-                f"{name}: {cmd} {' '.join(args)}" for name, cmd, args in stdio_servers
-            ]
-            logger.warning(
-                "Skipped untrusted project stdio MCP servers: %s",
-                "; ".join(skipped),
-            )
-        else:
+            continue
+
+        if trust_project_mcp is None and project_trusted is None:
             from deepagents_cli.mcp_trust import (
                 compute_config_fingerprint,
                 is_project_mcp_trusted,
@@ -1288,21 +1304,31 @@ async def resolve_and_load_mcp_tools(
 
             project_root = str(_resolve_project_config_base(project_context).resolve())
             fingerprint = compute_config_fingerprint(project_configs)
-            if is_project_mcp_trusted(project_root, fingerprint):
-                configs.append(config)
-            else:
-                filtered = _filter_project_stdio_servers(config)
-                if filtered.get("mcpServers"):
-                    configs.append(filtered)
-                skipped = [
-                    f"{name}: {cmd} {' '.join(args)}"
-                    for name, cmd, args in stdio_servers
-                ]
-                logger.warning(
-                    "Skipped untrusted project stdio MCP servers "
-                    "(config changed or not yet approved): %s",
-                    "; ".join(skipped),
-                )
+            project_trusted = is_project_mcp_trusted(project_root, fingerprint)
+
+        if project_trusted is True:
+            configs.append(config)
+            continue
+
+        # Untrusted project config: drop ALL servers (stdio + remote). Remote
+        # entries from an attacker-controlled .mcp.json can SSRF localhost or
+        # cloud metadata endpoints during the preflight HEAD probe, and any
+        # `${VAR}` references in their `headers` would exfiltrate the value
+        # to the attacker URL during the discovery handshake.
+        skipped = [
+            f"{name} [{kind}]: {summary}" for name, kind, summary in project_servers
+        ]
+        if trust_project_mcp is False:
+            logger.warning(
+                "Skipped untrusted project MCP servers: %s",
+                "; ".join(skipped),
+            )
+        else:
+            logger.warning(
+                "Skipped untrusted project MCP servers "
+                "(config changed or not yet approved): %s",
+                "; ".join(skipped),
+            )
 
     if explicit_config_path:
         config_path = (

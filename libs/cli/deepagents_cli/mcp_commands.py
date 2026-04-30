@@ -91,6 +91,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
 
     from deepagents_cli.mcp_auth import login
     from deepagents_cli.mcp_tools import (
+        _validate_server_config,
         classify_discovered_configs,
         discover_mcp_configs,
         load_mcp_config,
@@ -170,6 +171,17 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
             f"Known servers: {sorted(servers)}",
             file=sys.stderr,
         )
+        return 1
+
+    # Re-run shape validation on the selected entry. Auto-discovered configs
+    # reach this point via `load_mcp_config_lenient`, which intentionally
+    # skips validation so one malformed entry doesn't break the whole CLI.
+    # Validating here rejects path-traversal server names like "../evil"
+    # before they flow into `FileTokenStorage` and onto disk.
+    try:
+        _validate_server_config(server, servers[server])
+    except (TypeError, ValueError) as exc:
+        print(f"Invalid MCP server config for {server!r}: {exc}", file=sys.stderr)  # noqa: T201
         return 1
 
     import httpx

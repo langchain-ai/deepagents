@@ -92,6 +92,13 @@ logger = logging.getLogger(__name__)
 _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 """Matches `${VAR}` placeholders inside config strings for env-var substitution."""
 
+_SAFE_SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+"""Matches server names that are safe to embed in token-file basenames.
+
+Mirrors `_SERVER_NAME_RE` in `mcp_tools` — duplicated here because
+`mcp_auth` cannot import from `mcp_tools` at module top-level without
+risking a circular import. Keep both regexes in sync."""
+
 _STORAGE_VERSION = 1
 """Schema version stamped into persisted credential files; bump on incompatible
 shape changes so `_load_*` can reject or migrate older payloads."""
@@ -179,7 +186,20 @@ class FileTokenStorage(TokenStorage):
     """File-backed `TokenStorage` under `~/.deepagents/mcp-tokens/`."""
 
     def __init__(self, server_name: str, *, server_url: str | None = None) -> None:
-        """Bind this storage to a configured MCP server identity."""
+        """Bind this storage to a configured MCP server identity.
+
+        Raises:
+            ValueError: If `server_name` contains characters that would let
+                it escape the `~/.deepagents/mcp-tokens/` directory when
+                used as the token-file basename.
+        """
+        if not _SAFE_SERVER_NAME_RE.fullmatch(server_name):
+            msg = (
+                f"Invalid MCP server name {server_name!r}: token storage "
+                "names must match [A-Za-z0-9_-]+ to keep the on-disk path "
+                "inside ~/.deepagents/mcp-tokens/."
+            )
+            raise ValueError(msg)
         self._server_name = server_name
         self._server_url = server_url
 

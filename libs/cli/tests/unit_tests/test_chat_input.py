@@ -225,6 +225,22 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+class TestChatTextAreaKeybindings:
+    """Regression tests for terminal key aliases in the chat input."""
+
+    def test_newline_bindings_do_not_shadow_enter_alias(self) -> None:
+        """`ctrl+m` is carriage return in terminals, so it must remain plain Enter."""
+        newline_keys = {
+            key.strip()
+            for binding in ChatTextArea.BINDINGS
+            if binding.action == "insert_newline"
+            for key in binding.key.split(",")
+        }
+
+        assert "ctrl+m" not in newline_keys
+        assert "ctrl+m" not in ChatTextArea._NEWLINE_KEYS
+
+
 class _ImagePasteApp(App[None]):
     """App that wires a shared tracker into ChatInput for paste tests."""
 

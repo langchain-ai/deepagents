@@ -175,12 +175,20 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
-# 3. The skills_metadata and memory_contents keys are automatically excluded from subagent output
+# 3. The skills_metadata, skills_load_errors, and memory_contents keys are
+#    automatically excluded from subagent output
 #    via PrivateStateAttr annotations on their respective state schemas. However, they must ALSO
 #    be explicitly filtered from runtime.state when invoking a subagent to prevent parent state
 #    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
 #    SkillsMiddleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+_EXCLUDED_STATE_KEYS = {
+    "messages",
+    "todos",
+    "structured_response",
+    "skills_metadata",
+    "skills_load_errors",
+    "memory_contents",
+}
 
 
 class TaskToolSchema(BaseModel):

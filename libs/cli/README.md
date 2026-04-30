@@ -12,13 +12,13 @@
 ## Quick Install
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+curl -LsSf https://langch.in/gh-da-cli | bash
 ```
 
 ```bash
 # With model provider extras
 # OpenAI, Anthropic, and Gemini are included by default
-DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/gh-da-cli | bash
 ```
 
 Or install directly with `uv`:

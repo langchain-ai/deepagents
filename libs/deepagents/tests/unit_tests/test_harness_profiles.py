@@ -11,8 +11,11 @@ from deepagents import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
     HarnessProfileConfig,
+    ProfileSuffixContext,
 )
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+
+_EMPTY_SUFFIX_CONTEXT = ProfileSuffixContext(middleware_classes=frozenset())
 
 
 class TestGeneralPurposeSubagentProfileSerde:
@@ -219,6 +222,14 @@ class TestHarnessProfileConfigSerde:
         with pytest.raises(ValueError, match="extra_middleware"):
             HarnessProfileConfig.from_harness_profile(profile)
 
+    def test_from_harness_profile_rejects_callable_suffix(self) -> None:
+        def suffix(ctx: ProfileSuffixContext) -> str:
+            return f"{len(ctx.middleware_classes)} middleware"
+
+        profile = HarnessProfile(system_prompt_suffix=suffix)
+        with pytest.raises(TypeError, match="system_prompt_suffix"):
+            HarnessProfileConfig.from_harness_profile(profile)
+
 
 class TestExcludedMiddlewareGrammar:
     """Grammar-level validation runs at `HarnessProfile[Config]` construction."""
@@ -343,19 +354,19 @@ class TestApplyProfilePrompt:
     def test_empty_profile_returns_base_unchanged(self) -> None:
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
 
-        assert _apply_profile_prompt(HarnessProfile(), "base") == "base"
+        assert _apply_profile_prompt(HarnessProfile(), "base", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "base"
 
     def test_base_system_prompt_replaces_base(self) -> None:
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
 
         profile = HarnessProfile(base_system_prompt="custom base")
-        assert _apply_profile_prompt(profile, "ignored") == "custom base"
+        assert _apply_profile_prompt(profile, "ignored", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "custom base"
 
     def test_system_prompt_suffix_appended_to_base(self) -> None:
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
 
         profile = HarnessProfile(system_prompt_suffix="suffix")
-        assert _apply_profile_prompt(profile, "base") == "base\n\nsuffix"
+        assert _apply_profile_prompt(profile, "base", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "base\n\nsuffix"
 
     def test_base_and_suffix_combine(self) -> None:
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
@@ -364,21 +375,42 @@ class TestApplyProfilePrompt:
             base_system_prompt="custom base",
             system_prompt_suffix="suffix",
         )
-        assert _apply_profile_prompt(profile, "ignored") == "custom base\n\nsuffix"
+        assert _apply_profile_prompt(profile, "ignored", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "custom base\n\nsuffix"
 
     def test_empty_string_base_replaces_base(self) -> None:
         """`""` is distinct from `None` — explicitly empty replaces."""
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
 
         profile = HarnessProfile(base_system_prompt="")
-        assert _apply_profile_prompt(profile, "ignored") == ""
+        assert _apply_profile_prompt(profile, "ignored", suffix_context=_EMPTY_SUFFIX_CONTEXT) == ""
 
-    def test_empty_string_suffix_still_appended(self) -> None:
-        """An explicit empty suffix is appended (with separator) — distinct from `None`."""
+    def test_empty_string_suffix_treated_as_none(self) -> None:
+        """An explicit empty suffix is skipped — no trailing blank-line separator."""
         from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
 
         profile = HarnessProfile(system_prompt_suffix="")
-        assert _apply_profile_prompt(profile, "base") == "base\n\n"
+        assert _apply_profile_prompt(profile, "base", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "base"
+
+    def test_suffix_resolver_uses_middleware_context(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        def suffix(ctx: ProfileSuffixContext) -> str | None:
+            if AsyncSubAgentMiddleware in ctx.middleware_classes:
+                return "async suffix"
+            return None
+
+        profile = HarnessProfile(system_prompt_suffix=suffix)
+        context = ProfileSuffixContext(middleware_classes=frozenset({AsyncSubAgentMiddleware}))
+
+        assert _apply_profile_prompt(profile, "base", suffix_context=context) == "base\n\nasync suffix"
+        assert _apply_profile_prompt(profile, "base", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "base"
+
+    def test_suffix_resolver_empty_string_treated_as_none(self) -> None:
+        """A resolver returning `""` skips the append, same as returning `None`."""
+        from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt  # noqa: PLC0415
+
+        profile = HarnessProfile(system_prompt_suffix=lambda _ctx: "")
+        assert _apply_profile_prompt(profile, "base", suffix_context=_EMPTY_SUFFIX_CONTEXT) == "base"
 
 
 class TestMaterializeExtraMiddleware:

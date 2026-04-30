@@ -20,7 +20,7 @@ They may be layered on top of via additive merge semantics.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 from deepagents.profiles._keys import validate_profile_key
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
@@ -77,6 +77,63 @@ def _format_scaffolding_rejection(violations: list[str]) -> str:
         "enforcement — use excluded_tools for per-tool visibility or "
         "adjust profile settings instead of stripping scaffolding)"
     )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProfileSuffixContext:
+    """Read-only snapshot of one assembled middleware stack.
+
+    The SDK builds one `ProfileSuffixContext` per stack — main agent,
+    general-purpose subagent, and each declarative subagent — *after*
+    `excluded_middleware` filtering has run, then passes it to a callable
+    `system_prompt_suffix` resolver so the resolver can include or omit
+    suffix segments based on what middleware actually survived.
+
+    Frozen and keyword-only so resolvers cannot mutate assembly state and
+    new fields can be added without breaking positional construction.
+    """
+
+    middleware_classes: frozenset[type[AgentMiddleware]]
+    """Exact concrete middleware classes present in the final, post-exclusion
+    stack.
+
+    Match by class identity, not `isinstance` — same semantics as
+    `excluded_middleware`. A subclass `MySubclass(TodoListMiddleware)`
+    registers as `MySubclass`, not `TodoListMiddleware`, so resolvers that
+    branch on a base class won't fire for user subclasses.
+    """
+
+    def __contains__(self, item: object) -> bool:
+        """Allow `MiddlewareClass in ctx` as shorthand for membership.
+
+        Mirrors `MiddlewareClass in ctx.middleware_classes` so resolvers
+        don't have to reach into the field for the common case.
+        """
+        return item in self.middleware_classes
+
+    @classmethod
+    def _from_middleware(cls, middleware: Sequence[AgentMiddleware]) -> ProfileSuffixContext:
+        """Build a context from a final, post-exclusion middleware stack.
+
+        Internal — only SDK assembly should construct contexts. Callers must
+        pass the list after `_apply_excluded_middleware` has run; this
+        constructor does no filtering of its own. Resolver authors receive a
+        ready-built context as their argument and should not need this.
+        """
+        return cls(middleware_classes=frozenset(type(entry) for entry in middleware))
+
+
+SuffixResolver = Callable[[ProfileSuffixContext], str | None]
+"""Callable form of `HarnessProfile.system_prompt_suffix`.
+
+Invoked once per assembled stack that resolves to the owning profile — main
+agent, general-purpose subagent, and each declarative subagent — after
+`excluded_middleware` filtering, so a single `create_deep_agent` call can
+fire the resolver multiple times with different `ProfileSuffixContext`
+snapshots. Resolvers should be pure (no shared state, no I/O) so identical
+inputs produce identical output. Return a non-empty string to append, or
+`None` / `""` to skip the suffix for that stack.
+"""
 
 
 @dataclass(frozen=True)
@@ -201,8 +258,8 @@ class HarnessProfileConfig:
     A `HarnessProfileConfig` contains the file-friendly subset of harness
     settings: plain strings, bools, lists, and nested dicts that can be loaded
     from YAML or JSON. For in-code/runtime-only adjustments such as
-    `extra_middleware` or class-form `excluded_middleware`, use
-    `HarnessProfile` instead.
+    `extra_middleware`, callable `system_prompt_suffix` resolvers, or
+    class-form `excluded_middleware`, use `HarnessProfile` instead.
 
     !!! note "Class-path serialization"
 
@@ -441,8 +498,9 @@ class HarnessProfileConfig:
             ValueError: If `profile` contains runtime-only state such as
                 non-empty `extra_middleware`, or if a class-form
                 `excluded_middleware` entry has no `serialized_name` alias.
-            TypeError: If `tool_description_overrides` contains a non-string
-                key or value.
+            TypeError: If `profile.system_prompt_suffix` is a callable
+                resolver (runtime-only), or if `tool_description_overrides`
+                contains a non-string key or value.
         """
         extra = profile.extra_middleware
         if callable(extra) or (isinstance(extra, tuple) and extra):
@@ -453,9 +511,18 @@ class HarnessProfileConfig:
             )
             raise ValueError(msg)
 
+        suffix = profile.system_prompt_suffix
+        if callable(suffix):
+            msg = (
+                "HarnessProfileConfig.from_harness_profile() cannot export "
+                "`system_prompt_suffix` callables. Callable suffix resolvers "
+                "are runtime-only; keep them in `HarnessProfile`."
+            )
+            raise TypeError(msg)
+
         return cls(
             base_system_prompt=profile.base_system_prompt,
-            system_prompt_suffix=profile.system_prompt_suffix,
+            system_prompt_suffix=cast("str | None", suffix),
             tool_description_overrides=_coerce_str_mapping(
                 dict(profile.tool_description_overrides),
                 "tool_description_overrides",
@@ -545,13 +612,37 @@ class HarnessProfile:
     guidance on top of the SDK base.
     """
 
-    system_prompt_suffix: str | None = None
+    system_prompt_suffix: str | SuffixResolver | None = None
     """`SUFFIX` slot in the prompt assembly order — text appended to
     the assembled base system prompt.
 
     Always sits last (after `BASE` or `CUSTOM`) so model-tuning guidance
-    lands closest to the conversation history. `None` (the default)
-    means no suffix.
+    lands closest to the conversation history. `None` (the default) means
+    no suffix.
+
+    Most profiles pass a literal string. To make suffix text depend on the
+    final middleware stack, pass a resolver callable instead. The resolver
+    receives a frozen `ProfileSuffixContext` after `excluded_middleware` has
+    filtered the stack and returns a string to append or `None` to omit the
+    suffix for that stack:
+
+    ```python
+    from langchain.agents.middleware import TodoListMiddleware
+
+    def suffix(ctx: ProfileSuffixContext) -> str | None:
+        if TodoListMiddleware not in ctx:
+            return None
+        return "Use `write_todos` to keep plans current."
+    ```
+
+    Use the resolver form whenever suffix copy names a tool or feature
+    owned by an *excludable* middleware — it keeps the prompt in lockstep
+    with the runtime stack so the model never sees instructions for tools
+    that aren't bound.
+
+    Callable suffix resolvers are runtime-only. `HarnessProfileConfig` keeps
+    this field as `str | None` because callables cannot be represented in
+    YAML/JSON.
 
     Applied uniformly to every assembled stack that consults this
     profile: the main agent, declarative subagents whose model resolves
@@ -746,25 +837,66 @@ class HarnessProfile:
         return list(_resolve_middleware_seq(self.extra_middleware))
 
 
-def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str) -> str:
+def _resolve_profile_suffix(profile: HarnessProfile, suffix_context: ProfileSuffixContext) -> str | None:
+    """Resolve `profile.system_prompt_suffix` for one final middleware stack.
+
+    Args:
+        profile: Harness profile whose suffix should be resolved.
+        suffix_context: Read-only stack context passed to callable resolvers.
+
+    Returns:
+        The suffix text to append, or `None` when no suffix should be added.
+    """
+    suffix = profile.system_prompt_suffix
+    if suffix is None or isinstance(suffix, str):
+        return suffix
+    return suffix(suffix_context)
+
+
+def _append_profile_suffix(profile: HarnessProfile, prompt: str, *, suffix_context: ProfileSuffixContext) -> str:
+    """Append the resolved profile suffix to `prompt` when truthy.
+
+    Args:
+        profile: Harness profile whose suffix should be resolved.
+        prompt: Prompt text to append onto.
+        suffix_context: Read-only stack context passed to callable resolvers.
+
+    Returns:
+        `prompt` with the resolved suffix appended, or `prompt` unchanged
+            when the resolved suffix is empty.
+    """
+    suffix = _resolve_profile_suffix(profile, suffix_context)
+    if suffix:
+        return prompt + "\n\n" + suffix
+    return prompt
+
+
+def _apply_profile_prompt(profile: HarnessProfile, base_prompt: str, *, suffix_context: ProfileSuffixContext) -> str:
     """Apply `profile`'s prompt overlay to `base_prompt`.
 
     `base_system_prompt` (when set) replaces `base_prompt` outright;
-    `system_prompt_suffix` (when set) is appended with a blank-line
-    separator. Both are independently optional, mirroring the field
-    semantics — a profile that sets only the suffix layers it on top of
-    whatever base the caller passes in.
+    `system_prompt_suffix` (when set or resolved) is appended with a
+    blank-line separator. Both are independently optional, mirroring the
+    field semantics — a profile that sets only the suffix layers it on top
+    of whatever base the caller passes in.
 
     Used uniformly across the main agent (`base_prompt=BASE_AGENT_PROMPT`),
     declarative subagents (`base_prompt=spec["system_prompt"]`), and the
     auto-added general-purpose subagent (`base_prompt=GP base prompt`), so a
     profile registered under a model spec applies the same overlay regardless
     of which stack the model lands in.
+
+    Args:
+        profile: Harness profile to apply.
+        base_prompt: Stack-specific base prompt.
+        suffix_context: Read-only stack context passed to callable suffix
+            resolvers.
+
+    Returns:
+        The assembled prompt for this profile and stack.
     """
     prompt = profile.base_system_prompt if profile.base_system_prompt is not None else base_prompt
-    if profile.system_prompt_suffix is not None:
-        prompt = prompt + "\n\n" + profile.system_prompt_suffix
-    return prompt
+    return _append_profile_suffix(profile, prompt, suffix_context=suffix_context)
 
 
 _HARNESS_PROFILE_CONFIG_KEYS: frozenset[str] = frozenset(f.name for f in fields(HarnessProfileConfig))

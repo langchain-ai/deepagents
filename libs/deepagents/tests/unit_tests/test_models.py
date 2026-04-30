@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
@@ -26,9 +27,11 @@ from deepagents.profiles import (
 )
 from deepagents.profiles.harness.harness_profiles import (
     _HARNESS_PROFILES,
+    ProfileSuffixContext,
     _get_harness_profile,
     _merge_middleware,
     _merge_profiles,
+    _resolve_profile_suffix,
 )
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_APP_TITLE,
@@ -1057,21 +1060,33 @@ class TestBuiltInProfiles:
         """Each Codex model registers a non-empty Codex harness profile."""
         profile = _get_harness_profile(model_key)
         assert profile is not None
-        assert profile.system_prompt_suffix
-        assert "## Codex-Specific Behavior" in profile.system_prompt_suffix
-        assert "## Parallel Tool Use" in profile.system_prompt_suffix
-        assert "## Plan Hygiene" in profile.system_prompt_suffix
+        suffix = _resolve_profile_suffix(
+            profile,
+            ProfileSuffixContext(middleware_classes=frozenset({TodoListMiddleware})),
+        )
+        assert suffix
+        assert "## Codex-Specific Behavior" in suffix
+        assert "## Parallel Tool Use" in suffix
+        assert "## Plan Hygiene" in suffix
+
+        without_todos = _resolve_profile_suffix(profile, ProfileSuffixContext(middleware_classes=frozenset()))
+        assert without_todos
+        assert "## Codex-Specific Behavior" in without_todos
+        assert "## Parallel Tool Use" in without_todos
+        assert "## Plan Hygiene" not in without_todos
 
     def test_codex_suffix_is_identical_across_models(self) -> None:
         """All Codex variants share the same suffix from a single profile."""
-        suffixes = {
-            _get_harness_profile(spec).system_prompt_suffix  # type: ignore[union-attr]
-            for spec in (
-                "openai:gpt-5.1-codex",
-                "openai:gpt-5.2-codex",
-                "openai:gpt-5.3-codex",
-            )
-        }
+        context = ProfileSuffixContext(middleware_classes=frozenset({TodoListMiddleware}))
+        suffixes: set[str | None] = set()
+        for spec in (
+            "openai:gpt-5.1-codex",
+            "openai:gpt-5.2-codex",
+            "openai:gpt-5.3-codex",
+        ):
+            profile = _get_harness_profile(spec)
+            assert profile is not None
+            suffixes.add(_resolve_profile_suffix(profile, context))
         assert len(suffixes) == 1
 
 

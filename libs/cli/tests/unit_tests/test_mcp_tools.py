@@ -1918,6 +1918,15 @@ class TestToolFilterValidation:
         ):
             load_mcp_config(path)
 
+    @pytest.mark.parametrize("field", ["allowedTools", "disabledTools"])
+    def test_rejects_empty_list(
+        self, write_config: Callable[..., str], field: str
+    ) -> None:
+        """An empty filter list is a footgun and is rejected at load time."""
+        path = write_config({"mcpServers": {"fs": {"command": "node", field: []}}})
+        with pytest.raises(ValueError, match=rf"'{field}' must be non-empty"):
+            load_mcp_config(path)
+
 
 class TestApplyToolFilter:
     """Behavior of the `_apply_tool_filter` helper."""
@@ -2043,13 +2052,33 @@ class TestApplyToolFilter:
         )
         assert [t.name for t in result] == ["fs_read"]
 
+    def test_disabled_unknown_name_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `disabledTools` typo should be visible.
+
+        Otherwise the user thinks a tool was disabled when it's still active.
+        """
+        tools = [_make_prefixed_tool("fs_read"), _make_prefixed_tool("fs_write")]
+        with caplog.at_level("WARNING", logger="deepagents_cli.mcp_tools"):
+            result = _apply_tool_filter(
+                tools,
+                "fs",
+                {"command": "node", "disabledTools": ["write", "tpyo"]},
+            )
+        assert [t.name for t in result] == ["fs_read"]
+        assert "disabledTools entries matched no tools: tpyo" in caplog.text
+
 
 class TestToolFilterEndToEnd:
     """`get_mcp_tools` applies filtering after loading."""
 
     @pytest.fixture(autouse=True)
     def _bypass_health_checks(self) -> Generator[None]:
-        with patch("deepagents_cli.mcp_tools._check_stdio_server"):
+        with (
+            patch("deepagents_cli.mcp_tools._check_stdio_server"),
+            patch("deepagents_cli.mcp_tools._check_remote_server"),
+        ):
             yield
 
     async def test_allowed_tools_filters_loaded_tools(
@@ -2132,5 +2161,104 @@ class TestToolFilterEndToEnd:
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_filter_applies_to_http_server(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """`allowedTools` is honored for http (remote) servers, not just stdio."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "api": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "allowedTools": ["search"],
+                    }
+                }
+            }
+        )
+
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
+            )
+        )
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+
+        assert [t.name for t in tools] == ["api_search"]
+        assert manager is not None
+        await manager.cleanup()
+
+    async def test_filters_are_per_server(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """Each server's filter applies only to its own tools, never the union."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "fs": {
+                        "command": "node",
+                        "args": ["server.js"],
+                        "allowedTools": ["read_file"],
+                    },
+                    "api": {
+                        "type": "http",
+                        "url": "https://example.com/mcp",
+                        "disabledTools": ["delete"],
+                    },
+                }
+            }
+        )
+
+        fs_session = AsyncMock()
+        fs_session.initialize = AsyncMock()
+        fs_session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
+            )
+        )
+        api_session = AsyncMock()
+        api_session.initialize = AsyncMock()
+        api_session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
+            )
+        )
+
+        sessions_by_url = {
+            "https://example.com/mcp": api_session,
+        }
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            yield sessions_by_url.get(connection.get("url"), fs_session)
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            tools, manager, _ = await get_mcp_tools(path)
+
+        names = sorted(t.name for t in tools)
+        assert names == ["api_search", "fs_read_file"]
         assert manager is not None
         await manager.cleanup()

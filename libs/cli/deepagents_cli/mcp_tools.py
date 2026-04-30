@@ -513,8 +513,12 @@ def _validate_tool_filter_fields(
 ) -> None:
     """Validate optional `allowedTools` / `disabledTools` fields.
 
-    Both fields, when present, must be lists of strings. Setting both on the
-    same server is rejected to keep the filter semantics unambiguous.
+    Both fields, when present, must be non-empty lists of strings. Setting
+    both on the same server is rejected to keep the filter semantics
+    unambiguous. An empty list is rejected because it would silently strip
+    every tool from the server (`allowedTools`) or be a no-op
+    (`disabledTools`) — both are almost certainly user errors; omit the field
+    instead.
 
     Args:
         server_name: Name of the server (for error messages).
@@ -522,7 +526,7 @@ def _validate_tool_filter_fields(
 
     Raises:
         TypeError: If a field is not a list of strings.
-        ValueError: If both fields are set on the same server.
+        ValueError: If both fields are set, or either field is empty.
     """
     has_allowed = "allowedTools" in server_config
     has_disabled = "disabledTools" in server_config
@@ -544,6 +548,12 @@ def _validate_tool_filter_fields(
                 f"Server '{server_name}' '{field_name}' must be a list of strings"
             )
             raise TypeError(error_msg)
+        if not value:
+            error_msg = (
+                f"Server '{server_name}' '{field_name}' must be non-empty;"
+                " omit the field to disable filtering."
+            )
+            raise ValueError(error_msg)
 
 
 def load_mcp_config(config_path: str) -> dict[str, Any]:
@@ -1060,7 +1070,10 @@ def _apply_tool_filter(
     the bare MCP tool name and the server-prefixed name produced by
     `tool_name_prefix=True` (`f"{server_name}_{tool}"`). Entries that match
     no loaded tool are logged but not an error — the underlying MCP server
-    may expose different tools across versions.
+    may expose different tools across versions, so a stale entry should not
+    fail startup. The same warning is emitted symmetrically for both fields
+    so a typo in `disabledTools` is visible (otherwise a tool the user
+    intended to disable would silently remain enabled).
 
     Args:
         tools: Tools returned by `load_mcp_tools` for a single server.
@@ -1070,32 +1083,34 @@ def _apply_tool_filter(
     Returns:
         Filtered tool list preserving input order.
     """
-    allowed = server_config.get("allowedTools")
-    disabled = server_config.get("disabledTools")
-    if allowed is None and disabled is None:
+    allowed: list[str] | None = server_config.get("allowedTools")
+    disabled: list[str] | None = server_config.get("disabledTools")
+    entries: list[str] | None = allowed if allowed is not None else disabled
+    if entries is None:
         return tools
 
     prefix = f"{server_name}_"
+    field_name = "allowedTools" if allowed is not None else "disabledTools"
 
-    def _any_entry_matches(tool_name: str, entries: list[str]) -> bool:
-        return any(_entry_matches_tool(e, tool_name, prefix) for e in entries)
+    def _any_entry_matches(tool_name: str, entry_list: list[str]) -> bool:
+        return any(_entry_matches_tool(e, tool_name, prefix) for e in entry_list)
+
+    missing = [
+        e
+        for e in entries
+        if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
+    ]
+    if missing:
+        logger.warning(
+            "MCP server '%s' %s entries matched no tools: %s",
+            server_name,
+            field_name,
+            ", ".join(missing),
+        )
 
     if allowed is not None:
-        filtered = [t for t in tools if _any_entry_matches(t.name, allowed)]
-        missing = [
-            e
-            for e in allowed
-            if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
-        ]
-        if missing:
-            logger.warning(
-                "MCP server '%s' allowedTools entries matched no tools: %s",
-                server_name,
-                ", ".join(missing),
-            )
-        return filtered
-
-    return [t for t in tools if not _any_entry_matches(t.name, disabled or [])]
+        return [t for t in tools if _any_entry_matches(t.name, entries)]
+    return [t for t in tools if not _any_entry_matches(t.name, entries)]
 
 
 async def _load_tools_from_config(

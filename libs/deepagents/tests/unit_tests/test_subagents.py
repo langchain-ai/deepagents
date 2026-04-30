@@ -25,7 +25,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
@@ -1458,6 +1458,67 @@ class TestSubAgents:
         assert saw_parent_tools_update, "Should have seen the parent tools update with the subagent result"
         assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
         assert seen_agent_names == {"supervisor", "worker"}
+
+    def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
+        """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.
+
+        Regression test for #2925: when a raw StateGraph (not created via create_agent)
+        is passed as a CompiledSubAgent, streamed chunks must carry the declared name in
+        metadata, not the parent agent's name.
+        """
+        subagent_content = "RAW_GRAPH_RESPONSE"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "raw-worker"},
+                                "id": "call_raw_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            ),
+            stream_delimiter="_",
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content=subagent_content)]),
+            stream_delimiter="_",
+        )
+
+        # Raw StateGraph — NOT created via create_agent, so no lc_agent_name pre-set.
+        builder = StateGraph(MessagesState)
+        builder.add_node("model", create_agent(model=subagent_chat_model))
+        builder.add_edge(START, "model")
+        raw_graph = builder.compile()
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="supervisor",
+            subagents=[CompiledSubAgent(name="raw-worker", description="Raw graph subagent.", runnable=raw_graph)],
+        )
+
+        seen_subagent_names: set[str | None] = set()
+
+        for _ns, stream_mode, data in parent_agent.stream(
+            {"messages": [HumanMessage(content="Do something")]},
+            stream_mode=["messages"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": "test_raw_graph_lc_agent_name"}},
+        ):
+            if stream_mode == "messages":
+                message_chunk, metadata = data
+                if message_chunk.content:
+                    seen_subagent_names.add(metadata.get("lc_agent_name"))
+
+        assert "raw-worker" in seen_subagent_names, f"Expected 'raw-worker' in streamed lc_agent_name metadata, got: {seen_subagent_names}"
 
     def test_config_passed_to_runnable_lambda_subagent(self) -> None:
         """Test that config (including tags) is passed to a RunnableLambda subagent.

@@ -2,11 +2,10 @@
 
 ## [0.0.46](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.45...deepagents-cli==0.0.46) (2026-04-30)
 
-
 ### Features
 
-* **cli:** `allowedTools` and `disabledTools` filters in MCP config ([#2835](https://github.com/langchain-ai/deepagents/issues/2835)) ([eafd691](https://github.com/langchain-ai/deepagents/commit/eafd6912db637ab59085a0b05d6e36d6cdd10e1a))
-* **cli:** rework MCP integration and add OAuth login ([#2906](https://github.com/langchain-ai/deepagents/issues/2906)) ([6b7b0be](https://github.com/langchain-ai/deepagents/commit/6b7b0bef95db673fed23fc92803abaaa398b0a6d))
+* Rework MCP integration and add OAuth login ([#2906](https://github.com/langchain-ai/deepagents/issues/2906)) ([6b7b0be](https://github.com/langchain-ai/deepagents/commit/6b7b0bef95db673fed23fc92803abaaa398b0a6d))
+* `allowedTools` and `disabledTools` filters in MCP config ([#2835](https://github.com/langchain-ai/deepagents/issues/2835)) ([eafd691](https://github.com/langchain-ai/deepagents/commit/eafd6912db637ab59085a0b05d6e36d6cdd10e1a))
 
 ## [0.0.45](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.44...deepagents-cli==0.0.45) (2026-04-30)
 

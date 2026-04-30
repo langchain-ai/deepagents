@@ -7,7 +7,6 @@ enable composition without fragile string parsing.
 
 import os
 import re
-import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -15,6 +14,7 @@ from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
@@ -87,10 +87,15 @@ def _normalize_content(file_data: FileData) -> str:
     """
     content = file_data["content"]
     if isinstance(content, list):
-        warnings.warn(
-            "FileData with list[str] content is deprecated. Content should be stored as a plain str.",
-            DeprecationWarning,
-            stacklevel=2,
+        warn_deprecated(
+            since="0.5.0",
+            removal="0.7.0",
+            message=(
+                "`FileData` with `list[str]` content is deprecated and will "
+                "be removed in deepagents==0.7.0. Content should be stored "
+                "as a plain `str`."
+            ),
+            package="deepagents",
         )
         return "\n".join(content)
     return content
@@ -286,50 +291,23 @@ def slice_read_response(
     if not content or content.strip() == "":
         return content
 
-    lines = content.splitlines()
+    # Normalize line endings to LF before slicing. State/Store backends may
+    # carry CRLF or CR content as written; downstream tooling (edit match,
+    # grep, format) assumes LF.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+
+    # `splitlines(keepends=True)` retains each line's terminator, including
+    # the absence of one on the final line. Joining with `""` therefore
+    # round-trips the trailing-newline state of the file faithfully —
+    # required so `edit()` can report EOF-newline mismatches accurately.
+    lines = content.splitlines(keepends=True)
     start_idx = offset
     end_idx = min(start_idx + limit, len(lines))
 
     if start_idx >= len(lines):
         return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
-    selected_lines = lines[start_idx:end_idx]
-    return "\n".join(selected_lines)
-
-
-def format_read_response(
-    file_data: FileData,
-    offset: int,
-    limit: int,
-) -> str:
-    """Format file data for read response with line numbers.
-
-    .. deprecated::
-        Use `slice_read_response` and apply
-        `format_content_with_line_numbers` separately.
-
-    Args:
-        file_data: FileData dict
-        offset: Line offset (0-indexed)
-        limit: Maximum number of lines
-
-    Returns:
-        Formatted content or error message
-    """
-    content = file_data_to_string(file_data)
-    empty_msg = check_empty_content(content)
-    if empty_msg:
-        return empty_msg
-
-    lines = content.splitlines()
-    start_idx = offset
-    end_idx = min(start_idx + limit, len(lines))
-
-    if start_idx >= len(lines):
-        return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-
-    selected_lines = lines[start_idx:end_idx]
-    return format_content_with_line_numbers(selected_lines, start_line=start_idx + 1)
+    return "".join(lines[start_idx:end_idx])
 
 
 def perform_string_replacement(
@@ -352,6 +330,31 @@ def perform_string_replacement(
     occurrences = content.count(old_string)
 
     if occurrences == 0:
+        # Detect a common EOF mismatch: `old_string` carries a trailing
+        # newline that the file lacks at the same position. Models infer a
+        # terminator on what looks like a "well-formed" line; exact-match
+        # consumers must surface a precise hint rather than silently relax
+        # the contract — silent recovery on a stripped key risks corrupting
+        # interior text that happens to share a prefix.
+        if old_string.endswith("\n") and len(old_string) > 1 and content.endswith(old_string.removesuffix("\n")):
+            stripped = old_string.removesuffix("\n")
+            stripped_count = content.count(stripped)
+            if stripped_count == 1:
+                return (
+                    "Error: old_string ends with a newline, but the file does "
+                    "not end with a newline. Retry with the trailing newline "
+                    "removed from old_string (and from new_string if it also "
+                    "ends with a newline)."
+                )
+            # Stripped key is ambiguous: the model needs both fixes at once
+            # (drop the newline AND add surrounding context).
+            return (
+                f"Error: old_string ends with a newline, but the file does "
+                f"not end with a newline. With the trailing newline removed, "
+                f"old_string would appear {stripped_count} times in the file. "
+                f"Retry with the trailing newline removed and add surrounding "
+                f"context so the match is unique."
+            )
         return f"Error: String not found in file: '{old_string}'"
 
     if occurrences > 1 and not replace_all:
@@ -383,6 +386,30 @@ def truncate_if_too_long(result: list[str] | str) -> list[str] | str:
     if len(result) > TOOL_RESULT_TOKEN_LIMIT * 4:
         return result[: TOOL_RESULT_TOKEN_LIMIT * 4] + "\n" + TRUNCATION_GUIDANCE
     return result
+
+
+def to_posix_path(path: str) -> str:
+    r"""Normalize backslash separators to forward slashes for `PurePosixPath` use.
+
+    Backends running on Windows return OS-native paths using backslashes.
+    `PurePosixPath` treats backslashes as literal filename characters,
+    so `PurePosixPath(r"C:\a\b").name` yields the full string instead
+    of `"b"`. Normalize before constructing a `PurePosixPath`.
+
+    This is best-effort: a POSIX directory literally named with a backslash
+    will also be rewritten. That trade-off is accepted because such filenames
+    are vanishingly rare in practice and the alternative (gating on `os.sep`)
+    fails when a Windows-style path is handed to a non-Windows process.
+
+    Args:
+        path: Path string that may use backslash separators.
+
+    Returns:
+        The same path with every `\\` replaced by `/`.
+
+            Inputs that already use forward slashes are returned unchanged.
+    """
+    return path.replace("\\", "/")
 
 
 def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -> str:
@@ -423,7 +450,7 @@ def validate_path(path: str, *, allowed_prefixes: Sequence[str] | None = None) -
     """
     # Check for traversal as a path component (not substring) to avoid
     # false-positive rejection of legitimate filenames like "foo..bar.txt"
-    parts = PurePosixPath(path.replace("\\", "/")).parts
+    parts = PurePosixPath(to_posix_path(path)).parts
     if ".." in parts or path.startswith("~"):
         msg = f"Path traversal not allowed: {path}"
         raise ValueError(msg)

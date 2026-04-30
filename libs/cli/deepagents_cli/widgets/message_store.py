@@ -23,8 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Fields on MessageData that callers are allowed to update via update_message().
-# Prevents accidental overwriting of identity fields like id/type/timestamp.
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {
         "content",
@@ -36,30 +34,61 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "height_hint",
     }
 )
+"""Fields on `MessageData` that callers are allowed to update via `update_message`.
+
+Prevents accidental overwriting of identity fields like `id`, `type`, or
+`timestamp`.
+"""
 
 
 class MessageType(StrEnum):
     """Types of messages in the chat."""
 
     USER = "user"
+    """Input authored by the human, rendered above the agent's response."""
+
     ASSISTANT = "assistant"
+    """Streamed agent response rendered with markdown."""
+
     TOOL = "tool"
+    """Record of a tool invocation, including its args, status, and output."""
+
     SKILL = "skill"
+    """Record of a skill invocation, carrying its SKILL.md body and metadata."""
+
     ERROR = "error"
+    """Error surfaced to the user (e.g., a failed tool call or SDK exception)."""
+
     APP = "app"
+    """App-status note from the CLI itself (version info, command feedback)."""
+
     SUMMARIZATION = "summarization"
+    """Notification that the prior conversation was summarized/offloaded."""
+
     DIFF = "diff"
+    """Unified diff preview attached to a file-modifying tool call."""
 
 
 class ToolStatus(StrEnum):
     """Status of a tool call."""
 
     PENDING = "pending"
+    """Queued for execution, typically awaiting human approval."""
+
     RUNNING = "running"
+    """Currently executing."""
+
     SUCCESS = "success"
+    """Completed without error."""
+
     ERROR = "error"
+    """Raised an exception or returned a non-zero exit status."""
+
     REJECTED = "rejected"
+    """Human explicitly denied the call at the approval prompt."""
+
     SKIPPED = "skipped"
+    """Bypassed without executing (e.g., the agent canceled the call)."""
 
 
 @dataclass
@@ -133,6 +162,13 @@ class MessageData:
 
     While `True`, the corresponding widget is actively receiving content
     chunks and should not be pruned or re-hydrated.
+    """
+
+    is_markdown: bool = False
+    """For APP messages, whether `content` is a markdown source string.
+
+    When `True`, rehydration renders the content via Rich markdown instead of
+    the plain dim-italic `AppMessage` styling.
     """
 
     height_hint: int | None = None
@@ -215,7 +251,7 @@ class MessageData:
                 return ErrorMessage(self.content, id=self.id)
 
             case MessageType.APP:
-                return AppMessage(self.content, id=self.id)
+                return AppMessage(self.content, markdown=self.is_markdown, id=self.id)
 
             case MessageType.SUMMARIZATION:
                 return SummarizationMessage(self.content, id=self.id)
@@ -340,6 +376,7 @@ class MessageData:
                 type=MessageType.APP,
                 content=str(widget._content),
                 id=widget_id,
+                is_markdown=widget._is_markdown,
             )
 
         logger.warning(
@@ -375,6 +412,13 @@ class MessageStore:
     def __init__(self) -> None:
         """Initialize the message store."""
         self._messages: list[MessageData] = []
+        self._index: dict[str, MessageData] = {}
+        """ID -> MessageData lookup.
+
+        Must contain exactly one entry per element of `_messages`. Any method
+        that adds to or removes from `_messages` must update `_index`
+        in lockstep.
+        """
         self._visible_start: int = 0
         self._visible_end: int = 0
 
@@ -407,7 +451,14 @@ class MessageStore:
         Args:
             message: The message data to add.
         """
+        if message.id in self._index:
+            logger.warning(
+                "Duplicate message ID %r appended; previous entry will be "
+                "unreachable via get_message()",
+                message.id,
+            )
         self._messages.append(message)
+        self._index[message.id] = message
         self._visible_end = len(self._messages)
 
     def bulk_load(
@@ -426,6 +477,14 @@ class MessageStore:
             Tuple of (archived, visible) message lists.
         """
         self._messages.extend(messages)
+        for msg in messages:
+            if msg.id in self._index:
+                logger.warning(
+                    "Duplicate message ID %r in bulk_load; previous entry "
+                    "will be unreachable via get_message()",
+                    msg.id,
+                )
+            self._index[msg.id] = msg
         total = len(self._messages)
 
         if total <= self.WINDOW_SIZE:
@@ -448,10 +507,7 @@ class MessageStore:
         Returns:
             The message data, or None if not found.
         """
-        for msg in self._messages:
-            if msg.id == message_id:
-                return msg
-        return None
+        return self._index.get(message_id)
 
     def get_message_at_index(self, index: int) -> MessageData | None:
         """Get a message by its index.
@@ -488,12 +544,16 @@ class MessageStore:
             msg = f"Cannot update unknown or protected fields: {unknown}"
             raise ValueError(msg)
 
-        for msg_data in self._messages:
-            if msg_data.id == message_id:
-                for key, value in updates.items():
-                    setattr(msg_data, key, value)
-                return True
-        return False
+        msg_data = self._index.get(message_id)
+        if msg_data is None:
+            logger.warning(
+                "update_message called for unknown ID %r; update discarded",
+                message_id,
+            )
+            return False
+        for key, value in updates.items():
+            setattr(msg_data, key, value)
+        return True
 
     def set_active_message(self, message_id: str | None) -> None:
         """Set the currently active (streaming) message.
@@ -646,6 +706,7 @@ class MessageStore:
     def clear(self) -> None:
         """Clear all messages."""
         self._messages.clear()
+        self._index.clear()
         self._visible_start = 0
         self._visible_end = 0
         self._active_message_id = None

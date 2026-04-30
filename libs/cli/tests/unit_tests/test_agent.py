@@ -23,6 +23,7 @@ from deepagents_cli.agent import (
     _format_write_file_description,
     build_model_identity_section,
     create_cli_agent,
+    get_available_agent_names,
     get_system_prompt,
     list_agents,
     load_async_subagents,
@@ -1065,14 +1066,116 @@ class TestCreateCliAgentSkillsSources:
         assert len(captured_sources) == 1
         sources = captured_sources[0]
         assert sources == [
+            (str(built_in_dir), "Built-in"),
+            (str(skills_dir), "User Deepagents"),
+            (str(user_agent_skills_dir), "User Agents"),
+            (str(project_skills_dir), "Project Deepagents"),
+            (str(project_agent_skills_dir), "Project Agents"),
+            (str(tmp_path / "user-claude-skills"), "User Claude"),
+            (str(tmp_path / "project-claude-skills"), "Project Claude"),
+        ]
+
+        # End-to-end: the captured tuple list should produce distinct
+        # labels when formatted by the real middleware. Guards against
+        # a regression that drops labels back to leaf-only derivation
+        # (which would collapse user- vs project-scoped `.claude/skills`
+        # and `.agents/skills` / `.deepagents/skills` directories).
+        from deepagents.middleware.skills import (
+            SkillsMiddleware as RealSkillsMiddleware,
+        )
+
+        real_middleware = RealSkillsMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=sources,
+        )
+        rendered = real_middleware._format_skills_locations()
+        for expected in (
+            "**Built-in Skills**:",
+            "**User Deepagents Skills**:",
+            "**User Agents Skills**:",
+            "**Project Deepagents Skills**:",
+            "**Project Agents Skills**:",
+            "**User Claude Skills**:",
+            "**Project Claude Skills**:",
+        ):
+            assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
+        assert rendered.rstrip().endswith("(higher priority)")
+
+    def test_skills_sources_fallback_to_bare_paths_on_old_sdk(
+        self, tmp_path: Path
+    ) -> None:
+        """If the installed SDK lacks `SkillSource`, CLI passes bare paths.
+
+        Backwards-compat: SDKs < 0.5.4 only accept `list[str]`. The CLI
+        detects the missing alias at import time and strips labels
+        before handing sources to `SkillsMiddleware`, so the middleware
+        never receives an unsupported tuple.
+        """
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        user_agent_skills_dir = tmp_path / "user-agent-skills"
+        user_agent_skills_dir.mkdir()
+        built_in_dir = Settings.get_built_in_skills_dir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_claude_skills_dir.return_value = tmp_path / "nonexistent"
+        mock_settings.get_project_claude_skills_dir.return_value = None
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[Any]] = []
+
+        class FakeSkillsMiddleware:
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent._SUPPORTS_SKILL_SOURCE_TUPLES", False),
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        # Fallback stripped all labels; middleware receives bare strings.
+        assert sources == [
             str(built_in_dir),
             str(skills_dir),
             str(user_agent_skills_dir),
-            str(project_skills_dir),
-            str(project_agent_skills_dir),
-            str(tmp_path / "user-claude-skills"),
-            str(tmp_path / "project-claude-skills"),
         ]
+        for source in sources:
+            assert isinstance(source, str), f"expected str, got {type(source)!r}"
 
 
 class TestCreateCliAgentMemorySources:
@@ -1294,8 +1397,10 @@ class TestCreateCliAgentProjectContext:
 
         assert len(captured_sources) == 1
         sources = captured_sources[0]
-        assert str(project_skills_dir) in sources
-        assert str(project_agent_skills_dir) in sources
+        # Sources are (path, label) tuples; assert the project paths are wired.
+        source_paths = [s[0] if isinstance(s, tuple) else s for s in sources]
+        assert str(project_skills_dir) in source_paths
+        assert str(project_agent_skills_dir) in source_paths
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
             project_agents_dir=project_agents_dir,
@@ -2170,3 +2275,71 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert not any(
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
+
+
+def _mock_agents_dir(agents_dir: Path) -> Mock:
+    mock_settings = Mock()
+    mock_settings.user_deepagents_dir = agents_dir
+    return mock_settings
+
+
+class TestGetAvailableAgentNames:
+    """Tests for `get_available_agent_names`."""
+
+    def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
+        """No ~/.deepagents directory → empty list, no error."""
+        missing = tmp_path / "does_not_exist"
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(missing)):
+            assert get_available_agent_names() == []
+
+    def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
+        """Subdirectories are returned sorted."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        for name in ("zebra", "alpha", "mango"):
+            (agents_dir / name).mkdir()
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["alpha", "mango", "zebra"]
+
+    def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
+        """Files sitting next to agent directories are excluded."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / "config.toml").write_text("")
+        (agents_dir / ".DS_Store").write_text("")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_symlinks(self, tmp_path: Path) -> None:
+        """Symlinked directories are excluded — a dangling link must not show up."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "real").mkdir()
+        # Symlink to a real dir — still excluded because we only want files
+        # that live inside `~/.deepagents/` directly.
+        real_target = tmp_path / "outside"
+        real_target.mkdir()
+        (agents_dir / "linked").symlink_to(real_target, target_is_directory=True)
+        # Dangling symlink (target doesn't exist).
+        (agents_dir / "broken").symlink_to(tmp_path / "ghost")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["real"]
+
+    def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
+        """PermissionError on iterdir → logged + empty list, not raised."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        def boom(_self: Path) -> list[Path]:
+            msg = "forbidden"
+            raise PermissionError(msg)
+
+        with (
+            patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)),
+            patch.object(Path, "iterdir", boom),
+        ):
+            assert get_available_agent_names() == []

@@ -3,7 +3,7 @@
 import io
 import re
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.console import Console
@@ -69,6 +69,39 @@ class TestInitialSkillArg:
             args = parse_args()
         assert args.initial_skill == "code-review"
         assert args.initial_prompt == "review this patch"
+
+
+class TestStartupCmdArg:
+    """Tests for `--startup-cmd` pre-prompt shell command argument."""
+
+    def test_flag_sets_startup_cmd(self) -> None:
+        """Verify `--startup-cmd` stores the requested command."""
+        with patch.object(sys, "argv", ["deepagents", "--startup-cmd", "git status"]):
+            args = parse_args()
+        assert args.startup_cmd == "git status"
+
+    def test_no_flag(self) -> None:
+        """Verify `startup_cmd` defaults to `None`."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.startup_cmd is None
+
+    def test_with_non_interactive(self) -> None:
+        """Verify `--startup-cmd` works alongside `-n`."""
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--startup-cmd",
+                "echo hi",
+                "-n",
+                "do the thing",
+            ],
+        ):
+            args = parse_args()
+        assert args.startup_cmd == "echo hi"
+        assert args.non_interactive_message == "do the thing"
 
 
 class TestResumeArg:
@@ -232,10 +265,16 @@ class TestShortFlags:
         assert args.model == "gpt-4o"
 
     def test_agent_default_value(self) -> None:
-        """Verify -a defaults to DEFAULT_AGENT_NAME when omitted."""
+        """Verify -a is `None` when omitted so downstream fallback can run.
+
+        The `[agents].recent` / default-agent fallback lives in
+        `_resolve_agent_arg`, not argparse — argparse must leave the slot
+        empty so the resolver can distinguish "user didn't pass -a" from
+        "user explicitly passed the default name".
+        """
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
-        assert args.agent == DEFAULT_AGENT_NAME
+        assert args.agent is None
 
     def test_short_version_flag(self) -> None:
         """Verify -v shows version and exits."""
@@ -330,6 +369,95 @@ class TestNoMcpArg:
             with pytest.raises(SystemExit) as exc_info:
                 cli_main()
         assert exc_info.value.code == 2
+
+
+class TestMcpCommandDispatch:
+    """Tests for `cli_main()` dispatch of `deepagents mcp` subcommands."""
+
+    def test_mcp_login_rejects_global_mcp_config(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`deepagents mcp login` errors if only top-level `--mcp-config` is set."""
+        from deepagents_cli.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--mcp-config",
+                    "/global/config.json",
+                    "mcp",
+                    "login",
+                    "notion",
+                ],
+            ),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_cli.mcp_commands.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        mock_login.assert_not_awaited()
+        err = capsys.readouterr().err
+        assert "--mcp-config is not supported for 'mcp login'" in err
+
+    def test_mcp_login_accepts_subcommand_config_with_global(self) -> None:
+        """Subcommand `--config` is used even if top-level `--mcp-config` is set."""
+        from deepagents_cli.main import cli_main
+
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--mcp-config",
+                    "/global/config.json",
+                    "mcp",
+                    "login",
+                    "notion",
+                    "--config",
+                    "/subcommand/config.json",
+                ],
+            ),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch("deepagents_cli.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_cli.mcp_commands.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        mock_login.assert_awaited_once_with(
+            server="notion",
+            config_path="/subcommand/config.json",
+        )
+
+
+class TestAutoUpdateArg:
+    """Tests for --auto-update argument parsing."""
+
+    def test_flag_parsed(self) -> None:
+        """Verify --auto-update sets auto_update=True."""
+        with patch.object(sys, "argv", ["deepagents", "--auto-update"]):
+            args = parse_args()
+        assert args.auto_update is True
+
+    def test_default_false(self) -> None:
+        """Verify auto_update defaults to False."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.auto_update is False
 
 
 def test_default_agent_name_matches_canonical() -> None:

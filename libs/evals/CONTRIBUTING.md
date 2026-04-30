@@ -15,10 +15,10 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # Required: For Claude model
 export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING=true       # Required: Enable LangSmith tracing
 
-# All evals (default model)
-make evals
+# All evals
+make evals MODEL=claude-opus-4-7
 
-# Specific model
+# Specific model via raw pytest invocation
 LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals --model claude-sonnet-4-6-20250514
 
 # Single test file

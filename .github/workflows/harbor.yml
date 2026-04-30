@@ -1,4 +1,31 @@
+# Harbor evaluation workflow for Deep Agents
+#
+# Runs terminal-bench evaluations via Harbor with configurable sandbox
+# environments (Docker, Daytona, LangSmith, Modal, Runloop).
+# Models are selected via dropdown or comma-separated override.
+#
+# Required secrets (vary by sandbox + model provider):
+#   LANGSMITH_API_KEY          — experiment tracking (always required)
+#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   ANTHROPIC_API_KEY          — needed for Anthropic models
+#   OPENAI_API_KEY             — needed for OpenAI models
+#   GOOGLE_API_KEY             — needed for Google models
+#   XAI_API_KEY                — needed for xAI/Grok models
+#   GROQ_API_KEY               — needed for Groq-hosted models
+#   OLLAMA_API_KEY             — needed for Ollama Cloud models
+#   OLLAMA_HOST                — set to https://ollama.com for cloud inference
+#   NVIDIA_API_KEY             — needed for NVIDIA NIM models
+#   BASETEN_API_KEY            — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY          — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY         — needed for OpenRouter-hosted models
+#   DAYTONA_API_KEY            — needed for Daytona sandbox
+#   MODAL_TOKEN_ID             — needed for Modal sandbox
+#   MODAL_TOKEN_SECRET         — needed for Modal sandbox
+#   RUNLOOP_API_KEY            — needed for Runloop sandbox
+
 name: "📊 Evals - Harbor"
+run-name: >-
+  📊 Evals - Harbor — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_mode }}
 
 on:
   workflow_dispatch:
@@ -15,6 +42,7 @@ on:
           - set1
           - set2
           - frontier
+          - mega
           - fast
           - open
           - anthropic
@@ -28,14 +56,17 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-opus-4-7"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:fireworks/deepseek-v3p2"
@@ -73,9 +104,14 @@ on:
           - "openai:o4-mini"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:moonshotai/kimi-k2.5"
+          - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
@@ -407,7 +443,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: harbor-${{ strategy.job-index }}
           path: |

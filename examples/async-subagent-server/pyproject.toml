@@ -20,5 +20,5 @@ deepagents = { path = "../../libs/deepagents", editable = true }
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
-    "pytest>=9.0.2",
+    "pytest>=9.0.3",
 ]

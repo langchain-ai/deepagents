@@ -1,0 +1,4 @@
+[agent]
+name = "market-researcher"
+description = "Researches market trends, competitors, and target audiences to inform GTM strategy"
+model = "openai:gpt-5.4-mini"

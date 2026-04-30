@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-acp"
-version = "0.0.5"
+version = "0.0.6"
 description = "Agent Client Protocol integration for Deep Agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,6 +30,7 @@ dependencies = [
 
 [dependency-groups]
 examples = [
+    "langchain-baseten>=0.2.0",
     "langchain-openai>=1.1.11",
 ]
 test = [
@@ -52,7 +53,7 @@ Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
 
 [tool.uv]
 package = true

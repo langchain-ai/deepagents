@@ -36,6 +36,7 @@ on:
           - set1
           - set2
           - frontier
+          - mega
           - fast
           - open
           - anthropic
@@ -49,14 +50,17 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-opus-4-7"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
+          - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:fireworks/deepseek-v3p2"
@@ -94,9 +98,14 @@ on:
           - "openai:o4-mini"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
+          - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
           - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
+          - "openrouter:moonshotai/kimi-k2.5"
+          - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
@@ -155,6 +164,8 @@ on:
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-6"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
           - "openai:gpt-5.4-mini"
           - "openai:o4-mini"
           - "google_genai:gemini-3-flash-preview"
@@ -349,29 +360,6 @@ jobs:
             exit 1
           fi
 
-      - name: "🧠 Analyze eval failures"
-        if: "!cancelled() && inputs.analyze_failures"
-        continue-on-error: true
-        env:
-          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
-        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
-
-      - name: "📤 Upload failure analysis"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
-        with:
-          name: failure-analysis-${{ strategy.job-index }}
-          path: libs/evals/failure_analysis.json
-          if-no-files-found: warn
-
-      - name: "📤 Upload eval report"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
-        with:
-          name: evals-report-${{ strategy.job-index }}
-          path: libs/evals/evals_report.json
-          if-no-files-found: error
-
       - name: "📊 Post results to summary"
         if: "!cancelled()"
         run: |
@@ -464,6 +452,29 @@ jobs:
           print(text)
           PYEOF
 
+      - name: "🧠 Analyze eval failures"
+        if: "!cancelled() && inputs.analyze_failures"
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: failure-analysis-${{ strategy.job-index }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: warn
+
+      - name: "📤 Upload eval report"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: evals-report-${{ strategy.job-index }}
+          path: libs/evals/evals_report.json
+          if-no-files-found: error
+
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest
@@ -502,7 +513,7 @@ jobs:
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "📤 Upload JSON summary"
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: evals-summary
           path: evals_summary.json
@@ -510,7 +521,7 @@ jobs:
 
       - name: "📤 Upload radar charts"
         if: hashFiles('charts/radar.png') != ''
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: radar-charts
           path: charts/

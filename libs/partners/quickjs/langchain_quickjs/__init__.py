@@ -1,7 +1,6 @@
-"""QuickJS integration package for Deep Agents."""
+"""langchain-quickjs: persistent JS REPL middleware for agents."""
 
-from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_quickjs._ptc import PTCOption
+from langchain_quickjs.middleware import REPLMiddleware
 
-__version__ = "0.0.1"
-
-__all__ = ["QuickJSMiddleware", "__version__"]
+__all__ = ["PTCOption", "REPLMiddleware"]

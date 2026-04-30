@@ -184,6 +184,59 @@ build-backend = "hatchling.build"
 
 
 # ------------------------------------------------------------------
+# MCP pre-flight validation
+# ------------------------------------------------------------------
+
+
+def _preflight_validate_mcp_config(
+    *,
+    mcp_config_path: str | None,
+    no_mcp: bool,
+) -> None:
+    """Validate the explicit `--mcp-config` path before spawning the server.
+
+    Catches the common failure mode of passing a malformed MCP config: a
+    `ValueError` raised inside the server subprocess otherwise surfaces as an
+    opaque truncated log dump in `wait_for_server_healthy`. Running the same
+    validation in the parent process lets the TUI display a clean, actionable
+    message with the offending path and reason.
+
+    Project-level and user-level configs discovered by `resolve_and_load_mcp_tools`
+    are not validated here; their errors are already handled leniently via
+    `load_mcp_config_with_error` and surface as errored entries in the
+    `/mcp` viewer rather than as a fatal startup failure.
+
+    Args:
+        mcp_config_path: Explicit path passed via `--mcp-config`, or `None`.
+        no_mcp: When `True`, MCP is disabled and validation is skipped.
+
+    Raises:
+        MCPConfigError: If the config file is malformed or missing required
+            fields. Message includes the offending path for context.
+    """
+    if no_mcp or not mcp_config_path:
+        return
+
+    from deepagents_cli.mcp_tools import MCPConfigError, load_mcp_config
+
+    try:
+        load_mcp_config(mcp_config_path)
+    except MCPConfigError:
+        raise
+    except FileNotFoundError as exc:
+        msg = f"MCP config file not found: {mcp_config_path}"
+        raise MCPConfigError(msg) from exc
+    except (ValueError, TypeError) as exc:
+        # `ValueError` covers `json.JSONDecodeError` (subclass) and the
+        # shape/field validators in `_validate_server_config`; `TypeError`
+        # covers the wrong-type branches. Bare `RuntimeError` is
+        # deliberately NOT caught — it would mask unrelated bugs
+        # (recursion, reentrancy, stdlib internals) as config errors.
+        msg = f"Invalid MCP config at {mcp_config_path}: {exc}"
+        raise MCPConfigError(msg) from exc
+
+
+# ------------------------------------------------------------------
 # Server startup
 # ------------------------------------------------------------------
 
@@ -233,11 +286,21 @@ async def start_server_and_get_agent(
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
             The `mcp_session_manager` is currently always `None` (MCP lifecycle
             is handled server-side).
-    """
+
+    Raises:
+        MCPConfigError: The explicit `--mcp-config` path is malformed,
+            missing, or references contradictory transport fields. Raised
+            from the pre-flight validator before any subprocess is spawned.
+    """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
 
     project_context = _capture_project_context()
+
+    _preflight_validate_mcp_config(
+        mcp_config_path=mcp_config_path,
+        no_mcp=no_mcp,
+    )
 
     config = ServerConfig.from_cli_args(
         project_context=project_context,

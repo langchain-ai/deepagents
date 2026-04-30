@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from deepagents_cli.app import AppResult
     from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.notifications import PendingNotification
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -36,6 +37,71 @@ logger = logging.getLogger(__name__)
 # Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
 # module at startup. Keep in sync with agent.py. Tested.
 _DEFAULT_AGENT_NAME = "agent"
+
+
+def _resolve_agent_arg(args: argparse.Namespace) -> str:
+    """Resolve the final agent identifier from parsed CLI args.
+
+    Precedence, highest first:
+
+    1. Explicit `-a <name>` (stored as `args.agent` by argparse).
+    2. `-r <thread>` is present → use `_DEFAULT_AGENT_NAME`. The real agent is
+        inferred later by `_resolve_resume_thread` via thread metadata
+        (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
+        it would suppress that inference.
+    3. `[agents].recent` from config, if it points at an agent whose
+        directory still exists.
+    4. `_DEFAULT_AGENT_NAME` as the final fallback.
+
+    Extracted from the `cli_main` body so it's unit-testable without
+    constructing the full arg tree.
+
+    Args:
+        args: Parsed argparse namespace from `parse_args()`.
+
+    Returns:
+        The agent identifier to hand downstream.
+    """
+    if args.agent is not None:
+        return args.agent
+    if getattr(args, "resume_thread", None) is not None:
+        return _DEFAULT_AGENT_NAME
+
+    from deepagents_cli.model_config import load_recent_agent
+
+    recent = load_recent_agent()
+    if recent and _recent_agent_is_valid(recent):
+        return recent
+    return _DEFAULT_AGENT_NAME
+
+
+def _recent_agent_is_valid(name: str) -> bool:
+    """Return `True` when `~/.deepagents/<name>/` still exists on disk.
+
+    Used to guard against a stale `[agents].recent` entry pointing at an
+    agent the user has since deleted — in that case we silently fall back
+    to the hard-coded default instead of failing at server start.
+
+    Path is rebuilt from `Path.home()` rather than `settings.user_deepagents_dir`
+    because `settings` is intentionally imported *after* argparse in `cli_main`
+    (per the startup-hot-path guidance there), and pulling it in here would
+    undo that deferral.
+
+    `is_dir()` is wrapped in `try/except OSError` so permission errors on
+    `~/.deepagents` (symlink loops, EACCES) don't crash the launch — we
+    treat them the same as "not valid" and fall back to the default.
+    """
+    from pathlib import Path as _Path
+
+    try:
+        return (_Path.home() / ".deepagents" / name).is_dir()
+    except OSError:
+        logger.warning(
+            "Could not validate recent agent %r; falling back to default",
+            name,
+            exc_info=True,
+        )
+        return False
 
 
 def check_cli_dependencies() -> None:
@@ -68,9 +134,6 @@ def check_cli_dependencies() -> None:
 
 _RIPGREP_URL = "https://github.com/BurntSushi/ripgrep#installation"
 """Fallback installation URL when no platform package manager is detected."""
-
-_SUPPRESS_HINT_TUI = "Use /notifications to manage warnings."
-"""Suppression hint for TUI toasts, referencing the in-app settings screen."""
 
 _SUPPRESS_HINT_CLI = (
     'To suppress, edit ~/.deepagents/config.toml:\n\\[warnings]\nsuppress = \\["<key>"]'
@@ -149,29 +212,91 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     return missing
 
 
-def format_tool_warning_tui(tool: str) -> str:
-    """Format a missing-tool warning for the TUI toast.
+def build_missing_tool_notification(tool: str) -> "PendingNotification":
+    """Build a `PendingNotification` for a missing optional tool.
+
+    The returned entry carries the install hint (or URL) in a typed payload so
+    the notification center action handler can copy it / open it without
+    re-running platform detection.
 
     Args:
-        tool: Name of the missing tool.
+        tool: Name of the missing tool (e.g. `"ripgrep"`, `"tavily"`).
 
     Returns:
-        Plain-text warning suitable for `App.notify`.
+        A registry entry ready for `NotificationRegistry.add`.
     """
+    # Deferred import: keeps `--version` and other hot-path commands off the
+    # `deepagents_cli.notifications` -> `dataclasses`/`logging` chain.
+    from deepagents_cli.notifications import (
+        ActionId,
+        MissingDepPayload,
+        NotificationAction,
+        PendingNotification,
+    )
+
+    suppress_action = NotificationAction(
+        ActionId.SUPPRESS, "Don't show notification again"
+    )
     if tool == "ripgrep":
         hint = _ripgrep_install_hint()
-        return (
-            "ripgrep is not installed; the grep tool will use a slower fallback.\n"
-            f"\nInstall: {hint}\n\n"
-            f"{_SUPPRESS_HINT_TUI}"
+        if hint.startswith("http"):
+            actions: tuple[NotificationAction, ...] = (
+                NotificationAction(
+                    ActionId.OPEN_WEBSITE, "Open installation guide", primary=True
+                ),
+                suppress_action,
+            )
+            payload = MissingDepPayload(tool="ripgrep", url=hint)
+        else:
+            actions = (
+                NotificationAction(
+                    ActionId.COPY_INSTALL, "Copy install command", primary=True
+                ),
+                NotificationAction(ActionId.OPEN_WEBSITE, "Open installation guide"),
+                suppress_action,
+            )
+            payload = MissingDepPayload(
+                tool="ripgrep", install_command=hint, url=_RIPGREP_URL
+            )
+        body = (
+            "ripgrep is not installed; the grep tool will use a slower fallback.\n\n"
+            f"Install: {hint}"
+        )
+        return PendingNotification(
+            key="dep:ripgrep",
+            title="ripgrep is not installed",
+            body=body,
+            actions=actions,
+            payload=payload,
         )
     if tool == "tavily":
-        return (
-            "Web search is disabled \u2014 TAVILY_API_KEY is not set.\n"
-            "\nGet a key at https://tavily.com\n\n"
-            f"{_SUPPRESS_HINT_TUI}"
+        return PendingNotification(
+            key="dep:tavily",
+            title="Web search disabled",
+            body=(
+                "TAVILY_API_KEY is not set, so web search is disabled.\n\n"
+                "Get a key at https://tavily.com"
+            ),
+            actions=(
+                NotificationAction(
+                    ActionId.OPEN_WEBSITE, "Open tavily.com", primary=True
+                ),
+                suppress_action,
+            ),
+            payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
         )
-    return f"{tool} is not installed."
+    logger.warning("No install hint configured for tool %r", tool)
+    return PendingNotification(
+        key=f"dep:{tool}",
+        title=f"{tool} is not installed",
+        body=f"{tool} is not installed.",
+        actions=(
+            NotificationAction(
+                ActionId.SUPPRESS, "Don't show notification again", primary=True
+            ),
+        ),
+        payload=MissingDepPayload(tool=tool),
+    )
 
 
 def format_tool_warning_cli(tool: str) -> str:
@@ -263,6 +388,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_cli.deploy import setup_deploy_parsers
+    from deepagents_cli.mcp_commands import setup_mcp_parsers
     from deepagents_cli.output import add_json_output_arg
     from deepagents_cli.skills import setup_skills_parser
 
@@ -391,6 +517,10 @@ def parse_args() -> argparse.Namespace:
         subparsers,
         make_help_action=_make_help_action,
     )
+    setup_mcp_parsers(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
 
     threads_parser = subparsers.add_parser(
         "threads",
@@ -482,9 +612,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-a",
         "--agent",
-        default=_DEFAULT_AGENT_NAME,
+        default=None,
         metavar="NAME",
-        help="Agent to use (e.g., coder, researcher).",
+        help=(
+            "Agent to use (e.g., coder, researcher). "
+            "If omitted, falls back to [agents].recent in config, then "
+            f"the '{_DEFAULT_AGENT_NAME}' default."
+        ),
     )
 
     parser.add_argument(
@@ -546,6 +680,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--startup-cmd",
+        dest="startup_cmd",
+        metavar="CMD",
+        help="Shell command to run at startup, before the first prompt "
+        "(output shown, non-zero exit warns but does not abort)",
+    )
+
+    parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
@@ -568,6 +710,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
+    )
+
+    from deepagents_cli.ui import positive_int
+
+    parser.add_argument(
+        "--max-turns",
+        dest="max_turns",
+        type=positive_int,
+        metavar="N",
+        help="Maximum number of agentic turns before stopping (must be >= 1). "
+        "Overrides the internal safety default. Useful for CI/CD pipelines "
+        "to prevent runaway agents. Requires -n or piped stdin.",
     )
 
     parser.add_argument(
@@ -657,16 +811,37 @@ def parse_args() -> argparse.Namespace:
         help="Check for and install updates, then exit",
     )
     parser.add_argument(
+        "--auto-update",
+        action="store_true",
+        help="Toggle automatic updates on or off, then exit",
+    )
+    parser.add_argument(
         "--acp",
         action="store_true",
         help="Run as an ACP server over stdio instead of launching the Textual UI",
     )
 
+    version_text = f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}"
+    # `parse_args` runs on every invocation; keep the import-heavy metadata
+    # scan off the hot path unless the user explicitly asked for --version.
+    if any(arg in {"-v", "--version"} for arg in sys.argv[1:]):
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status_plain,
+                get_extras_status,
+            )
+
+            extras_text = format_extras_status_plain(get_extras_status())
+        except Exception:
+            logger.warning("Unexpected error collecting optional deps", exc_info=True)
+            extras_text = ""
+        if extras_text:
+            version_text = f"{version_text}\n\n{extras_text}"
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}",
+        version=version_text,
     )
     parser.add_argument(
         "-h",
@@ -691,6 +866,7 @@ async def run_textual_cli_async(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    startup_cmd: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -727,6 +903,10 @@ async def run_textual_cli_async(
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         initial_skill: Optional skill name to invoke when the session starts.
+        startup_cmd: Shell command to run at startup before the first prompt.
+
+            Output is rendered in the transcript; non-zero exits warn but
+            do not abort the session.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -813,6 +993,7 @@ async def run_textual_cli_async(
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
+            startup_cmd=startup_cmd,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -1125,24 +1306,29 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
 
 
 def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
-    """Check whether project-level MCP stdio servers should be trusted.
+    """Check whether project-level MCP servers should be trusted.
 
-    When the project has no stdio servers in project-level configs, returns
-    `None` (no gate needed). When `--trust-project-mcp` was passed, returns
-    `True`. Otherwise checks the persistent trust store; if untrusted, shows
-    an interactive approval prompt.
+    Both stdio and remote (http/sse) project entries require approval —
+    remote entries from an attacker-controlled `.mcp.json` can SSRF or
+    exfiltrate environment variables via `${VAR}` interpolation in their
+    `headers`, so they are gated identically to stdio commands.
+
+    When the project has no servers in project-level configs, returns
+    `None` (no gate needed). When `--trust-project-mcp` was passed,
+    returns `True`. Otherwise checks the persistent trust store; if
+    untrusted, shows an interactive approval prompt.
 
     Args:
         trust_flag: Whether `--trust-project-mcp` was passed.
 
     Returns:
-        `True` to allow project stdio servers, `False` to deny, or `None`
-            when no project stdio servers exist.
+        `True` to allow project servers, `False` to deny, or `None`
+            when no project servers exist.
     """
     from deepagents_cli.mcp_tools import (
         classify_discovered_configs,
         discover_mcp_configs,
-        extract_stdio_server_commands,
+        extract_project_server_summaries,
         load_mcp_config_lenient,
     )
     from deepagents_cli.project_utils import ProjectContext
@@ -1157,14 +1343,14 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not project_configs:
         return None
 
-    # Collect all stdio servers across project configs
-    all_stdio: list[tuple[str, str, list[str]]] = []
+    # Collect all servers (stdio + remote) across project configs
+    all_servers: list[tuple[str, str, str]] = []
     for path in project_configs:
         cfg = load_mcp_config_lenient(path)
         if cfg is not None:
-            all_stdio.extend(extract_stdio_server_commands(cfg))
+            all_servers.extend(extract_project_server_summaries(cfg))
 
-    if not all_stdio:
+    if not all_servers:
         return None
 
     if trust_flag:
@@ -1193,9 +1379,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     prompt_console.print(
         "[bold yellow]Project MCP servers require approval:[/bold yellow]"
     )
-    for name, cmd, args in all_stdio:
-        args_str = " ".join(args) if args else ""
-        prompt_console.print(f'  [bold]"{name}"[/bold]:  {cmd} {args_str}')
+    for name, kind, summary in all_servers:
+        prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
     prompt_console.print()
 
     try:
@@ -1235,7 +1420,20 @@ def cli_main() -> None:
         except Exception:  # Best-effort SDK version lookup
             logger.debug("Unexpected error looking up SDK version", exc_info=True)
             sdk_version = "unknown"
-        print(f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}")  # noqa: T201  # CLI version output
+        output = f"deepagents-cli {__version__}\ndeepagents (SDK) {sdk_version}"
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status_plain,
+                get_extras_status,
+            )
+
+            extras_text = format_extras_status_plain(get_extras_status())
+        except Exception:
+            logger.warning("Unexpected error collecting optional deps", exc_info=True)
+            extras_text = ""
+        if extras_text:
+            output = f"{output}\n\n{extras_text}"
+        print(output)  # noqa: T201  # CLI version output
         sys.exit(0)
 
     # ACP mode does not require Textual, so skip UI dependency checks when
@@ -1285,6 +1483,7 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
                 from deepagents_acp.server import AgentServerACP
@@ -1310,7 +1509,7 @@ def cli_main() -> None:
 
             exit_code = asyncio.run(
                 _run_acp_cli_async(
-                    assistant_id=args.agent,
+                    assistant_id=assistant_id,
                     run_acp_agent=run_acp_agent,
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
@@ -1358,6 +1557,17 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        max_turns_set = getattr(args, "max_turns", None) is not None
+        if max_turns_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --max-turns requires "
+                "--non-interactive (-n) or piped stdin\n"
+                "  deepagents -n 'refactor auth module' --max-turns 5"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -1383,27 +1593,43 @@ def cli_main() -> None:
                 from rich.markup import escape
 
                 from deepagents_cli._version import __version__ as cli_version
+                from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
+                    format_age_suffix,
                     is_update_available,
                     perform_upgrade,
                     upgrade_command,
                 )
+
+                if _is_editable_install():
+                    age_suffix = format_age_suffix(cli_version)
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "Updates are not available for editable installs. "
+                        f"Currently on v{cli_version}{age_suffix}."
+                    )
+                    sys.exit(0)
 
                 console.print("Checking for updates...", style="dim")
                 available, latest = is_update_available(bypass_cache=True)
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "
-                        "reach PyPI. Check your network and try again."
+                        "determine the latest version. Check your network "
+                        "and try again."
                     )
                     sys.exit(1)
                 if not available:
-                    console.print(f"Already on the latest version (v{cli_version}).")
+                    age_suffix = format_age_suffix(cli_version)
+                    console.print(
+                        f"Already on the latest version (v{cli_version}{age_suffix})."
+                    )
                     sys.exit(0)
 
+                age_suffix = format_age_suffix(latest)
                 console.print(
                     f"Update available: v{latest} "
-                    f"(current: v{cli_version}). Upgrading..."
+                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
                 )
                 success, output = asyncio.run(perform_upgrade())
                 if success:
@@ -1425,6 +1651,43 @@ def cli_main() -> None:
                     "deepagents-cli[/cyan]"
                 )
                 sys.exit(1)
+
+        # Handle --auto-update flag (headless toggle: reads current state
+        # and inverts it, no session)
+        if args.auto_update:
+            try:
+                from deepagents_cli.config import _is_editable_install
+                from deepagents_cli.update_check import (
+                    is_auto_update_enabled,
+                    set_auto_update,
+                )
+
+                if _is_editable_install():
+                    console.print(
+                        "[bold yellow]Warning:[/bold yellow] "
+                        "Auto-updates are not available for editable installs."
+                    )
+                    sys.exit(1)
+
+                currently_enabled = is_auto_update_enabled()
+                new_state = not currently_enabled
+                set_auto_update(new_state)
+                label = "enabled" if new_state else "disabled"
+                console.print(f"Auto-updates {label}.")
+            except OSError:
+                logger.warning("--auto-update failed: filesystem error", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates. "
+                    "Check permissions for ~/.deepagents/"
+                )
+                sys.exit(1)
+            except Exception:
+                logger.warning("--auto-update failed", exc_info=True)
+                console.print(
+                    "[bold red]Error:[/bold red] Failed to toggle auto-updates."
+                )
+                sys.exit(1)
+            sys.exit(0)
 
         # Handle --default-model / --clear-default-model (headless, no session)
         if args.clear_default_model:
@@ -1513,6 +1776,27 @@ def cli_main() -> None:
             from deepagents_cli.deploy import execute_deploy_command
 
             execute_deploy_command(args)
+        elif args.command == "mcp":
+            from deepagents_cli.mcp_commands import run_mcp_login
+            from deepagents_cli.ui import show_mcp_help
+
+            if args.mcp_command == "login":
+                if getattr(args, "mcp_config", None) and not args.config_path:
+                    print(  # noqa: T201
+                        "--mcp-config is not supported for 'mcp login'. "
+                        "Use: deepagents mcp login <server> --config <path>",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                sys.exit(
+                    asyncio.run(
+                        run_mcp_login(
+                            server=args.server,
+                            config_path=args.config_path,
+                        )
+                    )
+                )
+            show_mcp_help()
         elif args.command == "threads":
             from deepagents_cli.sessions import (
                 delete_thread_command,
@@ -1546,6 +1830,8 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            # Resolve recent-agent fallback only for actual session launches.
+            assistant_id = _resolve_agent_arg(args)
             # Check for optional tools before running agent (stderr so
             # --quiet piped output stays clean)
             try:
@@ -1584,7 +1870,7 @@ def cli_main() -> None:
             exit_code = asyncio.run(
                 run_non_interactive(
                     message=args.non_interactive_message,
-                    assistant_id=args.agent,
+                    assistant_id=assistant_id,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
                     profile_override=profile_override,
@@ -1592,15 +1878,19 @@ def cli_main() -> None:
                     sandbox_id=args.sandbox_id,
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     initial_skill=getattr(args, "initial_skill", None),
+                    startup_cmd=getattr(args, "startup_cmd", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    max_turns=getattr(args, "max_turns", None),
                 )
             )
             sys.exit(exit_code)
         else:
+            # Resolve recent-agent fallback only for actual session launches.
+            assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
             from rich.style import Style
             from rich.text import Text
@@ -1643,7 +1933,7 @@ def cli_main() -> None:
             try:
                 result = asyncio.run(
                     run_textual_cli_async(
-                        assistant_id=args.agent,
+                        assistant_id=assistant_id,
                         auto_approve=args.auto_approve,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
@@ -1655,6 +1945,7 @@ def cli_main() -> None:
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
+                        startup_cmd=getattr(args, "startup_cmd", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
@@ -1702,25 +1993,35 @@ def cli_main() -> None:
             # Warn about available update on exit
             try:
                 if result.update_available[0]:
+                    from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
+                        format_age_suffix,
                         is_auto_update_enabled,
+                        mark_update_notified,
+                        should_notify_update,
                         upgrade_command,
                     )
 
                     latest = result.update_available[1]
-                    console.print()
-                    update_msg = Text("Update available: ", style="yellow bold")
-                    update_msg.append(f"v{latest}", style="yellow")
-                    console.print(update_msg)
-                    cmd_hint = Text("Run: ", style="dim")
-                    cmd_hint.append(upgrade_command(), style="cyan")
-                    console.print(cmd_hint)
-                    if not is_auto_update_enabled():
-                        auto_hint = Text("Enable auto-updates: ", style="dim")
-                        auto_hint.append("/auto-update", style="cyan")
-                        console.print(auto_hint)
+                    if latest and should_notify_update(latest):
+                        console.print()
+                        age_suffix = format_age_suffix(latest)
+                        update_msg = Text("Update available: ", style="yellow bold")
+                        update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(
+                            f" (current: v{cli_version}{age_suffix})", style="dim"
+                        )
+                        console.print(update_msg)
+                        cmd_hint = Text("Run: ", style="dim")
+                        cmd_hint.append(upgrade_command(), style="cyan")
+                        console.print(cmd_hint)
+                        if not is_auto_update_enabled():
+                            auto_hint = Text("Enable auto-updates: ", style="dim")
+                            auto_hint.append("deepagents --auto-update", style="cyan")
+                            console.print(auto_hint)
+                        mark_update_notified(latest)
             except Exception:
-                logger.debug("Failed to display exit update banner", exc_info=True)
+                logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
         # Clean exit on Ctrl+C — suppress ugly traceback.
         # `console` may not be bound if Ctrl+C arrives during config import.

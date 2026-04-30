@@ -3,12 +3,17 @@
 This module contains async versions of skills middleware tests.
 """
 
-from pathlib import Path
+import logging
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.middleware.skills import SkillsMiddleware, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
@@ -41,14 +46,14 @@ async def test_alist_skills_from_backend_single_skill(tmp_path: Path) -> None:
 
     # Create skill using backend's upload_files interface
     skills_dir = tmp_path / "skills"
-    skill_path = str(skills_dir / "my-skill" / "SKILL.md")
+    skill_path = (skills_dir / "my-skill" / "SKILL.md").as_posix()
     skill_content = make_skill_content("my-skill", "My test skill")
 
     responses = backend.upload_files([(skill_path, skill_content.encode("utf-8"))])
     assert responses[0].error is None
 
     # List skills using the full absolute path
-    skills = await _alist_skills(backend, str(skills_dir))
+    skills = await _alist_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -118,14 +123,48 @@ async def test_alist_skills_from_backend_nonexistent_path(tmp_path: Path) -> Non
     assert skills == []
 
 
+async def test_alist_skills_logs_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A backend listing error should not look like a normal empty source."""
+    backend = MagicMock()
+    backend.als = AsyncMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[]))
+
+    with caplog.at_level(logging.WARNING):
+        skills = await _alist_skills(backend, "/bad")
+
+    assert skills == []
+    assert "Cannot load skills from '/bad'" in caplog.text
+    backend.adownload_files.assert_not_called()
+
+
+async def test_alist_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A partial listing warning should not hide valid sibling skills."""
+    skill_content = make_skill_content("valid-skill", "Valid skill")
+    skill_dir_path = "/skills/valid-skill/"
+    skill_md_path = "/skills/valid-skill/SKILL.md"
+
+    backend = MagicMock()
+    backend.als = AsyncMock(
+        return_value=LsResult(error="Cannot list '/skills/loop': symlink loop", entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+    )
+    backend.adownload_files = AsyncMock(return_value=[FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)])
+
+    with caplog.at_level(logging.WARNING):
+        skills = await _alist_skills(backend, "/skills")
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "valid-skill"
+    assert "Cannot load skills from '/skills'" in caplog.text
+    backend.adownload_files.assert_called_once_with([skill_md_path])
+
+
 async def test_alist_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     """Test that directories without SKILL.md are skipped (async)."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     # Create a valid skill and an invalid one (missing SKILL.md)
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_dir_file = str(skills_dir / "invalid-skill" / "readme.txt")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_dir_file = (skills_dir / "invalid-skill" / "readme.txt").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
 
@@ -137,7 +176,7 @@ async def test_alist_skills_from_backend_missing_skill_md(tmp_path: Path) -> Non
     )
 
     # List skills - should only get the valid one
-    skills = await _alist_skills(backend, str(skills_dir))
+    skills = await _alist_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -157,8 +196,8 @@ async def test_alist_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> 
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
     skills_dir = tmp_path / "skills"
-    valid_skill_path = str(skills_dir / "valid-skill" / "SKILL.md")
-    invalid_skill_path = str(skills_dir / "invalid-skill" / "SKILL.md")
+    valid_skill_path = (skills_dir / "valid-skill" / "SKILL.md").as_posix()
+    invalid_skill_path = (skills_dir / "invalid-skill" / "SKILL.md").as_posix()
 
     valid_content = make_skill_content("valid-skill", "Valid skill")
     invalid_content = """---
@@ -177,7 +216,7 @@ Content
     )
 
     # Should only get the valid skill
-    skills = await _alist_skills(backend, str(skills_dir))
+    skills = await _alist_skills(backend, skills_dir.as_posix())
 
     assert skills == [
         {
@@ -236,8 +275,8 @@ async def test_abefore_agent_skill_override(tmp_path: Path) -> None:
     base_dir = tmp_path / "skills" / "base"
     user_dir = tmp_path / "skills" / "user"
 
-    base_skill_path = str(base_dir / "shared-skill" / "SKILL.md")
-    user_skill_path = str(user_dir / "shared-skill" / "SKILL.md")
+    base_skill_path = (base_dir / "shared-skill" / "SKILL.md").as_posix()
+    user_skill_path = (user_dir / "shared-skill" / "SKILL.md").as_posix()
 
     base_content = make_skill_content("shared-skill", "Base description")
     user_content = make_skill_content("shared-skill", "User description")
@@ -250,8 +289,8 @@ async def test_abefore_agent_skill_override(tmp_path: Path) -> None:
     )
 
     sources = [
-        str(base_dir),
-        str(user_dir),
+        base_dir.as_posix(),
+        user_dir.as_posix(),
     ]
     middleware = SkillsMiddleware(
         backend=backend,
@@ -294,6 +333,45 @@ async def test_abefore_agent_empty_sources(tmp_path: Path) -> None:
 
     assert result is not None
     assert result["skills_metadata"] == []
+
+
+async def test_abefore_agent_records_skill_load_errors() -> None:
+    """Source load errors should be available in private middleware state."""
+    backend = SimpleNamespace(
+        als=AsyncMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[])),
+        adownload_files=AsyncMock(),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/bad"])
+
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["skills_metadata"] == []
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
+
+
+async def test_abefore_agent_partial_load_across_sources() -> None:
+    """A failing source must not hide skills loaded from a sibling source (async)."""
+    skill_content = make_skill_content("good-skill", "Skill from the working source")
+    skill_dir_path = "/good/good-skill/"
+    skill_md_path = "/good/good-skill/SKILL.md"
+
+    async def als_side_effect(path: str) -> LsResult:
+        if path == "/good":
+            return LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+        return LsResult(error="Cannot list '/bad': denied", entries=[])
+
+    backend = SimpleNamespace(
+        als=AsyncMock(side_effect=als_side_effect),
+        adownload_files=AsyncMock(return_value=[FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)]),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/good", "/bad"])
+
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["good-skill"]
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
 async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:
@@ -404,3 +482,39 @@ async def test_agent_with_skills_middleware_empty_sources_async(tmp_path: Path) 
 
     assert "Skills System" in content
     assert "No skills available" in content
+
+
+@pytest.mark.parametrize(
+    ("skill_dir_path", "source_path"),
+    [
+        ("C:\\Users\\project\\skills\\my-skill\\", "C:\\Users\\project\\skills\\"),
+        ("C:\\Users\\project\\skills\\my-skill", "C:\\Users\\project\\skills"),
+        ("C:\\Users\\project\\skills\\my-skill/", "C:\\Users\\project\\skills/"),
+        ("\\\\server\\share\\skills\\my-skill\\", "\\\\server\\share\\skills\\"),
+    ],
+    ids=["trailing-backslash", "no-trailing-sep", "mixed-separators", "unc-path"],
+)
+async def test_alist_skills_with_windows_style_paths(skill_dir_path: str, source_path: str) -> None:
+    """Async counterpart of `test_list_skills_with_windows_style_paths`."""
+    skill_content = make_skill_content("my-skill", "My test skill")
+    expected_skill_md_path = str(PurePosixPath(skill_dir_path.replace("\\", "/")) / "SKILL.md")
+
+    backend = MagicMock()
+    backend.als = AsyncMock(return_value=LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)]))
+    backend.adownload_files = AsyncMock(
+        return_value=[
+            FileDownloadResponse(
+                path=expected_skill_md_path,
+                content=skill_content.encode("utf-8"),
+                error=None,
+            )
+        ]
+    )
+
+    skills = await _alist_skills(backend, source_path)
+
+    backend.adownload_files.assert_awaited_once_with([expected_skill_md_path])
+    assert len(skills) == 1
+    assert skills[0]["name"] == "my-skill"
+    assert skills[0]["description"] == "My test skill"
+    assert skills[0]["path"] == expected_skill_md_path

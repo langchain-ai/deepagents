@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import pytest
@@ -14,6 +15,7 @@ from acp.schema import (
     PermissionOption,
     RequestPermissionResponse,
     ResourceContentBlock,
+    SessionConfigOptionSelect,
     SessionMode,
     SessionModeState,
     TextContentBlock,
@@ -30,6 +32,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from deepagents_acp import server as server_module
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from tests.chat_model import GenericFakeChatModel
 
@@ -944,3 +947,117 @@ async def test_acp_agent_hitl_requests_permission_only_once() -> None:
         "This indicates the double approval bug has regressed."
     )
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+
+
+def _make_server(*, with_modes: bool = True, with_models: bool = True) -> AgentServerACP:
+    """Build a server with optional mode and/or model selectors configured."""
+
+    def factory(
+        context: AgentSessionContext,  # noqa: ARG001  # ACP factory signature requires context
+    ) -> CompiledStateGraph:
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="OK")]), stream_delimiter=None
+        )
+        return create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    modes = (
+        SessionModeState(
+            current_mode_id="mode_a",
+            available_modes=[
+                SessionMode(id="mode_a", name="Mode A", description="First mode"),
+                SessionMode(id="mode_b", name="Mode B", description="Second mode"),
+            ],
+        )
+        if with_modes
+        else None
+    )
+    models = (
+        [
+            {"value": "m1", "name": "Model One", "description": "first"},
+            {"value": "m2", "name": "Model Two", "description": "second"},
+        ]
+        if with_models
+        else None
+    )
+    return AgentServerACP(agent=factory, modes=modes, models=models)
+
+
+def test_build_config_options_bare_when_wrapper_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: when the v0.9+ import fallback sets SessionConfigOption to None,
+    `_build_config_options` must emit bare SessionConfigOptionSelect instances. A future
+    change that drops the `else mode_select` branch in server.py would fail this test.
+    """
+    monkeypatch.setattr(server_module, "SessionConfigOption", None)
+
+    agent = _make_server()
+    options = agent._build_config_options("session-1")
+
+    assert len(options) == 2
+    for opt in options:
+        assert isinstance(opt, SessionConfigOptionSelect)
+    assert [opt.category for opt in options] == ["mode", "model"]
+
+
+def test_build_config_options_wrapped_when_wrapper_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: when SessionConfigOption is importable (acp v0.8.x), each option
+    must be wrapped via `root=<Select>`. Dropping the wrapper branch in server.py would
+    break v0.8 clients; this test pins the behavior.
+    """
+
+    @dataclass
+    class FakeWrapper:
+        root: SessionConfigOptionSelect
+
+    monkeypatch.setattr(server_module, "SessionConfigOption", FakeWrapper)
+
+    agent = _make_server()
+    options = agent._build_config_options("session-1")
+
+    assert len(options) == 2
+    for opt in options:
+        assert isinstance(opt, FakeWrapper)
+        assert isinstance(opt.root, SessionConfigOptionSelect)
+    assert [opt.root.category for opt in options] == ["mode", "model"]
+
+
+def test_build_config_options_modes_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When only modes are configured, `_build_config_options` emits a single mode entry."""
+    monkeypatch.setattr(server_module, "SessionConfigOption", None)
+
+    agent = _make_server(with_modes=True, with_models=False)
+    options = agent._build_config_options("session-1")
+
+    assert len(options) == 1
+    assert options[0].category == "mode"
+
+
+def test_build_config_options_models_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When only models are configured, `_build_config_options` emits a single model entry."""
+    monkeypatch.setattr(server_module, "SessionConfigOption", None)
+
+    agent = _make_server(with_modes=False, with_models=True)
+    options = agent._build_config_options("session-1")
+
+    assert len(options) == 1
+    assert options[0].category == "model"
+
+
+def test_build_config_options_empty_models_list_omits_entry() -> None:
+    """An empty models list must be treated as "no models" — not a crash on models[0]."""
+
+    def factory(
+        context: AgentSessionContext,  # noqa: ARG001  # ACP factory signature requires context
+    ) -> CompiledStateGraph:
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="OK")]), stream_delimiter=None
+        )
+        return create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=factory, models=[])
+    options = agent._build_config_options("session-1")
+
+    assert options == []

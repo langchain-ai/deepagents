@@ -99,17 +99,21 @@ async def _serve_example_agent() -> None:
     )
 
     # Define available models for dynamic switching
+    baseten_models = [
+        {"value": "baseten:moonshotai/Kimi-K2.6", "name": "Kimi-K2.6"},
+        {"value": "baseten:zai-org/GLM-5", "name": "GLM-5"},
+    ]
     anthropic_models = [
-        {"value": "anthropic:claude-opus-4-6", "name": "Claude Opus 4.6"},
+        {"value": "anthropic:claude-opus-4-7", "name": "Claude Opus 4.7"},
         {"value": "anthropic:claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]
     openai_models = [
+        {"value": "openai:gpt-5.5", "name": "GPT-5.5"},
         {"value": "openai:gpt-5.4-pro", "name": "GPT-5.4 Pro"},
-        {"value": "openai:gpt-5.4", "name": "GPT-5.4"},
         {"value": "openai:gpt-5.3-codex", "name": "GPT-5.3 Codex"},
     ]
-    models = anthropic_models + openai_models
+    models = baseten_models + anthropic_models + openai_models
 
     acp_agent = AgentServerACP(agent=build_agent, modes=modes, models=models)
     await run_acp_agent(acp_agent)

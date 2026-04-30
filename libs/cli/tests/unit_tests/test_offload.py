@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import BaseMessage
 
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.command_registry import SLASH_COMMANDS
@@ -37,6 +38,37 @@ def _make_messages(n: int) -> list[MagicMock]:
         msg.additional_kwargs = {}
         messages.append(msg)
     return messages
+
+
+def _make_dict_messages(n: int) -> list[dict[str, Any]]:
+    """Create serialized message payloads matching remote state snapshots."""
+    messages: list[dict[str, Any]] = []
+    for i in range(n):
+        message_type = "human" if i % 2 == 0 else "ai"
+        payload: dict[str, Any] = {
+            "content": f"Message {i}",
+            "additional_kwargs": {},
+            "response_metadata": {},
+            "type": message_type,
+            "name": None,
+            "id": f"msg-{i}",
+        }
+        if message_type == "ai":
+            payload["tool_calls"] = []
+        messages.append(payload)
+    return messages
+
+
+def _make_dict_summary_message() -> dict[str, Any]:
+    """Create a serialized summary message payload from remote state."""
+    return {
+        "content": "Old summary.",
+        "additional_kwargs": {"lc_source": "summarization"},
+        "response_metadata": {},
+        "type": "human",
+        "name": None,
+        "id": "summary-1",
+    }
 
 
 def _make_offload_result(
@@ -123,12 +155,12 @@ class TestOffloadInAutocomplete:
 
     def test_offload_in_slash_commands(self) -> None:
         """The /offload command should be in the SLASH_COMMANDS list."""
-        labels = [label for label, *_ in SLASH_COMMANDS]
+        labels = [entry.name for entry in SLASH_COMMANDS]
         assert "/offload" in labels
 
     def test_offload_sorted_alphabetically(self) -> None:
         """The /offload entry should appear between /model and /quit."""
-        labels = [label for label, *_ in SLASH_COMMANDS]
+        labels = [entry.name for entry in SLASH_COMMANDS]
         model_idx = labels.index("/model")
         offload_idx = labels.index("/offload")
         quit_idx = labels.index("/quit")
@@ -942,6 +974,104 @@ class TestOffloadRemoteFallback:
             update_values = app._agent.aupdate_state.call_args_list[0][0][1]
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 7
+
+
+class TestOffloadRemoteStateNormalization:
+    """Verify `/offload` handles serialized remote state without crashing."""
+
+    async def test_remote_state_dict_messages_normalized_before_middleware(
+        self,
+    ) -> None:
+        """Serialized `messages` from remote state are normalized in the UI path."""
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            state = MagicMock()
+            state.values = {"messages": _make_dict_messages(6)}
+
+            app._agent = MagicMock(spec=RemoteAgent)
+            app._agent.aget_state = AsyncMock(return_value=state)
+            app._agent.aensure_thread = AsyncMock()
+            app._agent.aupdate_state = AsyncMock()
+            app._backend = MagicMock()
+            app._lc_thread_id = "test-thread"
+            app._agent_running = False
+
+            model_result, mock_mw = _mock_perform_deps(cutoff=3)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=model_result),
+                patch(
+                    _COMPUTE_DEFAULTS_PATH,
+                    return_value={"keep": ("fraction", 0.1)},
+                ),
+                patch(_MW_CLASS_PATH, return_value=mock_mw),
+                patch(_TOKEN_COUNT_PATH, return_value=100),
+                patch(
+                    _OFFLOAD_BACKEND_PATH,
+                    new_callable=AsyncMock,
+                    return_value="/p.md",
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            passed_messages = mock_mw._apply_event_to_messages.call_args[0][0]
+            assert all(isinstance(message, BaseMessage) for message in passed_messages)
+            app._agent.aensure_thread.assert_awaited_once_with(
+                {"configurable": {"thread_id": "test-thread"}}
+            )
+            app._agent.aupdate_state.assert_awaited()
+
+    async def test_remote_state_dict_prior_event_normalized_before_middleware(
+        self,
+    ) -> None:
+        """Serialized `summary_message` is normalized in the UI path."""
+        from deepagents_cli.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            state = MagicMock()
+            state.values = {
+                "messages": _make_dict_messages(6),
+                "_summarization_event": {
+                    "cutoff_index": 2,
+                    "summary_message": _make_dict_summary_message(),
+                    "file_path": None,
+                },
+            }
+
+            app._agent = MagicMock(spec=RemoteAgent)
+            app._agent.aget_state = AsyncMock(return_value=state)
+            app._agent.aensure_thread = AsyncMock()
+            app._agent.aupdate_state = AsyncMock()
+            app._backend = MagicMock()
+            app._lc_thread_id = "test-thread"
+            app._agent_running = False
+
+            model_result, mock_mw = _mock_perform_deps(cutoff=0)
+
+            with (
+                patch(_CREATE_MODEL_PATH, return_value=model_result),
+                patch(
+                    _COMPUTE_DEFAULTS_PATH,
+                    return_value={"keep": ("fraction", 0.1)},
+                ),
+                patch(_MW_CLASS_PATH, return_value=mock_mw),
+                patch(_TOKEN_COUNT_PATH, return_value=50),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            passed_event = mock_mw._apply_event_to_messages.call_args[0][1]
+            assert isinstance(passed_event["summary_message"], BaseMessage)
+            app._agent.aensure_thread.assert_not_called()
+            app._agent.aupdate_state.assert_not_called()
 
 
 class TestFormatTokenCount:

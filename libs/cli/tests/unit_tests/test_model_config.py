@@ -138,9 +138,7 @@ class TestHasProviderCredentials:
 
     def test_perplexity_resolves_via_canonical_env_var(self):
         """Perplexity recognises `PERPLEXITY_API_KEY` as the primary env var."""
-        with patch.dict(
-            "os.environ", {"PERPLEXITY_API_KEY": "pplx-test"}, clear=True
-        ):
+        with patch.dict("os.environ", {"PERPLEXITY_API_KEY": "pplx-test"}, clear=True):
             assert has_provider_credentials("perplexity") is True
 
     def test_perplexity_resolves_via_legacy_env_var(self):

@@ -52,7 +52,13 @@ def runtime(worker: ThreadWorker) -> Runtime:
 
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    return _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +117,11 @@ def test_legacy_system_prompt_alias_removed() -> None:
     assert not hasattr(mw, "system_prompt")
 
 
+def test_rejects_invalid_max_ptc_calls() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        REPLMiddleware(max_ptc_calls=0)
+
+
 def test_system_prompt_injected_once() -> None:
     """wrap_model_call appends exactly one snippet per call, idempotent in content."""
     mw = REPLMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)
@@ -161,8 +172,20 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
 
 
 def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
-    a = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
-    b = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    a = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
+    b = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     a.eval_sync("let shared = 'from_a'")
     outcome = b.eval_sync("typeof shared")
     # QuickJS returns "undefined" for missing globals — an isolated context
@@ -190,7 +213,13 @@ def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
 
 
 def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
-    tight = _ThreadREPL(worker, runtime, timeout=0.1, capture_console=True)
+    tight = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=0.1,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     outcome = tight.eval_sync("while(true){}")
     assert outcome.error_type == "Timeout"
 
@@ -211,10 +240,87 @@ def test_console_log_is_captured(repl: _ThreadREPL) -> None:
 
 
 def test_console_can_be_disabled(worker: ThreadWorker, runtime: Runtime) -> None:
-    quiet = _ThreadREPL(worker, runtime, timeout=5.0, capture_console=False)
+    quiet = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=False,
+        max_stdout_chars=4000,
+    )
     outcome = quiet.eval_sync("typeof console")
     # With the bridge off, the global is absent.
     assert outcome.result == "undefined"
+
+
+def test_console_capture_is_bounded_at_append_time(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=64,
+    )
+    outcome = bounded.eval_sync(
+        "console.log('x'.repeat(80)); console.log('y'.repeat(80)); 1"
+    )
+    assert outcome.result == "1"
+    assert len(outcome.stdout) <= 64
+    assert outcome.stdout_truncated_chars > 0
+    formatted = format_outcome(outcome, max_result_chars=64)
+    assert "truncated" in formatted
+
+
+def test_console_overflow_preserves_prefix(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=10,
+    )
+    outcome = bounded.eval_sync("console.log('abcdef'); console.log('ghij');")
+    assert outcome.stdout == "abcdef\nghi"
+    assert outcome.stdout_truncated_chars == 1
+
+
+def test_console_truncation_state_resets_between_evals(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=10,
+    )
+    first = bounded.eval_sync("console.log('abcdef'); console.log('ghij');")
+    assert first.stdout_truncated_chars == 1
+    second = bounded.eval_sync("console.log('ok'); 2")
+    assert second.result == "2"
+    assert second.stdout == "ok"
+    assert second.stdout_truncated_chars == 0
+
+
+def test_console_truncation_marker_emits_with_zero_budget(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    bounded = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=0,
+    )
+    outcome = bounded.eval_sync("console.log('hello'); 1")
+    assert outcome.stdout == ""
+    assert outcome.stdout_truncated_chars > 0
+    formatted = format_outcome(outcome, max_result_chars=60)
+    assert "<stdout>" in formatted
+    assert "truncated" in formatted
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +357,12 @@ def test_large_result_is_truncated(repl: _ThreadREPL) -> None:
 
 
 def test_registry_reuses_thread_repl() -> None:
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         r1 = reg.get("thread-a")
         r2 = reg.get("thread-a")
@@ -276,7 +387,12 @@ def test_middleware_del_closes_runtime() -> None:
 
 def test_per_thread_slot_has_own_worker_and_runtime() -> None:
     """Each thread_id gets its own ThreadWorker and Runtime — not shared."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         reg.get("thread-b")
@@ -292,7 +408,12 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
 
 def test_evict_closes_and_removes_slot() -> None:
     """``evict`` closes the runtime and drops the slot from the registry."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime
@@ -306,7 +427,12 @@ def test_evict_closes_and_removes_slot() -> None:
 
 def test_evict_returns_fresh_slot_on_next_get() -> None:
     """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         first = reg.get("thread-a")
         first_runtime = reg._slots["thread-a"].runtime
@@ -320,7 +446,12 @@ def test_evict_returns_fresh_slot_on_next_get() -> None:
 
 def test_evict_unknown_thread_id_is_noop() -> None:
     """Evicting a thread_id that was never registered does not raise."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.evict("never-existed")
         assert reg._slots == {}
@@ -330,7 +461,12 @@ def test_evict_unknown_thread_id_is_noop() -> None:
 
 async def test_aevict_closes_and_removes_slot() -> None:
     """``aevict`` closes the runtime via the worker loop and drops the slot."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         reg.get("thread-a")
         rt = reg._slots["thread-a"].runtime

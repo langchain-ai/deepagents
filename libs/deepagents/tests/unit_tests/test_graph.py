@@ -26,7 +26,6 @@ from deepagents.graph import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.permissions import _PermissionMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
@@ -1059,7 +1058,6 @@ class TestMiddlewareExclusionWiring:
         forbidden_classes: tuple[type[AgentMiddleware[Any, Any, Any]], ...] = (
             FilesystemMiddleware,
             SubAgentMiddleware,
-            _PermissionMiddleware,
         )
         for forbidden_cls in forbidden_classes:
             with pytest.raises(ValueError, match=forbidden_cls.__name__):
@@ -1239,13 +1237,12 @@ class TestStringFormExcludedMiddleware:
         [
             "FilesystemMiddleware",
             "SubAgentMiddleware",
-            "PermissionMiddleware",
         ],
     )
     def test_string_entry_rejects_required_scaffolding(self, forbidden: str) -> None:
         """Public-name strings of required scaffolding raise `ValueError` at construction.
 
-        The private `"_PermissionMiddleware"` spelling is rejected by the
+        Underscore-prefixed private middleware names are rejected by the
         grammar guard on `HarnessProfile.__post_init__` (see
         `test_string_entry_rejects_private_underscore_prefixed_names`); the
         public spellings here are caught by the same construction-time
@@ -1254,7 +1251,7 @@ class TestStringFormExcludedMiddleware:
         with pytest.raises(ValueError, match="scaffolding"):
             HarnessProfile(excluded_middleware=frozenset({forbidden}))
 
-    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware", "_PermissionMiddleware"])
+    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware"])
     def test_string_entry_rejects_private_underscore_prefixed_names(self, entry: str) -> None:
         """Underscore-prefixed string entries raise `ValueError` at construction.
 

@@ -48,7 +48,12 @@ def _cache_key(meta: SkillMetadata) -> tuple[str, str, str | None]:
 
 @pytest.fixture
 def registry() -> _Registry:
-    reg = _Registry(memory_limit=64 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=64 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         yield reg
     finally:
@@ -203,7 +208,12 @@ async def test_install_cache_avoids_second_fetch(
 
 async def test_slot_skill_cache_is_cleared_on_slot_eviction(tmp_path: Path) -> None:
     """``Registry.evict`` clears the slot-local skill cache for that thread."""
-    reg = _Registry(memory_limit=32 * 1024 * 1024, timeout=5.0, capture_console=True)
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
     try:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
         skill_dir = str(tmp_path / "skills" / "persist")

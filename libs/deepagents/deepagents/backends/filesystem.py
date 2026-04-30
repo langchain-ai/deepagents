@@ -344,15 +344,18 @@ class FilesystemBackend(BackendProtocol):
             if empty_msg:
                 return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
 
-            lines = content.splitlines()
+            # `splitlines(keepends=True)` preserves whether the final line
+            # has a terminator; joining with `""` round-trips the file's
+            # trailing-newline state. Required so `edit()` can detect
+            # EOF-newline mismatches in the model's `old_string`.
+            lines = content.splitlines(keepends=True)
             start_idx = offset
             end_idx = min(start_idx + limit, len(lines))
 
             if start_idx >= len(lines):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
-            selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
+            return ReadResult(file_data=FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

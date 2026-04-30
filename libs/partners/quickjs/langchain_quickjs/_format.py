@@ -114,10 +114,15 @@ def format_outcome(
 ) -> str:
     """Render an EvalOutcome-like object as the tool's wire format."""
     parts: list[str] = []
-    if outcome.stdout:
-        parts.append(
-            f"<stdout>\n{_truncate(outcome.stdout, max_result_chars)}\n</stdout>"
-        )
+    if outcome.stdout or outcome.stdout_truncated_chars > 0:
+        stdout = outcome.stdout
+        if outcome.stdout_truncated_chars > 0:
+            stdout = _truncate(
+                outcome.stdout,
+                max_result_chars,
+                dropped=outcome.stdout_truncated_chars,
+            )
+        parts.append(f"<stdout>\n{stdout}\n</stdout>")
     if outcome.error_type is not None:
         inner = outcome.error_message
         if outcome.error_stack:
@@ -135,7 +140,15 @@ def format_outcome(
     return "\n".join(parts)
 
 
-def _truncate(text: str, limit: int) -> str:
+def _truncate(text: str, limit: int, *, dropped: int | None = None) -> str:
+    # stdout path -- we've already truncated the result, so we just add the marker
+    if dropped is not None:
+        marker = _TRUNCATE_MARKER.format(n=dropped)
+        if len(marker) >= limit:
+            return marker[: max(0, limit)]
+        keep = max(0, limit - len(marker))
+        return text[:keep] + marker
+    # result/error path -- these values need to be truncated
     if len(text) <= limit:
         return text
     keep = max(0, limit - len(_TRUNCATE_MARKER.format(n=0)))

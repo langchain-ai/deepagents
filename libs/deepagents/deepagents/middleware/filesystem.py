@@ -7,12 +7,14 @@ import contextvars
 import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
 
+import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -38,6 +40,8 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
+    FileInfo,
+    GrepMatch,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -53,6 +57,122 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._utils import append_to_system_message
+
+_FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
+
+FilesystemOperation = Literal["read", "write"]
+
+_DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
+    "ls": "read",
+    "read_file": "read",
+    "glob": "read",
+    "grep": "read",
+    "write_file": "write",
+    "edit_file": "write",
+}
+
+
+@dataclass
+class FilesystemPermission:
+    """A single access rule for filesystem operations."""
+
+    operations: list[FilesystemOperation]
+    paths: list[str]
+    mode: Literal["allow", "deny"] = "allow"
+
+    def __post_init__(self) -> None:
+        """Validate permission path patterns."""
+        for path in self.paths:
+            if not path.startswith("/"):
+                msg = f"Permission path must start with '/': {path!r}"
+                raise ValueError(msg)
+            parts = PurePosixPath(path.replace("\\", "/")).parts
+            if ".." in parts:
+                msg = f"Permission path must not contain '..': {path!r}"
+                raise ValueError(msg)
+            if "~" in parts:
+                msg = f"Permission path must not contain '~': {path!r}"
+                raise NotImplementedError(msg)
+
+
+def _check_fs_permission(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    path: str,
+) -> Literal["allow", "deny"]:
+    for rule in rules:
+        if operation not in rule.operations:
+            continue
+        if any(wcglob.globmatch(path, pattern, flags=_FS_WCMATCH_FLAGS) for pattern in rule.paths):
+            return rule.mode
+    return "allow"
+
+
+def _filter_paths_by_permission(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    paths: list[str],
+) -> list[str]:
+    if not rules:
+        return paths
+    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
+
+
+def _all_paths_scoped_to_routes(
+    rules: list[FilesystemPermission],
+    backend: BackendProtocol,
+) -> bool:
+    if not isinstance(backend, CompositeBackend):
+        return False
+
+    route_prefixes = list(backend.routes.keys())
+    if not route_prefixes:
+        return False
+
+    for rule in rules:
+        for path in rule.paths:
+            if not any(path.startswith(prefix) for prefix in route_prefixes):
+                return False
+    return True
+
+
+def _filter_file_infos_by_permission(
+    rules: list[FilesystemPermission],
+    infos: list[FileInfo],
+    *,
+    operation: FilesystemOperation,
+) -> list[FileInfo]:
+    """Filter file-info entries according to filesystem permissions."""
+    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) == "allow"]
+
+
+def _filter_grep_matches_by_permission(
+    rules: list[FilesystemPermission],
+    matches: list[GrepMatch],
+    *,
+    operation: FilesystemOperation,
+) -> list[GrepMatch]:
+    """Filter grep matches according to filesystem permissions."""
+    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
+
+
+def _apply_permissions_to_ls_results(
+    rules: list[FilesystemPermission],
+    entries: list[FileInfo],
+) -> list[str]:
+    """Filter ls entries by permission and return their paths."""
+    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read")
+    return [fi.get("path", "") for fi in filtered_entries]
+
+
+def _apply_permissions_to_glob_results(
+    rules: list[FilesystemPermission],
+    matches: list[FileInfo],
+) -> list[str]:
+    """Filter glob matches by permission and return their paths."""
+    filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read")
+    return [fi.get("path", "") for fi in filtered_infos]
+
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
@@ -581,6 +701,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
 
@@ -597,15 +718,31 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            _permissions: Optional filesystem permission rules enforced directly
+                by this middleware's tool implementations.
 
-        Raises:
-            ValueError: If `max_execute_timeout` is not positive.
+                Marked private for now because this is an internal
+                implementation detail and may move to the backend layer in a
+                future change.
         """
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
         # Use provided backend or default to StateBackend instance
         self.backend = backend if backend is not None else StateBackend()
+        if (
+            _permissions
+            and isinstance(self.backend, BackendProtocol)
+            and supports_execution(self.backend)
+            and not _all_paths_scoped_to_routes(_permissions, self.backend)
+        ):
+            msg = (
+                "FilesystemMiddleware does not yet support permissions with backends that "
+                "provide command execution (SandboxBackendProtocol). Tool-level permissions "
+                "for the execute tool are not implemented. Either remove permissions or use "
+                "a backend without execution support."
+            )
+            raise NotImplementedError(msg)
 
         artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
@@ -618,6 +755,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._permissions = list(_permissions or [])
 
         self.tools = [
             self._create_ls_tool(),
@@ -667,14 +805,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="ls",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             ls_result = resolved_backend.ls(validated_path)
             if ls_result.error:
                 return f"Error: {ls_result.error}"
             infos = ls_result.entries or []
-            paths = [fi.get("path", "") for fi in infos]
+            paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
                 content=str(truncate_if_too_long(paths)),
-                artifact=ls_result,
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
             )
@@ -689,14 +833,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="ls",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             ls_result = await resolved_backend.als(validated_path)
             if ls_result.error:
                 return f"Error: {ls_result.error}"
             infos = ls_result.entries or []
-            paths = [fi.get("path", "") for fi in infos]
+            paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
                 content=str(truncate_if_too_long(paths)),
-                artifact=ls_result,
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
             )
@@ -788,6 +938,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="read_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -803,6 +960,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(file_path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="read_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -823,7 +987,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -831,6 +995,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="write_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
                 return res.error
@@ -840,7 +1011,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for write_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -848,6 +1019,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="write_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
                 return res.error
@@ -873,7 +1051,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -881,6 +1059,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -893,7 +1078,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             *,
             replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
-        ) -> str:
+        ) -> ToolMessage | str:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -901,6 +1086,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             except ValueError as e:
                 return f"Error: {e}"
 
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="edit_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
                 return res.error
@@ -915,7 +1107,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
-    def _create_glob_tool(self) -> BaseTool:
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
@@ -930,6 +1122,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             ctx = contextvars.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
@@ -940,10 +1139,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if glob_result.error:
                 return f"Error: {glob_result.error}"
             infos = glob_result.matches or []
-            paths = [fi.get("path", "") for fi in infos]
+            paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
                 content=str(truncate_if_too_long(paths)),
-                artifact=glob_result,
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
             )
@@ -959,6 +1157,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for read on {validated_path}",
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             try:
                 glob_result = await asyncio.wait_for(
                     resolved_backend.aglob(pattern, path=validated_path),
@@ -969,10 +1174,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if glob_result.error:
                 return f"Error: {glob_result.error}"
             infos = glob_result.matches or []
-            paths = [fi.get("path", "") for fi in infos]
+            paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
                 content=str(truncate_if_too_long(paths)),
-                artifact=glob_result,
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
             )
@@ -986,7 +1190,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GlobSchema,
         )
 
-    def _create_grep_tool(self) -> BaseTool:
+    def _create_grep_tool(self) -> BaseTool:  # noqa: C901
         """Create the grep tool."""
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
@@ -1006,15 +1210,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     path = validate_path(path)
                 except ValueError as e:
                     return f"Error: {e}"
+                if _check_fs_permission(self._permissions, "read", path) == "deny":
+                    return ToolMessage(
+                        content=f"Error: permission denied for read on {path}",
+                        name="grep",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             resolved_backend = self._get_backend(runtime)
             grep_result = resolved_backend.grep(pattern, path=path, glob=glob)
             if grep_result.error:
                 return grep_result.error
             matches = grep_result.matches or []
-            formatted = format_grep_matches(matches, output_mode)
+            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
+            formatted = format_grep_matches(filtered_matches, output_mode)
             return ToolMessage(
                 content=truncate_if_too_long(formatted),
-                artifact={"result": grep_result, "output_mode": output_mode},
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
             )
@@ -1035,15 +1246,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     path = validate_path(path)
                 except ValueError as e:
                     return f"Error: {e}"
+                if _check_fs_permission(self._permissions, "read", path) == "deny":
+                    return ToolMessage(
+                        content=f"Error: permission denied for read on {path}",
+                        name="grep",
+                        tool_call_id=runtime.tool_call_id,
+                        status="error",
+                    )
             resolved_backend = self._get_backend(runtime)
             grep_result = await resolved_backend.agrep(pattern, path=path, glob=glob)
             if grep_result.error:
                 return grep_result.error
             matches = grep_result.matches or []
-            formatted = format_grep_matches(matches, output_mode)
+            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
+            formatted = format_grep_matches(filtered_matches, output_mode)
             return ToolMessage(
                 content=truncate_if_too_long(formatted),
-                artifact={"result": grep_result, "output_mode": output_mode},
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
             )
@@ -1670,10 +1888,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
-            return handler(request)
-
         tool_result = handler(request)
+
+        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
+            return tool_result
+
         return self._intercept_large_tool_result(tool_result, request.runtime)
 
     async def awrap_tool_call(
@@ -1690,8 +1909,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns:
             The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
         """
-        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
-            return await handler(request)
-
         tool_result = await handler(request)
+
+        if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
+            return tool_result
+
         return await self._aintercept_large_tool_result(tool_result, request.runtime)

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
+from deepagents.backends import sandbox as base_sandbox
 from deepagents.backends.langsmith import LangSmithSandbox
+from deepagents.backends.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES, TRUNCATION_MSG
 
 
 def _make_sandbox() -> tuple[LangSmithSandbox, MagicMock]:
@@ -271,8 +274,6 @@ def test_read_empty_file() -> None:
 
 
 def test_read_binary_file() -> None:
-    import base64  # noqa: PLC0415 — local to avoid top-level import for one test
-
     sb, mock_sdk = _make_sandbox()
     raw = b"\x89PNG\r\n\x1a\n"
     mock_sdk.read.return_value = raw
@@ -314,3 +315,129 @@ def test_read_offset_exceeds_length() -> None:
 
     assert result.error is not None
     assert "offset" in result.error.lower()
+
+
+def test_read_normalizes_crlf_to_lf() -> None:
+    r"""CRLF and bare-CR line endings collapse to LF, matching `BaseSandbox.read()`.
+
+    Without this, files written on Windows round-trip with stray `\r`
+    characters that break `edit()` (issue #2880).
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\r\nline2\r\nline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+
+
+def test_read_normalizes_bare_cr_to_lf() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\rline2\rline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+
+
+def test_read_text_with_only_newline_returns_empty_content() -> None:
+    r"""A file containing only `\n` paginates as a single empty line."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\n"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+
+
+def test_read_truncates_at_max_output_bytes() -> None:
+    """Pages exceeding `MAX_OUTPUT_BYTES` are truncated with `TRUNCATION_MSG`."""
+    sb, mock_sdk = _make_sandbox()
+    # Single-line payload comfortably above the cap. Using ASCII so byte length
+    # equals string length for the assertion below.
+    payload = b"x" * (MAX_OUTPUT_BYTES + 10_000)
+    mock_sdk.read.return_value = payload
+
+    result = sb.read("/app/big.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    content = result.file_data["content"]
+    assert content.endswith(TRUNCATION_MSG)
+    assert len(content.encode("utf-8")) <= MAX_OUTPUT_BYTES
+
+
+def test_read_binary_at_exact_max_size_succeeds() -> None:
+    sb, mock_sdk = _make_sandbox()
+    raw = b"\x00" * MAX_BINARY_BYTES
+    mock_sdk.read.return_value = raw
+
+    result = sb.read("/app/exact.png")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+
+
+def test_read_binary_one_byte_over_max_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\x00" * (MAX_BINARY_BYTES + 1)
+
+    result = sb.read("/app/over.png")
+
+    assert result.error is not None
+    assert "maximum preview size" in result.error
+    # Error message includes the path prefix to match `BaseSandbox.read()` shape.
+    assert "/app/over.png" in result.error
+
+
+def test_read_error_messages_include_file_path() -> None:
+    """All `read()` error paths prefix with `File '<path>': ` for parity with base."""
+    sb, mock_sdk = _make_sandbox()
+
+    mock_sdk.read.side_effect = ResourceNotFoundError("not found", resource_type="file")
+    not_found = sb.read("/missing.txt")
+    assert not_found.error is not None
+    assert not_found.error.startswith("File '/missing.txt':")
+
+    mock_sdk.read.side_effect = SandboxClientError("boom")
+    sdk_err = sb.read("/app/test.txt")
+    assert sdk_err.error is not None
+    assert sdk_err.error.startswith("File '/app/test.txt':")
+    assert "SandboxClientError" in sdk_err.error
+    assert "boom" in sdk_err.error
+
+
+def test_write_preflight_runs_existence_check() -> None:
+    """`write()` invokes `_write_preflight` before delegating to the SDK."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    sb.write("/app/test.txt", "hello")
+
+    # The preflight executes the base-64-encoded `_WRITE_CHECK_TEMPLATE` script.
+    assert mock_sdk.run.call_count == 1
+    cmd_arg = mock_sdk.run.call_args.args[0]
+    assert "python3 -c" in cmd_arg
+    assert base64.b64encode(b"/app/test.txt").decode("ascii") in cmd_arg
+
+
+def test_max_binary_bytes_constant_matches_template() -> None:
+    """Python `MAX_BINARY_BYTES` constant stays in lockstep with the heredoc literal.
+
+    Drift here would silently desync `LangSmithSandbox.read()` from
+    `BaseSandbox.read()` because the template does not import the constant.
+    """
+    assert "MAX_BINARY_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
+    assert MAX_BINARY_BYTES == 500 * 1024
+
+
+def test_max_output_bytes_constant_matches_template() -> None:
+    assert "MAX_OUTPUT_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
+    assert MAX_OUTPUT_BYTES == 500 * 1024

@@ -14,13 +14,35 @@ from deepagents.backends.protocol import (
     ReadResult,
     WriteResult,
 )
-from deepagents.backends.sandbox import _WRITE_CHECK_TEMPLATE, BaseSandbox
+from deepagents.backends.sandbox import (
+    MAX_BINARY_BYTES,
+    MAX_OUTPUT_BYTES,
+    TRUNCATION_MSG,
+    BaseSandbox,
+)
 from deepagents.backends.utils import _get_file_type
 
 if TYPE_CHECKING:
     from langsmith.sandbox import Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
+    """Build the binary `ReadResult` shape used by `LangSmithSandbox.read()`.
+
+    Mirrors the `error` / `encoding=base64` outputs produced server-side by
+    `_READ_COMMAND_TEMPLATE` in `sandbox.py`, including the `File '<path>': `
+    prefix that `BaseSandbox.read()` adds when it wraps script errors.
+    """
+    if len(raw) > MAX_BINARY_BYTES:
+        return ReadResult(error=(f"File '{file_path}': Binary file exceeds maximum preview size of {MAX_BINARY_BYTES} bytes"))
+    return ReadResult(
+        file_data=FileData(
+            content=base64.b64encode(raw).decode("ascii"),
+            encoding="base64",
+        )
+    )
 
 
 class LangSmithSandbox(BaseSandbox):
@@ -73,7 +95,8 @@ class LangSmithSandbox(BaseSandbox):
         `BaseSandbox.write()` sends the full content in a shell command, which
         can exceed ARG_MAX for large content. This override uses the SDK's
         native `write()`, which sends content in the HTTP body, but preserves
-        the same existence-check preflight as `BaseSandbox.write()`.
+        the same existence check and parent-directory creation as
+        `BaseSandbox.write()`.
 
         Args:
             file_path: Destination path inside the sandbox.
@@ -84,13 +107,9 @@ class LangSmithSandbox(BaseSandbox):
         """
         from langsmith.sandbox import SandboxClientError  # noqa: PLC0415
 
-        # Existence check + mkdir (same preflight as BaseSandbox.write)
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        check = self.execute(check_cmd)
-        if check.exit_code != 0 or "Error:" in check.output:
-            error_msg = check.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+        preflight_error = self._write_preflight(file_path)
+        if preflight_error is not None:
+            return preflight_error
 
         try:
             self._sandbox.write(file_path, content.encode("utf-8"))
@@ -98,23 +117,31 @@ class LangSmithSandbox(BaseSandbox):
         except SandboxClientError as e:
             return WriteResult(error=f"Failed to write file '{file_path}': {e}")
 
-    def read(
+    def read(  # noqa: PLR0911 - early returns for distinct error conditions
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content using the LangSmith SDK.
+        r"""Read file content using the LangSmith SDK.
 
         `BaseSandbox.read()` pipes file content through `execute()`, which
         can hang or exceed transport limits for large files. This override
-        uses the SDK's native `read()` to fetch bytes directly and applies
-        line-based pagination locally.
+        fetches bytes directly via the SDK and reproduces the base-class
+        pagination semantics locally:
+
+        - Empty files surface the "empty contents" reminder.
+        - Files routed as binary by extension (or that fail UTF-8 decode) are
+            returned base64-encoded, capped at `MAX_BINARY_BYTES`.
+        - Text content is normalized for universal newlines (`\r\n` and bare
+            `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
+            `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
+            with `TRUNCATION_MSG` appended on overflow.
 
         Args:
             file_path: Absolute path to the file to read.
-            offset: Starting line number (0-indexed).
-            limit: Maximum number of lines to return.
+            offset: Number of leading text lines to skip.
+            limit: Maximum number of text lines to return.
 
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.
@@ -123,9 +150,11 @@ class LangSmithSandbox(BaseSandbox):
 
         try:
             raw = self._sandbox.read(file_path)
-        except (ResourceNotFoundError, SandboxClientError) as e:
-            error = "file_not_found" if isinstance(e, ResourceNotFoundError) else str(e)
-            return ReadResult(error=f"File '{file_path}': {error}")
+        except ResourceNotFoundError:
+            return ReadResult(error=f"File '{file_path}': file_not_found")
+        except SandboxClientError as e:
+            logger.warning("LangSmith read failed for %s: %s", file_path, e)
+            return ReadResult(error=f"File '{file_path}': {type(e).__name__}: {e}")
 
         if not raw:
             return ReadResult(
@@ -135,36 +164,53 @@ class LangSmithSandbox(BaseSandbox):
                 )
             )
 
-        # Determine whether content is decodable text
-        is_text = _get_file_type(file_path) == "text"
-        text: str | None = None
-        if is_text:
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                is_text = False
+        # Route by extension first, mirroring _READ_COMMAND_TEMPLATE: anything
+        # not classified as text goes straight to base64 without a decode
+        # attempt.
+        if _get_file_type(file_path) != "text":
+            return _binary_read_result(file_path, raw)
 
-        if not is_text:
-            max_binary = 500 * 1024  # must match MAX_BINARY_BYTES in _READ_COMMAND_TEMPLATE
-            if len(raw) > max_binary:
-                return ReadResult(error=f"Binary file exceeds maximum preview size of {max_binary} bytes")
-            return ReadResult(file_data=FileData(content=base64.b64encode(raw).decode("ascii"), encoding="base64"))
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Text-by-extension file with non-UTF-8 bytes: fall back to base64
+            # rather than guessing an encoding. Log so a corrupted file or
+            # mis-named extension is observable rather than silently reshaped.
+            logger.info(
+                "Text-extension file %s contained invalid UTF-8; returning as base64",
+                file_path,
+            )
+            return _binary_read_result(file_path, raw)
 
-        # Line-based pagination matching _READ_COMMAND_TEMPLATE behavior:
-        # split on \n, trailing \n does not produce an extra line.
-        assert text is not None  # noqa: S101 — narrowing: is_text=True and decode succeeded
-        lines = text.split("\n")
-        if lines and lines[-1] == "" and text.endswith("\n"):
+        # Universal-newline normalization to match `open(..., newline=None)` +
+        # `rstrip('\n').rstrip('\r')` in _READ_COMMAND_TEMPLATE: \r\n and bare
+        # \r both collapse to \n. Without this, CRLF files round-trip with
+        # stray \r in returned content, which then breaks `edit()` (issue
+        # #2880).
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = normalized.split("\n")
+        if lines and lines[-1] == "":
             lines.pop()
 
         offset = int(offset)
         limit = int(limit)
 
-        if offset >= len(lines) and lines:
+        if not lines or offset >= len(lines):
             return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({len(lines)} lines)")
 
         page = lines[offset : offset + limit]
-        return ReadResult(file_data=FileData(content="\n".join(page), encoding="utf-8"))
+        content = "\n".join(page)
+
+        # Cap rendered text at MAX_OUTPUT_BYTES and append TRUNCATION_MSG, so
+        # large pages don't reintroduce the transport-size symptom this
+        # override fixes.
+        encoded = content.encode("utf-8")
+        msg_bytes = TRUNCATION_MSG.encode("utf-8")
+        effective_limit = MAX_OUTPUT_BYTES - len(msg_bytes)
+        if len(encoded) > effective_limit:
+            content = encoded[:effective_limit].decode("utf-8", errors="ignore") + TRUNCATION_MSG
+
+        return ReadResult(file_data=FileData(content=content, encoding="utf-8"))
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.

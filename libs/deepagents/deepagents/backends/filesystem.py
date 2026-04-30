@@ -847,17 +847,26 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
     return error
 
 
+# Win32 `ERROR_CANT_RESOLVE_FILENAME`, surfaced by NTFS for reparse-point
+# cycles. Python's mapping to `errno.ELOOP` is unreliable on this code path,
+# so we match the raw winerror when classifying symlink-loop failures.
+_WIN32_ERROR_CANT_RESOLVE_FILENAME = 1921
+
+
+def _is_eloop_oserror(exc: BaseException | None) -> bool:
+    """Return `True` if `exc` is an `OSError` reporting a symlink loop on any platform."""
+    return isinstance(exc, OSError) and (exc.errno == errno.ELOOP or getattr(exc, "winerror", None) == _WIN32_ERROR_CANT_RESOLVE_FILENAME)
+
+
 def _is_symlink_loop_error(exc: Exception) -> bool:
     """Return `True` when an exception came from an `ELOOP` filesystem error."""
-    if isinstance(exc, OSError) and exc.errno == errno.ELOOP:
+    if _is_eloop_oserror(exc):
         return True
 
     # Python <=3.12 wraps `OSError(errno.ELOOP, ...)` from `Path.resolve()` in
     # `RuntimeError`. The stable signal is the exception context, not the
     # human-readable RuntimeError message.
-    return isinstance(exc, RuntimeError) and any(
-        isinstance(chained, OSError) and chained.errno == errno.ELOOP for chained in (exc.__cause__, exc.__context__)
-    )
+    return isinstance(exc, RuntimeError) and any(_is_eloop_oserror(chained) for chained in (exc.__cause__, exc.__context__))
 
 
 def _raise_if_symlink_loop(path: Path) -> None:
@@ -866,13 +875,18 @@ def _raise_if_symlink_loop(path: Path) -> None:
     Python 3.13+ changed `Path.resolve(strict=False)` to silently return the
     unresolved path for symlink loops instead of raising. This restores the
     pre-3.13 contract by probing with a `stat()` that follows symlinks and
-    re-raising only `ELOOP`. Other errors (broken target, permission denied)
+    re-raising loop errors. Other errors (broken target, permission denied)
     are left for downstream existence checks to surface.
+
+    Windows surfaces NTFS reparse-point cycles as `OSError` with
+    `winerror=1921` (`ERROR_CANT_RESOLVE_FILENAME`); Python's mapping to
+    `errno.ELOOP` is unreliable on this path, so we match the Win32 code
+    explicitly via `_is_eloop_oserror`.
     """
     if not path.is_symlink():
         return
     try:
         path.stat()
     except OSError as exc:
-        if exc.errno == errno.ELOOP:
+        if _is_eloop_oserror(exc):
             raise

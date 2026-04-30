@@ -36,6 +36,7 @@ jobs:
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
+      code: ${{ steps.filter.outputs.code }}
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
@@ -75,6 +76,12 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/workflows/_benchmark.yml'
+              - '.github/actions/**'
+            code:
+              - 'libs/code/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
@@ -130,6 +137,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/cli"
+      python-version: "3.11"
+
+  lint-code:
+    name: "🧹 Lint code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/code"
       python-version: "3.11"
 
   lint-evals:
@@ -205,6 +221,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/cli"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-code:
+    name: "🧪 Test deepagents-code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/code"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -300,6 +326,7 @@ jobs:
       - changes
       - lint-deepagents
       - lint-cli
+      - lint-code
       - lint-evals
       - lint-daytona
       - lint-modal
@@ -308,6 +335,7 @@ jobs:
       - lint-quickjs
       - test-deepagents
       - test-cli
+      - test-code
       - test-evals
       - test-daytona
       - test-modal

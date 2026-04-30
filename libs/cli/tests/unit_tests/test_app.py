@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import io
 import os
@@ -871,12 +872,12 @@ class TestModalScreenCtrlDHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )
@@ -1034,12 +1035,12 @@ class TestModalScreenCtrlCHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )
@@ -3533,6 +3534,57 @@ class TestDeferredActions:
             assert app._server_startup_error == "RuntimeError: exit code 3"
             assert app._connecting is False
 
+    async def test_server_failure_trims_multiline_error_to_headline(self) -> None:
+        """Multi-line errors (e.g. `wait_for_server_healthy`'s log tail) are trimmed.
+
+        Guards against regressing the `_format_startup_error` behaviour that
+        keeps the banner readable when the server subprocess embeds thousands
+        of log chars in its `RuntimeError` message.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            log_dump = "line " * 1000
+            message = f"Server process exited with code 3\n{log_dump}"
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError(message))
+            )
+
+            stored = app._server_startup_error
+            assert stored is not None
+            assert "\n" not in stored
+            assert "Server process exited with code 3" in stored
+            assert len(stored) < 400
+
+    async def test_server_failure_mcp_config_error_omits_class_prefix(self) -> None:
+        """`MCPConfigError` banner shows the path and reason without class prefix."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            message = "Invalid MCP config at /tmp/x.json: bad shape"
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=MCPConfigError(message))
+            )
+
+            assert app._server_startup_error == message
+            assert "MCPConfigError:" not in app._server_startup_error
+
+    async def test_server_failure_empty_error_falls_back_to_class_name(self) -> None:
+        """A whitespace-only exception message falls back to the class name."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("   "))
+            )
+
+            assert app._server_startup_error == "RuntimeError: RuntimeError"
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()
@@ -5472,3 +5524,187 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
 
             assert isinstance(app.screen, NotificationCenterScreen)
+
+
+class TestFatalErrorRedaction:
+    """`_fatal_error` must not leak local variables (which carry secrets).
+
+    Locals on the `create_model` call path include resolved API keys in a
+    `kwargs` dict. Textual's default rendering uses `show_locals=True`,
+    which would print them. We disable locals unless `DEEPAGENTS_CLI_DEBUG`
+    is set to a truthy token.
+    """
+
+    @staticmethod
+    def _call_fatal_error(app: DeepAgentsApp) -> MagicMock:
+        """Run `_fatal_error` with the rendering pipeline patched out.
+
+        Returns the `Traceback` mock so callers can inspect its kwargs.
+        """
+        with (
+            patch("rich.traceback.Traceback") as mock_traceback,
+            patch("rich.segment.Segments"),
+            patch.object(app, "console", MagicMock()),
+            patch.object(app, "_close_messages_no_wait"),
+            patch.object(app, "bell"),
+        ):
+            app._fatal_error()
+        return mock_traceback
+
+    def test_show_locals_disabled_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default crash rendering hides locals so secrets don't reach stderr."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_DEBUG", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        mock_traceback = self._call_fatal_error(app)
+
+        mock_traceback.assert_called_once()
+        assert mock_traceback.call_args.kwargs["show_locals"] is False
+
+    def test_show_locals_enabled_when_debug_env_truthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Truthy `DEEPAGENTS_CLI_DEBUG` re-enables locals for debugging."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_DEBUG", "1")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        mock_traceback = self._call_fatal_error(app)
+
+        assert mock_traceback.call_args.kwargs["show_locals"] is True
+
+    @pytest.mark.parametrize("falsy", ["0", "false", "no", "", "False", "  "])
+    def test_show_locals_disabled_for_falsy_strings(
+        self, monkeypatch: pytest.MonkeyPatch, falsy: str
+    ) -> None:
+        """`DEEPAGENTS_CLI_DEBUG=0` (or other falsy strings) MUST NOT enable locals.
+
+        Regression guard: an earlier `bool(os.environ.get(...))` check would
+        have flipped to `True` for any non-empty string, leaking the API key
+        whenever a user set the var to `"0"` or `"false"` thinking they were
+        disabling the flag.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CLI_DEBUG", falsy)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        mock_traceback = self._call_fatal_error(app)
+
+        assert mock_traceback.call_args.kwargs["show_locals"] is False
+
+    def test_falls_back_to_super_on_import_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the override's own imports fail, defer to Textual's default.
+
+        Otherwise the user double-faults during a real crash and never sees
+        any traceback at all.
+        """
+        monkeypatch.delenv("DEEPAGENTS_CLI_DEBUG", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.dict("sys.modules", {"rich.traceback": None}),
+            patch("textual.app.App._fatal_error") as super_fatal,
+        ):
+            app._fatal_error()
+
+        super_fatal.assert_called_once()
+
+
+class TestPrewarmAwait:
+    """`_start_server_background` must wait for the prewarm worker first.
+
+    The prewarm worker imports `deepagents`/LangChain in a separate thread
+    via `asyncio.to_thread`. If `_start_server_background` triggers the
+    same module graph from the event-loop thread before prewarm finishes,
+    Python's per-module locks form a cycle and CPython raises
+    `_DeadlockError` from the import system.
+    """
+
+    async def test_await_prewarm_imports_no_worker(self) -> None:
+        """No-op when the prewarm worker handle isn't set."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        assert app._prewarm_worker is None
+        await app._await_prewarm_imports()  # must not raise
+
+    async def test_await_prewarm_imports_waits_for_worker(self) -> None:
+        """Awaits `Worker.wait()` so the import-prewarm thread is fully done."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        worker = MagicMock()
+        worker.wait = AsyncMock()
+        app._prewarm_worker = worker
+
+        await app._await_prewarm_imports()
+
+        worker.wait.assert_awaited_once()
+
+    async def test_await_prewarm_imports_swallows_worker_failure(self) -> None:
+        """`WorkerFailed` is non-fatal; main path proceeds regardless."""
+        from textual.worker import WorkerFailed
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        worker = MagicMock()
+        worker.wait = AsyncMock(side_effect=WorkerFailed(RuntimeError("boom")))
+        app._prewarm_worker = worker
+
+        await app._await_prewarm_imports()  # must not raise
+
+        worker.wait.assert_awaited_once()
+
+    async def test_await_prewarm_imports_propagates_cancellation(self) -> None:
+        """`CancelledError` MUST propagate so app shutdown isn't absorbed."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        worker = MagicMock()
+        worker.wait = AsyncMock(side_effect=asyncio.CancelledError())
+        app._prewarm_worker = worker
+
+        with pytest.raises(asyncio.CancelledError):
+            await app._await_prewarm_imports()
+
+    async def test_start_server_background_awaits_prewarm_before_create_model(
+        self,
+    ) -> None:
+        """Locks the call-order invariant that fixes the deadlock.
+
+        A future refactor that moves the `await _await_prewarm_imports()`
+        after `create_model` (or drops it) silently re-introduces the
+        production crash. This is the only test that catches that.
+        """
+        from deepagents_cli import config as cli_config
+
+        call_order: list[str] = []
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+
+        async def record_prewarm() -> None:
+            call_order.append("prewarm")
+            await asyncio.sleep(0)  # yield so any out-of-order calls would land first
+
+        def record_create_model(**_: Any) -> MagicMock:
+            call_order.append("create_model")
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", side_effect=record_prewarm),
+            patch.object(cli_config, "create_model", side_effect=record_create_model),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch.object(app, "post_message"),
+            # `_start_server_background` continues past `create_model` into
+            # server + MCP setup we don't care about for an ordering test.
+            contextlib.suppress(Exception),
+        ):
+            await app._start_server_background()
+
+        assert call_order[:2] == ["prewarm", "create_model"], (
+            f"prewarm must precede create_model; got {call_order}"
+        )

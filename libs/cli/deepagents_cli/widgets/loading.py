@@ -60,7 +60,7 @@ class LoadingWidget(Static):
     LoadingWidget {
         height: auto;
         padding: 0 1;
-        margin-top: 1;
+        margin: 0 0 1 0;
     }
 
     LoadingWidget .loading-container {

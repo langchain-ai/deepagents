@@ -428,6 +428,27 @@ def _truncate(text: str, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _format_startup_error(error: BaseException) -> str:
+    """Format a server-startup exception for the welcome banner.
+
+    `wait_for_server_healthy` appends a tail of the subprocess log to its
+    `RuntimeError` message (see `_LOG_TAIL_CHARS` in `server.py`), which
+    would overwhelm the banner. Trim to the headline so the user sees an
+    actionable line instead of a scrolling traceback; `DEEPAGENTS_CLI_DEBUG=1`
+    preserves the full log on disk for triage.
+
+    Args:
+        error: The exception raised during server startup.
+
+    Returns:
+        A single-line `Type: message` summary suitable for the banner.
+    """
+    first_line = str(error).splitlines()[0].strip() if str(error) else ""
+    if not first_line:
+        first_line = error.__class__.__name__
+    return f"{type(error).__name__}: {_truncate(first_line, limit=300)}"
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -755,6 +776,19 @@ class DeepAgentsApp(App):
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
+        self._mcp_unauthenticated = sum(
+            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        """MCP servers awaiting a `deepagents mcp login` run."""
+
+        self._mcp_errored = sum(
+            1 for s in (mcp_server_info or []) if s.status == "error"
+        )
+        """MCP servers that failed to load (config or network error)."""
+
+        self._active_mcp_viewer: Any = None
+        """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
         profile-aware behavior (model selection, offload budget display,
@@ -848,6 +882,13 @@ class DeepAgentsApp(App):
 
         self._shell_running = False
         """True while a `!` shell command is executing."""
+
+        self._prewarm_worker: Worker[None] | None = None
+        """Background worker that prewarms `deepagents`/LangChain imports.
+
+        Awaited via `_await_prewarm_imports` before any caller on the event
+        loop re-enters the same module graph (see that method for why).
+        """
 
         # Lifecycle flags & re-entry guards
         self._connecting = server_kwargs is not None
@@ -1038,6 +1079,39 @@ class DeepAgentsApp(App):
         colors = theme.get_theme_colors(self)
         return theme.get_css_variable_defaults(colors=colors)
 
+    def _fatal_error(self) -> None:
+        """Render an unhandled-exception traceback without leaking secrets.
+
+        Textual's default `_fatal_error` renders with `show_locals=True`,
+        which prints local variables — including resolved API keys carried
+        in `kwargs` dicts on the call path through `create_model`. Locals
+        are only re-enabled when `DEEPAGENTS_CLI_DEBUG` matches a truthy
+        token (`"1"`, `"true"`, `"yes"`); any other value, including `"0"`
+        and `"false"`, leaves them disabled.
+        """
+        try:
+            import rich
+            from rich.segment import Segments
+            from rich.traceback import Traceback
+
+            from deepagents_cli._env_vars import DEBUG
+        except Exception:  # noqa: BLE001  # mid-teardown import errors fall through to Textual's default rather than double-fault and swallow the original crash
+            super()._fatal_error()
+            return
+
+        self.bell()
+        show_locals = os.environ.get(DEBUG, "").lower() in {"1", "true", "yes"}
+        traceback = Traceback(
+            show_locals=show_locals,
+            width=None,
+            locals_max_length=5,
+            suppress=[rich],
+        )
+        self._exit_renderables.append(
+            Segments(self.console.render(traceback, self.console.options))
+        )
+        self._close_messages_no_wait()
+
     def compose(self) -> ComposeResult:
         """Compose the application layout.
 
@@ -1050,6 +1124,8 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -1108,7 +1184,8 @@ class DeepAgentsApp(App):
         # Prewarm heavy imports in a thread while the first frame renders.
         # The user can't type yet, so GIL contention is harmless.  By the
         # time _post_paint_init fires its inline imports are dict lookups.
-        self.run_worker(
+        # Handle is captured so `_await_prewarm_imports` can block on it.
+        self._prewarm_worker = self.run_worker(
             asyncio.to_thread(self._prewarm_deferred_imports),
             exclusive=True,
             group="startup-import-prewarm",
@@ -1580,6 +1657,10 @@ class DeepAgentsApp(App):
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
         if self._model_kwargs is not None:
+            # Block on prewarm before re-entering the import graph; see
+            # `_await_prewarm_imports` for the deadlock rationale.
+            await self._await_prewarm_imports()
+
             from deepagents_cli.config import create_model
             from deepagents_cli.model_config import ModelConfigError, save_recent_model
 
@@ -1662,13 +1743,27 @@ class DeepAgentsApp(App):
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+        self._mcp_unauthenticated = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        self._mcp_errored = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
 
         # Update welcome banner to show ready state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(self._mcp_tool_count)
+            banner.set_connected(
+                self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
+            )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+
+        if self._active_mcp_viewer is not None:
+            with suppress(Exception):
+                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -1701,8 +1796,14 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
         self._connecting = False
-        self._server_startup_error = f"{type(event.error).__name__}: {event.error}"
+        if isinstance(event.error, MCPConfigError):
+            # Already carries the path + hint; showing the class name is noise.
+            self._server_startup_error = str(event.error)
+        else:
+            self._server_startup_error = _format_startup_error(event.error)
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
         # Update banner to show persistent failure state
         try:
@@ -1718,6 +1819,30 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    async def _await_prewarm_imports(self) -> None:
+        """Wait for prewarm imports before re-entering their module graph.
+
+        Prevents a multi-threaded import deadlock: the prewarm worker runs in
+        `asyncio.to_thread`, and any caller that imports `deepagents` or
+        LangChain from the event-loop thread while it's still running can
+        race on partially-initialized module locks.
+
+        `CancelledError` propagates so app shutdown isn't silently absorbed.
+        """
+        from textual.worker import WorkerFailed
+
+        worker = self._prewarm_worker
+        if worker is None:
+            return
+        try:
+            await worker.wait()
+        except WorkerFailed:
+            # Prewarm body best-efforts third-party imports and already
+            # warns; logging at WARNING here surfaces unexpected failures
+            # (e.g. a regression that breaks a non-optional import) that
+            # the body itself didn't catch.
+            logger.warning("Import prewarm worker failed", exc_info=True)
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
@@ -4979,6 +5104,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_cli.widgets.notification_center import (
             NotificationCenterScreen,
         )
@@ -5003,6 +5129,9 @@ class DeepAgentsApp(App):
             self.screen,
             (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
         ):
+            self.screen.action_move_up()
+            return
+        if isinstance(self.screen, MCPViewerScreen):
             self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
@@ -5576,7 +5705,11 @@ class DeepAgentsApp(App):
                 self._connecting = False
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.set_connected(self._mcp_tool_count)
+                    banner.set_connected(
+                        self._mcp_tool_count,
+                        mcp_unauthenticated=self._mcp_unauthenticated,
+                        mcp_errored=self._mcp_errored,
+                    )
                 except NoMatches:
                     pass
                 self.notify(
@@ -6152,9 +6285,14 @@ class DeepAgentsApp(App):
         """Show read-only MCP server/tool viewer as a modal screen."""
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
 
-        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+        screen = MCPViewerScreen(
+            server_info=self._mcp_server_info or [],
+            connecting=self._connecting,
+        )
+        self._active_mcp_viewer = screen
 
         def handle_result(result: None) -> None:  # noqa: ARG001
+            self._active_mcp_viewer = None
             if self._chat_input:
                 self._chat_input.focus_input()
 

@@ -1388,7 +1388,9 @@ def _make_server(
     name: str, transport: str = "stdio", tool_names: list[str] | None = None
 ) -> MCPServerInfo:
     """Create an MCPServerInfo with the given tool names."""
-    tools = [MCPToolInfo(name=n, description=f"desc-{n}") for n in (tool_names or [])]
+    tools = tuple(
+        MCPToolInfo(name=n, description=f"desc-{n}") for n in (tool_names or [])
+    )
     return MCPServerInfo(name=name, transport=transport, tools=tools)
 
 

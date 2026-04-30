@@ -37,10 +37,9 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.permissions import FilesystemPermission, _PermissionMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
@@ -174,18 +173,14 @@ def get_default_model() -> ChatAnthropic:
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
-    (_PermissionMiddleware, ("PermissionMiddleware",)),
 )
 """Scaffolding middleware that core deep agent features depend on.
 
 Each entry pairs a class with any extra string aliases its `.name` may take
 beyond `__name__`. Removing any of these silently breaks core features:
-`FilesystemMiddleware` backs every built-in file tool, `SubAgentMiddleware`
-backs the `task` tool handler, and `_PermissionMiddleware` enforces
-`permissions` rules (a security guarantee). `_PermissionMiddleware` is
-intentionally private, so both `"_PermissionMiddleware"` and the public alias
-`"PermissionMiddleware"` are rejected — either spelling hits the informative
-scaffolding error instead of a silent no-op.
+`FilesystemMiddleware` backs every built-in file tool and now also enforces
+`permissions` rules (a security guarantee), while `SubAgentMiddleware` backs
+the `task` tool handler.
 
 Tracked here so `HarnessProfile.excluded_middleware` cannot strip them:
 `_apply_excluded_middleware` raises `ValueError` rather than proceeding with
@@ -304,7 +299,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 non-Anthropic models)
             - `MemoryMiddleware` (if `memory` is provided)
             - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
-            - `_PermissionMiddleware` (if permission rules are present, always last)
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -313,8 +307,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             drops the summarization middleware via its public alias).
             Entries that match nothing in the assembled stack raise
             `ValueError`, as does excluding scaffolding classes
-            (`FilesystemMiddleware`, `SubAgentMiddleware`,
-            `_PermissionMiddleware`).
+            (`FilesystemMiddleware`, `SubAgentMiddleware`).
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -368,8 +361,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
 
-            `_PermissionMiddleware` is appended last in the stack so it sees
-            all tools (including those injected by other middleware).
+            `FilesystemMiddleware` applies these permissions at the tool
+            level for its built-in filesystem tools, not at the backend
+            level. Direct backend usage does not currently incorporate
+            `permissions`.
         backend: Optional backend for file storage and execution.
 
             Pass a `Backend` instance (e.g. `StateBackend()`).
@@ -503,6 +498,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -519,8 +515,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Prompt caching
             subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-            if subagent_permissions:
-                subagent_middleware.append(_PermissionMiddleware(rules=subagent_permissions, backend=backend))
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -592,10 +586,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
         gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
-        # Permissions must be last so they see all tools from prior middleware
-        if permissions:
-            gp_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
-
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
@@ -635,6 +625,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
+            _permissions=permissions,
         )
     )
     if inline_subagents:
@@ -679,10 +670,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
-    # _PermissionMiddleware must be last so it sees all tools from prior middleware
-    if permissions:
-        deepagent_middleware.append(_PermissionMiddleware(rules=permissions, backend=backend))
-
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

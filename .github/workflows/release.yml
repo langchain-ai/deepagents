@@ -1,8 +1,15 @@
 # Builds and publishes deepagents packages to PyPI.
 #
 # Triggers:
-# - Automatically via workflow_call from release-please.yml when a release PR is merged
-# - Manually via workflow_dispatch
+# - Automatically via workflow_dispatch from release-please.yml when a release
+#   PR is merged (release-please.yml's `trigger-releases` job calls
+#   `gh workflow run release.yml ...`).
+# - Manually via workflow_dispatch from the Actions UI or `gh` CLI.
+#
+# This workflow is intentionally NOT a reusable workflow (no `workflow_call`
+# trigger): PyPI Trusted Publishing does not officially support reusable
+# workflows, so the auto path uses workflow_dispatch instead. See:
+# https://docs.pypi.org/trusted-publishers/troubleshooting/#reusable-workflows-on-github
 #
 # Flow: build -> pre-release-checks -> test-pypi -> publish -> release
 
@@ -10,23 +17,6 @@ name: "⚠️ Manual Package Release"
 run-name: "release(${{ inputs.package-override || inputs.package }}):${{
   inputs.version && format(' {0}', inputs.version) || '' }}"
 on:
-  workflow_call:
-    inputs:
-      package:
-        required: true
-        type: string
-        description: "Package to release"
-      version:
-        required: false
-        type: string
-        default: ""
-        description: "Version being released (used in run name)"
-      release-sha:
-        required: true
-        type: string
-        description: "Release-PR merge commit SHA. Pinned to the GitHub release tag
-          and used to look up the release PR for label updates. Auto-passed by
-          release-please.yml."
   workflow_dispatch:
     inputs:
       package:
@@ -39,6 +29,7 @@ on:
           - deepagents
           - deepagents-cli
           - deepagents-acp
+          - deepagents-code
           - deepagents-evals
           - langchain-daytona
           - langchain-modal
@@ -119,6 +110,9 @@ jobs:
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
               ;;
+            deepagents-code)
+              echo "working-dir=libs/code" >> $GITHUB_OUTPUT
+              ;;
             deepagents-evals)
               echo "working-dir=libs/evals" >> $GITHUB_OUTPUT
               ;;
@@ -139,7 +133,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-repl, langchain-runloop"
+              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-repl, langchain-runloop"
               exit 1
               ;;
           esac
@@ -256,7 +250,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Upload build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
@@ -628,7 +622,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish to test PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -814,7 +808,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true

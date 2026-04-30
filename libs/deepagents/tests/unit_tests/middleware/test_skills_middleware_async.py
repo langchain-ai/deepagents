@@ -3,7 +3,9 @@
 This module contains async versions of skills middleware tests.
 """
 
+import logging
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -119,6 +121,40 @@ async def test_alist_skills_from_backend_nonexistent_path(tmp_path: Path) -> Non
     # Try to list from non-existent directory
     skills = await _alist_skills(backend, str(tmp_path / "nonexistent"))
     assert skills == []
+
+
+async def test_alist_skills_logs_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A backend listing error should not look like a normal empty source."""
+    backend = MagicMock()
+    backend.als = AsyncMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[]))
+
+    with caplog.at_level(logging.WARNING):
+        skills = await _alist_skills(backend, "/bad")
+
+    assert skills == []
+    assert "Cannot load skills from '/bad'" in caplog.text
+    backend.adownload_files.assert_not_called()
+
+
+async def test_alist_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A partial listing warning should not hide valid sibling skills."""
+    skill_content = make_skill_content("valid-skill", "Valid skill")
+    skill_dir_path = "/skills/valid-skill/"
+    skill_md_path = "/skills/valid-skill/SKILL.md"
+
+    backend = MagicMock()
+    backend.als = AsyncMock(
+        return_value=LsResult(error="Cannot list '/skills/loop': symlink loop", entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+    )
+    backend.adownload_files = AsyncMock(return_value=[FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)])
+
+    with caplog.at_level(logging.WARNING):
+        skills = await _alist_skills(backend, "/skills")
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "valid-skill"
+    assert "Cannot load skills from '/skills'" in caplog.text
+    backend.adownload_files.assert_called_once_with([skill_md_path])
 
 
 async def test_alist_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
@@ -297,6 +333,45 @@ async def test_abefore_agent_empty_sources(tmp_path: Path) -> None:
 
     assert result is not None
     assert result["skills_metadata"] == []
+
+
+async def test_abefore_agent_records_skill_load_errors() -> None:
+    """Source load errors should be available in private middleware state."""
+    backend = SimpleNamespace(
+        als=AsyncMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[])),
+        adownload_files=AsyncMock(),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/bad"])
+
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["skills_metadata"] == []
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
+
+
+async def test_abefore_agent_partial_load_across_sources() -> None:
+    """A failing source must not hide skills loaded from a sibling source (async)."""
+    skill_content = make_skill_content("good-skill", "Skill from the working source")
+    skill_dir_path = "/good/good-skill/"
+    skill_md_path = "/good/good-skill/SKILL.md"
+
+    async def als_side_effect(path: str) -> LsResult:
+        if path == "/good":
+            return LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+        return LsResult(error="Cannot list '/bad': denied", entries=[])
+
+    backend = SimpleNamespace(
+        als=AsyncMock(side_effect=als_side_effect),
+        adownload_files=AsyncMock(return_value=[FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)]),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/good", "/bad"])
+
+    result = await middleware.abefore_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["good-skill"]
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
 async def test_abefore_agent_skips_loading_if_metadata_present(tmp_path: Path) -> None:

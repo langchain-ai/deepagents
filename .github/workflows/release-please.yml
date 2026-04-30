@@ -57,6 +57,7 @@ jobs:
       cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      code-release: ${{ steps.check-releases.outputs.code-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
@@ -66,7 +67,7 @@ jobs:
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
     steps:
-      - uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4
         id: release
         with:
           config-file: release-please-config.json
@@ -76,7 +77,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
+      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
@@ -87,7 +88,7 @@ jobs:
       - name: Label release PRs
         if: steps.release.outputs.prs != '[]' && steps.release.outputs.prs != ''
         continue-on-error: true
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RELEASE_PRS: ${{ steps.release.outputs.prs }}
         with:
@@ -169,6 +170,13 @@ jobs:
             echo "acp-release=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-code\):"; then
+            echo "code-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Code release detected: $COMMIT_MSG"
+          else
+            echo "code-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
             echo "daytona-release=true" >> "$GITHUB_OUTPUT"
             echo "Daytona release detected: $COMMIT_MSG"
@@ -232,157 +240,262 @@ jobs:
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
 
       - name: Update lockfiles
+        id: update-lockfiles
         run: |
-          git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
-            dir=$(dirname "$lockfile")
-            echo "Updating $dir"
-            if [ "$dir" = "libs/acp" ]; then
-              uv lock --directory "$dir" --python 3.14
-            else
-              uv lock --directory "$dir" --python 3.12
-            fi
-          done
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              echo "Updating $dir"
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+          regenerate
 
       - name: Commit and push
+        # Retry on push rejection. Concurrent release-please runs (one per push to
+        # main) all update the same release branch, so a stale local checkout can
+        # lose the push race ("cannot lock ref ...: is at X but expected Y"). On
+        # rejection: fetch the new tip, reset, re-run `uv lock` against it, and
+        # retry. `uv lock` is deterministic on a given pyproject.toml, so this
+        # converges — and if the rebased state already has the right lockfiles
+        # (another run won), the diff is empty and we exit cleanly.
         env:
           RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "**/uv.lock"
-          if git diff --staged --quiet; then
-            echo "No lockfile changes to commit"
-          else
+
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+
+          stage_and_commit() {
+            git add "**/uv.lock"
+            if git diff --staged --quiet; then
+              return 1
+            fi
             git diff --staged --stat
             git commit -m "chore: update lockfiles"
-            git push origin "HEAD:${RELEASE_BRANCH}"
+            return 0
+          }
+
+          if ! stage_and_commit; then
+            echo "No lockfile changes to commit"
+            exit 0
           fi
 
-  # Trigger release workflow when CLI release PR is merged
-  # GitHub release is created by release.yml AFTER all checks pass
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${RELEASE_BRANCH}"; then
+              echo "Push succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::Push rejected on attempt ${attempt}; rebasing onto fresh ${RELEASE_BRANCH} and retrying"
+            # Reset to FETCH_HEAD (the SHA `git fetch` just resolved) rather than
+            # `origin/${RELEASE_BRANCH}`, so we don't depend on the remote's
+            # default fetch refspec being configured to update the
+            # remote-tracking ref.
+            git fetch origin "${RELEASE_BRANCH}"
+            git reset --hard FETCH_HEAD
+            regenerate
+            if ! stage_and_commit; then
+              echo "Lockfile already up-to-date on remote after rebase; nothing to push"
+              exit 0
+            fi
+          done
+
+          echo "::error::Push still rejected after 3 attempts on '${RELEASE_BRANCH}'."
+          exit 1
+
+  # Dispatch release.yml for each merged release PR.
   #
-  # release-sha pins the release tag to the release-PR merge commit. github.sha
-  # here IS the merge commit because release-please.yml only fires on push events,
-  # and the release PR was just merged. Forwarding it explicitly means release.yml
-  # always reads inputs.release-sha — the auto path and workflow_dispatch retries
-  # share one code path, so neither can silently tag a different commit (see
-  # RELEASING.md -> Manual Release).
-  release-deepagents-cli:
+  # We use `gh workflow run` (workflow_dispatch) rather than `uses:` (workflow_call)
+  # because PyPI Trusted Publishing does not officially support reusable workflows
+  # (https://docs.pypi.org/trusted-publishers/troubleshooting/#reusable-workflows-on-github).
+  # Dispatching makes each release run a top-level workflow, so the OIDC token
+  # claim points at release.yml directly. Trade-off: release.yml runs are
+  # separate runs in the Actions tab rather than nested under release-please.
+  #
+  # release-sha pins the release *artifact* (build, tests, GitHub release tag) to
+  # the release-PR merge commit. github.sha here IS the merge commit because
+  # release-please.yml only fires on push events, and the release PR was just
+  # merged. Forwarding it explicitly means release.yml always reads
+  # inputs.release-sha — the auto path and workflow_dispatch retries share one
+  # code path, so neither can silently tag a different commit (see RELEASING.md
+  # -> Manual Release).
+  #
+  # Note: `gh workflow run --ref main` resolves the *workflow YAML* against
+  # main@HEAD at dispatch time, not against $RELEASE_SHA. The dispatches API
+  # accepts only branch/tag names for `ref`, not SHAs, so this race window
+  # (commit lands on main between this push event and the dispatch call) is
+  # unfixable. In practice it is benign: release.yml itself rarely changes, and
+  # the artifact still builds from $RELEASE_SHA via the checkout step.
+  trigger-releases:
     needs: release-please
-    if: needs.release-please.outputs.cli-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: deepagents-cli
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
+    if: |
+      needs.release-please.outputs.cli-release == 'true' ||
+      needs.release-please.outputs.sdk-release == 'true' ||
+      needs.release-please.outputs.acp-release == 'true' ||
+      needs.release-please.outputs.code-release == 'true' ||
+      needs.release-please.outputs.daytona-release == 'true' ||
+      needs.release-please.outputs.modal-release == 'true' ||
+      needs.release-please.outputs.runloop-release == 'true' ||
+      needs.release-please.outputs.quickjs-release == 'true' ||
+      needs.release-please.outputs.repl-release == 'true'
+    runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write
-      # write needed to update PR label from "autorelease: pending" to "autorelease: tagged"
-      pull-requests: write
+      actions: write # required for `gh workflow run` to dispatch release.yml
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.release-please.outputs.release-version }}
+      RELEASE_SHA: ${{ github.sha }}
+      RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
+        }}/actions/workflows/release.yml
+      CLI_RELEASE: ${{ needs.release-please.outputs.cli-release }}
+      SDK_RELEASE: ${{ needs.release-please.outputs.sdk-release }}
+      ACP_RELEASE: ${{ needs.release-please.outputs.acp-release }}
+      CODE_RELEASE: ${{ needs.release-please.outputs.code-release }}
+      DAYTONA_RELEASE: ${{ needs.release-please.outputs.daytona-release }}
+      MODAL_RELEASE: ${{ needs.release-please.outputs.modal-release }}
+      RUNLOOP_RELEASE: ${{ needs.release-please.outputs.runloop-release }}
+      QUICKJS_RELEASE: ${{ needs.release-please.outputs.quickjs-release }}
+      REPL_RELEASE: ${{ needs.release-please.outputs.repl-release }}
+    steps:
+      - name: Dispatch release workflows
+        # Best-effort: each package dispatch is independent. If one fails (transient
+        # API blip, rate limit, ...), continue with the rest — partial dispatch is
+        # better than a half-state where some packages are pending and others were
+        # never even attempted. Failures are aggregated and the job exits nonzero
+        # at the end so the operator sees them.
+        #
+        # We also write a markdown banner to $GITHUB_STEP_SUMMARY pointing at the
+        # release.yml workflow page. This job only *kicks off* the publish runs;
+        # the build/test/PyPI-publish steps live in those separate runs, so the
+        # operator needs to click through to find them. The summary makes that
+        # one click instead of "where did the publish go?".
+        run: |
+          set -uo pipefail
 
-  # Trigger release workflow when SDK release PR is merged
-  release-deepagents:
-    needs: release-please
-    if: needs.release-please.outputs.sdk-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: deepagents
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          DISPATCHED=()
+          FAILED=()
 
-  # Trigger release workflow when ACP release PR is merged
-  release-deepagents-acp:
-    needs: release-please
-    if: needs.release-please.outputs.acp-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: deepagents-acp
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          # Validate that an output value is exactly "true" or "false". Catches the
+          # case where release-please ever emits an empty/unexpected value, which
+          # would otherwise silently no-op the dispatch under the `= "true"` check.
+          assert_bool() {
+            local name="$1" value="$2"
+            case "$value" in
+              true|false) ;;
+              *)
+                echo "::warning::$name has unexpected value '$value' (expected 'true' or 'false'); treating as false"
+                ;;
+            esac
+          }
 
-  # Trigger release workflow when Daytona release PR is merged
-  release-langchain-daytona:
-    needs: release-please
-    if: needs.release-please.outputs.daytona-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: langchain-daytona
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          dispatch() {
+            local package="$1"
+            echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            # `--repo` is required: this job has no `actions/checkout` step, so
+            # `gh` cannot discover the target repo from a local `.git/` and
+            # would otherwise fail with `fatal: not a git repository`.
+            if gh workflow run release.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f package="$package" \
+              -f version="$VERSION" \
+              -f release-sha="$RELEASE_SHA"; then
+              # gh workflow run returns 0 once the dispatch is queued but yields
+              # no run ID. Surface a pointer so operators can find the dispatched
+              # run quickly without a manual scroll through Actions.
+              echo "Queued. Watch at: $RELEASE_WORKFLOW_URL"
+              DISPATCHED+=("$package")
+            else
+              echo "::error::Failed to dispatch release.yml for $package"
+              FAILED+=("$package")
+            fi
+          }
 
-  # Trigger release workflow when Modal release PR is merged
-  release-langchain-modal:
-    needs: release-please
-    if: needs.release-please.outputs.modal-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: langchain-modal
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
+          # surfaces a warning if the value is something other than "true"/"false".
+          CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
+          SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
+          ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
+          CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
+          DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
+          MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
+          RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
+          QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
+          REPL_RELEASE="${REPL_RELEASE:-false}";       assert_bool REPL_RELEASE    "$REPL_RELEASE"
 
-  # Trigger release workflow when Runloop release PR is merged
-  release-langchain-runloop:
-    needs: release-please
-    if: needs.release-please.outputs.runloop-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: langchain-runloop
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          # Banner: log + step summary. The step summary renders at the top of the
+          # run page, so operators see the link before scrolling through step logs.
+          echo ""
+          echo "================================================================"
+          echo "  Publish runs (build / tests / PyPI) live in release.yml:"
+          echo "  $RELEASE_WORKFLOW_URL"
+          echo "  This job only kicks them off."
+          echo "================================================================"
+          echo ""
 
-  # Trigger release workflow when QuickJS release PR is merged
-  release-langchain-quickjs:
-    needs: release-please
-    if: needs.release-please.outputs.quickjs-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: langchain-quickjs
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          {
+            echo "## Release dispatched"
+            echo ""
+            echo "This job only **kicks off** the publish workflow. Build, tests, and the actual PyPI publish run as separate \`release.yml\` runs."
+            echo ""
+            echo "👉 **[View \`release.yml\` runs]($RELEASE_WORKFLOW_URL)** to watch each publish."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  # Trigger release workflow when REPL release PR is merged
-  release-langchain-repl:
-    needs: release-please
-    if: needs.release-please.outputs.repl-release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      package: langchain-repl
-      version: ${{ needs.release-please.outputs.release-version }}
-      release-sha: ${{ github.sha }}
-    secrets: inherit
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
+          if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
+          if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
+          if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
+          if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
+          if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
+          if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
+          if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
+          if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
+          if [ "$REPL_RELEASE" = "true" ];    then dispatch langchain-repl;      fi
+
+          # Append per-package status to the step summary so operators see at a
+          # glance which packages were queued vs. which need a manual retry.
+          {
+            echo "### Dispatched (${#DISPATCHED[@]})"
+            if [ "${#DISPATCHED[@]}" -gt 0 ]; then
+              for p in "${DISPATCHED[@]}"; do echo "- \`$p\` @ \`$VERSION\`"; done
+            else
+              echo "_none_"
+            fi
+            echo ""
+            echo "### Failed (${#FAILED[@]})"
+            if [ "${#FAILED[@]}" -gt 0 ]; then
+              for p in "${FAILED[@]}"; do echo "- \`$p\`"; done
+              echo ""
+              echo "Recover with:"
+              echo ""
+              echo '```'
+              for p in "${FAILED[@]}"; do
+                echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+              done
+              echo '```'
+            else
+              echo "_none_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${#FAILED[@]}" -gt 0 ]; then
+            echo "::error::Failed to dispatch ${#FAILED[@]} release(s): ${FAILED[*]}"
+            echo "::error::Recover with: gh workflow run release.yml -f package=<name> -f version=$VERSION -f release-sha=$RELEASE_SHA"
+            exit 1
+          fi
+
+          echo "All release workflows dispatched. Watch at: $RELEASE_WORKFLOW_URL"

@@ -1,11 +1,30 @@
 # Changelog
 
-## [0.0.43](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.42...deepagents-cli==0.0.43) (2026-04-29)
-
+## [0.0.46](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.45...deepagents-cli==0.0.46) (2026-04-30)
 
 ### Features
 
-* **cli:** bundled chat frontend for deepagent deploy ([#2940](https://github.com/langchain-ai/deepagents/issues/2940)) ([9bde0c7](https://github.com/langchain-ai/deepagents/commit/9bde0c7835ded20e80466d8361f40784141d68d8))
+* Rework MCP integration and add OAuth login ([#2906](https://github.com/langchain-ai/deepagents/issues/2906)) ([6b7b0be](https://github.com/langchain-ai/deepagents/commit/6b7b0bef95db673fed23fc92803abaaa398b0a6d))
+* `allowedTools` and `disabledTools` filters in MCP config ([#2835](https://github.com/langchain-ai/deepagents/issues/2835)) ([eafd691](https://github.com/langchain-ai/deepagents/commit/eafd6912db637ab59085a0b05d6e36d6cdd10e1a))
+
+## [0.0.45](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.44...deepagents-cli==0.0.45) (2026-04-30)
+
+### Bug Fixes
+
+* Reject out-of-tree symlinked project `AGENTS.md` ([#3039](https://github.com/langchain-ai/deepagents/issues/3039)) ([4618098](https://github.com/langchain-ai/deepagents/commit/4618098e59c8c8d1d3f91354e4f4163a9582f710))
+* Support modified backspace word deletion ([#3037](https://github.com/langchain-ai/deepagents/issues/3037)) ([bc3d019](https://github.com/langchain-ai/deepagents/commit/bc3d01916d2ba34be07d56c9eb9b813008c1584c))
+
+## [0.0.44](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.43...deepagents-cli==0.0.44) (2026-04-29)
+
+### Bug Fixes
+
+* Startup import deadlock ([#3017](https://github.com/langchain-ai/deepagents/issues/3017)) ([d40ab57](https://github.com/langchain-ai/deepagents/commit/d40ab57800a6ad12b0c9a5e249753702ec0832c8))
+
+## [0.0.43](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.42...deepagents-cli==0.0.43) (2026-04-29)
+
+### Features
+
+* Bundled chat frontend for deepagent deploy ([#2940](https://github.com/langchain-ai/deepagents/issues/2940)) ([9bde0c7](https://github.com/langchain-ai/deepagents/commit/9bde0c7835ded20e80466d8361f40784141d68d8))
 
 ## [0.0.42](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.41...deepagents-cli==0.0.42) (2026-04-29)
 

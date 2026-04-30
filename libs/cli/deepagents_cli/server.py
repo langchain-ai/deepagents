@@ -30,6 +30,10 @@ _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
 _SHUTDOWN_TIMEOUT = 5
+_LOG_TAIL_CHARS = 3000
+"""Max chars of subprocess log appended to the early-exit `RuntimeError`
+message. Enough to carry a Python traceback without flooding the TUI banner
+when it surfaces via `ServerStartFailed`."""
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -200,7 +204,7 @@ async def wait_for_server_healthy(
                 output = read_log() if read_log else ""
                 msg = f"Server process exited with code {process.returncode}"
                 if output:
-                    msg += f"\n{output[-3000:]}"
+                    msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
                 raise RuntimeError(msg)
 
             try:
@@ -446,11 +450,24 @@ class ServerProcess:
         self._process = None
 
         if self._log_file is not None:
+            log_path = Path(self._log_file.name)
             try:
                 self._log_file.close()
-                Path(self._log_file.name).unlink()
             except OSError:
-                logger.debug("Failed to clean up log file", exc_info=True)
+                logger.debug("Failed to close log file", exc_info=True)
+
+            from deepagents_cli._env_vars import DEBUG, is_env_truthy
+
+            if is_env_truthy(DEBUG):
+                print(  # noqa: T201
+                    f"Server log preserved at: {log_path}",
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    log_path.unlink()
+                except OSError:
+                    logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
 
     def stop(self) -> None:

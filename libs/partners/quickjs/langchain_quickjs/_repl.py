@@ -22,7 +22,6 @@ from quickjs_rs import (
     Context,
     DeadlockError,
     HostCancellationError,
-    HostError,
     JSError,
     MarshalError,
     MemoryLimitError,
@@ -588,10 +587,21 @@ class _ThreadREPL:
                         outcome.stdout_truncated_chars,
                     ) = self._console.drain()
                     return outcome
+        # Save/restore rather than clear-on-exit: a second eval that hits
+        # ConcurrentEvalError would otherwise null out the in-flight
+        # eval's state and orphan its bridge calls.
+        prev_ptc_state = self._ptc_state
         self._ptc_state = _PTCState(remaining_calls=self._max_ptc_calls)
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)
+        except _PTCCallBudgetExceededError as e:
+            # Raised from inside the PTC bridge; quickjs-rs propagates the
+            # original exception out of eval_async. Surface it as a
+            # distinct, model-recoverable error so the agent can shorten
+            # its script rather than crash.
+            outcome.error_type = "PTCCallBudgetExceeded"
+            outcome.error_message = e.render_message()
         except MarshalError:
             outcome.result_kind = "handle"
             outcome.result = await self._describe_via_handle_async(code)
@@ -620,25 +630,12 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
         finally:
-            self._ptc_state = None
+            self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
-        # HostError is a JSError subclass; surface it as "HostError"
-        # so operators can distinguish a bug in our console bridge
-        # from a user-code error.
-        if isinstance(e, HostError):
-            cause = e.__cause__
-            if isinstance(cause, _PTCCallBudgetExceededError):
-                outcome.error_type = "PTCCallBudgetExceeded"
-                outcome.error_message = cause.render_message()
-                outcome.error_stack = None
-                return
-            logger.warning("console-bridge host error", exc_info=cause)
-            outcome.error_type = "HostError"
-        else:
-            outcome.error_type = e.name
+        outcome.error_type = e.name
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 

@@ -403,14 +403,8 @@ async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
     outcome = await repl.eval_async(
         "try { await tools.boom({x: 1}); 'no-throw' } catch (e) { e.message }"
     )
-    # Host errors surface into JS as a catchable error. The exact class
-    # name is implementation detail; we only care that the message is
-    # reachable.
     assert outcome.error_type is None, outcome.error_message
-    assert any(
-        msg in (outcome.result or "")
-        for msg in ("tool exploded", "Host function failed")
-    )
+    assert outcome.result == "Host function failed"
 
 
 async def test_install_tools_skips_invalid_js_identifier_names(

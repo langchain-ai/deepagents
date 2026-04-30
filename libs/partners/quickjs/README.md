@@ -258,7 +258,6 @@ REPLMiddleware(
 | `Timeout` | Call exceeded `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
-| `HostError` | A registered host function (console bridge, tool bridge) threw on the Python side. |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 | `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |

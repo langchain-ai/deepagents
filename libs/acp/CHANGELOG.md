@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.6...deepagents-acp==0.0.7) (2026-04-30)
+
+
+### Features
+
+* **acp:** Update OpenAI and Baseten model in ACP example agent ([#2939](https://github.com/langchain-ai/deepagents/issues/2939)) ([eb9e491](https://github.com/langchain-ai/deepagents/commit/eb9e491acb57f9b1346b68a479ffd67cbbdb98f8))
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.5...deepagents-acp==0.0.6) (2026-04-18)
 
 ### Features

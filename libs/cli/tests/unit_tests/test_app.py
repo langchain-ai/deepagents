@@ -872,12 +872,12 @@ class TestModalScreenCtrlDHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )
@@ -1035,12 +1035,12 @@ class TestModalScreenCtrlCHandling:
                     MCPServerInfo(
                         name="filesystem",
                         transport="stdio",
-                        tools=[
+                        tools=(
                             MCPToolInfo(
                                 name="read_file",
                                 description="Read a file",
-                            )
-                        ],
+                            ),
+                        ),
                     )
                 ]
             )
@@ -3533,6 +3533,57 @@ class TestDeferredActions:
 
             assert app._server_startup_error == "RuntimeError: exit code 3"
             assert app._connecting is False
+
+    async def test_server_failure_trims_multiline_error_to_headline(self) -> None:
+        """Multi-line errors (e.g. `wait_for_server_healthy`'s log tail) are trimmed.
+
+        Guards against regressing the `_format_startup_error` behaviour that
+        keeps the banner readable when the server subprocess embeds thousands
+        of log chars in its `RuntimeError` message.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            log_dump = "line " * 1000
+            message = f"Server process exited with code 3\n{log_dump}"
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError(message))
+            )
+
+            stored = app._server_startup_error
+            assert stored is not None
+            assert "\n" not in stored
+            assert "Server process exited with code 3" in stored
+            assert len(stored) < 400
+
+    async def test_server_failure_mcp_config_error_omits_class_prefix(self) -> None:
+        """`MCPConfigError` banner shows the path and reason without class prefix."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            message = "Invalid MCP config at /tmp/x.json: bad shape"
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=MCPConfigError(message))
+            )
+
+            assert app._server_startup_error == message
+            assert "MCPConfigError:" not in app._server_startup_error
+
+    async def test_server_failure_empty_error_falls_back_to_class_name(self) -> None:
+        """A whitespace-only exception message falls back to the class name."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=RuntimeError("   "))
+            )
+
+            assert app._server_startup_error == "RuntimeError: RuntimeError"
 
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""

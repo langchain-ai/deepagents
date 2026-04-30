@@ -223,24 +223,24 @@ def test_quickjs_sync_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
-def test_quickjs_sync_tool_exception() -> None:
-    """Verify sync tool exceptions surface as eval errors."""
-    result = _make_agent(
+def test_quickjs_sync_tool_exception_propagates() -> None:
+    """Tool exceptions propagate as the original Python exception so
+    ToolNode's default handler reraises and the agent crashes — same
+    semantics as a non-quickjs tool that raises."""
+    agent = _make_agent(
         "await tools.alwaysFails({value: 'x'})",
         REPLMiddleware(ptc=[always_fails]),
-    ).invoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="Use the eval tool to call the async tool that raises"
-                )
-            ]
-        }
     )
-
-    tool_message = _eval_tool_message(result)
-    assert '<error type="HostError">' in tool_message.content
-    assert "Host function failed" in tool_message.content
+    with pytest.raises(RuntimeError, match="boom:x"):
+        agent.invoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Use the eval tool to call the async tool that raises"
+                    )
+                ]
+            }
+        )
 
 
 def test_quickjs_sync_toolruntime_configurable_foreign_function() -> None:
@@ -307,7 +307,6 @@ async def test_async_ptc_eval_through_repl() -> None:
     _assert_no_error(_eval_tool_message(result).content)
 
 
-@pytest.mark.xfail
 def test_wrong_arg_name_surfaces_to_model() -> None:
     """Document what the model sees when JS calls a tool with a misspelled arg."""
     agent = create_deep_agent(

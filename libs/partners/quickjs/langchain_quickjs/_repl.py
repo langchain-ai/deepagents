@@ -23,7 +23,6 @@ from quickjs_rs import (
     Context,
     DeadlockError,
     HostCancellationError,
-    HostError,
     JSError,
     MarshalError,
     MemoryLimitError,
@@ -566,14 +565,7 @@ class _ThreadREPL:
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
-        # HostError is a JSError subclass; surface it as "HostError"
-        # so operators can distinguish a bug in our console bridge
-        # from a user-code error.
-        if isinstance(e, HostError):
-            logger.warning("console-bridge host error", exc_info=e.__cause__)
-            outcome.error_type = "HostError"
-        else:
-            outcome.error_type = e.name
+        outcome.error_type = e.name
         outcome.error_message = e.message
         outcome.error_stack = e.stack
 

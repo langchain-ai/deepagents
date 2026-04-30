@@ -135,7 +135,7 @@ class TestSubagentMiddlewareInit:
         return builder.compile()
 
     def test_compiled_subagent_name_propagated_via_config(self) -> None:
-        """CompiledSubAgent.name is forwarded into metadata and run_name, not via attribute mutation."""
+        """CompiledSubAgent.name is forwarded into metadata.lc_agent_name and run_name."""
         graph = self._make_echo_graph()
 
         middleware = SubAgentMiddleware(

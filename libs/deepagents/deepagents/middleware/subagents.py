@@ -557,11 +557,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         for spec in self._subagents:
             if "runnable" in spec:
-                # CompiledSubAgent - propagate the declared name into metadata so
-                # lc_agent_name in streamed chunks reflects the subagent name rather
-                # than the parent agent name. Use with_config (not attribute assignment)
-                # so the original runnable is never mutated and a shared instance can
-                # be registered under multiple names safely.
+                # Use with_config (not attribute mutation) so the original runnable is
+                # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
                 runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
                 specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})

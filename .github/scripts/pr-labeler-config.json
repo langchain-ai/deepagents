@@ -50,10 +50,12 @@
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
+    "code": "deepagents-code",
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
+    "deepagents-code": "deepagents-code",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
@@ -92,6 +94,11 @@
     {
       "label": "acp",
       "prefix": "libs/acp/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "deepagents-code",
+      "prefix": "libs/code/",
       "skipExcludedFiles": true
     },
     {

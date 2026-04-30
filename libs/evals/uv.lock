@@ -2617,7 +2617,7 @@ test = [
 
 [[package]]
 name = "langchain-repl"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "../repl" }
 dependencies = [
     { name = "deepagents" },

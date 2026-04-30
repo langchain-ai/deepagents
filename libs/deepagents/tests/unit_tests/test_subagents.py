@@ -688,7 +688,9 @@ class TestSubAgents:
         # Pregel merges the runtime recursion_limit patch with the subagent's own
         # config instead of replacing it wholesale.
         assert captured_config["tags"] == ["hello"]
-        assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
+        # CompiledSubAgent.name takes precedence over the name set in create_agent()
+        # so that lc_agent_name in streamed chunks reflects the declared subagent name.
+        assert captured_config["metadata"]["lc_agent_name"] == "general-purpose"
 
     def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
         interrupt_payloads: list[Any] = []

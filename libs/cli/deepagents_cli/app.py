@@ -883,6 +883,13 @@ class DeepAgentsApp(App):
         self._shell_running = False
         """True while a `!` shell command is executing."""
 
+        self._prewarm_worker: Worker[None] | None = None
+        """Background worker that prewarms `deepagents`/LangChain imports.
+
+        Awaited via `_await_prewarm_imports` before any caller on the event
+        loop re-enters the same module graph (see that method for why).
+        """
+
         # Lifecycle flags & re-entry guards
         self._connecting = server_kwargs is not None
         """True while the backing server is being started or restarted.
@@ -1072,6 +1079,39 @@ class DeepAgentsApp(App):
         colors = theme.get_theme_colors(self)
         return theme.get_css_variable_defaults(colors=colors)
 
+    def _fatal_error(self) -> None:
+        """Render an unhandled-exception traceback without leaking secrets.
+
+        Textual's default `_fatal_error` renders with `show_locals=True`,
+        which prints local variables — including resolved API keys carried
+        in `kwargs` dicts on the call path through `create_model`. Locals
+        are only re-enabled when `DEEPAGENTS_CLI_DEBUG` matches a truthy
+        token (`"1"`, `"true"`, `"yes"`); any other value, including `"0"`
+        and `"false"`, leaves them disabled.
+        """
+        try:
+            import rich
+            from rich.segment import Segments
+            from rich.traceback import Traceback
+
+            from deepagents_cli._env_vars import DEBUG
+        except Exception:  # noqa: BLE001  # mid-teardown import errors fall through to Textual's default rather than double-fault and swallow the original crash
+            super()._fatal_error()
+            return
+
+        self.bell()
+        show_locals = os.environ.get(DEBUG, "").lower() in {"1", "true", "yes"}
+        traceback = Traceback(
+            show_locals=show_locals,
+            width=None,
+            locals_max_length=5,
+            suppress=[rich],
+        )
+        self._exit_renderables.append(
+            Segments(self.console.render(traceback, self.console.options))
+        )
+        self._close_messages_no_wait()
+
     def compose(self) -> ComposeResult:
         """Compose the application layout.
 
@@ -1144,7 +1184,8 @@ class DeepAgentsApp(App):
         # Prewarm heavy imports in a thread while the first frame renders.
         # The user can't type yet, so GIL contention is harmless.  By the
         # time _post_paint_init fires its inline imports are dict lookups.
-        self.run_worker(
+        # Handle is captured so `_await_prewarm_imports` can block on it.
+        self._prewarm_worker = self.run_worker(
             asyncio.to_thread(self._prewarm_deferred_imports),
             exclusive=True,
             group="startup-import-prewarm",
@@ -1616,6 +1657,10 @@ class DeepAgentsApp(App):
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
         if self._model_kwargs is not None:
+            # Block on prewarm before re-entering the import graph; see
+            # `_await_prewarm_imports` for the deadlock rationale.
+            await self._await_prewarm_imports()
+
             from deepagents_cli.config import create_model
             from deepagents_cli.model_config import ModelConfigError, save_recent_model
 
@@ -1774,6 +1819,30 @@ class DeepAgentsApp(App):
                 w.remove()
             self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    async def _await_prewarm_imports(self) -> None:
+        """Wait for prewarm imports before re-entering their module graph.
+
+        Prevents a multi-threaded import deadlock: the prewarm worker runs in
+        `asyncio.to_thread`, and any caller that imports `deepagents` or
+        LangChain from the event-loop thread while it's still running can
+        race on partially-initialized module locks.
+
+        `CancelledError` propagates so app shutdown isn't silently absorbed.
+        """
+        from textual.worker import WorkerFailed
+
+        worker = self._prewarm_worker
+        if worker is None:
+            return
+        try:
+            await worker.wait()
+        except WorkerFailed:
+            # Prewarm body best-efforts third-party imports and already
+            # warns; logging at WARNING here surfaces unexpected failures
+            # (e.g. a regression that breaks a non-optional import) that
+            # the body itself didn't catch.
+            logger.warning("Import prewarm worker failed", exc_info=True)
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:

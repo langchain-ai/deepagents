@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.0.45](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.44...deepagents-cli==0.0.45) (2026-04-30)
+
+### Bug Fixes
+
+* Reject out-of-tree symlinked project `AGENTS.md` ([#3039](https://github.com/langchain-ai/deepagents/issues/3039)) ([4618098](https://github.com/langchain-ai/deepagents/commit/4618098e59c8c8d1d3f91354e4f4163a9582f710))
+* Support modified backspace word deletion ([#3037](https://github.com/langchain-ai/deepagents/issues/3037)) ([bc3d019](https://github.com/langchain-ai/deepagents/commit/bc3d01916d2ba34be07d56c9eb9b813008c1584c))
+
+## [0.0.44](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.43...deepagents-cli==0.0.44) (2026-04-29)
+
+### Bug Fixes
+
+* Startup import deadlock ([#3017](https://github.com/langchain-ai/deepagents/issues/3017)) ([d40ab57](https://github.com/langchain-ai/deepagents/commit/d40ab57800a6ad12b0c9a5e249753702ec0832c8))
+
+## [0.0.43](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.42...deepagents-cli==0.0.43) (2026-04-29)
+
+### Features
+
+* Bundled chat frontend for deepagent deploy ([#2940](https://github.com/langchain-ai/deepagents/issues/2940)) ([9bde0c7](https://github.com/langchain-ai/deepagents/commit/9bde0c7835ded20e80466d8361f40784141d68d8))
+
+## [0.0.42](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.41...deepagents-cli==0.0.42) (2026-04-29)
+
+### Features
+
+* `shift+enter` newline on kitty-capable terminals ([#2869](https://github.com/langchain-ai/deepagents/issues/2869)) ([34e6614](https://github.com/langchain-ai/deepagents/commit/34e6614a2c6e6a7e33f763ac5b527c13b324a690))
+* Hint `Enter` behavior in `/model` empty state ([#2933](https://github.com/langchain-ai/deepagents/issues/2933)) ([7cffa16](https://github.com/langchain-ai/deepagents/commit/7cffa16a072bc77def78e4cda09c2e5a2cf8ca39))
+
+### Bug Fixes
+
+* Queue `/model` switches during server startup ([#2895](https://github.com/langchain-ai/deepagents/issues/2895)) ([6ed7b65](https://github.com/langchain-ai/deepagents/commit/6ed7b65a40ac5bd926e94edd944bd552e8d6b5b4))
+
 ## [0.0.41](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.40...deepagents-cli==0.0.41) (2026-04-21)
 
 ### Features

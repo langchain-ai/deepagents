@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.41"
+version = "0.0.45"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.4",
+    "deepagents==0.5.5",
     "langchain>=1.2.15,<2.0.0",
     "langgraph>=1.1.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -38,8 +38,8 @@ dependencies = [
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.4.2,<2.0.0",
-    "langchain-google-genai>=4.2.1,<5.0.0",
-    "langchain-openai>=1.1.12,<2.0.0",
+    "langchain-google-genai>=4.2.2,<5.0.0",
+    "langchain-openai>=1.2.1,<2.0.0",
 
     # UI/Terminal
     # Workaround for Textualize/textual#6378 lives in `_textual_patches.py`.
@@ -74,7 +74,7 @@ dependencies = [
     "tomli-w>=1.0.0,<2.0.0",
 
     # MCP
-    "langchain-mcp-adapters>=0.2.0,<1.0.0",
+    "langchain-mcp-adapters>=0.2.2,<1.0.0",
 
     # ACP
     "deepagents-acp>=0.0.4",
@@ -83,33 +83,33 @@ dependencies = [
 [project.optional-dependencies]
 # Model providers
 anthropic = ["langchain-anthropic>=1.4.2,<2.0.0"]
-baseten = ["langchain-baseten>=0.1.9,<1.0.0"]
-bedrock = ["langchain-aws>=1.0.0,<2.0.0"]
-cohere = ["langchain-cohere>=0.5.0,<1.0.0"]
-deepseek = ["langchain-deepseek>=1.0.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.0.0,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.2.1,<5.0.0"]
-groq = ["langchain-groq>=1.0.0,<2.0.0"]
-huggingface = ["langchain-huggingface>=1.0.0,<2.0.0"]
-ibm = ["langchain-ibm>=1.0.0,<2.0.0"]
-litellm = ["langchain-litellm>=0.6.1,<2.0.0"]
-mistralai = ["langchain-mistralai>=1.0.0,<2.0.0"]
-nvidia = ["langchain-nvidia-ai-endpoints>=1.0.0,<2.0.0"]
-ollama = ["langchain-ollama>=1.0.0,<2.0.0"]
-openai = ["langchain-openai>=1.1.12,<2.0.0"]
-openrouter = ["langchain-openrouter>=0.2.0,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.0.0,<2.0.0"]
-vertexai = ["langchain-google-vertexai>=3.0.0,<4.0.0"]
-xai = ["langchain-xai>=1.0.0,<2.0.0"]
+baseten = ["langchain-baseten>=0.2.0,<1.0.0"]
+bedrock = ["langchain-aws>=1.4.5,<2.0.0"]
+cohere = ["langchain-cohere>=0.5.1,<1.0.0"]
+deepseek = ["langchain-deepseek>=1.0.1,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.2.0,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.2.2,<5.0.0"]
+groq = ["langchain-groq>=1.1.2,<2.0.0"]
+huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
+ibm = ["langchain-ibm>=1.0.7,<2.0.0"]
+litellm = ["langchain-litellm>=0.6.4,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.1.2,<2.0.0"]
+nvidia = ["langchain-nvidia-ai-endpoints>=1.2.1,<2.0.0"]
+ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
+openai = ["langchain-openai>=1.2.1,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.2.1,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.1.0,<2.0.0"]
+vertexai = ["langchain-google-vertexai>=3.2.2,<4.0.0"]
+xai = ["langchain-xai>=1.2.2,<2.0.0"]
 all-providers = [
     "deepagents-cli[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,vertexai,xai]",
 ]
 
 # Sandbox providers
-agentcore = ["langchain-agentcore-codeinterpreter>=0.0.1"]
-daytona = ["langchain-daytona>=0.0.4"]
-modal = ["langchain-modal>=0.0.2"]
-runloop = ["langchain-runloop>=0.0.3"]
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.2"]
+daytona = ["langchain-daytona>=0.0.5"]
+modal = ["langchain-modal>=0.0.3"]
+runloop = ["langchain-runloop>=0.0.4"]
 all-sandboxes = [
     "deepagents-cli[agentcore,daytona,modal,runloop]",
 ]
@@ -125,7 +125,7 @@ Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
 Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/cli/CHANGELOG.md"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
 Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
@@ -151,6 +151,12 @@ test = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_cli"]
+include = [
+    "deepagents_cli/**/*.py",
+    "deepagents_cli/**/*.md",
+    "deepagents_cli/**/*.tcss",
+    "deepagents_cli/deploy/frontend_dist/**/*",
+]
 
 [tool.hatch.build.targets.wheel.shared-data]
 "deepagents_cli/default_agent_prompt.md" = "deepagents_cli/default_agent_prompt.md"

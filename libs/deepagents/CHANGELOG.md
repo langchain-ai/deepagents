@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.5...deepagents==0.5.6) (2026-04-30)
+
+
+### Bug Fixes
+
+* **sdk:** add write preflight and native read to langsmith sandbox ([#2695](https://github.com/langchain-ai/deepagents/issues/2695)) ([741221c](https://github.com/langchain-ai/deepagents/commit/741221c9d8b65a535816e318ee24d3c19a4bde80))
+* **sdk:** propagate `CompiledSubAgent` name into `lc_agent_name` metadata ([#3045](https://github.com/langchain-ai/deepagents/issues/3045)) ([f671e6b](https://github.com/langchain-ai/deepagents/commit/f671e6b18aa49700a535f7b48441662b67dafef9))
+
 ## [0.5.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.4...deepagents==0.5.5) (2026-04-30)
 
 ### Bug Fixes

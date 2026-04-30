@@ -161,7 +161,6 @@ class SubagentTransformer(_TasksLifecycleBase):
         handle_cls = AsyncSubagentRunStream if child_mux.is_async else SubagentRunStream
         handle = handle_cls(
             mux=child_mux,
-            values_transformer=values_t,
             path=ns,
             graph_name=subagent_type,
             trigger_call_id=info["tool_call_id"] or None,

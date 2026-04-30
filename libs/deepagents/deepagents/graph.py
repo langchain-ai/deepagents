@@ -629,19 +629,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
+    sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
-        deepagent_middleware.append(
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-                # Overrides the task tool description. Value should include
-                # {available_agents} — a format placeholder replaced with the
-                # subagent name/description list. Without it the model can't
-                # see which subagents exist. None (default) uses the built-in
-                # template. Stale keys silently no-op if the tool is renamed.
-                task_description=_profile.tool_description_overrides.get("task"),
-            )
+        sub_agent_middleware = SubAgentMiddleware(
+            backend=backend,
+            subagents=inline_subagents,
+            # Overrides the task tool description. Value should include
+            # {available_agents} — a format placeholder replaced with the
+            # subagent name/description list. Without it the model can't
+            # see which subagents exist. None (default) uses the built-in
+            # template. Stale keys silently no-op if the tool is renamed.
+            task_description=_profile.tool_description_overrides.get("task"),
         )
+        deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -705,7 +705,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Bake declared subagent names into a scope-aware factory so each
     # subgraph mini-mux spawns a fresh `SubagentTransformer` that knows
     # which nested runs belong to declared subagents.
-    subagent_names = frozenset(sub_agent_middleware.subagent_names)
+    subagent_names = frozenset(
+        sub_agent_middleware.subagent_names if sub_agent_middleware is not None else ()
+    )
 
     def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
         return SubagentTransformer(scope, subagent_names=subagent_names)

@@ -1,4 +1,4 @@
-"""Integration tests for create_deep_agent streaming via stream_v2/astream_v2.
+"""Integration tests for create_deep_agent streaming via stream_events(version="v3").
 
 Drives a real `create_deep_agent` graph end-to-end through the
 streaming pipeline and asserts that subagents are surfaced as typed
@@ -117,7 +117,7 @@ class TestCreateDeepAgentAstreamV2:
     async def test_run_exposes_native_projections(self) -> None:
         """`run.subagents` / `.messages` / `.tool_calls` / `.middleware` all bound."""
         agent = _build_agent_with_one_subagent()
-        run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
+        run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
         for attr in ("subagents", "subgraphs", "messages", "tool_calls", "values"):
             assert hasattr(run, attr), f"missing projection {attr!r}"
 
@@ -127,7 +127,7 @@ class TestCreateDeepAgentAstreamV2:
 
     async def test_subagents_yields_one_typed_handle(self) -> None:
         agent = _build_agent_with_one_subagent()
-        run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
+        run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
         handles: list[AsyncSubagentRunStream] = []
         async for sub in run.subagents:
@@ -152,7 +152,7 @@ class TestCreateDeepAgentAstreamV2:
 
     async def test_subagent_tool_calls_surface(self) -> None:
         agent = _build_agent_with_one_subagent()
-        run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
+        run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
         tool_names: list[str] = []
         async for sub in run.subagents:
@@ -180,7 +180,7 @@ class TestCreateDeepAgentAstreamV2:
                 }
             ],
         )
-        run = await agent.astream_v2({"messages": [HumanMessage(content="hi")]})
+        run = await agent.astream_events({"messages": [HumanMessage(content="hi")]}, version="v3")
 
         # No subagents should surface.
         handles = [sub async for sub in run.subagents]
@@ -195,7 +195,7 @@ class TestCreateDeepAgentAstreamV2:
     async def test_concurrent_iteration_does_not_drop_events(self) -> None:
         """Iterating `subagents` and `messages` in parallel drops no events."""
         agent = _build_agent_with_one_subagent()
-        run = await agent.astream_v2({"messages": [HumanMessage(content="go")]})
+        run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
         subagent_names: list[str] = []
         parent_message_count = 0
@@ -221,7 +221,7 @@ class TestCreateDeepAgentAstreamV2:
 class TestCreateDeepAgentStreamV2:
     def test_run_exposes_native_projections_sync(self) -> None:
         agent = _build_agent_with_one_subagent()
-        run = agent.stream_v2({"messages": [HumanMessage(content="go")]})
+        run = agent.stream_events({"messages": [HumanMessage(content="go")]}, version="v3")
         for attr in ("subagents", "subgraphs", "messages", "tool_calls", "values"):
             assert hasattr(run, attr)
 
@@ -231,7 +231,7 @@ class TestCreateDeepAgentStreamV2:
 
     def test_subagents_yields_one_typed_handle_sync(self) -> None:
         agent = _build_agent_with_one_subagent()
-        run = agent.stream_v2({"messages": [HumanMessage(content="go")]})
+        run = agent.stream_events({"messages": [HumanMessage(content="go")]}, version="v3")
 
         handles: list[SubagentRunStream] = []
         for sub in run.subagents:

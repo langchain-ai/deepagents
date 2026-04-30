@@ -105,8 +105,7 @@ class WelcomeBanner(Static):
         self._connecting = connecting
         self._resuming = resuming
         self._local_server = local_server
-        self._failed = False
-        self._failure_error: str = ""
+        self._idle = False
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
         self._tip: str = random.choice(_TIPS)  # noqa: S311
@@ -162,7 +161,7 @@ class WelcomeBanner(Static):
             mcp_errored: Number of MCP servers that failed to load.
         """
         self._connecting = False
-        self._failed = False
+        self._idle = False
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
@@ -176,19 +175,21 @@ class WelcomeBanner(Static):
         currently reachable.
         """
         self._connecting = True
-        self._failed = False
+        self._idle = False
         self._resuming = False
         self.update(self._build_banner(self._project_url))
 
-    def set_failed(self, error: str) -> None:
-        """Transition from "connecting" to a persistent failure state.
+    def set_idle(self) -> None:
+        """Transition to a neutral state with no connecting spinner or footer.
 
-        Args:
-            error: Error message describing the server startup failure.
+        Used after a fatal startup failure so the banner stops claiming
+        progress (the failure is communicated via the chat surface). The
+        banner keeps its identity rows (title, version, install path,
+        LangSmith project, thread ID) but appends no footer line, leaving
+        the chat error as the sole source of failure context.
         """
         self._connecting = False
-        self._failed = True
-        self._failure_error = error
+        self._idle = True
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -314,36 +315,18 @@ class WelcomeBanner(Static):
                 ]
             )
 
-        if self._failed:
-            parts.append(build_failure_footer(self._failure_error))
-        elif self._connecting:
+        if self._connecting:
             parts.append(
                 build_connecting_footer(
                     resuming=self._resuming,
                     local_server=self._local_server,
                 )
             )
-        else:
+        elif not self._idle:
             ready_color = "bold" if ansi else colors.primary
             parts.append(build_welcome_footer(primary_color=ready_color, tip=self._tip))
+        # `_idle` ⇒ no footer; chat-surface owns the failure message.
         return Content.assemble(*parts)
-
-
-def build_failure_footer(error: str) -> Content:
-    """Build a footer shown when the server failed to start.
-
-    Args:
-        error: Error message describing the failure.
-
-    Returns:
-        Content with a persistent failure message.
-    """
-    colors = theme.get_theme_colors()
-    return Content.assemble(
-        ("\nServer failed to start: ", f"bold {colors.error}"),
-        (error, colors.error),
-        ("\n", colors.error),
-    )
 
 
 def build_connecting_footer(

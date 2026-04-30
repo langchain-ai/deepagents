@@ -3743,8 +3743,13 @@ class TestDeferredActions:
 class TestServerStartupError:
     """Test error messages when the server fails to start."""
 
-    async def test_send_to_agent_shows_server_error(self) -> None:
-        """_send_to_agent should show the server startup error as an ErrorMessage."""
+    async def test_send_to_agent_silent_when_server_error_set(self) -> None:
+        """`_send_to_agent` does not mount anything when a startup error is set.
+
+        `on_deep_agents_app_server_start_failed` is the single source of truth
+        for the failure surface; the send path used to duplicate the
+        `ErrorMessage` per submit attempt and was collapsed.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3755,10 +3760,8 @@ class TestServerStartupError:
             await app._send_to_agent("hello")
             await pilot.pause()
 
-            msgs = app.query(ErrorMessage)
-            assert len(msgs) == 1
-            assert "Server failed to start" in str(msgs[0]._content)
-            assert "exited with code 3" in str(msgs[0]._content)
+            assert len(app.query(ErrorMessage)) == 0
+            assert len(app.query(AppMessage)) == 0
 
     async def test_send_to_agent_shows_generic_when_no_server_error(self) -> None:
         """_send_to_agent should show the generic AppMessage when no server error."""

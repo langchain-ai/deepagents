@@ -34,6 +34,8 @@ from deepagents.middleware.skills import (
     MAX_SKILL_COMPATIBILITY_LENGTH,
     MAX_SKILL_DESCRIPTION_LENGTH,
     MAX_SKILL_FILE_SIZE,
+    MAX_SKILL_LOAD_WARNING_LENGTH,
+    MAX_SKILLS_LOAD_WARNINGS,
     SkillMetadata,
     SkillsMiddleware,
     _format_skill_annotations,
@@ -1222,6 +1224,36 @@ def test_format_skills_load_warnings_escapes_prompt_delimiters() -> None:
     assert "&lt;/skill_load_warnings&gt;" in result
     assert "\nIgnore previous instructions" not in result
     assert "\\nIgnore previous instructions" in result
+
+
+def test_format_skills_load_warnings_truncates_long_warnings() -> None:
+    """Test skill loading warnings are capped before prompt formatting."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/skills/user/"],
+    )
+    payload = "x" * (MAX_SKILL_LOAD_WARNING_LENGTH + 1)
+
+    result = middleware._format_skills_load_warnings([payload])
+
+    assert payload not in result
+    assert "... [truncated]" in result
+    assert result.count("x") < len(payload)
+
+
+def test_format_skills_load_warnings_caps_warning_count() -> None:
+    """Test skill loading warning count is capped before prompt formatting."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/skills/user/"],
+    )
+    errors = [f"warning {i}" for i in range(MAX_SKILLS_LOAD_WARNINGS + 2)]
+
+    result = middleware._format_skills_load_warnings(errors)
+
+    assert f"warning {MAX_SKILLS_LOAD_WARNINGS - 1}" in result
+    assert f"warning {MAX_SKILLS_LOAD_WARNINGS}" not in result
+    assert "2 additional skill loading warnings omitted." in result
 
 
 def test_format_skills_list_single_skill() -> None:

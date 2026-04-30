@@ -48,6 +48,7 @@ class TestServerConfigRoundTrip:
             mcp_config_path="/home/user/.mcp.json",
             no_mcp=True,
             trust_project_mcp=True,
+            repl_runtime="quickjs",
         )
         env_dict = original.to_env()
         with patch.dict(os.environ, {}, clear=True):

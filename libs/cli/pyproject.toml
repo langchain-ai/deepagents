@@ -35,6 +35,7 @@ dependencies = [
     "langgraph-sdk>=0.3.11,<1.0.0",
     "langgraph-cli[inmem]>=0.4.15,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
+    "langchain-quickjs==0.1.0a1",
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.4.2,<2.0.0",

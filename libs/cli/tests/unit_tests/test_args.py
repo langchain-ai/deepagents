@@ -104,6 +104,28 @@ class TestStartupCmdArg:
         assert args.non_interactive_message == "do the thing"
 
 
+class TestReplArg:
+    """Tests for `--repl` runtime argument."""
+
+    def test_flag_defaults_to_quickjs(self) -> None:
+        """`--repl` without a value should select `quickjs`."""
+        with patch.object(sys, "argv", ["deepagents", "--repl"]):
+            args = parse_args()
+        assert args.repl_runtime == "quickjs"
+
+    def test_explicit_quickjs(self) -> None:
+        """`--repl quickjs` should parse successfully."""
+        with patch.object(sys, "argv", ["deepagents", "--repl", "quickjs"]):
+            args = parse_args()
+        assert args.repl_runtime == "quickjs"
+
+    def test_no_flag(self) -> None:
+        """`repl_runtime` should be `None` when not provided."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.repl_runtime is None
+
+
 class TestResumeArg:
     """Tests for -r/--resume thread resume argument."""
 

@@ -128,5 +128,6 @@ class TestServerGraph:
             cwd=None,
             project_context=None,
             async_subagents=None,
+            repl_runtime=None,
         )
         assert module.graph is graph_obj

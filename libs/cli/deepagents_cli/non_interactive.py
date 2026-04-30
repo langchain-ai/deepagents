@@ -900,6 +900,7 @@ async def run_non_interactive(
     *,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
+    repl_runtime: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
@@ -944,6 +945,7 @@ async def run_non_interactive(
             Output follows the same console routing as other CLI messages:
             stdout by default, stderr when `-q` is set. Non-zero exits and
             timeouts warn but do not abort the task.
+        repl_runtime: Optional REPL runtime to enable.
         profile_override: Extra profile fields from `--profile-override`.
 
             Merged on top of config file profile overrides.
@@ -1137,6 +1139,7 @@ async def run_non_interactive(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=False,
+            repl_runtime=repl_runtime,
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:

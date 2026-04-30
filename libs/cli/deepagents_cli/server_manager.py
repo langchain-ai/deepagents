@@ -205,6 +205,7 @@ async def start_server_and_get_agent(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
+    repl_runtime: str | None = None,
     host: str = "127.0.0.1",
     port: int = 2024,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
@@ -226,6 +227,7 @@ async def start_server_and_get_agent(
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
+        repl_runtime: Optional REPL runtime to enable.
         host: Server host.
         port: Server port.
 
@@ -256,6 +258,7 @@ async def start_server_and_get_agent(
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        repl_runtime=repl_runtime,
     )
     _apply_server_config(config)
 
@@ -302,6 +305,7 @@ async def server_session(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
+    repl_runtime: str | None = None,
     host: str = "127.0.0.1",
     port: int = 2024,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
@@ -326,6 +330,7 @@ async def server_session(
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
+        repl_runtime: Optional REPL runtime to enable.
         host: Server host.
         port: Server port.
 
@@ -351,6 +356,7 @@ async def server_session(
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
             interactive=interactive,
+            repl_runtime=repl_runtime,
             host=host,
             port=port,
         )

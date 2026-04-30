@@ -673,6 +673,18 @@ def parse_args() -> argparse.Namespace:
         metavar="NAME",
         help="Invoke a skill when the interactive session starts",
     )
+    parser.add_argument(
+        "--repl",
+        dest="repl_runtime",
+        nargs="?",
+        const="quickjs",
+        choices=["quickjs"],
+        metavar="RUNTIME",
+        help=(
+            "Enable REPL middleware. Use --repl (defaults to quickjs) "
+            "or --repl quickjs."
+        ),
+    )
 
     parser.add_argument(
         "--startup-cmd",
@@ -862,6 +874,7 @@ async def run_textual_cli_async(
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
+    repl_runtime: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -902,6 +915,9 @@ async def run_textual_cli_async(
 
             Output is rendered in the transcript; non-zero exits warn but
             do not abort the session.
+        repl_runtime: Optional REPL runtime to enable.
+
+            Supported values: `'quickjs'`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -968,6 +984,7 @@ async def run_textual_cli_async(
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "repl_runtime": repl_runtime,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -1016,6 +1033,7 @@ async def _run_acp_cli_async(
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     profile_override: dict[str, Any] | None = None,
+    repl_runtime: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -1029,6 +1047,7 @@ async def _run_acp_cli_async(
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
         profile_override: Extra profile fields from `--profile-override`.
+        repl_runtime: Optional REPL runtime to enable.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
         no_mcp: Disable all MCP tool loading.
         trust_project_mcp: Controls project-level stdio server trust.
@@ -1098,6 +1117,7 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            repl_runtime=repl_runtime,
         )
     except Exception as exc:
         sys.stderr.write(f"Error: failed to create agent: {exc}\n")
@@ -1506,6 +1526,7 @@ def cli_main() -> None:
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
                     profile_override=profile_override,
+                    repl_runtime=getattr(args, "repl_runtime", None),
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
@@ -1849,6 +1870,7 @@ def cli_main() -> None:
                     sandbox_setup=getattr(args, "sandbox_setup", None),
                     initial_skill=getattr(args, "initial_skill", None),
                     startup_cmd=getattr(args, "startup_cmd", None),
+                    repl_runtime=getattr(args, "repl_runtime", None),
                     quiet=args.quiet,
                     stream=not args.no_stream,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -1916,6 +1938,7 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
                         startup_cmd=getattr(args, "startup_cmd", None),
+                        repl_runtime=getattr(args, "repl_runtime", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,

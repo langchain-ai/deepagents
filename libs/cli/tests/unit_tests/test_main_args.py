@@ -332,6 +332,28 @@ class TestMaxTurnsArgument:
             cli_main()
         assert mock_run.await_args.kwargs["max_turns"] == 3  # type: ignore[union-attr]
 
+    def test_repl_forwarded_to_run_non_interactive(self) -> None:
+        """`--repl` should be forwarded to non-interactive execution."""
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "do the thing", "--repl"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_cli.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_run.await_args.kwargs["repl_runtime"] == "quickjs"  # type: ignore[union-attr]
+
     def test_not_forwarded_as_none_when_omitted(self) -> None:
         """When --max-turns is omitted, max_turns=None is forwarded."""
         from deepagents_cli.main import cli_main

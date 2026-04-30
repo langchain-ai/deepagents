@@ -111,6 +111,9 @@ def show_help() -> None:
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
     console.print("  --skill NAME               Invoke a skill when the session starts")
     console.print(
+        "  --repl [RUNTIME]          Enable REPL middleware (default runtime: quickjs)"
+    )
+    console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print(

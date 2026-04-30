@@ -229,6 +229,25 @@ class TestRunTextualCliAsyncMcp:
 
         assert captured_kwargs["mcp_preload_kwargs"] is None
 
+    async def test_repl_runtime_forwarded_to_server_kwargs(self) -> None:
+        """`repl_runtime` should be forwarded for deferred server startup."""
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
+            await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+                repl_runtime="quickjs",
+            )
+
+        assert captured_kwargs["server_kwargs"]["repl_runtime"] == "quickjs"
+
 
 class TestServerCleanupLifecycle:
     """Verify server_proc.stop() is guaranteed after the TUI exits."""

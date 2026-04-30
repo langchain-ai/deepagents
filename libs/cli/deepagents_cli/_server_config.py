@@ -132,6 +132,7 @@ class ServerConfig:
     mcp_config_path: str | None = None
     no_mcp: bool = False
     trust_project_mcp: bool | None = None
+    repl_runtime: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
@@ -191,6 +192,7 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "REPL_RUNTIME": self.repl_runtime,
         }
 
     @classmethod
@@ -229,6 +231,7 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            repl_runtime=_read_env_str("REPL_RUNTIME"),
         )
 
     # ------------------------------------------------------------------
@@ -255,6 +258,7 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        repl_runtime: str | None = None,
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -281,6 +285,7 @@ class ServerConfig:
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
             interactive: Whether the agent is interactive.
+            repl_runtime: Optional REPL runtime to enable.
 
         Returns:
             A fully resolved `ServerConfig`.
@@ -314,6 +319,7 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            repl_runtime=repl_runtime,
         )
 
 

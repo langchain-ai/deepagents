@@ -181,6 +181,7 @@ def make_graph() -> Any:  # noqa: ANN401
         cwd=project_context.user_cwd if project_context is not None else config.cwd,
         project_context=project_context,
         async_subagents=async_subagents,
+        repl_runtime=config.repl_runtime,
     )
     return agent
 

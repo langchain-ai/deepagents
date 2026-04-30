@@ -921,6 +921,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    repl_runtime: str | None = None,
 ) -> tuple[Pregel, CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -983,6 +984,9 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        repl_runtime: Optional REPL runtime to enable.
+
+            Supported values: `'quickjs'`.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -990,6 +994,11 @@ def create_cli_agent(
             - `agent_graph`: Configured LangGraph Pregel instance ready
                 for execution
             - `composite_backend`: `CompositeBackend` for file operations
+
+    Raises:
+        ValueError: If `repl_runtime` is set to an unsupported value.
+        RuntimeError: If `repl_runtime='quickjs'` but `langchain-quickjs`
+            is not installed.
     """
     tools = tools or []
     effective_cwd = (
@@ -1252,6 +1261,29 @@ def create_cli_agent(
         composite_backend = CompositeBackend(
             default=backend,
             routes={},
+        )
+
+    if repl_runtime is not None:
+        if repl_runtime != "quickjs":
+            msg = (
+                f"Unsupported REPL runtime: {repl_runtime!r}. "
+                "Supported runtimes: quickjs."
+            )
+            raise ValueError(msg)
+        try:
+            from langchain_quickjs import REPLMiddleware
+        except ImportError as exc:
+            msg = (
+                "QuickJS REPL support is not installed. "
+                "Install `langchain-quickjs` to use --repl."
+            )
+            raise RuntimeError(msg) from exc
+
+        agent_middleware.append(
+            REPLMiddleware(
+                ptc=["task"],
+                skills_backend=composite_backend if enable_skills else None,
+            )
         )
 
     from deepagents.middleware.summarization import create_summarization_tool_middleware

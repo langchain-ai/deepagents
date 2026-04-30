@@ -590,7 +590,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.store import StoreBackend
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.permissions import FilesystemPermission
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,

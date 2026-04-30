@@ -619,6 +619,13 @@ USER_PREFIX = "/memories/user/"
 
 HAS_USER_MEMORIES = {has_user_memories!r}
 
+# `/memories/` backing store. "store" routes through the LangGraph runtime
+# store (in-memory for `langgraph dev`, Postgres on the platform). "hub"
+# persists into a LangSmith Hub agent repo via ContextHubBackend — a single
+# hub repo for the agent, plus a per-user repo when user memories are on.
+MEMORIES_BACKEND = {memories_backend!r}
+MEMORIES_HUB_IDENTIFIER = {memories_hub_identifier!r}
+
 # What to seed into the store on first run.
 SEED_PATH = Path(__file__).parent / "_seed.json"
 
@@ -724,8 +731,28 @@ def _load_seed() -> dict:
 # Per-(process, assistant_id) gate.
 _SEEDED_ASSISTANTS: set[str] = set()
 
+# Per-(process, assistant_id) gate for hub seeding.
+_SEEDED_HUB_ASSISTANTS: set[str] = set()
+
 # Per-(process, assistant_id, user_id) gate for user memories.
 _SEEDED_USERS: set[tuple[str, str]] = set()
+
+# Per-(process, assistant_id, user_id) gate for per-user hub seeding.
+_SEEDED_HUB_USERS: set[tuple[str, str]] = set()
+
+
+_USER_ID_SAFE_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+
+
+def _sanitize_user_id(user_id: str) -> str:
+    """Translate a user identity into a hub-repo-name-safe slug.
+
+    Replaces any non `[A-Za-z0-9_-]` character with `-` and truncates to 40
+    chars so callers with long identities (emails, provider-prefixed IDs,
+    long UUIDs) still get a workable repo name.
+    """
+    slug = "".join(c if c in _USER_ID_SAFE_CHARS else "-" for c in user_id)
+    return slug[:40]
 
 
 async def _seed_store_if_needed(store, assistant_id: str) -> None:
@@ -788,6 +815,99 @@ async def _seed_user_memories_if_needed(
     )
 
 
+def _hub_route_or_none(backend, prefix: str):
+    """Return the ContextHubBackend behind ``prefix`` on the composite, or None."""
+    routes = getattr(backend, "routes", None)
+    if routes is None:
+        return None
+    return routes.get(prefix)
+
+
+def _log_seed_errors(responses, scope: str) -> None:
+    """Surface upload errors at warn level; the deploy continues either way."""
+    failures = [r for r in responses if r.error is not None]
+    if failures:
+        logger.warning(
+            "Hub seed had %d failed file(s) in %s: %s",
+            len(failures),
+            scope,
+            [(r.path, r.error) for r in failures],
+        )
+
+
+async def _seed_hub_if_needed(backend, assistant_id: str) -> None:
+    """Seed the agent hub repo on first deploy as a single multi-file commit.
+
+    Skips entirely once the repo has any prior commits, so user edits/deletes
+    in the LangSmith UI are never silently undone on redeploy or restart.
+    """
+    if assistant_id in _SEEDED_HUB_ASSISTANTS:
+        return
+    _SEEDED_HUB_ASSISTANTS.add(assistant_id)
+
+    hub = _hub_route_or_none(backend, MEMORIES_PREFIX)
+    if hub is not None and hub.has_prior_commits():
+        return
+
+    seed = _load_seed()
+    batch: list[tuple[str, bytes]] = []
+    for path, content in seed.get("memories", {{}}).items():
+        full_path = f"{{MEMORIES_PREFIX}}{{path.lstrip('/')}}"
+        batch.append((full_path, content.encode("utf-8")))
+    for path, content in seed.get("skills", {{}}).items():
+        full_path = f"{{SKILLS_PREFIX}}{{path.lstrip('/')}}"
+        batch.append((full_path, content.encode("utf-8")))
+    for sa_name, sa_data in seed.get("subagents", {{}}).items():
+        sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
+        for path, content in sa_data.get("memories", {{}}).items():
+            full_path = f"{{sa_prefix}}{{path.lstrip('/')}}"
+            batch.append((full_path, content.encode("utf-8")))
+        for path, content in sa_data.get("skills", {{}}).items():
+            full_path = f"{{sa_prefix}}skills/{{path.lstrip('/')}}"
+            batch.append((full_path, content.encode("utf-8")))
+
+    if not batch:
+        return
+    responses = await backend.aupload_files(batch)
+    _log_seed_errors(responses, scope=f"agent={{assistant_id}}")
+
+
+async def _seed_user_hub_if_needed(
+    backend, assistant_id: str, user_id: str,
+) -> None:
+    """Seed user memory templates into the per-user hub repo on first use.
+
+    Same first-deploy gate as :func:`_seed_hub_if_needed`: once the user's
+    repo has any commits, subsequent invocations skip seeding so the user's
+    own changes (including deletes) survive across runs.
+    """
+    key = (assistant_id, user_id)
+    if key in _SEEDED_HUB_USERS:
+        return
+    _SEEDED_HUB_USERS.add(key)
+
+    seed = _load_seed()
+    user_memories = seed.get("user_memories", {{}})
+    if not user_memories:
+        return
+
+    user_hub = _hub_route_or_none(backend, USER_PREFIX)
+    if user_hub is not None and user_hub.has_prior_commits():
+        return
+
+    batch = [
+        (f"{{USER_PREFIX}}{{path.lstrip('/')}}", content.encode("utf-8"))
+        for path, content in user_memories.items()
+    ]
+    responses = await backend.aupload_files(batch)
+    _log_seed_errors(responses, scope=f"user={{user_id}}")
+    logger.info(
+        "Seeded %d user memory template(s) into hub for user %s",
+        len(user_memories),
+        user_id,
+    )
+
+
 {sandbox_block}
 
 {mcp_tools_block}
@@ -824,7 +944,7 @@ def _make_user_namespace_factory(assistant_id: str):
 SANDBOX_SCOPE = {sandbox_scope!r}
 
 
-def _build_backend_factory(assistant_id: str):
+def _build_backend_factory(assistant_id: str, user_id: str | None = None):
     """Return a backend factory that builds the composite per invocation."""
     def _factory(ctx):  # noqa: ARG001
         from langgraph.config import get_config
@@ -836,27 +956,43 @@ def _build_backend_factory(assistant_id: str):
             cache_key = f"thread:{{thread_id}}"
         sandbox_backend = _get_or_create_sandbox(cache_key)
 
-        routes = {{
-            MEMORIES_PREFIX: StoreBackend(
-                namespace=_make_namespace_factory(assistant_id),
-            ),
-            SKILLS_PREFIX: StoreBackend(
-                namespace=_make_namespace_factory(assistant_id),
-            ),
-        }}
+        if MEMORIES_BACKEND == "hub":
+            # Vendored alongside the generated graph by the bundler.
+            from _context_hub import ContextHubBackend
 
-        if HAS_USER_MEMORIES:
-            routes[USER_PREFIX] = StoreBackend(
-                namespace=_make_user_namespace_factory(assistant_id),
-            )
+            routes = {{
+                MEMORIES_PREFIX: ContextHubBackend(identifier=MEMORIES_HUB_IDENTIFIER),
+            }}
+            if HAS_USER_MEMORIES and user_id:
+                user_hub_identifier = (
+                    f"{{MEMORIES_HUB_IDENTIFIER}}-user-{{_sanitize_user_id(user_id)}}"
+                )
+                routes[USER_PREFIX] = ContextHubBackend(identifier=user_hub_identifier)
+        else:
+            routes = {{
+                MEMORIES_PREFIX: StoreBackend(
+                    namespace=_make_namespace_factory(assistant_id),
+                ),
+                SKILLS_PREFIX: StoreBackend(
+                    namespace=_make_namespace_factory(assistant_id),
+                ),
+            }}
+            if HAS_USER_MEMORIES:
+                routes[USER_PREFIX] = StoreBackend(
+                    namespace=_make_user_namespace_factory(assistant_id),
+                )
 
-        # Add subagent store routes for seeded sync subagents.
-        seed = _load_seed()
-        for sa_name in seed.get("subagents", {{}}):
-            sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
-            routes[sa_prefix] = StoreBackend(
-                namespace=_make_namespace_factory(assistant_id, "subagents", sa_name),
-            )
+            # Subagent store routes only apply in store mode. In hub mode,
+            # subagent content lives under /memories/subagents/... in the
+            # agent's hub repo and is reached via the single /memories/ mount.
+            seed = _load_seed()
+            for sa_name in seed.get("subagents", {{}}):
+                sa_prefix = f"{{MEMORIES_PREFIX}}subagents/{{sa_name}}/"
+                routes[sa_prefix] = StoreBackend(
+                    namespace=_make_namespace_factory(
+                        assistant_id, "subagents", sa_name
+                    ),
+                )
 
         return CompositeBackend(
             default=sandbox_backend,
@@ -889,10 +1025,6 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
             "(runtime.user.identity is empty). User memory features "
             "will be skipped for this invocation."
         )
-    if store is not None:
-        await _seed_store_if_needed(store, assistant_id)
-        if HAS_USER_MEMORIES and user_id:
-            await _seed_user_memories_if_needed(store, assistant_id, user_id)
 
     tools: list = []
     {mcp_tools_load_call}
@@ -901,7 +1033,18 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     all_subagents: list = []
     {sync_subagents_load_call}
 
-    backend_factory = _build_backend_factory(assistant_id)
+    backend_factory = _build_backend_factory(assistant_id, user_id)
+
+    if MEMORIES_BACKEND == "hub":
+        # Seed via the composite so writes land in the hub repo(s).
+        _seed_backend = backend_factory(None)
+        await _seed_hub_if_needed(_seed_backend, assistant_id)
+        if HAS_USER_MEMORIES and user_id:
+            await _seed_user_hub_if_needed(_seed_backend, assistant_id, user_id)
+    elif store is not None:
+        await _seed_store_if_needed(store, assistant_id)
+        if HAS_USER_MEMORIES and user_id:
+            await _seed_user_memories_if_needed(store, assistant_id, user_id)
 
     # Preload AGENTS.md + user memory into the agent's context.
     memory_sources = [f"{{MEMORIES_PREFIX}}AGENTS.md"]

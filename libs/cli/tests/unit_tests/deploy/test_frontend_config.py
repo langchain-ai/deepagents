@@ -113,6 +113,7 @@ def test_frontend_enabled_without_auth_errors(tmp_path, monkeypatch):
 def test_frontend_with_anonymous_provider_validates_clean(tmp_path, monkeypatch):
     """[auth] provider = "anonymous" satisfies the [frontend] validation."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     _write_project(tmp_path)
     cfg = DeployConfig(
         agent=AgentConfig(name="a"),

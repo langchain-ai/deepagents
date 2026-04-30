@@ -26,6 +26,7 @@ from deepagents_cli.deploy.config import (
     AgentConfig,
     AuthConfig,
     DeployConfig,
+    MemoriesConfig,
     SandboxConfig,
 )
 
@@ -307,6 +308,39 @@ class TestRenderDeployGraph:
         assert "AGENTS.md" in result
         assert 'mode="deny"' in result
 
+    def test_default_memories_backend_is_hub(self) -> None:
+        """`_minimal_config()` relies on `MemoriesConfig()` — default must be hub."""
+        result = _render_deploy_graph(_minimal_config(), mcp_present=False)
+        assert "MEMORIES_BACKEND = 'hub'" in result
+
+    def test_store_backend_opt_in(self) -> None:
+        """Opt-in to the store backend still works for existing projects."""
+        config = DeployConfig(
+            agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(backend="store"),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "MEMORIES_BACKEND = 'store'" in result
+
+    def test_hub_backend_wires_context_hub_route(self) -> None:
+        config = DeployConfig(
+            agent=AgentConfig(name="hubtest"),
+            memories=MemoriesConfig(backend="hub"),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "MEMORIES_BACKEND = 'hub'" in result
+        assert "MEMORIES_HUB_IDENTIFIER = '-/hubtest'" in result
+        assert "from _context_hub import ContextHubBackend" in result
+        assert "_seed_hub_if_needed" in result
+
+    def test_hub_backend_honors_identifier_override(self) -> None:
+        config = DeployConfig(
+            agent=AgentConfig(name="hubtest"),
+            memories=MemoriesConfig(backend="hub", identifier="org-ns/custom"),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "MEMORIES_HUB_IDENTIFIER = 'org-ns/custom'" in result
+
 
 class TestBundle:
     def test_produces_expected_files(self, tmp_path: Path) -> None:
@@ -355,6 +389,43 @@ class TestBundle:
         )
         with pytest.raises(ValueError, match="Unknown sandbox provider"):
             bundle(config, project, build)
+
+    def test_hub_bundle_vendors_context_hub(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = DeployConfig(
+            agent=AgentConfig(name="hubtest"),
+            memories=MemoriesConfig(backend="hub"),
+        )
+        bundle(config, project, build)
+        vendored = build / "_context_hub.py"
+        assert vendored.exists()
+        # The vendored file must contain the class the graph imports.
+        assert "class ContextHubBackend" in vendored.read_text(encoding="utf-8")
+        # Generated graph should syntactically compile.
+        graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
+        compile(graph_py, "<hub_deploy_graph>", "exec")
+
+    def test_store_bundle_does_not_vendor_context_hub(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = DeployConfig(
+            agent=AgentConfig(name="test-agent", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(backend="store"),
+        )
+        bundle(config, project, build)
+        assert not (build / "_context_hub.py").exists()
+
+    def test_hub_bundle_adds_langsmith_dep(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = DeployConfig(
+            agent=AgentConfig(name="hubtest"),
+            memories=MemoriesConfig(backend="hub"),
+        )
+        bundle(config, project, build)
+        pyproject = (build / "pyproject.toml").read_text(encoding="utf-8")
+        assert "langsmith>=0.7.35" in pyproject
 
     def test_bundle_with_subagents(self, tmp_path: Path) -> None:
         """Full bundle with sync subagents produces valid artifacts."""

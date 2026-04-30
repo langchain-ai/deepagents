@@ -14,15 +14,18 @@ from deepagents_cli.deploy.config import (
     SKILLS_DIRNAME,
     SUBAGENTS_DIRNAME,
     VALID_AUTH_PROVIDERS,
+    VALID_MEMORIES_BACKENDS,
     VALID_SANDBOX_PROVIDERS,
     AgentConfig,
     AuthConfig,
     DeployConfig,
+    MemoriesConfig,
     SandboxConfig,
     SubAgentConfig,
     SubAgentProject,
     _parse_config,
     _validate_auth_credentials,
+    _validate_hub_credentials,
     _validate_mcp_for_deploy,
     _validate_model_credentials,
     _validate_sandbox_credentials,
@@ -121,6 +124,35 @@ class TestAuthConfig:
 
 
 # ---------------------------------------------------------------------------
+# MemoriesConfig
+# ---------------------------------------------------------------------------
+
+
+class TestMemoriesConfig:
+    def test_defaults(self) -> None:
+        cfg = MemoriesConfig()
+        assert cfg.backend == "hub"
+        assert cfg.identifier == ""
+
+    def test_store_backend(self) -> None:
+        cfg = MemoriesConfig(backend="store")
+        assert cfg.backend == "store"
+
+    def test_hub_backend(self) -> None:
+        cfg = MemoriesConfig(backend="hub", identifier="-/my-agent")
+        assert cfg.backend == "hub"
+        assert cfg.identifier == "-/my-agent"
+
+    def test_frozen(self) -> None:
+        cfg = MemoriesConfig()
+        with pytest.raises(AttributeError):
+            cfg.backend = "store"  # type: ignore[misc]
+
+    def test_valid_backends(self) -> None:
+        assert frozenset({"store", "hub"}) == VALID_MEMORIES_BACKENDS
+
+
+# ---------------------------------------------------------------------------
 # DeployConfig
 # ---------------------------------------------------------------------------
 
@@ -138,8 +170,13 @@ class TestDeployConfig:
     def test_validate_valid_project(self, tmp_path: Path) -> None:
         (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
         cfg = DeployConfig(agent=AgentConfig(name="x"))
-        # Filter out credential warnings (env-dependent).
-        structural = [e for e in cfg.validate(tmp_path) if "API key" not in e]
+        # Filter out credential warnings (env-dependent): model API keys
+        # and the LangSmith key required by the default hub memories backend.
+        structural = [
+            e
+            for e in cfg.validate(tmp_path)
+            if "API key" not in e and "LangSmith key" not in e
+        ]
         assert structural == []
 
     def test_validate_skills_must_be_dir(self, tmp_path: Path) -> None:
@@ -169,6 +206,32 @@ class TestDeployConfig:
         )
         errors = cfg.validate(tmp_path)
         assert any("SUPABASE_URL" in e for e in errors)
+
+    def test_validate_hub_missing_langsmith_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        cfg = DeployConfig(
+            agent=AgentConfig(name="x"),
+            memories=MemoriesConfig(backend="hub"),
+        )
+        errors = cfg.validate(tmp_path)
+        assert any("LANGSMITH_API_KEY" in e for e in errors)
+
+    def test_validate_hub_with_langchain_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / AGENTS_MD_FILENAME).write_text("# Agent", encoding="utf-8")
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "anything")
+        cfg = DeployConfig(
+            agent=AgentConfig(name="x"),
+            memories=MemoriesConfig(backend="hub"),
+        )
+        errors = cfg.validate(tmp_path)
+        assert not any("LANGSMITH_API_KEY" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +327,54 @@ class TestParseConfig:
         with pytest.raises(ValueError, match=r"Unknown key.*\[auth\]"):
             _parse_config(
                 {"agent": {"name": "x"}, "auth": {"provider": "supabase", "extra": 1}}
+            )
+
+    def test_memories_section_optional(self) -> None:
+        cfg = _parse_config({"agent": {"name": "x"}})
+        assert cfg.memories == MemoriesConfig()
+
+    def test_memories_section_parsed(self) -> None:
+        data = {
+            "agent": {"name": "x"},
+            "memories": {"backend": "hub", "identifier": "-/my-agent"},
+        }
+        cfg = _parse_config(data)
+        assert cfg.memories.backend == "hub"
+        assert cfg.memories.identifier == "-/my-agent"
+
+    def test_memories_backend_only(self) -> None:
+        cfg = _parse_config({"agent": {"name": "x"}, "memories": {"backend": "hub"}})
+        assert cfg.memories.backend == "hub"
+        assert cfg.memories.identifier == ""
+
+    def test_memories_backend_defaults_to_hub_when_omitted(self) -> None:
+        """`[memories]` present but `backend` omitted defaults to "hub"."""
+        cfg = _parse_config(
+            {"agent": {"name": "x"}, "memories": {"identifier": "-/my-agent"}}
+        )
+        assert cfg.memories.backend == "hub"
+        assert cfg.memories.identifier == "-/my-agent"
+
+    def test_memories_invalid_backend_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown memories backend"):
+            _parse_config({"agent": {"name": "x"}, "memories": {"backend": "redis"}})
+
+    def test_memories_unknown_key_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"Unknown key.*\[memories\]"):
+            _parse_config(
+                {
+                    "agent": {"name": "x"},
+                    "memories": {"backend": "hub", "extra": 1},
+                }
+            )
+
+    def test_memories_identifier_without_slash_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"owner/name"):
+            _parse_config(
+                {
+                    "agent": {"name": "x"},
+                    "memories": {"backend": "hub", "identifier": "my-agent"},
+                }
             )
 
 

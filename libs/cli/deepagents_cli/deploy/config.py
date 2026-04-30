@@ -48,6 +48,11 @@ per-browser thread scoping is enforced client-side via a UUID cookie.
 VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
 """Valid auth providers for deploy."""
 
+MemoriesBackend = Literal["store", "hub"]
+"""Valid backing store for the `/memories/` namespace."""
+
+VALID_MEMORIES_BACKENDS: frozenset[str] = frozenset(get_args(MemoriesBackend))
+
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
 # Canonical filenames inside the project root.
@@ -139,6 +144,23 @@ class AuthConfig:
 
 
 @dataclass(frozen=True)
+class MemoriesConfig:
+    """`[memories]` section — backing store for `/memories/`.
+
+    `backend = "hub"` (default) routes `/memories/` through a
+    `ContextHubBackend` bound to a LangSmith Hub agent repo, giving
+    persistent, git-like storage. `backend = "store"` routes it through a
+    `StoreBackend` against the LangGraph runtime store.
+
+    `identifier` overrides the Hub agent repo. When omitted, it defaults
+    to `-/{agent.name}` at bundle time.
+    """
+
+    backend: MemoriesBackend = "hub"
+    identifier: str = ""
+
+
+@dataclass(frozen=True)
 class FrontendConfig:
     """`[frontend]` section — bundled default frontend settings.
 
@@ -169,6 +191,8 @@ class DeployConfig:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
     auth: AuthConfig | None = None
+    memories: MemoriesConfig = field(default_factory=MemoriesConfig)
+    """Parsed `[memories]` section — backing store for `/memories/`."""
     frontend: FrontendConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
@@ -215,6 +239,15 @@ class DeployConfig:
                 f"Unknown sandbox scope: {self.sandbox.scope}. "
                 f"Valid: {', '.join(sorted(VALID_SANDBOX_SCOPES))}"
             )
+
+        if self.memories.backend not in VALID_MEMORIES_BACKENDS:
+            errors.append(
+                f"Unknown memories backend: {self.memories.backend}. "
+                f"Valid: {', '.join(sorted(VALID_MEMORIES_BACKENDS))}"
+            )
+
+        if self.memories.backend == "hub":
+            errors.extend(_validate_hub_credentials())
 
         # Validate credentials for model provider.
         errors.extend(_validate_model_credentials(self.agent.model))
@@ -405,10 +438,11 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "frontend"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "memories", "frontend"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 _ALLOWED_AUTH_KEYS = frozenset({"provider"})
+_ALLOWED_MEMORIES_KEYS = frozenset({"backend", "identifier"})
 _ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name", "subtitle", "prompts"})
 
 
@@ -485,6 +519,35 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
         auth = AuthConfig(provider=auth_provider)
 
+    memories = MemoriesConfig()
+    memories_data = data.get("memories")
+    if memories_data is not None:
+        unknown_memories = set(memories_data.keys()) - _ALLOWED_MEMORIES_KEYS
+        if unknown_memories:
+            msg = (
+                f"Unknown key(s) in [memories]: {sorted(unknown_memories)}. "
+                f"Allowed: {sorted(_ALLOWED_MEMORIES_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        backend = memories_data.get("backend", "hub")
+        if backend not in VALID_MEMORIES_BACKENDS:
+            msg = (
+                f"Unknown memories backend: {backend}. "
+                f"Valid: {', '.join(sorted(VALID_MEMORIES_BACKENDS))}"
+            )
+            raise ValueError(msg)
+
+        identifier = memories_data.get("identifier", "")
+        if identifier and "/" not in identifier:
+            msg = (
+                f"[memories].identifier must be in 'owner/name' form "
+                f"(or '-/name' for the caller's tenant); got {identifier!r}"
+            )
+            raise ValueError(msg)
+
+        memories = MemoriesConfig(backend=backend, identifier=identifier)
+
     frontend: FrontendConfig | None = None
     frontend_data = data.get("frontend")
     if frontend_data is not None:
@@ -511,7 +574,13 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
             frontend_kwargs["prompts"] = tuple(prompts_raw)
         frontend = FrontendConfig(**frontend_kwargs)
 
-    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth, frontend=frontend)
+    return DeployConfig(
+        agent=agent,
+        sandbox=sandbox,
+        auth=auth,
+        memories=memories,
+        frontend=frontend,
+    )
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {
@@ -609,6 +678,19 @@ def _validate_auth_credentials(provider: str) -> list[str]:
     ]
 
 
+def _validate_hub_credentials() -> list[str]:
+    """Check that a LangSmith key is set when `[memories].backend = 'hub'`."""
+    if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
+        return []
+    return [
+        (
+            "Memories backend 'hub' requires a LangSmith key: "
+            "set LANGSMITH_API_KEY (or LANGCHAIN_API_KEY) in your .env "
+            "file or environment."
+        ),
+    ]
+
+
 def _validate_frontend_credentials(provider: str) -> list[str]:
     """Check that all extra env vars are set for the frontend bundle."""
     required = _FRONTEND_EXTRA_ENV.get(provider)
@@ -655,6 +737,13 @@ model = "anthropic:claude-sonnet-4-6"
 # [auth] is optional. Add to enable user authentication.
 # [auth]
 # provider = "supabase"   # supabase | clerk | anonymous
+
+# [memories] is optional. Defaults to a LangSmith Hub agent repo
+# (`backend = "hub"`). Set backend = "store" to use the LangGraph
+# runtime store instead.
+# [memories]
+# backend = "hub"            # hub | store
+# identifier = "-/my-agent"  # optional override; defaults to `-/{agent.name}`
 
 # [frontend] is optional. Add to ship a bundled chat UI on the same
 # deployment as the agent. Requires [auth] — pick "supabase" or

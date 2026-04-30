@@ -333,5 +333,7 @@ def test_wrong_arg_name_surfaces_to_model() -> None:
         middleware=[REPLMiddleware(ptc=[echo_foo])],
     )
     result = agent.invoke({"messages": [HumanMessage(content="go")]})
-    content = _eval_tool_message(result).content
-    assert "Host function failed" not in content
+    message_types = [message.type for message in result["messages"]]
+    assert message_types == ["human", "ai", "tool", "ai"]
+    tool_message = result["messages"][-2]
+    assert tool_message.text.startswith("Error invoking tool")

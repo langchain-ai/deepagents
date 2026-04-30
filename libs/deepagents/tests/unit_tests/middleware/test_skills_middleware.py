@@ -726,6 +726,38 @@ def test_list_skills_from_backend_nonexistent_path(tmp_path: Path) -> None:
     assert skills == []
 
 
+def test_list_skills_logs_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A backend listing error should not look like a normal empty source."""
+    backend = MagicMock()
+    backend.ls.return_value = LsResult(error="Cannot list '/bad': denied", entries=[])
+
+    with caplog.at_level(logging.WARNING):
+        skills = _list_skills(backend, "/bad")
+
+    assert skills == []
+    assert "Cannot load skills from '/bad'" in caplog.text
+    backend.download_files.assert_not_called()
+
+
+def test_list_skills_loads_partial_results_with_ls_error(caplog: pytest.LogCaptureFixture) -> None:
+    """A partial listing warning should not hide valid sibling skills."""
+    skill_content = make_skill_content("valid-skill", "Valid skill")
+    skill_dir_path = "/skills/valid-skill/"
+    skill_md_path = "/skills/valid-skill/SKILL.md"
+
+    backend = MagicMock()
+    backend.ls.return_value = LsResult(error="Cannot list '/skills/loop': symlink loop", entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+    backend.download_files.return_value = [FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)]
+
+    with caplog.at_level(logging.WARNING):
+        skills = _list_skills(backend, "/skills")
+
+    assert len(skills) == 1
+    assert skills[0]["name"] == "valid-skill"
+    assert "Cannot load skills from '/skills'" in caplog.text
+    backend.download_files.assert_called_once_with([skill_md_path])
+
+
 def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     """Test that directories without SKILL.md are skipped."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -1158,6 +1190,19 @@ def test_format_skills_list_empty() -> None:
     assert "/skills/project/" in result
 
 
+def test_format_skills_load_warnings() -> None:
+    """Test _format_skills_load_warnings with source errors."""
+    middleware = SkillsMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/skills/user/"],
+    )
+
+    result = middleware._format_skills_load_warnings(["Cannot load skills from '/bad': denied"])
+
+    assert "Skill Loading Warnings" in result
+    assert "Cannot load skills from '/bad': denied" in result
+
+
 def test_format_skills_list_single_skill() -> None:
     """Test _format_skills_list with a single skill."""
     sources = ["/skills/user/"]
@@ -1426,6 +1471,45 @@ def test_before_agent_empty_registries(tmp_path: Path) -> None:
 
     assert result is not None
     assert result["skills_metadata"] == []
+
+
+def test_before_agent_records_skill_load_errors() -> None:
+    """Source load errors should be available in private middleware state."""
+    backend = SimpleNamespace(
+        ls=MagicMock(return_value=LsResult(error="Cannot list '/bad': denied", entries=[])),
+        download_files=MagicMock(),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/bad"])
+
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert result["skills_metadata"] == []
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
+
+
+def test_before_agent_partial_load_across_sources() -> None:
+    """A failing source must not hide skills loaded from a sibling source."""
+    skill_content = make_skill_content("good-skill", "Skill from the working source")
+    skill_dir_path = "/good/good-skill/"
+    skill_md_path = "/good/good-skill/SKILL.md"
+
+    def ls_side_effect(path: str) -> LsResult:
+        if path == "/good":
+            return LsResult(entries=[FileInfo(path=skill_dir_path, is_dir=True)])
+        return LsResult(error="Cannot list '/bad': denied", entries=[])
+
+    backend = SimpleNamespace(
+        ls=MagicMock(side_effect=ls_side_effect),
+        download_files=MagicMock(return_value=[FileDownloadResponse(path=skill_md_path, content=skill_content.encode("utf-8"), error=None)]),
+    )
+    middleware = SkillsMiddleware(backend=backend, sources=["/good", "/bad"])
+
+    result = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+
+    assert result is not None
+    assert [skill["name"] for skill in result["skills_metadata"]] == ["good-skill"]
+    assert result["skills_load_errors"] == ["Cannot load skills from '/bad': Cannot list '/bad': denied"]
 
 
 def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:

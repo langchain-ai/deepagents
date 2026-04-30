@@ -97,6 +97,7 @@ def test_tool_registered_with_default_name() -> None:
     tools = agent.nodes["tools"].bound._tools_by_name
     assert "eval" in tools
     assert "persistent" in tools["eval"].description.lower()
+    assert tools["eval"].metadata["ls_code_input_language"] == "javascript"
 
 
 def test_tool_registered_with_custom_name() -> None:
@@ -110,6 +111,7 @@ def test_tool_registered_with_custom_name() -> None:
     tools = agent.nodes["tools"].bound._tools_by_name
     assert "js" in tools
     assert "eval" not in tools
+    assert tools["js"].metadata["ls_code_input_language"] == "javascript"
 
 
 def test_legacy_system_prompt_alias_removed() -> None:

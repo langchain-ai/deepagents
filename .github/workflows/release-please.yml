@@ -57,6 +57,7 @@ jobs:
       cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      code-release: ${{ steps.check-releases.outputs.code-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
@@ -76,7 +77,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
+      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
@@ -167,6 +168,13 @@ jobs:
             echo "ACP release detected: $COMMIT_MSG"
           else
             echo "acp-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-code\):"; then
+            echo "code-release=true" >> "$GITHUB_OUTPUT"
+            echo "Deep Agents Code release detected: $COMMIT_MSG"
+          else
+            echo "code-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
@@ -287,6 +295,7 @@ jobs:
       needs.release-please.outputs.cli-release == 'true' ||
       needs.release-please.outputs.sdk-release == 'true' ||
       needs.release-please.outputs.acp-release == 'true' ||
+      needs.release-please.outputs.code-release == 'true' ||
       needs.release-please.outputs.daytona-release == 'true' ||
       needs.release-please.outputs.modal-release == 'true' ||
       needs.release-please.outputs.runloop-release == 'true' ||
@@ -299,10 +308,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.release-please.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
-      RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/release.yml
+      RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
+        }}/actions/workflows/release.yml
       CLI_RELEASE: ${{ needs.release-please.outputs.cli-release }}
       SDK_RELEASE: ${{ needs.release-please.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.release-please.outputs.acp-release }}
+      CODE_RELEASE: ${{ needs.release-please.outputs.code-release }}
       DAYTONA_RELEASE: ${{ needs.release-please.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.release-please.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.release-please.outputs.runloop-release }}
@@ -364,6 +375,7 @@ jobs:
           CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
+          CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
@@ -392,6 +404,7 @@ jobs:
           if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
+          if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi

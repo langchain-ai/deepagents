@@ -169,6 +169,7 @@ class FilesystemBackend(BackendProtocol):
         Raises:
             ValueError: If path traversal is attempted in `virtual_mode` or if the
                 resolved path escapes the root directory.
+            OSError: If the path is a symlink loop (`ELOOP`).
         """
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
@@ -181,12 +182,16 @@ class FilesystemBackend(BackendProtocol):
             except ValueError:
                 msg = f"Path:{full} outside root directory: {self.cwd}"
                 raise ValueError(msg) from None
+            _raise_if_symlink_loop(full)
             return full
 
         path = Path(key)
         if path.is_absolute():
+            _raise_if_symlink_loop(path)
             return path
-        return (self.cwd / path).resolve()
+        resolved = (self.cwd / path).resolve()
+        _raise_if_symlink_loop(resolved)
+        return resolved
 
     def _to_virtual_path(self, path: Path) -> str:
         """Convert a filesystem path to a virtual path relative to cwd.
@@ -253,6 +258,7 @@ class FilesystemBackend(BackendProtocol):
                     try:
                         if child_path.is_symlink():
                             child_path.resolve()
+                            _raise_if_symlink_loop(child_path)
                     except (OSError, RuntimeError) as e:
                         msg = f"child error: cannot resolve '{child_path}': {e}"
                         logger.warning("%s", msg)
@@ -852,3 +858,21 @@ def _is_symlink_loop_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and any(
         isinstance(chained, OSError) and chained.errno == errno.ELOOP for chained in (exc.__cause__, exc.__context__)
     )
+
+
+def _raise_if_symlink_loop(path: Path) -> None:
+    """Raise `OSError(ELOOP)` if `path` is an unresolvable symlink loop.
+
+    Python 3.13+ changed `Path.resolve(strict=False)` to silently return the
+    unresolved path for symlink loops instead of raising. This restores the
+    pre-3.13 contract by probing with a `stat()` that follows symlinks and
+    re-raising only `ELOOP`. Other errors (broken target, permission denied)
+    are left for downstream existence checks to surface.
+    """
+    if not path.is_symlink():
+        return
+    try:
+        path.stat()
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise

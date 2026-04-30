@@ -23,6 +23,8 @@ ever renamed, only the value here changes.
 
 from __future__ import annotations
 
+import os
+
 # ---------------------------------------------------------------------------
 # Constants — import these instead of bare string literals.
 # Keep alphabetically sorted by constant name.
@@ -32,7 +34,10 @@ AUTO_UPDATE = "DEEPAGENTS_CLI_AUTO_UPDATE"
 """Enable automatic CLI updates ('1', 'true', or 'yes')."""
 
 DEBUG = "DEEPAGENTS_CLI_DEBUG"
-"""Enable verbose debug logging to a file."""
+"""Enable verbose debug logging and preserve the server subprocess log.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled."""
 
 DEBUG_FILE = "DEEPAGENTS_CLI_DEBUG_FILE"
 """Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
@@ -69,3 +74,35 @@ SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 
 USER_ID = "DEEPAGENTS_CLI_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
+
+
+_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+
+def is_env_truthy(name: str, *, default: bool = False) -> bool:
+    """Return whether env var *name* is set to a recognizably truthy value.
+
+    Unlike `bool(os.environ.get(name))`, this does not treat `"0"` or
+    `"false"` as enabled. Use this for on/off flags where the user would
+    reasonably expect `VAR=0` to mean "disabled".
+
+    Args:
+        name: Environment variable name (typically a `DEEPAGENTS_CLI_*`
+            constant from this module).
+        default: Value returned when the variable is unset OR set to a
+            value that is neither recognizably truthy nor falsy.
+
+    Returns:
+        `True` for `1`/`true`/`yes`/`on` (case-insensitive), `False` for
+        `0`/`false`/`no`/`off`/empty string, or `default` otherwise.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    lowered = raw.strip().lower()
+    if lowered in _TRUTHY_VALUES:
+        return True
+    if lowered in _FALSY_VALUES:
+        return False
+    return default

@@ -188,7 +188,13 @@ def runtime(worker: ThreadWorker) -> Runtime:
 
 @pytest.fixture
 def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
-    return _ThreadREPL(worker, runtime, timeout=5.0, capture_console=True)
+    return _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +342,7 @@ async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
     assert {c["name"] for c in calls} == {"a", "b"}
 
 
-async def test_command_tool_updates_are_collected_from_single_eval(
+async def test_command_tool_output_is_visible_to_js(
     repl: _ThreadREPL,
 ) -> None:
     repl.install_tools([_command_tool()])
@@ -347,18 +353,20 @@ async def test_command_tool_updates_are_collected_from_single_eval(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "done"
-    assert [cmd.update.get("ptc_values") for cmd in outcome.commands] == [
-        [1],
-        [2],
-    ]
 
 
-async def test_command_buffer_is_scoped_to_one_eval(repl: _ThreadREPL) -> None:
+async def test_command_tool_does_not_change_eval_outcome_shape(
+    repl: _ThreadREPL,
+) -> None:
     repl.install_tools([_command_tool()])
     first = await repl.eval_async("await tools.emitCommand({value: 7})")
-    assert len(first.commands) == 1
+    assert first.error_type is None, first.error_message
+    assert first.result == "value=7"
+    assert not hasattr(first, "commands")
     second = await repl.eval_async("1 + 1")
-    assert second.commands == []
+    assert second.error_type is None, second.error_message
+    assert second.result == "2"
+    assert not hasattr(second, "commands")
 
 
 async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> None:
@@ -366,18 +374,15 @@ async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> 
     outcome = await repl.eval_async("await tools.emitMessages({value: 9})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "second=9"
-    assert outcome.commands == []
 
 
-async def test_mixed_list_collects_commands_and_uses_tail_message(
+async def test_mixed_list_uses_tail_message(
     repl: _ThreadREPL,
 ) -> None:
     repl.install_tools([_mixed_list_tool()])
     outcome = await repl.eval_async("await tools.emitMixed({value: 11})")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "from-list-tail=11"
-    assert len(outcome.commands) == 1
-    assert outcome.commands[0].update.get("ptc_values") == [11]
 
 
 async def test_tool_failure_surfaces_as_js_error(repl: _ThreadREPL) -> None:
@@ -450,6 +455,95 @@ async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
     assert outcome2.result == "function"
 
 
+async def test_ptc_host_call_budget_exceeded_surfaces_error(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=2,
+    )
+    limited.install_tools([_greet_tool()])
+    outcome = await limited.eval_async(
+        "await tools.greet({name: 'a'});\n"
+        "await tools.greet({name: 'b'});\n"
+        "await tools.greet({name: 'c'});\n"
+        "'done'"
+    )
+    assert outcome.error_type == "PTCCallBudgetExceeded"
+    assert "limit=2" in outcome.error_message
+    assert "attempted=3" in outcome.error_message
+    assert "function=tools.greet" in outcome.error_message
+
+
+async def test_ptc_host_call_budget_catch_surfaces_generic_host_error(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=1,
+    )
+    limited.install_tools([_greet_tool()])
+    outcome = await limited.eval_async(
+        "try {\n"
+        "  await tools.greet({name: 'ok'});\n"
+        "  await tools.greet({name: 'overflow'});\n"
+        "  'not-caught';\n"
+        "} catch (e) {\n"
+        "  `${e.name}:${e.message}`;\n"
+        "}"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "HostError:Host function failed"
+
+
+async def test_ptc_host_call_budget_resets_each_eval(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    limited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=1,
+    )
+    limited.install_tools([_greet_tool()])
+    first = await limited.eval_async("await tools.greet({name: 'a'})")
+    second = await limited.eval_async("await tools.greet({name: 'b'})")
+    assert first.error_type is None, first.error_message
+    assert second.error_type is None, second.error_message
+
+
+async def test_ptc_host_call_budget_none_disables_limit(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    unlimited = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+        max_ptc_calls=None,
+    )
+    unlimited.install_tools([_greet_tool()])
+    outcome = await unlimited.eval_async(
+        "await tools.greet({name: 'a'});\n"
+        "await tools.greet({name: 'b'});\n"
+        "await tools.greet({name: 'c'});\n"
+        "'done'"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "done"
+
+
 # ---------------------------------------------------------------------------
 # Middleware integration
 # ---------------------------------------------------------------------------
@@ -510,7 +604,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     assert outcome.result == "function"
 
 
-async def test_middleware_eval_tool_returns_commands_plus_tool_message() -> None:
+async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     from types import SimpleNamespace
 
     from langchain.tools import ToolRuntime
@@ -533,12 +627,9 @@ async def test_middleware_eval_tool_returns_commands_plus_tool_message() -> None
         runtime=runtime,
         code="await tools.emitCommand({value: 5})",
     )
-    assert isinstance(result, list)
-    assert len(result) == 2
-    assert isinstance(result[0], Command)
-    assert result[0].update.get("ptc_values") == [5]
-    assert isinstance(result[1], ToolMessage)
-    assert result[1].name == "eval"
+    assert isinstance(result, ToolMessage)
+    assert result.name == "eval"
+    assert "<result>value=5</result>" in result.content
 
 
 def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:

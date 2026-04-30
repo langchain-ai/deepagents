@@ -123,6 +123,16 @@ The runtime has a shared memory limit across every context under it (default 64 
 <error type="OutOfMemory">...</error>
 ```
 
+PTC host-function calls are also budgeted per eval call (default 256 `tools.*`
+invocations). Exceeding the budget surfaces as:
+
+```xml
+<error type="PTCCallBudgetExceeded">...</error>
+```
+
+Set `max_ptc_calls=None` only in trusted environments. Disabling the
+budget allows unbounded PTC-call loops and increases DoS risk.
+
 Top-level `await` works on the async path — the promise settles before the call returns. An un-resolvable top-level promise (no host work in flight, no resolver) surfaces as `<error type="Deadlock">`.
 
 ### Result formatting
@@ -231,6 +241,7 @@ There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or 
 REPLMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
     timeout=5.0,                     # per-call seconds
+    max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
@@ -246,6 +257,7 @@ REPLMiddleware(
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
 | `Timeout` | Call exceeded `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
+| `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 | `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |

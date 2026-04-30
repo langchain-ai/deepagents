@@ -16,6 +16,13 @@ def write_file(p: Path, content: str):
     p.write_text(content)
 
 
+def make_symlink_loop(path: Path) -> None:
+    try:
+        path.symlink_to(path)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+
+
 def test_filesystem_backend_normal_mode(tmp_path: Path):
     root = tmp_path
     f1 = root / "a.txt"
@@ -685,6 +692,67 @@ class TestEditCrlfNormalization:
         assert "Human: next" in final
 
 
+def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
+    """A resolver failure in `ls` should not escape the backend boundary."""
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.ls("loop")
+
+    assert result.entries == []
+    assert result.error is not None
+    assert "Cannot list 'loop'" in result.error
+
+
+def test_ls_virtual_mode_reports_child_symlink_loop(tmp_path: Path) -> None:
+    """Virtual listings should report cyclic children without raising."""
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.ls("/")
+
+    assert result.error is not None
+    # Per-child failures are prefixed so callers can tell them apart from a
+    # top-level listing failure.
+    assert "child error:" in result.error
+    assert "loop" in result.error
+    assert result.entries == []
+
+
+def test_file_operations_return_errors_for_symlink_loop_paths(tmp_path: Path) -> None:
+    """Resolver failures should become operation errors for model-facing APIs.
+
+    Asserts on the resolver-failure phrase so a regression that drops the
+    `_resolve_path` guard (and falls back to "File not found") would fail.
+    """
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    read_error = be.read("loop").error
+    assert read_error is not None
+    assert "Error reading file 'loop'" in read_error
+
+    write_error = be.write("loop", "content").error
+    assert write_error is not None
+    assert "Error writing file 'loop'" in write_error
+
+    edit_error = be.edit("loop", "old", "new").error
+    assert edit_error is not None
+    assert "Error editing file 'loop'" in edit_error
+
+    grep_error = be.grep("needle", path="loop").error
+    assert grep_error is not None
+    assert "Error searching path 'loop'" in grep_error
+
+    glob_error = be.glob("*", path="loop").error
+    assert glob_error is not None
+    assert "Error globbing path 'loop'" in glob_error
+
+    assert be.upload_files([("loop", b"content")])[0].error == "invalid_path"
+    assert be.download_files(["loop"])[0].error == "invalid_path"
+
+
 class TestVirtualModeDefaultDeprecation:
     """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
 
@@ -708,3 +776,53 @@ class TestVirtualModeDefaultDeprecation:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+class TestReadTrailingNewlineRoundtrip:
+    """`FilesystemBackend.read` must round-trip the file's trailing-newline state.
+
+    That state feeds `perform_string_replacement`'s EOF-mismatch detection.
+    Dropping it here re-introduces the silent-failure loop from #2856.
+    """
+
+    def test_preserves_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "with_newline.txt"
+        target.write_text("foo\nbar\n")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar\n"
+
+    def test_preserves_no_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "no_newline.txt"
+        target.write_text("foo\nbar")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar"
+
+    def test_read_then_edit_eof_mismatch_surfaces_hint(self, tmp_path: Path) -> None:
+        """End-to-end: read+edit on an unterminated file emits the EOF hint.
+
+        Pins the #2856 fix at the boundary that matters — the model-facing
+        flow — not just the inner predicate.
+        """
+        target = tmp_path / "memory.md"
+        target.write_text("# Agent Role:\nyou are an assistant")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.edit(
+            str(target),
+            "# Agent Role:\nyou are an assistant\n",
+            "# Agent Role:\nyou are an assistant\nYou can do anything\n",
+        )
+
+        assert result.error is not None
+        assert "old_string ends with a newline" in result.error
+        assert target.read_text() == "# Agent Role:\nyou are an assistant"

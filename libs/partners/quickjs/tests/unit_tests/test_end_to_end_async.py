@@ -220,6 +220,21 @@ async def test_quickjs_async_tool_exception_propagates() -> None:
         )
 
 
+async def test_quickjs_async_host_call_budget_exceeded() -> None:
+    """Verify async eval surfaces per-eval PTC call budget exhaustion."""
+    result = await _make_agent(
+        "await tools.syncLabel({value: 'a'});\n"
+        "await tools.syncLabel({value: 'b'});\n"
+        "'done'",
+        REPLMiddleware(ptc=[sync_label_tool], max_ptc_calls=1),
+    ).ainvoke(
+        {"messages": [HumanMessage(content="Use eval and call sync_label twice.")]}
+    )
+    tool_message = _eval_tool_message(result)
+    assert '<error type="PTCCallBudgetExceeded">' in tool_message.content
+    assert "limit=1" in tool_message.content
+
+
 async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None:
     """Verify async PTC tool calls see configurable runtime data."""
     result = await _make_agent(

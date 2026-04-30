@@ -428,6 +428,24 @@ def _truncate(text: str, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Done-callback that surfaces unhandled exceptions from fire-and-forget tasks.
+
+    Default `asyncio` behavior is to log "Task exception was never retrieved"
+    only when the task is GC'd — easy to miss. This callback runs at task
+    completion and routes failures through `logger.warning` with `exc_info`,
+    matching the codebase pattern at `_finalize_git_branch_refresh`. Use
+    when scheduling a coroutine via `asyncio.create_task` whose result is
+    not awaited (e.g. event-handler cleanup, single-fire mounts).
+    """
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.warning("Background task failed unexpectedly", exc_info=True)
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -905,6 +923,25 @@ class DeepAgentsApp(App):
         Shown in place of the generic 'Agent not configured' message.
         """
 
+        self._server_startup_missing_credentials_provider: str | None = None
+        """Set to the offending provider name when startup failed with
+        `MissingCredentialsError`; `None` otherwise. Gates the `/model`
+        recovery hint without string-matching on the formatted error.
+        """
+
+        self._retry_status_widget: AppMessage | None = None
+        """Transient "Retrying startup with X…" breadcrumb. Mounted via
+        `_mount_before_queued` (not `_mount_message`) because it is ephemeral
+        state and must not appear in scrollback or serialized history.
+        """
+
+        self._startup_failure_widget: ErrorMessage | None = None
+        """Transient chat surface for the most recent server-startup failure.
+        Mounted by `on_deep_agents_app_server_start_failed`; removed on
+        `ServerReady` so a successful `/model` retry doesn't leave the stale
+        error dangling in scrollback.
+        """
+
         self._quit_pending = False
         """True after a first `Ctrl+C` so a second press within the window quits."""
 
@@ -1180,6 +1217,14 @@ class DeepAgentsApp(App):
 
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
+
+        # Pre-import `html.entities` on the main thread before the worker
+        # starts. Python 3.14 replaced the global import lock with per-module
+        # locks; a worker importing `markdown_it` (which transitively pulls
+        # `html.entities`) can race main-thread code looking up `html` *while
+        # `html` itself is still being initialized*, raising `KeyError: 'html'`
+        # from `_find_and_load_unlocked`.
+        import html.entities  # noqa: F401
 
         # Prewarm heavy imports in a thread while the first frame renders.
         # The user can't type yet, so GIL contention is harmless.  By the
@@ -1742,6 +1787,28 @@ class DeepAgentsApp(App):
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
+
+        # Drop transient failure-state widgets — banner state and the agent
+        # response now convey "connected", so the prior error and breadcrumb
+        # would just dangle in scrollback.
+        for attr in ("_retry_status_widget", "_startup_failure_widget"):
+            widget = getattr(self, attr)
+            if widget is None:
+                continue
+            setattr(self, attr, None)
+
+            async def _drop(w: Widget = widget) -> None:
+                # Mount may still be in flight when `ServerReady` arrives;
+                # short-circuit on un-attached widgets instead of raising.
+                # `NoMatches`/`ScreenStackError` cover later-stage detach
+                # races (screen torn down mid-removal).
+                if not w.is_attached:
+                    return
+                with suppress(NoMatches, ScreenStackError):
+                    await w.remove()
+
+            task = asyncio.create_task(_drop())
+            task.add_done_callback(_log_task_exception)
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
         self._mcp_unauthenticated = sum(
             1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
@@ -1797,6 +1864,7 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         from deepagents_cli.mcp_tools import MCPConfigError
+        from deepagents_cli.model_config import MissingCredentialsError
 
         self._connecting = False
         if isinstance(event.error, MCPConfigError):
@@ -1804,21 +1872,67 @@ class DeepAgentsApp(App):
             self._server_startup_error = str(event.error)
         else:
             self._server_startup_error = _format_startup_error(event.error)
+
+        # Stash the provider for the `/model` recovery hint. Reset on every
+        # failure so a non-credentials retry-failure clears the prior flag.
+        self._server_startup_missing_credentials_provider = (
+            event.error.provider
+            if isinstance(event.error, MissingCredentialsError)
+            else None
+        )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
-        # Update banner to show persistent failure state
+
+        # Drop the banner's connecting spinner — chat surface owns the error.
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_failed(self._server_startup_error)
+            banner.set_idle()
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
 
-        # Discard any messages queued while the server was starting
-        if self._pending_messages:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
+        # Keep any queued messages and widgets in place — `/model` retry can
+        # bring the server up, at which point `_run_session_start_sequence`
+        # drains them. Deferred actions (model/thread switches queued during
+        # the initial connect) are dropped because the failure invalidates
+        # their assumptions; the user can re-issue them after recovery.
         self._deferred_actions.clear()
+
+        # Failure surfaces only in chat — keeps recovery hint adjacent to the
+        # input. Banner is set to idle above to drop the connecting spinner.
+        text = f"Server failed to start: {self._server_startup_error}"
+        if (
+            self._server_startup_missing_credentials_provider is not None
+            and self._server_kwargs is not None
+        ):
+            text += (
+                "\n\nHint: run `/model <provider>:<model>` to retry "
+                "startup with a provider you have credentials for."
+            )
+
+        async def _mount_failure() -> None:
+            # Drop any prior failure widget (re-entrant on retry-then-fail).
+            prior = self._startup_failure_widget
+            self._startup_failure_widget = None
+            if prior is not None and prior.is_attached:
+                with suppress(NoMatches, ScreenStackError):
+                    await prior.remove()
+
+            try:
+                messages = self.query_one("#messages", Container)
+            except (NoMatches, ScreenStackError):
+                return
+            if not messages.is_attached:
+                return
+
+            new_widget = ErrorMessage(text)
+            # Mount before storing the reference so `ServerReady` racing this
+            # await cannot observe a half-mounted widget.
+            await self._mount_before_queued(messages, new_widget)
+            self._startup_failure_widget = new_widget
+
+        # Fire-and-forget mount: this is the *only* failure surface, so log
+        # any exception loudly via `_log_task_exception`.
+        task = asyncio.create_task(_mount_failure())
+        task.add_done_callback(_log_task_exception)
 
     async def _await_prewarm_imports(self) -> None:
         """Wait for prewarm imports before re-entering their module graph.
@@ -3065,14 +3179,17 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If the app is busy or still sequencing startup work, enqueue instead
-        # of processing. Messages queued during startup are drained once the
-        # session reaches its first stable idle/running state.
+        # If the app is busy, still sequencing startup work, or holding a
+        # post-failure recovery state (server hasn't come up yet but `/model`
+        # retry is still possible), enqueue instead of processing. Messages
+        # queued in any of these states are drained once the session reaches
+        # its first stable idle/running state.
         if (
             self._agent_running
             or self._shell_running
             or self._connecting
             or self._startup_sequence_running
+            or self._server_startup_error is not None
         ):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
@@ -4120,11 +4237,10 @@ class DeepAgentsApp(App):
                 self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
             )
-        elif self._server_startup_error:
-            await self._mount_message(
-                ErrorMessage(f"Server failed to start: {self._server_startup_error}")
-            )
-        else:
+        elif not self._server_startup_error:
+            # When a server-startup failure is in flight, the chat
+            # `ErrorMessage` mounted by `on_deep_agents_app_server_start_failed`
+            # is the single source of truth — don't duplicate it here.
             await self._mount_message(
                 AppMessage("Agent not configured for this session.")
             )
@@ -6530,6 +6646,18 @@ class DeepAgentsApp(App):
                         timeout=3,
                     )
                     return
+                # Recover from a failed startup (e.g., `MissingCredentialsError`).
+                # The server never came up, so the only way out without
+                # restarting the CLI is to retry startup with the new model.
+                # Only valid for CLI-owned servers.
+                if (
+                    self._server_startup_error is not None
+                    and self._server_kwargs is not None
+                ):
+                    await self._retry_startup_with_model(
+                        model_spec, extra_kwargs=extra_kwargs
+                    )
+                    return
                 await self._mount_message(
                     ErrorMessage("Model switching requires a server-backed session.")
                 )
@@ -6621,6 +6749,107 @@ class DeepAgentsApp(App):
                 self.query_one("#chat", VerticalScroll).anchor()
         finally:
             self._model_switching = False
+
+    async def _retry_startup_with_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Retry deferred server startup after a failed initial startup.
+
+        Exists because the server never came up (typically a
+        `MissingCredentialsError`), so the only escape without restarting
+        the CLI is re-running the deferred startup worker with a new spec.
+
+        Args:
+            model_spec: The new model specification (`provider:model` or bare
+                model name for auto-detection).
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from deepagents_cli.config import detect_provider
+        from deepagents_cli.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            has_provider_credentials,
+        )
+
+        if self._server_kwargs is None:
+            await self._mount_message(
+                ErrorMessage("Cannot retry startup: server is not CLI-owned.")
+            )
+            return
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
+
+        # Tri-state credentials check (`None` = unknown provider, treated as
+        # proceed); bail early so retrying with still-missing creds doesn't
+        # loop right back into the same `MissingCredentialsError`.
+        has_creds = has_provider_credentials(provider) if provider else None
+        if has_creds is False and provider is not None:
+            env_var = get_credential_env_var(provider)
+            detail = (
+                f"{env_var} is not set or is empty"
+                if env_var
+                else (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an "
+                    "api_key_env field"
+                )
+            )
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
+
+        display = model_spec
+        if provider and not parsed:
+            display = f"{provider}:{model_name}"
+
+        new_model_kwargs: dict[str, Any] = {
+            "model_spec": display,
+            "extra_kwargs": extra_kwargs,
+            "profile_overrides": self._profile_override,
+        }
+        self._model_kwargs = new_model_kwargs
+        self._server_kwargs["model_name"] = display
+        if extra_kwargs is not None:
+            self._server_kwargs["model_params"] = extra_kwargs
+
+        self._server_startup_error = None
+        self._server_startup_missing_credentials_provider = None
+        self._connecting = True
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connecting()
+        except (NoMatches, ScreenStackError):
+            logger.debug("Welcome banner not found during startup retry", exc_info=True)
+
+        if self._retry_status_widget is not None:
+            with suppress(NoMatches, ScreenStackError):
+                await self._retry_status_widget.remove()
+            self._retry_status_widget = None
+        try:
+            messages = self.query_one("#messages", Container)
+        except (NoMatches, ScreenStackError):
+            messages = None
+        if messages is not None and messages.is_attached:
+            new_widget = AppMessage(f"Retrying startup with {display}…")
+            # Mount before storing the reference so `on_deep_agents_app_server_ready`
+            # cannot observe a half-mounted widget if it races during this await.
+            await self._mount_before_queued(messages, new_widget)
+            self._retry_status_widget = new_widget
+        logger.info("Retrying server startup with model %s", display)
+
+        self.run_worker(
+            self._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.

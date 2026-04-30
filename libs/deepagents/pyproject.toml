@@ -28,6 +28,17 @@ dependencies = [
     "wcmatch",
 ]
 
+[tool.uv]
+prerelease = "allow"
+environments = ["python_version >= '3.11' and python_version < '3.14'"]
+override-dependencies = [
+    "langchain-core @ git+https://github.com/langchain-ai/langchain.git@nh/streaming-for-alpha-release#subdirectory=libs/core",
+]
+
+[tool.uv.sources]
+langchain = { git = "https://github.com/langchain-ai/langchain.git", branch = "nh/streaming-for-alpha-release", subdirectory = "libs/langchain_v1" }
+langgraph = { git = "https://github.com/langchain-ai/langgraph.git", branch = "nh/streaming-for-alpha-release", subdirectory = "libs/langgraph" }
+
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

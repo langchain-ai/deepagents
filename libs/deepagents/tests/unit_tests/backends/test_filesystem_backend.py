@@ -708,3 +708,53 @@ class TestVirtualModeDefaultDeprecation:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+class TestReadTrailingNewlineRoundtrip:
+    """`FilesystemBackend.read` must round-trip the file's trailing-newline state.
+
+    That state feeds `perform_string_replacement`'s EOF-mismatch detection.
+    Dropping it here re-introduces the silent-failure loop from #2856.
+    """
+
+    def test_preserves_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "with_newline.txt"
+        target.write_text("foo\nbar\n")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar\n"
+
+    def test_preserves_no_trailing_newline(self, tmp_path: Path) -> None:
+        target = tmp_path / "no_newline.txt"
+        target.write_text("foo\nbar")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.read(str(target))
+
+        assert isinstance(result, ReadResult)
+        assert result.file_data is not None
+        assert result.file_data["content"] == "foo\nbar"
+
+    def test_read_then_edit_eof_mismatch_surfaces_hint(self, tmp_path: Path) -> None:
+        """End-to-end: read+edit on an unterminated file emits the EOF hint.
+
+        Pins the #2856 fix at the boundary that matters — the model-facing
+        flow — not just the inner predicate.
+        """
+        target = tmp_path / "memory.md"
+        target.write_text("# Agent Role:\nyou are an assistant")
+
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        result = be.edit(
+            str(target),
+            "# Agent Role:\nyou are an assistant\n",
+            "# Agent Role:\nyou are an assistant\nYou can do anything\n",
+        )
+
+        assert result.error is not None
+        assert "old_string ends with a newline" in result.error
+        assert target.read_text() == "# Agent Role:\nyou are an assistant"

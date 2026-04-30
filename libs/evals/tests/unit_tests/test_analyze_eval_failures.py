@@ -62,6 +62,16 @@ class TestFormatMarkdown:
         md = _format_markdown(results)
         assert "**Category:** tool_use" in md
 
+    def test_wrapped_in_details_toggle(self):
+        results = [{**_SAMPLE_FAILURE, "analysis": "analysis"}]
+        md = _format_markdown(results)
+        # Heading stays outside the toggle so the count is visible collapsed.
+        heading_idx = md.index("## Failure analysis")
+        details_idx = md.index("<details>")
+        summary_idx = md.index("<summary>(click to expand)</summary>")
+        close_idx = md.index("</details>")
+        assert heading_idx < details_idx < summary_idx < close_idx
+
 
 class TestAnalyzeOne:
     async def test_returns_analysis(self):

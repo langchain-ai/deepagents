@@ -4,6 +4,8 @@ This module is imported at CLI startup to wire `-h` actions into the
 argparse tree.  It must stay lightweight — no SDK or langchain imports.
 """
 
+import argparse
+
 from rich.markup import escape
 
 from deepagents_cli import theme
@@ -16,6 +18,29 @@ from deepagents_cli.config import (
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
 _HELP_OPTION_LINE = "  -h, --help              Show this help message"
+
+
+def positive_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 1.
+
+    Args:
+        value: Raw CLI argument string to parse.
+
+    Returns:
+        Parsed positive integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 1:
+        msg = f"must be a positive integer (>= 1), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:
@@ -59,6 +84,7 @@ def show_help() -> None:
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
     )
+    console.print("  deepagents mcp <login>                         Manage MCP servers")
     console.print(
         "  deepagents update                              Check for and install updates"
     )
@@ -84,7 +110,10 @@ def show_help() -> None:
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
-    console.print("  --skill NAME              Invoke a skill when the session starts")
+    console.print("  --skill NAME               Invoke a skill when the session starts")
+    console.print(
+        "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
+    )
     console.print(
         "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )
@@ -112,6 +141,9 @@ def show_help() -> None:
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
+    )
+    console.print(
+        "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(
@@ -368,6 +400,40 @@ def show_update_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents update")
     console.print("  deepagents update --json")
+    console.print()
+
+
+def show_mcp_help() -> None:
+    """Show help information for the `mcp` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_login_help() -> None:
+    """Show help information for the `mcp login` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login <server> [--config PATH]")
+    console.print()
+    _print_option_section(
+        "  --config PATH           Path to an MCP config JSON file "
+        "(default: auto-discovered)",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
     console.print()
 
 

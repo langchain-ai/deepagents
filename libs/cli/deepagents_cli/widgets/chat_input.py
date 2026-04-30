@@ -326,11 +326,17 @@ class ChatTextArea(TextArea):
 
     BINDINGS: ClassVar[list[Binding]] = [
         Binding(
-            "shift+enter,alt+enter,ctrl+enter",
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
             "insert_newline",
             "New Line",
             show=False,
             priority=True,
+        ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
         ),
     ]
     """Key bindings for the chat text area.

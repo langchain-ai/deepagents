@@ -36,6 +36,18 @@ VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
 
 VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
+AuthProvider = Literal["supabase", "clerk", "anonymous"]
+"""Valid auth provider identifiers.
+
+`"anonymous"` ships a permissive auth handler that overrides LangSmith
+Cloud's default `x-api-key` requirement so the bundled frontend can
+reach `/threads`. The API is open to anyone with the deploy URL —
+per-browser thread scoping is enforced client-side via a UUID cookie.
+"""
+
+VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
+"""Valid auth providers for deploy."""
+
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
 # Canonical filenames inside the project root.
@@ -112,6 +124,42 @@ class SandboxConfig:
 
 
 @dataclass(frozen=True)
+class AuthConfig:
+    """`[auth]` section — authentication provider settings.
+
+    The whole section is optional. When omitted, no `auth.py` is
+    generated and LangSmith Cloud's default `x-api-key` auth applies
+    (callers still need a LangSmith API key to reach the deployment).
+    To make the API genuinely open — e.g., to expose the bundled
+    `[frontend]` without sign-in — set `provider = "anonymous"`
+    explicitly.
+    """
+
+    provider: AuthProvider
+
+
+@dataclass(frozen=True)
+class FrontendConfig:
+    """`[frontend]` section — bundled default frontend settings.
+
+    When `enabled = True`, `deepagent deploy` copies a pre-built React
+    chat UI into the deployment alongside the agent. An `[auth]`
+    section is required in this case — pick `"supabase"` or `"clerk"`
+    for real per-user auth, or set `provider = "anonymous"` explicitly
+    to ship the UI with an open API.
+    """
+
+    enabled: bool = False
+    app_name: str | None = None
+    subtitle: str | None = None
+    """Subtitle shown under the app name in the header and on the
+    empty-state hero. Falls back to a generic default when unset."""
+    prompts: tuple[str, ...] | None = None
+    """Suggestion chips shown on the empty-state. Falls back to the
+    bundled defaults when unset."""
+
+
+@dataclass(frozen=True)
 class DeployConfig:
     """Top-level deploy configuration parsed from `deepagents.toml`."""
 
@@ -120,6 +168,8 @@ class DeployConfig:
 
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
+    auth: AuthConfig | None = None
+    frontend: FrontendConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -171,6 +221,20 @@ class DeployConfig:
 
         # Validate credentials for sandbox provider.
         errors.extend(_validate_sandbox_credentials(self.sandbox.provider))
+
+        # Validate credentials for auth provider.
+        if self.auth is not None:
+            errors.extend(_validate_auth_credentials(self.auth.provider))
+
+        if self.frontend is not None and self.frontend.enabled:
+            if self.auth is None:
+                errors.append(
+                    "[frontend].enabled requires [auth] to be configured. "
+                    'Add an [auth] section with provider = "supabase", '
+                    '"clerk", or "anonymous".'
+                )
+            else:
+                errors.extend(_validate_frontend_credentials(self.auth.provider))
 
         return errors
 
@@ -341,9 +405,11 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "frontend"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
+_ALLOWED_AUTH_KEYS = frozenset({"provider"})
+_ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name", "subtitle", "prompts"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -394,7 +460,58 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
     }
     sandbox = SandboxConfig(**sandbox_kwargs)
 
-    return DeployConfig(agent=agent, sandbox=sandbox)
+    auth: AuthConfig | None = None
+    auth_data = data.get("auth")
+    if auth_data is not None:
+        unknown_auth = set(auth_data.keys()) - _ALLOWED_AUTH_KEYS
+        if unknown_auth:
+            msg = (
+                f"Unknown key(s) in [auth]: {sorted(unknown_auth)}. "
+                f"Allowed: {sorted(_ALLOWED_AUTH_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        if "provider" not in auth_data:
+            msg = "[auth].provider is required in deepagents.toml"
+            raise ValueError(msg)
+
+        auth_provider = auth_data["provider"]
+        if auth_provider not in VALID_AUTH_PROVIDERS:
+            msg = (
+                f"Unknown auth provider: {auth_provider}. "
+                f"Valid: {', '.join(sorted(VALID_AUTH_PROVIDERS))}"
+            )
+            raise ValueError(msg)
+
+        auth = AuthConfig(provider=auth_provider)
+
+    frontend: FrontendConfig | None = None
+    frontend_data = data.get("frontend")
+    if frontend_data is not None:
+        unknown_frontend = set(frontend_data.keys()) - _ALLOWED_FRONTEND_KEYS
+        if unknown_frontend:
+            msg = (
+                f"Unknown key(s) in [frontend]: {sorted(unknown_frontend)}. "
+                f"Allowed: {sorted(_ALLOWED_FRONTEND_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        frontend_kwargs: dict[str, Any] = {
+            k: frontend_data[k] for k in _ALLOWED_FRONTEND_KEYS if k in frontend_data
+        }
+        # FrontendConfig is frozen=True; coerce list -> tuple so the
+        # dataclass stays hashable.
+        if "prompts" in frontend_kwargs:
+            prompts_raw = frontend_kwargs["prompts"]
+            if not isinstance(prompts_raw, list) or not all(
+                isinstance(p, str) for p in prompts_raw
+            ):
+                msg = "[frontend].prompts must be a list of strings"
+                raise ValueError(msg)
+            frontend_kwargs["prompts"] = tuple(prompts_raw)
+        frontend = FrontendConfig(**frontend_kwargs)
+
+    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth, frontend=frontend)
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {
@@ -426,6 +543,21 @@ _SANDBOX_PROVIDER_ENV: dict[str, list[str]] = {
     "runloop": ["RUNLOOP_API_KEY"],
     # Modal falls back to default auth if env vars are not set.
 }
+
+_AUTH_PROVIDER_ENV: dict[str, list[str]] = {
+    "supabase": ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_DEFAULT_KEY"],
+    "clerk": ["CLERK_SECRET_KEY"],
+}
+
+_FRONTEND_EXTRA_ENV: dict[str, list[str]] = {
+    # Supabase reuses `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_DEFAULT_KEY`
+    # from [auth] — no extra browser-facing env vars needed.
+    "supabase": [],
+    # Clerk's browser-facing publishable key is distinct from
+    # `CLERK_SECRET_KEY` (which [auth] uses for JWKS validation).
+    "clerk": ["CLERK_PUBLISHABLE_KEY"],
+}
+"""Additional env vars the frontend bundle needs beyond what `[auth]` requires."""
 
 
 def _validate_model_credentials(model: str) -> list[str]:
@@ -461,6 +593,39 @@ def _validate_sandbox_credentials(provider: str) -> list[str]:
     ]
 
 
+def _validate_auth_credentials(provider: str) -> list[str]:
+    """Check that all required env vars are set for the auth provider."""
+    required_vars = _AUTH_PROVIDER_ENV.get(provider)
+    if required_vars is None:
+        return []
+    missing = [v for v in required_vars if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Auth provider '{provider}' requires {' and '.join(missing)}. "
+            f"Add them to your .env file or environment."
+        ),
+    ]
+
+
+def _validate_frontend_credentials(provider: str) -> list[str]:
+    """Check that all extra env vars are set for the frontend bundle."""
+    required = _FRONTEND_EXTRA_ENV.get(provider)
+    if required is None:
+        return []
+    missing = [v for v in required if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Frontend for '{provider}' requires {' and '.join(missing)}. "
+            f"Add it to your .env file so the bundler can write it "
+            f"into index.html at deploy time."
+        ),
+    ]
+
+
 def find_config(start_path: Path | None = None) -> Path | None:
     """Find `deepagents.toml` in *start_path* (or cwd if not given).
 
@@ -486,6 +651,19 @@ model = "anthropic:claude-sonnet-4-6"
 # [sandbox]
 # provider = "langsmith"   # langsmith | daytona | modal | runloop
 # scope = "thread"         # thread | assistant
+
+# [auth] is optional. Add to enable user authentication.
+# [auth]
+# provider = "supabase"   # supabase | clerk | anonymous
+
+# [frontend] is optional. Add to ship a bundled chat UI on the same
+# deployment as the agent. Requires [auth] — pick "supabase" or
+# "clerk" for real per-user auth, or set provider = "anonymous" to
+# leave the API open to anyone with the deploy URL (private/dev
+# deploys only).
+# [frontend]
+# enabled = true
+# app_name = "My Agent"
 """
 
 
@@ -511,6 +689,15 @@ ANTHROPIC_API_KEY=
 
 # LangSmith API key (required for deploy and sandbox)
 LANGSMITH_API_KEY=
+
+# Auth provider (optional, uncomment for [auth])
+# SUPABASE_URL=
+# SUPABASE_PUBLISHABLE_DEFAULT_KEY=
+# CLERK_SECRET_KEY=
+
+# Frontend (optional, uncomment for [frontend] + matching [auth])
+# Clerk only — browser-facing publishable key. Supabase reuses the keys above.
+# CLERK_PUBLISHABLE_KEY=
 """
 
 

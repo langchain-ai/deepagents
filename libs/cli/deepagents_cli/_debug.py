@@ -12,7 +12,7 @@ import logging
 import os
 from pathlib import Path
 
-from deepagents_cli._env_vars import DEBUG, DEBUG_FILE
+from deepagents_cli._env_vars import DEBUG, DEBUG_FILE, is_env_truthy
 
 
 def configure_debug_logging(target: logging.Logger) -> None:
@@ -22,12 +22,12 @@ def configure_debug_logging(target: logging.Logger) -> None:
     with `DEEPAGENTS_CLI_DEBUG_FILE`. The handler appends so that multiple
     modules share the same log file across a session.
 
-    Does nothing when `DEEPAGENTS_CLI_DEBUG` is not set.
+    Does nothing when `DEEPAGENTS_CLI_DEBUG` is not truthy (see `is_env_truthy`).
 
     Args:
         target: Logger to configure.
     """
-    if not os.environ.get(DEBUG):
+    if not is_env_truthy(DEBUG):
         return
 
     debug_path = Path(

@@ -1,17 +1,18 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
 import base64
+import errno
 import json
 import logging
 import os
 import re
 import subprocess
-import warnings
 from datetime import datetime
 from pathlib import Path
 
 import wcmatch.glob as wcglob
 
+from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
@@ -129,15 +130,21 @@ class FilesystemBackend(BackendProtocol):
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
         if virtual_mode is None:
-            warnings.warn(
-                "FilesystemBackend virtual_mode default will change in deepagents 0.5.0; "
-                "please specify virtual_mode explicitly. "
-                "Note: virtual_mode is for virtual path semantics (e.g., CompositeBackend routing) and optional path-based guardrails; "
-                "it does not provide sandboxing or process isolation. "
-                "Security note: leaving virtual_mode=False allows absolute paths and '..' to bypass root_dir. "
-                "Consult the API reference for details.",
-                DeprecationWarning,
-                stacklevel=2,
+            warn_deprecated(
+                since="0.5.0",
+                removal="0.6.0",
+                message=(
+                    "`FilesystemBackend` `virtual_mode` default will change "
+                    "in deepagents==0.6.0; please specify `virtual_mode` "
+                    "explicitly. Note: `virtual_mode` is for virtual path "
+                    "semantics (e.g., `CompositeBackend` routing) and "
+                    "optional path-based guardrails; it does not provide "
+                    "sandboxing or process isolation. Security note: leaving "
+                    "`virtual_mode=False` allows absolute paths and `'..'` "
+                    "to bypass `root_dir`. Consult the API reference for "
+                    "details."
+                ),
+                package="deepagents",
             )
             virtual_mode = False
         self.virtual_mode = virtual_mode
@@ -162,6 +169,7 @@ class FilesystemBackend(BackendProtocol):
         Raises:
             ValueError: If path traversal is attempted in `virtual_mode` or if the
                 resolved path escapes the root directory.
+            OSError: If the path is a symlink loop (`ELOOP`).
         """
         if self.virtual_mode:
             vpath = key if key.startswith("/") else "/" + key
@@ -174,12 +182,16 @@ class FilesystemBackend(BackendProtocol):
             except ValueError:
                 msg = f"Path:{full} outside root directory: {self.cwd}"
                 raise ValueError(msg) from None
+            _raise_if_symlink_loop(full)
             return full
 
         path = Path(key)
         if path.is_absolute():
+            _raise_if_symlink_loop(path)
             return path
-        return (self.cwd / path).resolve()
+        resolved = (self.cwd / path).resolve()
+        _raise_if_symlink_loop(resolved)
+        return resolved
 
     def _to_virtual_path(self, path: Path) -> str:
         """Convert a filesystem path to a virtual path relative to cwd.
@@ -192,7 +204,10 @@ class FilesystemBackend(BackendProtocol):
 
         Raises:
             ValueError: If path is outside cwd.
-            OSError: If path cannot be resolved (broken symlink, permission denied).
+            OSError: If `Path.resolve()` raises during resolution (e.g.,
+                permission denied, or `ELOOP` on Python 3.13+).
+            RuntimeError: If `Path.resolve()` detects a symlink loop on
+                Python <=3.12 (wraps the underlying `OSError(ELOOP)`).
         """
         return "/" + path.resolve().relative_to(self.cwd).as_posix()
 
@@ -207,11 +222,17 @@ class FilesystemBackend(BackendProtocol):
                 directory. Directories have a trailing `/` in their path and
                 `is_dir=True`.
         """
-        dir_path = self._resolve_path(path)
-        if not dir_path.exists() or not dir_path.is_dir():
-            return LsResult(entries=[])
+        try:
+            dir_path = self._resolve_path(path)
+            if not dir_path.exists() or not dir_path.is_dir():
+                return LsResult(entries=[])
+        except (OSError, RuntimeError) as e:
+            msg = f"Cannot list '{path}': {e}"
+            logger.warning("%s", msg)
+            return LsResult(error=msg, entries=[])
 
         results: list[FileInfo] = []
+        errors: list[str] = []
 
         # Convert cwd to string for comparison
         cwd_str = str(self.cwd)
@@ -224,10 +245,25 @@ class FilesystemBackend(BackendProtocol):
                 try:
                     is_file = child_path.is_file()
                     is_dir = child_path.is_dir()
-                except OSError:
+                except (OSError, RuntimeError) as e:
+                    msg = f"child error: cannot stat '{child_path}': {e}"
+                    logger.warning("%s", msg)
+                    errors.append(msg)
                     continue
 
                 abs_path = str(child_path)
+                if not is_file and not is_dir:
+                    # `is_symlink()` itself can raise OSError on stale handles or
+                    # mid-walk permission flips; keep it inside the guard.
+                    try:
+                        if child_path.is_symlink():
+                            child_path.resolve()
+                            _raise_if_symlink_loop(child_path)
+                    except (OSError, RuntimeError) as e:
+                        msg = f"child error: cannot resolve '{child_path}': {e}"
+                        logger.warning("%s", msg)
+                        errors.append(msg)
+                    continue
 
                 if not self.virtual_mode:
                     # Non-virtual mode: use absolute paths
@@ -264,8 +300,10 @@ class FilesystemBackend(BackendProtocol):
                     except ValueError:
                         logger.debug("Skipping path outside root: %s", child_path)
                         continue
-                    except OSError:
-                        logger.warning("Could not resolve path: %s", child_path, exc_info=True)
+                    except (OSError, RuntimeError) as e:
+                        msg = f"child error: cannot resolve '{child_path}': {e}"
+                        logger.warning("%s", msg)
+                        errors.append(msg)
                         continue
 
                     if is_file:
@@ -294,12 +332,21 @@ class FilesystemBackend(BackendProtocol):
                             )
                         except OSError:
                             results.append({"path": virt_path + "/", "is_dir": True})
-        except (OSError, PermissionError):
-            pass
+        except (OSError, RuntimeError) as e:
+            # iterdir() itself can raise mid-iteration (NFS drops, FUSE failures,
+            # permission flips). Surface as a top-level abort so partial results
+            # are not labeled as authoritative.
+            msg = f"Listing of '{path}' aborted: {e}"
+            logger.warning("%s", msg)
+            errors.append(msg)
 
         # Keep deterministic order by path
         results.sort(key=lambda x: x.get("path", ""))
-        return LsResult(entries=results)
+        # Sort errors for deterministic output across filesystems (iterdir()
+        # ordering varies); newline-join keeps them readable when any individual
+        # message contains punctuation.
+        error = "\n".join(sorted(errors)) if errors else None
+        return LsResult(error=error, entries=results)
 
     def read(
         self,
@@ -318,35 +365,43 @@ class FilesystemBackend(BackendProtocol):
             ReadResult with raw (unformatted) content for the requested
             window. Line-number formatting is applied by the middleware.
         """
-        resolved_path = self._resolve_path(file_path)
-
-        if not resolved_path.exists() or not resolved_path.is_file():
-            return ReadResult(error=f"File '{file_path}' not found")
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
         try:
+            if not resolved_path.exists() or not resolved_path.is_file():
+                return ReadResult(error=f"File '{file_path}' not found")
+
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             if _get_file_type(file_path) != "text":
                 with os.fdopen(fd, "rb") as f:
                     raw = f.read()
                 encoded = base64.standard_b64encode(raw).decode("ascii")
-                return ReadResult(file_data=FileData(content=encoded, encoding="base64"))
+                file_data = FileData(content=encoded, encoding="base64")
+            else:
+                with os.fdopen(fd, "r", encoding="utf-8") as f:
+                    content = f.read()
 
-            with os.fdopen(fd, "r", encoding="utf-8") as f:
-                content = f.read()
+                empty_msg = check_empty_content(content)
+                if empty_msg:
+                    file_data = FileData(content=empty_msg, encoding="utf-8")
+                else:
+                    # `splitlines(keepends=True)` preserves whether the final line
+                    # has a terminator; joining with `""` round-trips the file's
+                    # trailing-newline state. Required so `edit()` can detect
+                    # EOF-newline mismatches in the model's `old_string`.
+                    lines = content.splitlines(keepends=True)
+                    start_idx = offset
+                    end_idx = min(start_idx + limit, len(lines))
 
-            empty_msg = check_empty_content(content)
-            if empty_msg:
-                return ReadResult(file_data=FileData(content=empty_msg, encoding="utf-8"))
+                    if start_idx >= len(lines):
+                        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
-            lines = content.splitlines()
-            start_idx = offset
-            end_idx = min(start_idx + limit, len(lines))
+                    file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
 
-            if start_idx >= len(lines):
-                return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-
-            selected_lines = lines[start_idx:end_idx]
-            return ReadResult(file_data=FileData(content="\n".join(selected_lines), encoding="utf-8"))
+            return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 
@@ -365,12 +420,16 @@ class FilesystemBackend(BackendProtocol):
             `WriteResult` with path on success, or error message if the file
                 already exists or write fails.
         """
-        resolved_path = self._resolve_path(file_path)
-
-        if resolved_path.exists():
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
+            if resolved_path.exists():
+                msg = f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
+                return WriteResult(error=msg)
+
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -408,12 +467,15 @@ class FilesystemBackend(BackendProtocol):
             `EditResult` with path and occurrence count on success, or error
                 message if file not found or replacement fails.
         """
-        resolved_path = self._resolve_path(file_path)
-
-        if not resolved_path.exists() or not resolved_path.is_file():
-            return EditResult(error=f"Error: File '{file_path}' not found")
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return EditResult(error=f"Error editing file '{file_path}': {e}")
 
         try:
+            if not resolved_path.exists() or not resolved_path.is_file():
+                return EditResult(error=f"Error: File '{file_path}' not found")
+
             # Read securely
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "r", encoding="utf-8") as f:
@@ -470,9 +532,16 @@ class FilesystemBackend(BackendProtocol):
             base_full = self._resolve_path(path or ".")
         except ValueError:
             return GrepResult(matches=[])
+        except (OSError, RuntimeError) as e:
+            search_path = path or "."
+            return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
-        if not base_full.exists():
-            return GrepResult(matches=[])
+        try:
+            if not base_full.exists():
+                return GrepResult(matches=[])
+        except OSError as e:
+            search_path = path or "."
+            return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
         results = self._ripgrep_search(pattern, base_full, glob)
@@ -533,7 +602,7 @@ class FilesystemBackend(BackendProtocol):
                 except ValueError:
                     logger.debug("Skipping grep result outside root: %s", p)
                     continue
-                except OSError:
+                except (OSError, RuntimeError):
                     logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
                     continue
             else:
@@ -569,7 +638,7 @@ class FilesystemBackend(BackendProtocol):
             try:
                 if not fp.is_file():
                     continue
-            except (PermissionError, OSError):
+            except (PermissionError, OSError, RuntimeError):
                 continue
             if include_glob:
                 rel_path = str(fp.relative_to(root))
@@ -578,11 +647,11 @@ class FilesystemBackend(BackendProtocol):
             try:
                 if fp.stat().st_size > self.max_file_size_bytes:
                     continue
-            except OSError:
+            except (OSError, RuntimeError):
                 continue
             try:
                 content = fp.read_text()
-            except (UnicodeDecodeError, PermissionError, OSError):
+            except (UnicodeDecodeError, PermissionError, OSError, RuntimeError):
                 continue
             for line_num, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
@@ -592,7 +661,7 @@ class FilesystemBackend(BackendProtocol):
                         except ValueError:
                             logger.debug("Skipping grep result outside root: %s", fp)
                             continue
-                        except OSError:
+                        except (OSError, RuntimeError):
                             logger.warning("Could not resolve grep result path: %s", fp, exc_info=True)
                             continue
                     else:
@@ -618,9 +687,12 @@ class FilesystemBackend(BackendProtocol):
             msg = "Path traversal not allowed in glob pattern"
             raise ValueError(msg)
 
-        search_path = self.cwd if path == "/" else self._resolve_path(path)
-        if not search_path.exists() or not search_path.is_dir():
-            return GlobResult(matches=[])
+        try:
+            search_path = self.cwd if path == "/" else self._resolve_path(path)
+            if not search_path.exists() or not search_path.is_dir():
+                return GlobResult(matches=[])
+        except (OSError, RuntimeError) as e:
+            return GlobResult(error=f"Error globbing path '{path}': {e}", matches=[])
 
         results: list[FileInfo] = []
         try:
@@ -628,14 +700,14 @@ class FilesystemBackend(BackendProtocol):
             for matched_path in search_path.rglob(pattern):
                 try:
                     is_file = matched_path.is_file()
-                except (PermissionError, OSError):
+                except (PermissionError, OSError, RuntimeError):
                     continue
                 if not is_file:
                     continue
                 if self.virtual_mode:
                     try:
                         matched_path.resolve().relative_to(self.cwd)
-                    except ValueError:
+                    except (OSError, RuntimeError, ValueError):
                         continue
                 abs_path = str(matched_path)
                 if not self.virtual_mode:
@@ -658,7 +730,7 @@ class FilesystemBackend(BackendProtocol):
                     except ValueError:
                         logger.debug("Skipping glob result outside root: %s", matched_path)
                         continue
-                    except OSError:
+                    except (OSError, RuntimeError):
                         logger.warning("Could not resolve glob result path: %s", matched_path, exc_info=True)
                         continue
                     try:
@@ -673,8 +745,13 @@ class FilesystemBackend(BackendProtocol):
                         )
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
-        except (OSError, ValueError):
-            pass
+        except (OSError, RuntimeError, ValueError) as e:
+            # rglob() raised mid-iteration. Return whatever was accumulated
+            # but flag the partial result so callers don't trust it as complete.
+            msg = f"Glob of '{path}' aborted partway: {e}"
+            logger.warning("%s", msg, exc_info=True)
+            results.sort(key=lambda x: x.get("path", ""))
+            return GlobResult(error=msg, matches=results)
 
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results)
@@ -756,14 +833,60 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
     Returns:
         A `FileOperationError` literal, or `None` if unrecognized.
     """
+    error: FileOperationError | None = None
     if isinstance(exc, FileNotFoundError):
-        return FILE_NOT_FOUND
-    if isinstance(exc, PermissionError):
-        return PERMISSION_DENIED
-    if isinstance(exc, IsADirectoryError):
-        return IS_DIRECTORY
-    if isinstance(exc, (NotADirectoryError, FileExistsError)):
-        return INVALID_PATH
-    if isinstance(exc, ValueError):
-        return INVALID_PATH
-    return None
+        error = FILE_NOT_FOUND
+    elif _is_symlink_loop_error(exc):
+        error = INVALID_PATH
+    elif isinstance(exc, PermissionError):
+        error = PERMISSION_DENIED
+    elif isinstance(exc, IsADirectoryError):
+        error = IS_DIRECTORY
+    elif isinstance(exc, (NotADirectoryError, FileExistsError, ValueError)):
+        error = INVALID_PATH
+    return error
+
+
+# Win32 `ERROR_CANT_RESOLVE_FILENAME`, surfaced by NTFS for reparse-point
+# cycles. Python's mapping to `errno.ELOOP` is unreliable on this code path,
+# so we match the raw winerror when classifying symlink-loop failures.
+_WIN32_ERROR_CANT_RESOLVE_FILENAME = 1921
+
+
+def _is_eloop_oserror(exc: BaseException | None) -> bool:
+    """Return `True` if `exc` is an `OSError` reporting a symlink loop on any platform."""
+    return isinstance(exc, OSError) and (exc.errno == errno.ELOOP or getattr(exc, "winerror", None) == _WIN32_ERROR_CANT_RESOLVE_FILENAME)
+
+
+def _is_symlink_loop_error(exc: Exception) -> bool:
+    """Return `True` when an exception came from an `ELOOP` filesystem error."""
+    if _is_eloop_oserror(exc):
+        return True
+
+    # Python <=3.12 wraps `OSError(errno.ELOOP, ...)` from `Path.resolve()` in
+    # `RuntimeError`. The stable signal is the exception context, not the
+    # human-readable RuntimeError message.
+    return isinstance(exc, RuntimeError) and any(_is_eloop_oserror(chained) for chained in (exc.__cause__, exc.__context__))
+
+
+def _raise_if_symlink_loop(path: Path) -> None:
+    """Raise `OSError(ELOOP)` if `path` is an unresolvable symlink loop.
+
+    Python 3.13+ changed `Path.resolve(strict=False)` to silently return the
+    unresolved path for symlink loops instead of raising. This restores the
+    pre-3.13 contract by probing with a `stat()` that follows symlinks and
+    re-raising loop errors. Other errors (broken target, permission denied)
+    are left for downstream existence checks to surface.
+
+    Windows surfaces NTFS reparse-point cycles as `OSError` with
+    `winerror=1921` (`ERROR_CANT_RESOLVE_FILENAME`); Python's mapping to
+    `errno.ELOOP` is unreliable on this path, so we match the Win32 code
+    explicitly via `_is_eloop_oserror`.
+    """
+    if not path.is_symlink():
+        return
+    try:
+        path.stat()
+    except OSError as exc:
+        if _is_eloop_oserror(exc):
+            raise

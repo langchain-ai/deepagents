@@ -53,7 +53,7 @@ Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
 Documentation = "https://reference.langchain.com/python/deepagents/"
 Repository = "https://github.com/langchain-ai/deepagents"
 Issues = "https://github.com/langchain-ai/deepagents/issues"
-Twitter = "https://x.com/LangChain"
+Twitter = "https://x.com/langchain_oss"
 
 [tool.uv]
 package = true

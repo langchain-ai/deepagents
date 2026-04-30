@@ -54,6 +54,10 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "anthropic:claude-haiku-4-5",
+        frozenset({"eval:anthropic", "harbor:anthropic"}),
+    ),
+    Model(
         "anthropic:claude-sonnet-4-5-20250929",
         frozenset({"eval:set0", "eval:anthropic", "harbor:set0", "harbor:anthropic"}),
     ),
@@ -82,6 +86,21 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "anthropic:claude-opus-4-6",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:anthropic",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:anthropic",
+            }
+        ),
+    ),
+    Model(
+        "anthropic:claude-opus-4-7",
         frozenset(
             {
                 "eval:set0",
@@ -126,6 +145,10 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "baseten:moonshotai/Kimi-K2.5",
+        frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
+    ),
+    Model(
+        "baseten:moonshotai/Kimi-K2.6",
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
     ),
     Model(
@@ -422,6 +445,30 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
+        "openai:gpt-5.5",
+        frozenset(
+            {
+                "eval:set0",
+                "eval:set1",
+                "eval:frontier",
+                "eval:openai",
+                "harbor:set0",
+                "harbor:set1",
+                "harbor:frontier",
+                "harbor:openai",
+            }
+        ),
+    ),
+    Model(
+        "openai:gpt-5.5-pro",
+        frozenset(
+            {
+                "eval:mega",
+                "harbor:mega",
+            }
+        ),
+    ),
+    Model(
         "openai:gpt-5.4-mini",
         frozenset(
             {
@@ -437,6 +484,24 @@ REGISTRY: tuple[Model, ...] = (
     # -- OpenRouter --
     Model(
         "openrouter:minimax/minimax-m2.7",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.5",
+        frozenset(
+            {
+                "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:moonshotai/kimi-k2.6",
         frozenset(
             {
                 "eval:openrouter",
@@ -493,6 +558,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("set1", "set1"),
             ("set2", "set2"),
             ("frontier", "frontier"),
+            ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
         ],

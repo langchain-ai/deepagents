@@ -1,9 +1,8 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
-import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -13,15 +12,14 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
-from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.permissions import FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemPermission
 
 
 class SubAgent(TypedDict):
@@ -56,6 +54,12 @@ class SubAgent(TypedDict):
         skills: Skill source paths for SkillsMiddleware.
 
             List of paths to skill directories (e.g., `["/skills/user/", "/skills/project/"]`).
+        permissions: Filesystem permission rules for this subagent.
+
+            If omitted, inherits the parent agent's permissions. If provided,
+            replaces the parent agent's rules entirely for this subagent.
+
+            Rules are evaluated in declaration order; the first match wins.
     """
 
     name: str
@@ -89,7 +93,8 @@ class SubAgent(TypedDict):
     the parent's permissions entirely for this subagent.
 
     Rules are evaluated in declaration order; the first match wins.
-    ``_PermissionMiddleware`` is appended last in the middleware stack.
+    `FilesystemMiddleware` enforces these rules for the built-in filesystem
+    tools on the subagent stack.
     """
 
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
@@ -170,12 +175,20 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
-# 3. The skills_metadata and memory_contents keys are automatically excluded from subagent output
+# 3. The skills_metadata, skills_load_errors, and memory_contents keys are
+#    automatically excluded from subagent output
 #    via PrivateStateAttr annotations on their respective state schemas. However, they must ALSO
 #    be explicitly filtered from runtime.state when invoking a subagent to prevent parent state
 #    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
 #    SkillsMiddleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+_EXCLUDED_STATE_KEYS = {
+    "messages",
+    "todos",
+    "structured_response",
+    "skills_metadata",
+    "skills_load_errors",
+    "memory_contents",
+}
 
 
 class TaskToolSchema(BaseModel):
@@ -347,27 +360,6 @@ class _SubagentSpec(TypedDict):
     runnable: Runnable
 
 
-@contextlib.contextmanager
-def _subagent_tracing_context() -> Generator[None, None, None]:
-    """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
-
-    Sets `ls_agent_type` on the langsmith tracing context `metadata`, which is
-    propagated to LangSmith runs. This mirrors
-    langchain's `ls_agent_type="root"` tagging behavior.
-
-    Forwards all other current tracing-context fields (parent, client, tags,
-    etc.) unchanged so this wrapper does not clobber the enclosing context.
-    """
-    current = get_tracing_context()
-    merged_metadata = {**(current.get("metadata") or {}), "ls_agent_type": "subagent"}
-    # Pass every field from the current tracing context through to
-    # `tracing_context` so we don't accidentally clobber fields that may be
-    # added to langsmith in the future. The only change is `metadata`.
-    kwargs: dict[str, Any] = {**current, "metadata": merged_metadata}
-    with tracing_context(**kwargs):
-        yield
-
-
 def _build_task_tool(  # noqa: C901
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
@@ -445,8 +437,10 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state)
+
+        # Don't merge all fields because this will block out manual `.with_config`
+        subagent_config: RunnableConfig = {"configurable": {**runtime.config.get("configurable", {}), "ls_agent_type": "subagent"}}
+        result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -461,8 +455,9 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state)
+        # Don't merge all fields because this will block out manual `.with_config`
+        subagent_config: RunnableConfig = {"configurable": {**runtime.config.get("configurable", {}), "ls_agent_type": "subagent"}}
+        result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(

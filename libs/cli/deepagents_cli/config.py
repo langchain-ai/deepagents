@@ -1935,9 +1935,14 @@ def _get_provider_kwargs(
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
-    from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
+    from deepagents_cli.model_config import (
+        PROVIDER_API_KEY_ENV,
+        PROVIDER_API_KEY_ENV_FALLBACKS,
+        resolve_env_var,
+    )
 
     api_key_env = config.get_api_key_env(provider)
+    fallback_envs: tuple[str, ...] = ()
     if not api_key_env:
         api_key_env = PROVIDER_API_KEY_ENV.get(provider)
         if api_key_env:
@@ -1946,8 +1951,19 @@ def _get_provider_kwargs(
                 " using hardcoded provider env var",
                 provider,
             )
+            fallback_envs = PROVIDER_API_KEY_ENV_FALLBACKS.get(provider, ())
     if api_key_env:
         api_key = resolve_env_var(api_key_env)
+        if not api_key:
+            for fallback in fallback_envs:
+                api_key = resolve_env_var(fallback)
+                if api_key:
+                    logger.debug(
+                        "Using fallback env var %s for provider '%s'",
+                        fallback,
+                        provider,
+                    )
+                    break
         if api_key:
             result["api_key"] = api_key
 

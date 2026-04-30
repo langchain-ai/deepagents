@@ -11,6 +11,7 @@ import pytest
 from deepagents_cli import model_config
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
+    PROVIDER_API_KEY_ENV_FALLBACKS,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
     ModelConfigError,
@@ -134,6 +135,23 @@ class TestHasProviderCredentials:
             clear=True,
         ):
             assert has_provider_credentials("anthropic") is True
+
+    def test_perplexity_resolves_via_canonical_env_var(self):
+        """Perplexity recognises `PERPLEXITY_API_KEY` as the primary env var."""
+        with patch.dict(
+            "os.environ", {"PERPLEXITY_API_KEY": "pplx-test"}, clear=True
+        ):
+            assert has_provider_credentials("perplexity") is True
+
+    def test_perplexity_resolves_via_legacy_env_var(self):
+        """Perplexity falls back to `PPLX_API_KEY` when canonical name is unset."""
+        with patch.dict("os.environ", {"PPLX_API_KEY": "pplx-legacy"}, clear=True):
+            assert has_provider_credentials("perplexity") is True
+
+    def test_perplexity_returns_false_when_neither_env_var_set(self):
+        """Perplexity reports missing credentials when neither var is set."""
+        with patch.dict("os.environ", {}, clear=True):
+            assert has_provider_credentials("perplexity") is False
 
 
 class TestThreadColumnPersistence:
@@ -498,9 +516,13 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
         assert PROVIDER_API_KEY_ENV["openrouter"] == "OPENROUTER_API_KEY"
-        assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
+        assert PROVIDER_API_KEY_ENV["perplexity"] == "PERPLEXITY_API_KEY"
         assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
+
+    def test_perplexity_legacy_fallback_registered(self):
+        """`PPLX_API_KEY` remains a recognised legacy fallback for Perplexity."""
+        assert "PPLX_API_KEY" in PROVIDER_API_KEY_ENV_FALLBACKS["perplexity"]
 
 
 class TestModelConfigLoad:

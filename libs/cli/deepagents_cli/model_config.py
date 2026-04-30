@@ -279,7 +279,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
-    "perplexity": "PPLX_API_KEY",
+    "perplexity": "PERPLEXITY_API_KEY",
     "together": "TOGETHER_API_KEY",
     "xai": "XAI_API_KEY",
 }
@@ -292,6 +292,18 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+PROVIDER_API_KEY_ENV_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "perplexity": ("PPLX_API_KEY",),
+}
+"""Legacy env-var names checked when the primary `PROVIDER_API_KEY_ENV` value is unset.
+
+Some providers ship under a canonical env var (e.g. `PERPLEXITY_API_KEY`) but
+also support an older name (`PPLX_API_KEY`) for backwards compatibility with
+the upstream SDK. Listing the legacy names here lets the credential pre-check
+and the api_key kwarg resolution recognise either, while keeping the canonical
+name visible in error messages.
 """
 
 IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
@@ -801,7 +813,14 @@ def has_provider_credentials(provider: str) -> bool | None:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(resolve_env_var(env_var))
+        if resolve_env_var(env_var):
+            return True
+        # Some providers accept legacy env-var names (e.g. PPLX_API_KEY for
+        # Perplexity). Treat the credential as available when any fallback is set.
+        for fallback in PROVIDER_API_KEY_ENV_FALLBACKS.get(provider, ()):
+            if resolve_env_var(fallback):
+                return True
+        return False
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -817,7 +836,10 @@ def get_credential_env_var(provider: str) -> str | None:
     """Return the env var name that holds credentials for a provider.
 
     Checks the config file first (user override), then falls back to the
-    hardcoded `PROVIDER_API_KEY_ENV` map.
+    hardcoded `PROVIDER_API_KEY_ENV` map. Always returns the canonical primary
+    env var; legacy fallbacks (see `PROVIDER_API_KEY_ENV_FALLBACKS`) are not
+    surfaced here so that credential-missing messages prompt for the
+    user-facing canonical name.
 
     Args:
         provider: Provider name.

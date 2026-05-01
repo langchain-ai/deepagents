@@ -19,6 +19,9 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/text-to-sql-agent"
 
+[tool.uv]
+prerelease = "allow"
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"

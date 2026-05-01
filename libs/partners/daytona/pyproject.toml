@@ -51,6 +51,7 @@ test = [
 deepagents = { path = "../../deepagents", editable = true }
 
 [tool.uv]
+prerelease = "allow"
 constraint-dependencies = ["urllib3>=2.6.3"]
 
 [tool.ty.environment]

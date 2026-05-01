@@ -31,7 +31,7 @@ from langgraph.stream.run_stream import (
     AsyncSubgraphRunStream,
     SubgraphRunStream,
 )
-from langgraph.stream.stream_channel import StreamChannel as EventLog
+from langgraph.stream.stream_channel import StreamChannel
 from langgraph.stream.transformers import (
     SubgraphStatus,
     _TasksLifecycleBase,
@@ -83,7 +83,7 @@ class SubagentTransformer(_TasksLifecycleBase):
     ) -> None:
         super().__init__(scope)
         self._names = subagent_names
-        self._log: EventLog[SubagentRunStream | AsyncSubagentRunStream] = EventLog()
+        self._log: StreamChannel[SubagentRunStream | AsyncSubagentRunStream] = StreamChannel()
         self._handles: dict[tuple[str, ...], SubagentRunStream | AsyncSubagentRunStream] = {}
         self._mux: StreamMux | None = None
         # parent_task_id -> {"subagent_type": ..., "tool_call_id": ...}

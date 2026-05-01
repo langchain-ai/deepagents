@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphInterrupt
 from langgraph.stream._mux import StreamMux
-from langgraph.stream.stream_channel import StreamChannel as EventLog
+from langgraph.stream.stream_channel import StreamChannel
 from langgraph.stream.transformers import (
     LifecycleTransformer,
     MessagesTransformer,
@@ -150,14 +150,14 @@ def _values(payload: dict[str, Any], *, namespace: list[str]) -> ProtocolEvent:
     }
 
 
-def _subscribe(log: EventLog) -> None:
+def _subscribe(log: StreamChannel) -> None:
     log._subscribed = True
 
 
 def _pre_subscribe_handle(handle: SubagentRunStream) -> None:
-    """Flip `_subscribed` on every EventLog inside the handle's mini-mux."""
+    """Flip `_subscribed` on every StreamChannel inside the handle's mini-mux."""
     for value in handle._mux.extensions.values():
-        if isinstance(value, EventLog):
+        if isinstance(value, StreamChannel):
             _subscribe(value)
 
 

@@ -45,6 +45,23 @@ if TYPE_CHECKING:
 class SubagentRunStream(SubgraphRunStream):
     """Typed sync handle for a declared subagent execution."""
 
+    def __init__(
+        self,
+        mux: StreamMux,
+        *,
+        path: tuple[str, ...],
+        graph_name: str | None = None,
+        trigger_call_id: str | None = None,
+        task_input: str | None = None,
+    ) -> None:
+        super().__init__(
+            mux,
+            path=path,
+            graph_name=graph_name,
+            trigger_call_id=trigger_call_id,
+        )
+        self.task_input = task_input
+
     @property
     def name(self) -> str | None:
         return self.graph_name
@@ -58,6 +75,23 @@ class SubagentRunStream(SubgraphRunStream):
 
 class AsyncSubagentRunStream(AsyncSubgraphRunStream):
     """Typed async handle for a declared subagent execution."""
+
+    def __init__(
+        self,
+        mux: StreamMux,
+        *,
+        path: tuple[str, ...],
+        graph_name: str | None = None,
+        trigger_call_id: str | None = None,
+        task_input: str | None = None,
+    ) -> None:
+        super().__init__(
+            mux,
+            path=path,
+            graph_name=graph_name,
+            trigger_call_id=trigger_call_id,
+        )
+        self.task_input = task_input
 
     @property
     def name(self) -> str | None:
@@ -104,8 +138,9 @@ class SubagentTransformer(_TasksLifecycleBase):
 
         Pregel emits a `tasks` start at the parent ns whose `input` is
         the list of tool calls being dispatched. Each ``task`` tool
-        call carries the user-visible ``tool_call_id`` and the
-        declared ``subagent_type`` we need at child-task time.
+        call carries the user-visible ``tool_call_id``, the declared
+        ``subagent_type``, and the ``description`` we need at
+        child-task time.
         """
         ns = tuple(event["params"]["namespace"])
         if ns != self.scope:
@@ -123,11 +158,13 @@ class SubagentTransformer(_TasksLifecycleBase):
             args = tc.get("args") or {}
             subagent_type = args.get("subagent_type")
             tool_call_id = tc.get("id")
+            task_input = args.get("description")
             if not isinstance(subagent_type, str):
                 continue
             self._pending[parent_task_id] = {
                 "subagent_type": subagent_type,
                 "tool_call_id": tool_call_id if isinstance(tool_call_id, str) else "",
+                "task_input": task_input if isinstance(task_input, str) else "",
             }
             # First task-typed call wins; multiple `task` calls under
             # the same parent task aren't expected in the current
@@ -160,6 +197,7 @@ class SubagentTransformer(_TasksLifecycleBase):
             path=ns,
             graph_name=subagent_type,
             trigger_call_id=info["tool_call_id"] or None,
+            task_input=info["task_input"] or None,
         )
         self._handles[ns] = handle
         self._log.push(handle)

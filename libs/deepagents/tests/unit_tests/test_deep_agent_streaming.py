@@ -112,6 +112,57 @@ def _build_agent_with_one_subagent() -> CompiledStateGraph:
     )
 
 
+class _Failing(BaseChatModel):
+    """A chat model whose `_generate` always raises."""
+
+    error_message: str = "boom"
+    tools: Sequence[dict[str, Any] | type | Callable | BaseTool] = ()
+
+    @property
+    def _llm_type(self) -> str:
+        return "failing"
+
+    def _generate(
+        self,
+        messages: Sequence[Any],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise RuntimeError(self.error_message)
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        self.tools = tools
+        return self
+
+
+def _build_agent_with_failing_subagent() -> CompiledStateGraph:
+    parent = _Scripted(
+        responses=[
+            _task_call("look something up", "researcher", "call-parent-1"),
+            AIMessage(content="parent recovered"),
+        ]
+    )
+    return create_deep_agent(
+        model=parent,
+        subagents=[
+            {
+                "name": "researcher",
+                "description": "research subagent",
+                "system_prompt": "you are a researcher",
+                "model": _Failing(error_message="research failed"),
+                "tools": [_inner],
+            }
+        ],
+    )
+
+
 class TestCreateDeepAgentAstreamV2:
     async def test_run_exposes_native_projections(self) -> None:
         """`run.subagents` / `.messages` / `.tool_calls` / `.middleware` all bound."""
@@ -141,6 +192,8 @@ class TestCreateDeepAgentAstreamV2:
         assert len(handles) == 1
         (sub,) = handles
         assert sub.name == "researcher"
+        assert sub.task_input == "look something up"
+        assert sub.cause == {"type": "toolCall", "tool_call_id": "call-parent-1"}
         assert sub.status == "completed"
         # path is ("tools:<pregel_task_id>",) — the tool node hosting the subagent.
         assert len(sub.path) == 1
@@ -214,6 +267,48 @@ class TestCreateDeepAgentAstreamV2:
 
         assert subagent_names == ["researcher"]
         assert parent_message_count > 0
+
+    async def test_subagent_error_surfaces_failed_status(self) -> None:
+        """A subagent whose model raises mid-run lands as ``status='failed'``.
+
+        The error propagates up through Pregel into the parent stream, so
+        every projection drain may raise — that's fine. The handle should
+        still surface on `run.subagents` and reach the failed terminal state.
+        """
+        agent = _build_agent_with_failing_subagent()
+        run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
+
+        handles: list[AsyncSubagentRunStream] = []
+
+        async def collect_subagents() -> None:
+            try:
+                async for sub in run.subagents:
+                    handles.append(sub)
+                    try:
+                        async for _ in sub.messages:
+                            pass
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        async def drain_parent() -> None:
+            try:
+                async for _ in run.messages:
+                    pass
+            except Exception:
+                pass
+
+        # Drive both projections concurrently so the pump can advance
+        # past the subagent's terminal event before the error escapes.
+        await asyncio.gather(collect_subagents(), drain_parent())
+
+        assert len(handles) == 1
+        (sub,) = handles
+        assert sub.name == "researcher"
+        assert sub.task_input == "look something up"
+        assert sub.status == "failed"
+        assert sub.error is not None
 
 
 class TestCreateDeepAgentStreamV2:

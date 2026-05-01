@@ -295,6 +295,15 @@ class HarnessProfileConfig:
 
     This is the canonical on-disk representation used by `to_dict` /
     `from_dict`.
+
+    !!! note "Removing the `task` tool"
+
+        `excluded_middleware` won't drop `"SubAgentMiddleware"` (or
+        `"FilesystemMiddleware"`) — they're required scaffolding. To run
+        without the `task` tool, set `general_purpose_subagent.enabled`
+        to `false` on this config and pass no synchronous subagents via
+        `subagents=` on `create_deep_agent`. Async subagents are
+        unaffected.
     """
 
     general_purpose_subagent: GeneralPurposeSubagentProfile | None = None
@@ -303,6 +312,11 @@ class HarnessProfileConfig:
     Unset is equivalent to passing a default-constructed
     `GeneralPurposeSubagentProfile()` — the auto-added subagent runs with
     its stock description and prompt.
+
+    Set `enabled` to `false` on a populated sub-profile to remove
+    the default `general-purpose` subagent. Pair that with no synchronous
+    subagents via `subagents=` on `create_deep_agent` and the `task` tool
+    is dropped too. Async subagents are unaffected.
     """
 
     def __post_init__(self) -> None:
@@ -659,6 +673,15 @@ class HarnessProfile:
             `create_deep_agent` resolves the profile.
         - Entries that match no middleware in the assembled stack are
             rejected as likely typos or stale profiles.
+
+    !!! note "Removing the `task` tool"
+
+        Don't reach for `excluded_middleware` here — it intentionally raises
+        `ValueError` on `SubAgentMiddleware`. Instead, set
+        `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
+        and pass no synchronous subagents via `subagents=` on
+        `create_deep_agent`. With nothing to back, the `task` tool is gone.
+        Async subagents are independent.
     """
 
     extra_middleware: Sequence[AgentMiddleware] | Callable[[], Sequence[AgentMiddleware]] = ()
@@ -688,6 +711,9 @@ class HarnessProfile:
     `GeneralPurposeSubagentProfile()` — the auto-added subagent runs with
     its stock description and prompt. Set `enabled=False` on a populated
     sub-profile to remove the default `general-purpose` subagent entirely.
+    Pair that with no synchronous subagents via `subagents=` on
+    `create_deep_agent` and the `task` tool is dropped too. Async
+    subagents are unaffected.
     """
 
     def __post_init__(self) -> None:

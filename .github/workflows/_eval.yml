@@ -149,7 +149,9 @@ jobs:
         if: inputs.openrouter_provider != '' && inputs.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
-        run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
+        run: |
+          provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
+          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s\n' "${PYTEST_ADDOPTS}" "${provider}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

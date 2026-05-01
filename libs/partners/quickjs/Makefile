@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch help lint_package coverage update_snapshots
+.PHONY: test tests integration_test integration_tests lint format help
 
 .DEFAULT_GOAL := help
 

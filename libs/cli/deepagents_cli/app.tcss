@@ -37,7 +37,6 @@ Screen {
 #bottom-app-container {
     height: auto;
     margin-top: 1;
-    padding: 0 1;
 }
 
 /* Input area */
@@ -99,7 +98,6 @@ Screen {
 #status-bar {
     height: 1;
     dock: bottom;
-    margin-bottom: 1;
 }
 
 /* Tool approval widgets */

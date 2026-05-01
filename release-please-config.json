@@ -91,6 +91,18 @@
       ],
       "changelog-path": "CHANGELOG.md"
     },
+    "libs/code": {
+      "release-type": "python",
+      "package-name": "deepagents-code",
+      "component": "deepagents-code",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "deepagents_code/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md"
+    },
     "libs/partners/daytona": {
       "release-type": "python",
       "package-name": "langchain-daytona",

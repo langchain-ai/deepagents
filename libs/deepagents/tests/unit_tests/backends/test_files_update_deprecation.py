@@ -1,12 +1,13 @@
-"""Tests for the deprecated ``files_update`` field on WriteResult and EditResult.
+"""Tests for the deprecated `files_update` field on `WriteResult` and `EditResult`.
 
-``files_update`` was removed in favour of internal backend state handling.
-Passing it should emit a DeprecationWarning (scheduled for removal in v0.7)
+`files_update` was removed in favour of internal backend state handling.
+Passing it should emit a `DeprecationWarning` (scheduled for removal in 0.7.0)
 but must not raise an error so existing callers aren't broken.
 """
 
 import warnings
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.protocol import EditResult, WriteResult
 
 # -- WriteResult -----------------------------------------------------------
@@ -29,8 +30,12 @@ class TestWriteResultFilesUpdateDeprecation:
             result = WriteResult(path="/f.txt", files_update=None)
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
+        assert deprecation_warnings[0].category is LangChainDeprecationWarning
+        # Wording is asserted explicitly because the test below also relies on
+        # the literal `0.7.0` substring rather than `langchain_core`'s
+        # auto-formatted text.
         assert "files_update" in str(deprecation_warnings[0].message)
-        assert "v0.7" in str(deprecation_warnings[0].message)
+        assert "0.7.0" in str(deprecation_warnings[0].message)
         assert result.files_update is None
 
     def test_warning_with_files_update_dict(self) -> None:
@@ -47,6 +52,15 @@ class TestWriteResultFilesUpdateDeprecation:
         result = WriteResult(error="File exists")
         assert result.error == "File exists"
         assert result.path is None
+
+    def test_warning_attributed_to_caller(self) -> None:
+        """The warning's filename must point at the caller, not deepagents internals."""
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            WriteResult(path="/f.txt", files_update=None)
+        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert len(deprecation_warnings) == 1
+        assert deprecation_warnings[0].filename == __file__
 
 
 # -- EditResult ------------------------------------------------------------
@@ -71,7 +85,7 @@ class TestEditResultFilesUpdateDeprecation:
         deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert len(deprecation_warnings) == 1
         assert "files_update" in str(deprecation_warnings[0].message)
-        assert "v0.7" in str(deprecation_warnings[0].message)
+        assert "0.7.0" in str(deprecation_warnings[0].message)
         assert result.files_update is None
         assert result.occurrences == 2
 

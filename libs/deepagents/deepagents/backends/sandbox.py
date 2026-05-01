@@ -81,6 +81,30 @@ Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
 """
 
+MAX_BINARY_BYTES: Final = 500 * 1024
+"""Maximum size of a binary file returned by `read()` as base64.
+
+Files exceeding this size return a `Binary file exceeds maximum preview size`
+error rather than being base64-encoded in full. Backends overriding `read()`
+should import and reuse this constant to stay in sync with the base
+implementation. Kept in lockstep with the `MAX_BINARY_BYTES` literal in
+`_READ_COMMAND_TEMPLATE` (asserted by `test_read_constants_match_template`).
+"""
+
+MAX_OUTPUT_BYTES: Final = 500 * 1024
+"""Maximum size of rendered text content returned by `read()`.
+
+Pages exceeding this cap are truncated and `TRUNCATION_MSG` is appended.
+Mirrors the `MAX_OUTPUT_BYTES` literal in `_READ_COMMAND_TEMPLATE`.
+"""
+
+TRUNCATION_MSG: Final = (
+    "\n\n[Output was truncated due to size limits. "
+    "This paginated read result exceeded the sandbox stdout limit. "
+    "Continue reading with a larger offset or smaller limit to inspect the rest of the file.]"
+)
+"""Sentinel appended to `read()` content when `MAX_OUTPUT_BYTES` is hit."""
+
 _EDIT_COMMAND_TEMPLATE = """python3 -c "
 import sys, os, base64, json
 
@@ -101,7 +125,23 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling (issue #2880): the read template normalizes
+# CRLF to LF for the LLM, so old_string arrives LF-only even when the
+# file on disk is CRLF. Try old as sent, then a CRLF variant, then an LF
+# variant. The first match reveals the file line-ending style in that
+# region; apply the same transform to new so the file style is preserved.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -109,7 +149,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(path, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -176,7 +216,19 @@ except UnicodeDecodeError:
     print(json.dumps({{'error': 'not_a_text_file'}}))
     sys.exit(0)
 
-count = text.count(old)
+# Match-driven CRLF handling -- see _EDIT_COMMAND_TEMPLATE and issue #2880.
+old_crlf = old.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+old_lf = old.replace('\\r\\n', '\\n')
+new_crlf = new.replace('\\r\\n', '\\n').replace('\\n', '\\r\\n')
+new_lf = new.replace('\\r\\n', '\\n')
+count = 0
+matched_old, matched_new = old, new
+for cand_old, cand_new in ((old, new), (old_crlf, new_crlf), (old_lf, new_lf)):
+    c = text.count(cand_old)
+    if c >= 1:
+        matched_old, matched_new, count = cand_old, cand_new, c
+        break
+
 if count == 0:
     print(json.dumps({{'error': 'string_not_found'}}))
     sys.exit(0)
@@ -184,7 +236,7 @@ if count > 1 and not replace_all:
     print(json.dumps({{'error': 'multiple_occurrences', 'count': count}}))
     sys.exit(0)
 
-result = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+result = text.replace(matched_old, matched_new) if replace_all else text.replace(matched_old, matched_new, 1)
 with open(target, 'wb') as f:
     f.write(result.encode('utf-8'))
 
@@ -204,7 +256,7 @@ files cannot be read.
 """
 
 _READ_COMMAND_TEMPLATE = """python3 -c "
-import os, sys, base64, json
+import codecs, os, sys, base64, json
 
 MAX_OUTPUT_BYTES = 500 * 1024
 MAX_BINARY_BYTES = 500 * 1024
@@ -238,9 +290,16 @@ if file_type != 'text':
 with open(path, 'rb') as f:
     raw_prefix = f.read(8192)
 
+# The 8192-byte prefix can slice a multi-byte UTF-8 char (CJK is 3 bytes,
+# emoji is 4); the incremental decoder buffers a trailing partial sequence
+# instead of raising, so legitimate text isn't misclassified as binary.
+is_binary = False
 try:
-    raw_prefix.decode('utf-8')
+    codecs.getincrementaldecoder('utf-8')().decode(raw_prefix, final=False)
 except UnicodeDecodeError:
+    is_binary = True
+
+if is_binary:
     with open(path, 'rb') as f:
         raw = f.read()
     print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
@@ -312,6 +371,14 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     delegates content transfer to `upload_files()`. Edit uses a server-side
     script for small payloads and uploads old/new strings as temp files with
     a server-side replace for large ones.
+
+    !!! note
+
+        `BaseSandbox` does not reduce or partition the trust boundary of
+        `execute()`. Its helper methods are convenience wrappers built on top of
+        the subclass-provided command-execution primitive and assume callers who
+        can use `BaseSandbox` already have whatever shell-execution capability
+        that backend exposes.
 
     Subclasses must implement `execute()`, `upload_files()`, `download_files()`,
     and the `id` property.
@@ -438,6 +505,31 @@ except PermissionError:
             )
         )
 
+    def _write_preflight(self, file_path: str) -> WriteResult | None:
+        """Run the existence check + parent-directory creation for `write()`.
+
+        Subclasses overriding `write()` (e.g., to use a native SDK transport)
+        should call this first so they preserve the same "fail if file exists"
+        and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
+        window between this check and the actual write — an inherent limitation
+        of splitting the operation across two backend calls.
+
+        Args:
+            file_path: Absolute path for the file about to be written.
+
+        Returns:
+            `None` if the preflight passes (target does not exist, parents
+                created); a populated `WriteResult` with `error` set if the
+                check fails.
+        """
+        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
+        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
+        result = self.execute(check_cmd)
+        if result.exit_code != 0 or "Error:" in result.output:
+            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
+            return WriteResult(error=error_msg)
+        return None
+
     def write(
         self,
         file_path: str,
@@ -452,15 +544,9 @@ except PermissionError:
         Returns:
             `WriteResult` with `path` on success or `error` on failure.
         """
-        # Existence check + mkdir. There is a TOCTOU window between this check
-        # and the upload below - a concurrent process could create the file in
-        # between. This is an inherent limitation of splitting the operation;
-        path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-        check_cmd = _WRITE_CHECK_TEMPLATE.format(path_b64=path_b64)
-        result = self.execute(check_cmd)
-        if result.exit_code != 0 or "Error:" in result.output:
-            error_msg = result.output.strip() or f"Failed to write file '{file_path}'"
-            return WriteResult(error=error_msg)
+        preflight_error = self._write_preflight(file_path)
+        if preflight_error is not None:
+            return preflight_error
 
         responses = self.upload_files([(file_path, content.encode("utf-8"))])
         if not responses:
@@ -487,6 +573,14 @@ except PermissionError:
         no file transfer.  For larger payloads, uploads old/new strings as
         temp files and runs a server-side replace script — the source file
         never leaves the sandbox.
+
+        `read()` normalizes CRLF to LF for the LLM, so `old_string` is
+        typically LF-only. The server-side script tries `old_string` as-is
+        first, then CRLF- and LF-normalized variants, and applies the same
+        transform to `new_string` so the file's line-ending style is
+        preserved on write. On mixed-ending files, `replace_all=True` only
+        touches occurrences in the first matching style — subsequent edits
+        can replace the rest.
 
         Args:
             file_path: Absolute path to the file to edit.
@@ -660,7 +754,7 @@ except PermissionError:
         # Add glob pattern if specified
         glob_pattern = ""
         if glob:
-            glob_pattern = f"--include='{glob}'"
+            glob_pattern = f"--include={shlex.quote(glob)}"
 
         # Escape pattern for shell
         pattern_escaped = shlex.quote(pattern)

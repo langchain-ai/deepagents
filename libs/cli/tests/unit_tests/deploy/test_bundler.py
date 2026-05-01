@@ -24,6 +24,7 @@ from deepagents_cli.deploy.config import (
     SUBAGENTS_DIRNAME,
     USER_DIRNAME,
     AgentConfig,
+    AuthConfig,
     DeployConfig,
     SandboxConfig,
 )
@@ -46,10 +47,12 @@ def _minimal_config(
     *,
     provider: str = "none",
     model: str = "anthropic:claude-sonnet-4-6",
+    auth: AuthConfig | None = None,
 ) -> DeployConfig:
     return DeployConfig(
         agent=AgentConfig(name="test-agent", model=model),
         sandbox=SandboxConfig(provider=provider),  # type: ignore[arg-type]
+        auth=auth,
     )
 
 
@@ -454,6 +457,91 @@ class TestPrintBundleSummary:
         out = capsys.readouterr().out
         assert "Subagents (1)" in out
         assert "researcher" in out
+
+
+class TestRenderLanggraphJsonAuth:
+    def test_without_auth(self) -> None:
+        result = json.loads(
+            _render_langgraph_json(env_present=False, auth_present=False)
+        )
+        assert "auth" not in result
+
+    def test_with_auth(self) -> None:
+        result = json.loads(_render_langgraph_json(env_present=True, auth_present=True))
+        assert result["auth"] == {"path": "./auth.py:auth"}
+
+
+class TestRenderPyprojectAuth:
+    def test_no_auth_dep(self) -> None:
+        config = _minimal_config(model="bare-model")
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" not in result
+
+    def test_clerk_adds_pyjwt(self) -> None:
+        config = _minimal_config(model="bare-model", auth=AuthConfig(provider="clerk"))
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" in result
+
+    def test_supabase_no_extra_dep(self) -> None:
+        config = _minimal_config(
+            model="bare-model", auth=AuthConfig(provider="supabase")
+        )
+        result = _render_pyproject(config, mcp_present=False)
+        assert "pyjwt" not in result
+
+
+class TestBundleAuth:
+    def test_auth_py_generated(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        assert (build / "auth.py").exists()
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        assert "auth = Auth()" in content
+        assert "SUPABASE_URL" in content
+        assert "add_owner" in content
+
+    def test_auth_py_not_generated_without_auth(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        assert not (build / "auth.py").exists()
+
+    def test_langgraph_json_includes_auth(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        lg = json.loads((build / "langgraph.json").read_text(encoding="utf-8"))
+        assert lg["auth"] == {"path": "./auth.py:auth"}
+
+    def test_langgraph_json_no_auth_without_config(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config()
+        bundle(config, project, build)
+        lg = json.loads((build / "langgraph.json").read_text(encoding="utf-8"))
+        assert "auth" not in lg
+
+    def test_clerk_auth_py_valid_python(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="clerk"))
+        bundle(config, project, build)
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        compile(content, "<auth.py>", "exec")
+        assert "CLERK_SECRET_KEY" in content
+        assert "add_owner" in content
+
+    def test_supabase_auth_py_valid_python(self, tmp_path: Path) -> None:
+        project = _minimal_project(tmp_path / "project")
+        build = tmp_path / "build"
+        config = _minimal_config(auth=AuthConfig(provider="supabase"))
+        bundle(config, project, build)
+        content = (build / "auth.py").read_text(encoding="utf-8")
+        compile(content, "<auth.py>", "exec")
 
 
 def _add_subagent(

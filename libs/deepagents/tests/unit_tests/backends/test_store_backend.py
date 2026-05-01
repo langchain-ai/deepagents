@@ -10,6 +10,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.store.memory import InMemoryStore
 
+from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import BackendContext, StoreBackend, _NamespaceRuntimeCompat, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -312,9 +313,9 @@ def test_compat_wrapper_old_style_runtime_access_warns() -> None:
         result = compat.runtime
         assert result is None
         assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+        assert w[0].category is LangChainDeprecationWarning
         assert ".runtime" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
+        assert "0.7.0" in str(w[0].message)
 
 
 def test_compat_wrapper_old_style_state_access_warns() -> None:
@@ -326,9 +327,9 @@ def test_compat_wrapper_old_style_state_access_warns() -> None:
         result = compat.state
         assert result == {"messages": []}
         assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+        assert w[0].category is LangChainDeprecationWarning
         assert ".state" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
+        assert "0.7.0" in str(w[0].message)
 
 
 def test_compat_wrapper_proxies_runtime_attrs() -> None:

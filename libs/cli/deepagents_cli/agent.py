@@ -16,6 +16,18 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
+# Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
+# `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
+# that permits `(path, label)` tuples. The `skills` module is already
+# loaded by the `SkillsMiddleware` import above, so the extra lookup
+# here adds no startup cost.
+try:
+    from deepagents.middleware.skills import SkillSource as _SkillSource  # noqa: F401
+except ImportError:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = False
+else:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = True
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
@@ -1116,25 +1128,40 @@ def create_cli_agent(
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
         # -> user .claude (experimental) -> project .claude (experimental)
-        sources = [str(settings.get_built_in_skills_dir())]
-        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
+        # Labels disambiguate user- vs project-scoped sources that share a
+        # `.../skills` leaf; the middleware would otherwise derive identical
+        # labels from the parent directory name.
+        sources: list[tuple[str, str]] = [
+            (str(settings.get_built_in_skills_dir()), "Built-in"),
+            (str(skills_dir), "User Deepagents"),
+            (str(user_agent_skills_dir), "User Agents"),
+        ]
         if project_skills_dir:
-            sources.append(str(project_skills_dir))
+            sources.append((str(project_skills_dir), "Project Deepagents"))
         if project_agent_skills_dir:
-            sources.append(str(project_agent_skills_dir))
+            sources.append((str(project_agent_skills_dir), "Project Agents"))
 
         # Experimental: Claude Code skill directories
         user_claude_skills_dir = settings.get_user_claude_skills_dir()
         if user_claude_skills_dir.exists():
-            sources.append(str(user_claude_skills_dir))
+            sources.append((str(user_claude_skills_dir), "User Claude"))
         project_claude_skills_dir = settings.get_project_claude_skills_dir()
         if project_claude_skills_dir:
-            sources.append(str(project_claude_skills_dir))
+            sources.append((str(project_claude_skills_dir), "Project Claude"))
+
+        # Backwards-compat: strip labels when the installed SDK is too old
+        # to accept `(path, label)` tuples. Label-based disambiguation
+        # regresses to the pre-alias behavior (user- and project-scoped
+        # `.claude/skills` collapse to the same label), but functionality
+        # is preserved.
+        middleware_sources: Sequence[str | tuple[str, str]] = (
+            sources if _SUPPORTS_SKILL_SOURCE_TUPLES else [path for path, _ in sources]
+        )
 
         agent_middleware.append(
             SkillsMiddleware(
                 backend=FilesystemBackend(),
-                sources=sources,
+                sources=middleware_sources,
             )
         )
 

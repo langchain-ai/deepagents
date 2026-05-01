@@ -15,6 +15,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!libs/cli/frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -226,3 +227,9 @@ libs/cli/TEXTUAL_PROGRESS.md
 */tmp/.DS_Store
 
 CLAUDE.md
+.worktrees/
+
+# Frontend build artifacts (source tree; package data under libs/cli/deepagents_cli/deploy/frontend_dist/ is tracked)
+libs/cli/frontend/node_modules/
+libs/cli/frontend/dist/
+node_modules/

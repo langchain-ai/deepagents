@@ -23,8 +23,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Fields on MessageData that callers are allowed to update via update_message().
-# Prevents accidental overwriting of identity fields like id/type/timestamp.
 _UPDATABLE_FIELDS: frozenset[str] = frozenset(
     {
         "content",
@@ -36,30 +34,61 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "height_hint",
     }
 )
+"""Fields on `MessageData` that callers are allowed to update via `update_message`.
+
+Prevents accidental overwriting of identity fields like `id`, `type`, or
+`timestamp`.
+"""
 
 
 class MessageType(StrEnum):
     """Types of messages in the chat."""
 
     USER = "user"
+    """Input authored by the human, rendered above the agent's response."""
+
     ASSISTANT = "assistant"
+    """Streamed agent response rendered with markdown."""
+
     TOOL = "tool"
+    """Record of a tool invocation, including its args, status, and output."""
+
     SKILL = "skill"
+    """Record of a skill invocation, carrying its SKILL.md body and metadata."""
+
     ERROR = "error"
+    """Error surfaced to the user (e.g., a failed tool call or SDK exception)."""
+
     APP = "app"
+    """App-status note from the CLI itself (version info, command feedback)."""
+
     SUMMARIZATION = "summarization"
+    """Notification that the prior conversation was summarized/offloaded."""
+
     DIFF = "diff"
+    """Unified diff preview attached to a file-modifying tool call."""
 
 
 class ToolStatus(StrEnum):
     """Status of a tool call."""
 
     PENDING = "pending"
+    """Queued for execution, typically awaiting human approval."""
+
     RUNNING = "running"
+    """Currently executing."""
+
     SUCCESS = "success"
+    """Completed without error."""
+
     ERROR = "error"
+    """Raised an exception or returned a non-zero exit status."""
+
     REJECTED = "rejected"
+    """Human explicitly denied the call at the approval prompt."""
+
     SKIPPED = "skipped"
+    """Bypassed without executing (e.g., the agent canceled the call)."""
 
 
 @dataclass
@@ -133,6 +162,13 @@ class MessageData:
 
     While `True`, the corresponding widget is actively receiving content
     chunks and should not be pruned or re-hydrated.
+    """
+
+    is_markdown: bool = False
+    """For APP messages, whether `content` is a markdown source string.
+
+    When `True`, rehydration renders the content via Rich markdown instead of
+    the plain dim-italic `AppMessage` styling.
     """
 
     height_hint: int | None = None
@@ -215,7 +251,7 @@ class MessageData:
                 return ErrorMessage(self.content, id=self.id)
 
             case MessageType.APP:
-                return AppMessage(self.content, id=self.id)
+                return AppMessage(self.content, markdown=self.is_markdown, id=self.id)
 
             case MessageType.SUMMARIZATION:
                 return SummarizationMessage(self.content, id=self.id)
@@ -340,6 +376,7 @@ class MessageData:
                 type=MessageType.APP,
                 content=str(widget._content),
                 id=widget_id,
+                is_markdown=widget._is_markdown,
             )
 
         logger.warning(

@@ -38,7 +38,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     WriteResult,
 )
-from deepagents.backends.sandbox import BaseSandbox
+from deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES, BaseSandbox
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
 pytestmark = pytest.mark.skipif(
@@ -777,6 +777,195 @@ class TestLocalSandboxOperations:
         file_content = read_result.file_data["content"]
         assert "red cat" in file_content
         assert "The quick red cat jumps" in file_content
+
+    # ==================== CRLF handling (issue #2880) ====================
+
+    @staticmethod
+    def _place_raw(sandbox: "LocalSubprocessSandbox", virtual_path: str, raw: bytes) -> None:
+        """Write raw bytes to the real path behind a virtual sandbox path.
+
+        Bypasses `write()` so tests can seed files with CRLF byte sequences
+        exactly as they would exist on disk (e.g. templates edited on
+        Windows or shipped via npm without `.gitattributes`).
+        """
+        real = Path(sandbox._to_real_path(virtual_path))
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_bytes(raw)
+
+    @staticmethod
+    def _read_raw(sandbox: "LocalSubprocessSandbox", virtual_path: str) -> bytes:
+        """Read raw bytes from the real path behind a virtual sandbox path."""
+        return Path(sandbox._to_real_path(virtual_path)).read_bytes()
+
+    def test_edit_crlf_file_lf_old_string_inline(self, sandbox: LocalSubprocessSandbox) -> None:
+        """CRLF file + LF `old_string` (as the LLM sees it via read_file) should match.
+
+        `read()` normalizes CRLF to LF for the LLM, so `old_string` arrives
+        LF-only. The edit template reads raw bytes, so without CRLF-aware
+        matching the replacement deterministically fails.
+        """
+        path = "/tmp/test_sandbox_ops/crlf_inline.txt"
+        self._place_raw(sandbox, path, b"line1\r\nline2\r\nline3\r\n")
+
+        result = sandbox.edit(path, "line1\nline2", "REPLACED")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"REPLACED\r\nline3\r\n"
+
+    def test_edit_crlf_file_preserves_line_endings_on_new_string(self, sandbox: LocalSubprocessSandbox) -> None:
+        """`new_string` LF content should be written as CRLF on a CRLF file."""
+        path = "/tmp/test_sandbox_ops/crlf_new_string.txt"
+        self._place_raw(sandbox, path, b"a\r\nb\r\nc\r\n")
+
+        result = sandbox.edit(path, "a\nb", "x\ny\nz")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"x\r\ny\r\nz\r\nc\r\n"
+
+    def test_edit_lf_file_remains_lf(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Pure-LF file with LF `old_string` should still work and stay LF."""
+        path = "/tmp/test_sandbox_ops/lf_regression.txt"
+        self._place_raw(sandbox, path, b"alpha\nbeta\ngamma\n")
+
+        result = sandbox.edit(path, "alpha\nbeta", "one\ntwo")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"one\ntwo\ngamma\n"
+
+    def test_edit_mixed_endings_lf_section(self, sandbox: LocalSubprocessSandbox) -> None:
+        """File with mixed endings: edits in an LF section stay LF."""
+        path = "/tmp/test_sandbox_ops/mixed_lf_section.txt"
+        self._place_raw(sandbox, path, b"lf1\nlf2\nlf3\ncrlf1\r\ncrlf2\r\n")
+
+        result = sandbox.edit(path, "lf1\nlf2", "LF_REPLACED")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"LF_REPLACED\nlf3\ncrlf1\r\ncrlf2\r\n"
+
+    def test_edit_mixed_endings_crlf_section(self, sandbox: LocalSubprocessSandbox) -> None:
+        """File with mixed endings: edits in a CRLF section stay CRLF."""
+        path = "/tmp/test_sandbox_ops/mixed_crlf_section.txt"
+        self._place_raw(sandbox, path, b"lf1\nlf2\ncrlf1\r\ncrlf2\r\ncrlf3\r\n")
+
+        result = sandbox.edit(path, "crlf1\ncrlf2", "CRLF_REPLACED")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"lf1\nlf2\nCRLF_REPLACED\r\ncrlf3\r\n"
+
+    def test_edit_crlf_genuine_string_not_found_still_surfaces(self, sandbox: LocalSubprocessSandbox) -> None:
+        """If no CRLF/LF variant matches, `string_not_found` must still surface."""
+        path = "/tmp/test_sandbox_ops/crlf_missing.txt"
+        self._place_raw(sandbox, path, b"alpha\r\nbeta\r\n")
+
+        result = sandbox.edit(path, "definitely not present", "x")
+
+        assert result.error is not None
+        assert "not found" in result.error.lower()
+        assert self._read_raw(sandbox, path) == b"alpha\r\nbeta\r\n"
+
+    def test_edit_crlf_replace_all(self, sandbox: LocalSubprocessSandbox) -> None:
+        """`replace_all=True` on a CRLF file should match and count every occurrence."""
+        path = "/tmp/test_sandbox_ops/crlf_replace_all.txt"
+        self._place_raw(sandbox, path, b"foo\r\nbar\r\nfoo\r\nbaz\r\n")
+
+        result = sandbox.edit(path, "foo", "X", replace_all=True)
+
+        assert result.error is None
+        assert result.occurrences == 2
+        assert self._read_raw(sandbox, path) == b"X\r\nbar\r\nX\r\nbaz\r\n"
+
+    def test_edit_crlf_roundtrip_after_read(self, sandbox: LocalSubprocessSandbox) -> None:
+        """End-to-end: read normalizes CRLF→LF, LLM uses that for old_string, edit preserves CRLF."""
+        path = "/tmp/test_sandbox_ops/crlf_roundtrip.txt"
+        self._place_raw(sandbox, path, b"## Summary\r\n\r\nHuman: hi\r\nAI: hello\r\n")
+
+        read_result = sandbox.read(path)
+        assert read_result.error is None
+        llm_view = read_result.file_data["content"]
+        # `read()` only shows LF to the LLM (sandbox.py:259 `newline=None`).
+        assert "\r" not in llm_view
+
+        result = sandbox.edit(path, "Human: hi\nAI: hello", "Human: bye\nAI: see you")
+
+        assert result.error is None
+        assert result.occurrences == 1
+        # On-disk bytes must still be CRLF — style preserved.
+        raw = self._read_raw(sandbox, path)
+        assert b"\r\n" in raw
+        assert b"Human: bye\r\nAI: see you\r\n" in raw
+
+    def test_edit_crlf_file_lf_old_string_upload_path(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Same asymmetry exists in `_EDIT_TMPFILE_TEMPLATE` for large payloads."""
+        path = "/tmp/test_sandbox_ops/crlf_upload.txt"
+        # Build old/new strings larger than the inline threshold so the upload
+        # path is exercised; embed a CRLF-containing marker for the LLM's LF view.
+        marker_lf = "a\nb\nc"
+        filler = "x" * (_EDIT_INLINE_MAX_BYTES + 100)
+        old_lf = f"{marker_lf}\n{filler}"
+        new_lf = f"REPLACED\n{filler}"
+
+        marker_crlf = marker_lf.replace("\n", "\r\n")
+        file_bytes = f"prefix\r\n{marker_crlf}\r\n{filler}\r\nsuffix\r\n".encode()
+        self._place_raw(sandbox, path, file_bytes)
+
+        result = sandbox.edit(path, old_lf, new_lf)
+
+        assert result.error is None
+        assert result.occurrences == 1
+        raw = self._read_raw(sandbox, path)
+        # The filler block is CRLF-ending in the file — the written new_string
+        # should match that style.
+        assert b"REPLACED\r\n" in raw
+        assert raw.startswith(b"prefix\r\n")
+
+    def test_edit_crlf_multiple_occurrences_without_replace_all(self, sandbox: LocalSubprocessSandbox) -> None:
+        """`multiple_occurrences` still surfaces when the matched CRLF variant hits >1."""
+        path = "/tmp/test_sandbox_ops/crlf_multi.txt"
+        self._place_raw(sandbox, path, b"foo\r\nbar\r\nfoo\r\nbaz\r\n")
+
+        result = sandbox.edit(path, "foo\n", "X\n")
+
+        assert result.error is not None
+        assert "multiple times" in result.error.lower()
+        # File untouched.
+        assert self._read_raw(sandbox, path) == b"foo\r\nbar\r\nfoo\r\nbaz\r\n"
+
+    def test_edit_mixed_endings_replace_all_is_non_atomic(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Pins current contract: `replace_all` only replaces in the first matching style.
+
+        On a mixed-ending file, the match-driven loop picks the first variant
+        with count >= 1 and breaks. `replace_all` then only touches occurrences
+        in that style. A second `edit()` call converges on the remaining
+        occurrences in the other style. This test pins that behavior so any
+        future change to make `replace_all` cross-style is deliberate.
+        """
+        path = "/tmp/test_sandbox_ops/mixed_replace_all.txt"
+        self._place_raw(sandbox, path, b"foo\nbar\nfoo\r\nbaz\r\n")
+
+        first = sandbox.edit(path, "foo", "X", replace_all=True)
+        assert first.error is None
+        # "foo" has no newlines; the as-is variant matches both occurrences.
+        assert first.occurrences == 2
+        assert self._read_raw(sandbox, path) == b"X\nbar\nX\r\nbaz\r\n"
+
+        # A newline-spanning old_string *does* split across styles.
+        self._place_raw(sandbox, path, b"hit\nnext\nhit\r\nnext\r\n")
+        second = sandbox.edit(path, "hit\nnext", "Y", replace_all=True)
+        assert second.error is None
+        # Only the LF-style occurrence is replaced on this call.
+        assert second.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"Y\nhit\r\nnext\r\n"
+
+        # A follow-up edit catches the CRLF-style occurrence.
+        third = sandbox.edit(path, "hit\nnext", "Y", replace_all=True)
+        assert third.error is None
+        assert third.occurrences == 1
+        assert self._read_raw(sandbox, path) == b"Y\nY\r\n"
 
     # ==================== ls_info() tests ====================
 

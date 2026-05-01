@@ -496,14 +496,22 @@ def is_ascii_mode() -> bool:
 
 
 def newline_shortcut() -> str:
-    """Return the platform-native label for the newline keyboard shortcut.
+    """Return the terminal-appropriate label for the newline keyboard shortcut.
 
-    macOS labels the modifier "Option" while other platforms use Ctrl+J
-    as the most reliable cross-terminal shortcut.
+    Prefers `Shift+Enter` when the terminal is known to support the kitty
+    keyboard protocol, either via conservative terminal-identity heuristics
+    or the `DEEPAGENTS_CLI_KITTY_KEYBOARD` override. Falls back to
+    `Option+Enter` on macOS and `Ctrl+J` elsewhere — both survive legacy
+    terminals that strip the shift modifier from `Enter`.
 
     Returns:
-        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+        A human-readable shortcut string,
+            e.g. `'Shift+Enter'`, `'Option+Enter'`, or `'Ctrl+J'`.
     """
+    from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    if supports_kitty_keyboard_protocol():
+        return "Shift+Enter"
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 
@@ -1854,36 +1862,52 @@ _OPENROUTER_APP_TITLE = "Deep Agents CLI"
 _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 """Default `app_categories` (maps to `X-OpenRouter-Categories`) for OpenRouter."""
 
+_cli_openrouter_profile_registered = False
+"""Process-wide guard so the CLI OpenRouter profile is registered exactly once."""
 
-def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
-    """Inject default OpenRouter attribution kwargs.
 
-    Sets `app_url`, `app_title`, and `app_categories` via `setdefault` so
-    that user-supplied values in config take precedence. These map to the
-    `HTTP-Referer`, `X-Title`, and `X-OpenRouter-Categories` headers that
-    `ChatOpenRouter` sends for app attribution
-    (see https://openrouter.ai/docs/app-attribution).
+def _cli_openrouter_attribution_kwargs() -> dict[str, Any]:
+    """CLI-specific OpenRouter attribution kwargs.
 
-    Users can override either value provider-wide or per-model in
-    `~/.deepagents/config.toml`:
+    Layered on top of the SDK's built-in factory via profile stacking; these
+    values override the SDK defaults but still sit beneath any caller-supplied
+    `kwargs` (i.e. `config.toml`-resolved values), preserving the precedence
+    documented on `apply_provider_profile`.
 
-    ```toml
-    # Provider-wide
-    [models.providers.openrouter.params]
-    app_url = "https://myapp.com"
-    app_title = "My App"
-
-    # Per-model (shallow-merges on top of provider-wide)
-    [models.providers.openrouter.params."openai/gpt-oss-120b"]
-    app_title = "My App (GPT)"
-    ```
-
-    Args:
-        kwargs: Mutable kwargs dict to update in place.
+    Returns:
+        Mapping of `app_url` and `app_title` to spread into `init_chat_model`.
     """
-    kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
-    kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
-    kwargs.setdefault("app_categories", _OPENROUTER_APP_CATEGORIES)
+    return {
+        "app_url": _OPENROUTER_APP_URL,
+        "app_title": _OPENROUTER_APP_TITLE,
+    }
+
+
+def _ensure_cli_openrouter_profile_registered() -> None:
+    """Stack the CLI OpenRouter attribution onto the SDK's built-in profile.
+
+    Stacking (vs. duplicating the inline `_get_provider_kwargs` path) means the
+    SDK's `pre_init` version check fires exactly once and the CLI's app-
+    attribution defaults are composed via the same `apply_provider_profile`
+    path used for every other provider. `register_provider_profile` merges on
+    top of the existing built-in registration: the CLI's `init_kwargs` and
+    factory output win on shared keys, while the built-in's `pre_init` and
+    factory still chain.
+    """
+    global _cli_openrouter_profile_registered  # noqa: PLW0603
+    if _cli_openrouter_profile_registered:
+        return
+
+    from deepagents.profiles.provider import ProviderProfile, register_provider_profile
+
+    register_provider_profile(
+        "openrouter",
+        ProviderProfile(
+            init_kwargs={"app_categories": _OPENROUTER_APP_CATEGORIES},
+            init_kwargs_factory=_cli_openrouter_attribution_kwargs,
+        ),
+    )
+    _cli_openrouter_profile_registered = True
 
 
 def _get_provider_kwargs(
@@ -1926,14 +1950,6 @@ def _get_provider_kwargs(
         api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
-
-    if provider == "openrouter":
-        from deepagents.profiles._openrouter import (
-            check_openrouter_version,  # noqa: PLC2701
-        )
-
-        check_openrouter_version()
-        _apply_openrouter_defaults(result)
 
     return result
 
@@ -2178,9 +2194,10 @@ def create_model(
         A `ModelResult` containing the model and its metadata.
 
     Raises:
-        ModelConfigError: If provider cannot be determined from the model name,
-            required provider package is not installed, or no credentials are
-            configured.
+        ModelConfigError: If provider cannot be determined from the model name
+            or required provider package is not installed.
+        MissingCredentialsError: If no credentials are configured for the
+            resolved provider.
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
@@ -2232,15 +2249,49 @@ def create_model(
     if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
         cred_status = has_provider_credentials(provider)
         if cred_status is False:
-            env_var = get_credential_env_var(provider) or f"<{provider} API key>"
+            from deepagents_cli.model_config import MissingCredentialsError
+
+            env_var = get_credential_env_var(provider)
+            display_env = env_var or f"<{provider} API key>"
             msg = (
                 f"No credentials found for provider '{provider}'. "
-                f"Please set the {env_var} environment variable."
+                f"Please set the {display_env} environment variable."
             )
-            raise ModelConfigError(msg)
+            raise MissingCredentialsError(msg, provider=provider, env_var=env_var)
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
+
+    # Compose under existing kwargs: profile < config.toml < --model-params
+    # (applied below). The CLI's OpenRouter profile is stacked on top of the
+    # built-in SDK profile so its `pre_init` (version check) and factory
+    # (app attribution) compose into a single `apply_provider_profile` call.
+    if provider:
+        from deepagents.profiles.provider import apply_provider_profile
+
+        if provider == "openrouter":
+            _ensure_cli_openrouter_profile_registered()
+
+        spec = f"{provider}:{model_name}" if model_name else provider
+        try:
+            kwargs = apply_provider_profile(spec, kwargs)
+        except ModelConfigError:
+            raise
+        except Exception as exc:
+            # `pre_init` and `init_kwargs_factory` callables registered on a
+            # `ProviderProfile` may raise arbitrary exceptions (e.g. an
+            # `ImportError` from the OpenRouter min-version check). Surface
+            # them as `ModelConfigError` so the CLI's error path renders an
+            # actionable message instead of a raw stack trace.
+            logger.debug(
+                "ProviderProfile resolution for %r failed.", spec, exc_info=True
+            )
+            msg = (
+                f"Failed to apply provider profile for '{spec}': {exc}. "
+                f"Check that the provider package is installed and up to date, "
+                f"or set explicit kwargs via `--model-params`."
+            )
+            raise ModelConfigError(msg) from exc
 
     # CLI --model-params take highest priority
     if extra_kwargs:

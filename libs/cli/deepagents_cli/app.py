@@ -24,12 +24,20 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
+from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.theme import Theme
 from textual.widgets import Static
+from textual.widgets._toast import (
+    Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
+)
 
-from deepagents_cli import theme
+# Applied as an import-time side effect; must come before any App is created.
+from deepagents_cli import (
+    _textual_patches,  # noqa: F401
+    theme,
+)
 from deepagents_cli._cli_context import CLIContext
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
@@ -47,6 +55,15 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.notifications import (
+    ActionId,
+    MissingDepPayload,
+    NotificationAction,
+    NotificationRegistry,
+    PendingNotification,
+    UpdateAvailablePayload,
+)
+from deepagents_cli.widgets._links import open_url_async
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.loading import LoadingWidget
 from deepagents_cli.widgets.message_store import (
@@ -90,6 +107,7 @@ if TYPE_CHECKING:
     from deepagents_cli.textual_adapter import TextualUIAdapter
     from deepagents_cli.widgets.approval import ApprovalMenu
     from deepagents_cli.widgets.ask_user import AskUserMenu
+    from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
 
 # iTerm2 Cursor Guide Workaround
 # ===============================
@@ -394,6 +412,61 @@ def _new_thread_id() -> str:
     return generate_thread_id()
 
 
+def _action_label(entry: PendingNotification, action_id: ActionId) -> str:
+    """Return the user-facing label for *action_id* on *entry*, or the id itself."""
+    for action in entry.actions:
+        if action.action_id == action_id:
+            return action.label
+    return action_id.value
+
+
+def _truncate(text: str, *, limit: int) -> str:
+    """Return *text* truncated to *limit* characters with an ellipsis suffix."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _log_task_exception(task: asyncio.Task[Any]) -> None:
+    """Done-callback that surfaces unhandled exceptions from fire-and-forget tasks.
+
+    Default `asyncio` behavior is to log "Task exception was never retrieved"
+    only when the task is GC'd — easy to miss. This callback runs at task
+    completion and routes failures through `logger.warning` with `exc_info`,
+    matching the codebase pattern at `_finalize_git_branch_refresh`. Use
+    when scheduling a coroutine via `asyncio.create_task` whose result is
+    not awaited (e.g. event-handler cleanup, single-fire mounts).
+    """
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.warning("Background task failed unexpectedly", exc_info=True)
+
+
+def _format_startup_error(error: BaseException) -> str:
+    """Format a server-startup exception for the welcome banner.
+
+    `wait_for_server_healthy` appends a tail of the subprocess log to its
+    `RuntimeError` message (see `_LOG_TAIL_CHARS` in `server.py`), which
+    would overwhelm the banner. Trim to the headline so the user sees an
+    actionable line instead of a scrolling traceback; `DEEPAGENTS_CLI_DEBUG=1`
+    preserves the full log on disk for triage.
+
+    Args:
+        error: The exception raised during server startup.
+
+    Returns:
+        A single-line `Type: message` summary suitable for the banner.
+    """
+    first_line = str(error).splitlines()[0].strip() if str(error) else ""
+    if not first_line:
+        first_line = error.__class__.__name__
+    return f"{type(error).__name__}: {_truncate(first_line, limit=300)}"
+
+
 class TextualSessionState:
     """Session state for the Textual app."""
 
@@ -428,6 +501,47 @@ _COMMAND_URLS: dict[str, str] = {
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
 """Slash-command to URL mapping for commands that just open a browser."""
+
+
+_toast_internals_warned: list[bool] = [False]
+"""Single-slot flag; once `_Toast._notification` is missing, log warning once.
+
+Tests reset this directly (`_toast_internals_warned[0] = False`) when
+they need to exercise the one-shot semantics deterministically.
+"""
+
+
+def _toast_identity(
+    widget: _Toast,
+    *,
+    app: App | None = None,
+) -> str | None:
+    """Return the identity of the notification backing *widget*, or `None`.
+
+    `_Toast._notification` is a Textual internal. If a future upgrade
+    renames it, toast-click routing silently becomes inert. Logs a
+    single warning, and — when *app* is supplied — also posts a
+    one-shot user-visible toast pointing users at the `ctrl+n`
+    fallback so the regression isn't invisible outside the debug log.
+    """
+    notif = getattr(widget, "_notification", None)
+    if notif is None:
+        if not _toast_internals_warned[0]:
+            logger.warning(
+                "Textual Toast no longer exposes `_notification`; "
+                "toast-click routing is disabled.",
+            )
+            if app is not None:
+                app.notify(
+                    "Toast click routing disabled after a Textual upgrade. "
+                    "Press ctrl+n to view notifications.",
+                    severity="warning",
+                    timeout=10,
+                    markup=False,
+                )
+            _toast_internals_warned[0] = True
+        return None
+    return getattr(notif, "identity", None)
 
 
 class DeepAgentsApp(App):
@@ -475,6 +589,13 @@ class DeepAgentsApp(App):
             "ctrl+x",
             "open_editor",
             "Open Editor",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+n",
+            "open_notifications",
+            "Notifications",
             show=False,
             priority=True,
         ),
@@ -673,6 +794,19 @@ class DeepAgentsApp(App):
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
+        self._mcp_unauthenticated = sum(
+            1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        """MCP servers awaiting a `deepagents mcp login` run."""
+
+        self._mcp_errored = sum(
+            1 for s in (mcp_server_info or []) if s.status == "error"
+        )
+        """MCP servers that failed to load (config or network error)."""
+
+        self._active_mcp_viewer: Any = None
+        """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
         profile-aware behavior (model selection, offload budget display,
@@ -767,6 +901,13 @@ class DeepAgentsApp(App):
         self._shell_running = False
         """True while a `!` shell command is executing."""
 
+        self._prewarm_worker: Worker[None] | None = None
+        """Background worker that prewarms `deepagents`/LangChain imports.
+
+        Awaited via `_await_prewarm_imports` before any caller on the event
+        loop re-enters the same module graph (see that method for why).
+        """
+
         # Lifecycle flags & re-entry guards
         self._connecting = server_kwargs is not None
         """True while the backing server is being started or restarted.
@@ -780,6 +921,25 @@ class DeepAgentsApp(App):
         session lifetime (server failure is terminal).
 
         Shown in place of the generic 'Agent not configured' message.
+        """
+
+        self._server_startup_missing_credentials_provider: str | None = None
+        """Set to the offending provider name when startup failed with
+        `MissingCredentialsError`; `None` otherwise. Gates the `/model`
+        recovery hint without string-matching on the formatted error.
+        """
+
+        self._retry_status_widget: AppMessage | None = None
+        """Transient "Retrying startup with X…" breadcrumb. Mounted via
+        `_mount_before_queued` (not `_mount_message`) because it is ephemeral
+        state and must not appear in scrollback or serialized history.
+        """
+
+        self._startup_failure_widget: ErrorMessage | None = None
+        """Transient chat surface for the most recent server-startup failure.
+        Mounted by `on_deep_agents_app_server_start_failed`; removed on
+        `ServerReady` so a successful `/model` retry doesn't leave the stale
+        error dangling in scrollback.
         """
 
         self._quit_pending = False
@@ -865,7 +1025,30 @@ class DeepAgentsApp(App):
         """Typing-aware approval deferral state."""
 
         self._update_available: tuple[bool, str | None] = (False, None)
-        """Update availability state — set by _check_for_updates, read on exit."""
+        """Update availability state.
+
+        Set by `_check_for_updates` when PyPI reports a newer version;
+        read at shutdown (for the exit banner), by `_handle_version_command`
+        (for the `/version` update hint), and by downstream callers. Does
+        *not* drive missing-dep toast suppression — that's gated on
+        `_update_modal_pending`.
+        """
+
+        self._update_check_done = asyncio.Event()
+        """Set by `_check_for_updates` when it returns (success, failure, or
+        no-op). Lets `_check_optional_tools_background` defer posting
+        missing-dep toasts until we know whether the update modal is about
+        to clear them."""
+
+        self._update_modal_pending = asyncio.Event()
+        """Set only immediately before the update modal is scheduled.
+
+        Used by `_check_optional_tools_background` to decide whether to
+        suppress missing-dep toasts: we only suppress when a modal is
+        actually about to open, not merely when an update was detected.
+        A detected-but-throttled update (already notified within
+        `CACHE_TTL`) leaves this clear so missing-dep toasts still fire.
+        """
 
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
@@ -891,6 +1074,13 @@ class DeepAgentsApp(App):
         self._image_tracker = MediaTracker()
         """Tracks image/media pastes in the chat input so they can be
         attached to outgoing messages and cleared after submission."""
+
+        self._notice_registry = NotificationRegistry()
+        """Pending actionable notifications.
+
+        Startup workers register notices (missing deps, update available)
+        here; the user opens them via toast click or `ctrl+n`.
+        """
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -926,6 +1116,39 @@ class DeepAgentsApp(App):
         colors = theme.get_theme_colors(self)
         return theme.get_css_variable_defaults(colors=colors)
 
+    def _fatal_error(self) -> None:
+        """Render an unhandled-exception traceback without leaking secrets.
+
+        Textual's default `_fatal_error` renders with `show_locals=True`,
+        which prints local variables — including resolved API keys carried
+        in `kwargs` dicts on the call path through `create_model`. Locals
+        are only re-enabled when `DEEPAGENTS_CLI_DEBUG` matches a truthy
+        token (`"1"`, `"true"`, `"yes"`); any other value, including `"0"`
+        and `"false"`, leaves them disabled.
+        """
+        try:
+            import rich
+            from rich.segment import Segments
+            from rich.traceback import Traceback
+
+            from deepagents_cli._env_vars import DEBUG
+        except Exception:  # noqa: BLE001  # mid-teardown import errors fall through to Textual's default rather than double-fault and swallow the original crash
+            super()._fatal_error()
+            return
+
+        self.bell()
+        show_locals = os.environ.get(DEBUG, "").lower() in {"1", "true", "yes"}
+        traceback = Traceback(
+            show_locals=show_locals,
+            width=None,
+            locals_max_length=5,
+            suppress=[rich],
+        )
+        self._exit_renderables.append(
+            Segments(self.console.render(traceback, self.console.options))
+        )
+        self._close_messages_no_wait()
+
     def compose(self) -> ComposeResult:
         """Compose the application layout.
 
@@ -938,6 +1161,8 @@ class DeepAgentsApp(App):
             yield WelcomeBanner(
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
@@ -993,10 +1218,19 @@ class DeepAgentsApp(App):
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
 
+        # Pre-import `html.entities` on the main thread before the worker
+        # starts. Python 3.14 replaced the global import lock with per-module
+        # locks; a worker importing `markdown_it` (which transitively pulls
+        # `html.entities`) can race main-thread code looking up `html` *while
+        # `html` itself is still being initialized*, raising `KeyError: 'html'`
+        # from `_find_and_load_unlocked`.
+        import html.entities  # noqa: F401
+
         # Prewarm heavy imports in a thread while the first frame renders.
         # The user can't type yet, so GIL contention is harmless.  By the
         # time _post_paint_init fires its inline imports are dict lookups.
-        self.run_worker(
+        # Handle is captured so `_await_prewarm_imports` can block on it.
+        self._prewarm_worker = self.run_worker(
             asyncio.to_thread(self._prewarm_deferred_imports),
             exclusive=True,
             group="startup-import-prewarm",
@@ -1193,6 +1427,17 @@ class DeepAgentsApp(App):
             group="startup-tool-check",
         )
 
+        # Debug helpers: exercise the notification center and update-modal
+        # flows without waiting for real conditions. The two env vars are
+        # independent so missing-dep notices can be surfaced without auto-
+        # stealing focus into the update modal.
+        from deepagents_cli._env_vars import DEBUG_NOTIFICATIONS, DEBUG_UPDATE
+
+        if os.environ.get(DEBUG_NOTIFICATIONS):
+            self.call_after_refresh(self._inject_debug_notifications)
+        if os.environ.get(DEBUG_UPDATE):
+            self.call_after_refresh(self._inject_debug_update)
+
         # Session-start sequence (history -> `--startup-cmd` -> initial prompt/
         # skill -> queue drain). When connecting, defer until
         # `on_deep_agents_app_server_ready` fires; otherwise run it now so the
@@ -1223,12 +1468,20 @@ class DeepAgentsApp(App):
             )
 
     async def _check_optional_tools_background(self) -> None:
-        """Check for optional tools in a thread and notify if missing."""
+        """Check for optional tools and register actionable notices.
+
+        Missing tools are added to the notifications registry. Toasts
+        are posted only if no update modal is actually about to open;
+        otherwise the modal's `clear_notifications` call would
+        immediately drop them and cause visible flicker. Entries remain
+        reachable via ctrl+n either way.
+        """
         try:
             from deepagents_cli.main import (
+                build_missing_tool_notification,
                 check_optional_tools,
-                format_tool_warning_tui,
             )
+            from deepagents_cli.update_check import is_update_check_enabled
         except ImportError:
             logger.warning(
                 "Could not import optional tools checker",
@@ -1238,20 +1491,53 @@ class DeepAgentsApp(App):
 
         try:
             missing = await asyncio.to_thread(check_optional_tools)
-        except (OSError, FileNotFoundError):
+        except OSError:
             logger.debug("Failed to check for optional tools", exc_info=True)
             return
         except Exception:
-            logger.warning("Unexpected error checking optional tools", exc_info=True)
-            return
-
-        for tool in missing:
+            # Defensive: surface regressions (e.g. future refactors of
+            # check_optional_tools raising an unexpected exception type)
+            # instead of silently returning.
+            logger.warning("Optional-tools check failed unexpectedly", exc_info=True)
             self.notify(
-                format_tool_warning_tui(tool),
+                "Could not check optional tools — see logs.",
                 severity="warning",
-                timeout=15,
+                timeout=6,
                 markup=False,
             )
+            return
+
+        if not missing:
+            return
+
+        # Wait for the update check so we know whether the update
+        # modal is about to clear any toasts we post. Bounded by a
+        # short timeout to avoid blocking indefinitely if PyPI hangs.
+        if is_update_check_enabled():
+            try:
+                await asyncio.wait_for(self._update_check_done.wait(), timeout=5.0)
+            except TimeoutError:
+                logger.debug("Update check timed out; posting tool toasts anyway")
+
+        # Suppress only when a modal is actually going to open — not
+        # just when an update was detected. A detected-but-throttled
+        # update (already notified within CACHE_TTL) does not open the
+        # modal, so toasts must still fire or returning users never
+        # see the warning.
+        suppress_toasts = self._update_modal_pending.is_set()
+
+        for tool in missing:
+            notification = build_missing_tool_notification(tool)
+            if suppress_toasts:
+                # Register silently; the update modal's dismissal
+                # leaves these reachable via ctrl+n (notification center).
+                self._notice_registry.add(notification)
+            else:
+                self._notify_actionable(
+                    notification,
+                    severity="warning",
+                    timeout=15,
+                )
 
     async def _discover_skills(self) -> None:
         """Discover skills, cache metadata, and update autocomplete.
@@ -1416,6 +1702,10 @@ class DeepAgentsApp(App):
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
         if self._model_kwargs is not None:
+            # Block on prewarm before re-entering the import graph; see
+            # `_await_prewarm_imports` for the deadlock rationale.
+            await self._await_prewarm_imports()
+
             from deepagents_cli.config import create_model
             from deepagents_cli.model_config import ModelConfigError, save_recent_model
 
@@ -1497,14 +1787,50 @@ class DeepAgentsApp(App):
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
+
+        # Drop transient failure-state widgets — banner state and the agent
+        # response now convey "connected", so the prior error and breadcrumb
+        # would just dangle in scrollback.
+        for attr in ("_retry_status_widget", "_startup_failure_widget"):
+            widget = getattr(self, attr)
+            if widget is None:
+                continue
+            setattr(self, attr, None)
+
+            async def _drop(w: Widget = widget) -> None:
+                # Mount may still be in flight when `ServerReady` arrives;
+                # short-circuit on un-attached widgets instead of raising.
+                # `NoMatches`/`ScreenStackError` cover later-stage detach
+                # races (screen torn down mid-removal).
+                if not w.is_attached:
+                    return
+                with suppress(NoMatches, ScreenStackError):
+                    await w.remove()
+
+            task = asyncio.create_task(_drop())
+            task.add_done_callback(_log_task_exception)
         self._mcp_tool_count = sum(len(s.tools) for s in (event.mcp_server_info or []))
+        self._mcp_unauthenticated = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "unauthenticated"
+        )
+        self._mcp_errored = sum(
+            1 for s in (event.mcp_server_info or []) if s.status == "error"
+        )
 
         # Update welcome banner to show ready state
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_connected(self._mcp_tool_count)
+            banner.set_connected(
+                self._mcp_tool_count,
+                mcp_unauthenticated=self._mcp_unauthenticated,
+                mcp_errored=self._mcp_errored,
+            )
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
+
+        if self._active_mcp_viewer is not None:
+            with suppress(Exception):
+                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -1537,23 +1863,100 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+        from deepagents_cli.model_config import MissingCredentialsError
+
         self._connecting = False
-        self._server_startup_error = f"{type(event.error).__name__}: {event.error}"
+        if isinstance(event.error, MCPConfigError):
+            # Already carries the path + hint; showing the class name is noise.
+            self._server_startup_error = str(event.error)
+        else:
+            self._server_startup_error = _format_startup_error(event.error)
+
+        # Stash the provider for the `/model` recovery hint. Reset on every
+        # failure so a non-credentials retry-failure clears the prior flag.
+        self._server_startup_missing_credentials_provider = (
+            event.error.provider
+            if isinstance(event.error, MissingCredentialsError)
+            else None
+        )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
-        # Update banner to show persistent failure state
+
+        # Drop the banner's connecting spinner — chat surface owns the error.
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-            banner.set_failed(self._server_startup_error)
+            banner.set_idle()
         except NoMatches:
             logger.warning("Welcome banner not found during server failure transition")
 
-        # Discard any messages queued while the server was starting
-        if self._pending_messages:
-            self._pending_messages.clear()
-            for w in self._queued_widgets:
-                w.remove()
-            self._queued_widgets.clear()
+        # Keep any queued messages and widgets in place — `/model` retry can
+        # bring the server up, at which point `_run_session_start_sequence`
+        # drains them. Deferred actions (model/thread switches queued during
+        # the initial connect) are dropped because the failure invalidates
+        # their assumptions; the user can re-issue them after recovery.
         self._deferred_actions.clear()
+
+        # Failure surfaces only in chat — keeps recovery hint adjacent to the
+        # input. Banner is set to idle above to drop the connecting spinner.
+        text = f"Server failed to start: {self._server_startup_error}"
+        if (
+            self._server_startup_missing_credentials_provider is not None
+            and self._server_kwargs is not None
+        ):
+            text += (
+                "\n\nHint: run `/model <provider>:<model>` to retry "
+                "startup with a provider you have credentials for."
+            )
+
+        async def _mount_failure() -> None:
+            # Drop any prior failure widget (re-entrant on retry-then-fail).
+            prior = self._startup_failure_widget
+            self._startup_failure_widget = None
+            if prior is not None and prior.is_attached:
+                with suppress(NoMatches, ScreenStackError):
+                    await prior.remove()
+
+            try:
+                messages = self.query_one("#messages", Container)
+            except (NoMatches, ScreenStackError):
+                return
+            if not messages.is_attached:
+                return
+
+            new_widget = ErrorMessage(text)
+            # Mount before storing the reference so `ServerReady` racing this
+            # await cannot observe a half-mounted widget.
+            await self._mount_before_queued(messages, new_widget)
+            self._startup_failure_widget = new_widget
+
+        # Fire-and-forget mount: this is the *only* failure surface, so log
+        # any exception loudly via `_log_task_exception`.
+        task = asyncio.create_task(_mount_failure())
+        task.add_done_callback(_log_task_exception)
+
+    async def _await_prewarm_imports(self) -> None:
+        """Wait for prewarm imports before re-entering their module graph.
+
+        Prevents a multi-threaded import deadlock: the prewarm worker runs in
+        `asyncio.to_thread`, and any caller that imports `deepagents` or
+        LangChain from the event-loop thread while it's still running can
+        race on partially-initialized module locks.
+
+        `CancelledError` propagates so app shutdown isn't silently absorbed.
+        """
+        from textual.worker import WorkerFailed
+
+        worker = self._prewarm_worker
+        if worker is None:
+            return
+        try:
+            await worker.wait()
+        except WorkerFailed:
+            # Prewarm body best-efforts third-party imports and already
+            # warns; logging at WARNING here surfaces unexpected failures
+            # (e.g. a regression that breaks a non-optional import) that
+            # the body itself didn't catch.
+            logger.warning("Import prewarm worker failed", exc_info=True)
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
@@ -1642,7 +2045,29 @@ class DeepAgentsApp(App):
             logger.warning("Could not prewarm model caches", exc_info=True)
 
     async def _check_for_updates(self) -> None:
-        """Check PyPI for a newer version and optionally auto-update."""
+        """Run the update check and signal completion for downstream waiters.
+
+        Wraps `_check_for_updates_impl` so `_update_check_done.set()`
+        always fires — lets `_check_optional_tools_background` unblock
+        after the PyPI round-trip regardless of success, failure, or no-op.
+        """
+        try:
+            await self._check_for_updates_impl()
+        finally:
+            # Always signal completion — the optional-tools worker
+            # waits on this before deciding whether to post toasts.
+            self._update_check_done.set()
+
+    async def _check_for_updates_impl(self) -> None:
+        """Check PyPI for a newer version and either auto-update or queue a modal.
+
+        Phase 1 contacts PyPI and records the latest version on the app.
+        Phase 2 either performs the auto-upgrade (when enabled), or
+        registers the actionable notice and schedules the update modal.
+        Phase 2 sets `_update_modal_pending` *only* when the modal is
+        actually being scheduled; a detected-but-throttled update
+        leaves the event clear so missing-dep toasts still fire.
+        """
         # Phase 1: version check (benign failure)
         try:
             from deepagents_cli.update_check import (
@@ -1660,7 +2085,7 @@ class DeepAgentsApp(App):
             logger.debug("Background update check failed", exc_info=True)
             return
 
-        # Phase 2: auto-update or notify
+        # Phase 2: auto-update or register actionable notice
         try:
             from deepagents_cli._version import __version__ as cli_version
 
@@ -1672,7 +2097,7 @@ class DeepAgentsApp(App):
                     severity="information",
                     timeout=5,
                 )
-                success, _output = await perform_upgrade()
+                success, output = await perform_upgrade()
                 if success:
                     self.notify(
                         f"Updated to v{latest}. Restart to use the new version.",
@@ -1680,15 +2105,25 @@ class DeepAgentsApp(App):
                         timeout=10,
                     )
                 else:
+                    logger.warning(
+                        "Background auto-upgrade to v%s failed. Output:\n%s",
+                        latest,
+                        output,
+                    )
                     cmd = upgrade_command()
+                    snippet = _truncate(output, limit=160) if output else ""
+                    message = f"Auto-update failed. Run manually: {cmd}"
+                    if snippet:
+                        message = f"{message}\n{snippet}"
                     self.notify(
-                        f"Auto-update failed. Run manually: {cmd}",
+                        message,
                         severity="warning",
                         timeout=15,
                         markup=False,
                     )
             else:
                 from deepagents_cli.update_check import (
+                    format_age_suffix,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -1697,15 +2132,24 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
-                self.notify(
-                    f"Update available: v{latest} (current: v{cli_version}). "
-                    f"Run: {cmd}\n\n"
-                    f"Enable auto-updates: /auto-update",
-                    severity="information",
-                    timeout=15,
-                    markup=False,
+                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+                notification = self._build_update_notification(
+                    latest=latest,
+                    cli_version=cli_version,
+                    age_suffix=age_suffix,
+                    upgrade_cmd=cmd,
                 )
+                # Register without a toast: the dedicated modal is
+                # the update's UI, so a parallel toast would be
+                # redundant. Registration still makes the entry
+                # reachable via ctrl+n if the modal is dismissed.
+                self._notice_registry.add(notification)
                 await asyncio.to_thread(mark_update_notified, latest)
+                # Set *before* scheduling the modal: the optional-tools
+                # worker may race with this path, and it gates toast
+                # suppression on this event.
+                self._update_modal_pending.set()
+                self.call_after_refresh(self._open_update_available_modal, notification)
         except Exception:
             logger.warning("Update check/notify failed unexpectedly", exc_info=True)
             if is_auto_update_enabled():
@@ -1714,6 +2158,38 @@ class DeepAgentsApp(App):
                     severity="warning",
                     timeout=10,
                 )
+
+    @staticmethod
+    def _build_update_notification(
+        *,
+        latest: str,
+        cli_version: str,
+        age_suffix: str,
+        upgrade_cmd: str,
+    ) -> PendingNotification:
+        """Build the update-available registry entry.
+
+        Args:
+            latest: New version advertised by PyPI.
+            cli_version: Currently installed version string.
+            age_suffix: Pre-formatted "(released N days ago)" fragment.
+            upgrade_cmd: Shell command to install the update.
+
+        Returns:
+            Registry entry ready to pass to `_notify_actionable`.
+        """
+        body = f"v{latest} is available (current: v{cli_version}{age_suffix})."
+        return PendingNotification(
+            key="update:available",
+            title=f"Update available: v{latest}",
+            body=body,
+            actions=(
+                NotificationAction(ActionId.INSTALL, "Install now", primary=True),
+                NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),
+                NotificationAction(ActionId.SKIP_VERSION, "Skip this version"),
+            ),
+            payload=UpdateAvailablePayload(latest=latest, upgrade_cmd=upgrade_cmd),
+        )
 
     async def _show_whats_new(self) -> None:
         """Show a 'what's new' banner on the first launch after an upgrade."""
@@ -1754,26 +2230,51 @@ class DeepAgentsApp(App):
         """Handle the `/update` slash command — check for and install updates."""
         await self._mount_message(UserMessage("/update"))
         try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
+                format_age_suffix,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
             )
 
+            if await asyncio.to_thread(_is_editable_install):
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        "Updates are not available for editable installs. "
+                        f"Currently on v{cli_version}{age_suffix}."
+                    )
+                )
+                return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available, bypass_cache=True
             )
+            if latest is None:
+                await self._mount_message(
+                    AppMessage(
+                        "Could not determine the latest version. "
+                        "Check your network and try again."
+                    )
+                )
+                return
             if not available:
-                await self._mount_message(AppMessage("Already on the latest version."))
+                age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+                await self._mount_message(
+                    AppMessage(
+                        f"Already on the latest version (v{cli_version}{age_suffix})."
+                    )
+                )
                 return
 
-            from deepagents_cli._version import __version__ as cli_version
-
+            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} (current: v{cli_version}). "
-                    "Upgrading..."
+                    f"Update available: v{latest} "
+                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
                 )
             )
             success, output = await perform_upgrade()
@@ -1793,6 +2294,83 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}")
             )
+
+    async def _handle_version_command(self) -> None:
+        """Handle the `/version` slash command — show versions and update status.
+
+        The CLI release age is served from the cache populated by the
+        background update check. The SDK release age is served from its own
+        cache; on the first call for a given SDK version (or on a cache
+        miss) this triggers a one-off PyPI fetch bounded by a 3s timeout,
+        then persists the result so subsequent calls stay local. The
+        update-available hint reads `self._update_available`, which
+        reflects the last completed background check.
+        """
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+
+        lines: list[str] = []
+        try:
+            from deepagents_cli._version import __version__ as cli_version
+            from deepagents_cli.update_check import format_age_suffix
+
+            age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
+            lines.append(f"deepagents-cli version: {cli_version}{age_suffix}")
+        except ImportError:
+            logger.debug("deepagents_cli._version module not found")
+            lines.append("deepagents-cli version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up CLI version", exc_info=True)
+            lines.append("deepagents-cli version: unknown")
+
+        try:
+            from deepagents_cli.update_check import format_sdk_age_suffix
+
+            sdk_version = _pkg_version("deepagents")
+            sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
+            lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
+        except PackageNotFoundError:
+            logger.debug("deepagents SDK package not found in environment")
+            lines.append("deepagents (SDK) version: unknown")
+        except Exception:
+            logger.warning("Unexpected error looking up SDK version", exc_info=True)
+            lines.append("deepagents (SDK) version: unknown")
+
+        available, latest = self._update_available
+        if available and latest:
+            try:
+                from deepagents_cli.update_check import upgrade_command
+
+                cmd = upgrade_command()
+            except Exception:
+                logger.warning(
+                    "Could not resolve upgrade command for /version; "
+                    "falling back to generic pip hint",
+                    exc_info=True,
+                )
+                from deepagents_cli.update_check import FALLBACK_UPGRADE_COMMAND
+
+                cmd = FALLBACK_UPGRADE_COMMAND
+            lines.extend(("", f"Update available: v{latest}. Run: {cmd}"))
+
+        await self._mount_message(AppMessage("\n".join(lines)))
+
+        try:
+            from deepagents_cli.extras_info import (
+                format_extras_status,
+                get_extras_status,
+            )
+
+            extras_markdown = format_extras_status(get_extras_status())
+        except Exception:
+            logger.warning(
+                "Failed to collect optional dependency status", exc_info=True
+            )
+            extras_markdown = ""
+        if extras_markdown:
+            await self._mount_message(AppMessage(extras_markdown, markdown=True))
 
     async def _handle_auto_update_toggle(self) -> None:
         """Handle the `/auto-update` slash command — persist toggle immediately."""
@@ -2601,14 +3179,17 @@ class DeepAgentsApp(App):
             )
             return
 
-        # If the app is busy or still sequencing startup work, enqueue instead
-        # of processing. Messages queued during startup are drained once the
-        # session reaches its first stable idle/running state.
+        # If the app is busy, still sequencing startup work, or holding a
+        # post-failure recovery state (server hasn't come up yet but `/model`
+        # retry is still possible), enqueue instead of processing. Messages
+        # queued in any of these states are drained once the session reaches
+        # its first stable idle/running state.
         if (
             self._agent_running
             or self._shell_running
             or self._connecting
             or self._startup_sequence_running
+            or self._server_startup_error is not None
         ):
             if mode == "command" and self._can_bypass_queue(value.lower().strip()):
                 await self._process_message(value, mode)
@@ -3004,6 +3585,7 @@ class DeepAgentsApp(App):
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
                 "  Ctrl+X          Open prompt in external editor\n"
+                "  Ctrl+N          Review pending notifications\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -3020,34 +3602,7 @@ class DeepAgentsApp(App):
             await self._open_url_command(command, cmd)
         elif cmd == "/version":
             await self._mount_message(UserMessage(command))
-            # Show CLI and SDK package versions
-            try:
-                from deepagents_cli._version import (
-                    __version__ as cli_version,
-                )
-
-                cli_line = f"deepagents-cli version: {cli_version}"
-            except ImportError:
-                logger.debug("deepagents_cli._version module not found")
-                cli_line = "deepagents-cli version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up CLI version", exc_info=True)
-                cli_line = "deepagents-cli version: unknown"
-            try:
-                from importlib.metadata import (
-                    PackageNotFoundError,
-                    version as _pkg_version,
-                )
-
-                sdk_version = _pkg_version("deepagents")
-                sdk_line = f"deepagents (SDK) version: {sdk_version}"
-            except PackageNotFoundError:
-                logger.debug("deepagents SDK package not found in environment")
-                sdk_line = "deepagents (SDK) version: unknown"
-            except Exception:
-                logger.warning("Unexpected error looking up SDK version", exc_info=True)
-                sdk_line = "deepagents (SDK) version: unknown"
-            await self._mount_message(AppMessage(f"{cli_line}\n{sdk_line}"))
+            await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
         elif cmd == "/clear":
@@ -3682,11 +4237,10 @@ class DeepAgentsApp(App):
                 self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
             )
-        elif self._server_startup_error:
-            await self._mount_message(
-                ErrorMessage(f"Server failed to start: {self._server_startup_error}")
-            )
-        else:
+        elif not self._server_startup_error:
+            # When a server-startup failure is in flight, the chat
+            # `ErrorMessage` mounted by `on_deep_agents_app_server_start_failed`
+            # is the single source of truth — don't duplicate it here.
             await self._mount_message(
                 AppMessage("Agent not configured for this session.")
             )
@@ -4666,11 +5220,17 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_cli.widgets.notification_center import (
+            NotificationCenterScreen,
+        )
+        from deepagents_cli.widgets.notification_detail import NotificationDetailScreen
         from deepagents_cli.widgets.notification_settings import (
             NotificationSettingsScreen,
         )
         from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
 
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
@@ -4680,6 +5240,15 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, NotificationSettingsScreen):
             self.screen.focus_previous()
+            return
+        if isinstance(
+            self.screen,
+            (UpdateAvailableScreen, NotificationCenterScreen, NotificationDetailScreen),
+        ):
+            self.screen.action_move_up()
+            return
+        if isinstance(self.screen, MCPViewerScreen):
+            self.screen.action_move_up()
             return
         # shift+tab is reused for navigation inside modal screens (e.g.
         # ModelSelectorScreen); skip the toggle so it doesn't fire through.
@@ -4827,8 +5396,22 @@ class DeepAgentsApp(App):
             return
         self._chat_input.focus_input()
 
-    def on_click(self, _event: Click) -> None:
-        """Handle clicks anywhere in the terminal to focus on the command line."""
+    def on_click(self, event: Click) -> None:
+        """Handle clicks anywhere in the terminal.
+
+        Clicks on registered actionable toasts open the notification
+        center. The toast itself dismisses as normal; we only piggyback
+        on the click. Other clicks restore focus to the chat input.
+        """
+        widget = event.widget
+        if isinstance(widget, _Toast):
+            identity = _toast_identity(widget, app=self)
+            if identity is not None and self._notice_registry.is_actionable_toast(
+                identity
+            ):
+                self.call_after_refresh(self._open_notification_center)
+            return
+
         if not self._chat_input:
             return
         # Don't steal focus from approval or ask_user widgets
@@ -5141,6 +5724,21 @@ class DeepAgentsApp(App):
 
         previous_agent = self._assistant_id
         previous_thread_id = self._lc_thread_id
+        # Only offer a resume hint if the previous thread produced agent-side
+        # output. `USER` alone is not enough: local-only flows (`/update`,
+        # `!shell`, most slash commands) mount a `UserMessage` widget without
+        # ever invoking the server, so no checkpoint exists and `-r <thread>`
+        # would fail. `ASSISTANT` / `TOOL` / `SKILL` entries only land in the
+        # store after a server round-trip, which implies a checkpoint row.
+        checkpoint_signal_types = {
+            MessageType.ASSISTANT,
+            MessageType.TOOL,
+            MessageType.SKILL,
+        }
+        previous_thread_has_agent_output = any(
+            msg.type in checkpoint_signal_types
+            for msg in self._message_store.get_all_messages()
+        )
         server_proc = self._server_proc
         if server_proc is None:
             # Guarded in _switch_agent, but the worker runs in the next tick
@@ -5223,7 +5821,11 @@ class DeepAgentsApp(App):
                 self._connecting = False
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
-                    banner.set_connected(self._mcp_tool_count)
+                    banner.set_connected(
+                        self._mcp_tool_count,
+                        mcp_unauthenticated=self._mcp_unauthenticated,
+                        mcp_errored=self._mcp_errored,
+                    )
                 except NoMatches:
                     pass
                 self.notify(
@@ -5304,8 +5906,9 @@ class DeepAgentsApp(App):
             # alone is enough: `_resolve_resume_thread` infers the owning
             # agent from persisted thread metadata via `get_thread_agent`.
             # Build via `from_markup` so a thread ID with stray brackets
-            # can't corrupt rendering.
-            if previous_thread_id:
+            # can't corrupt rendering. See checkpoint-gating rationale on
+            # `previous_thread_has_agent_output` above.
+            if previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] deepagents -r $thread "
                     "[dim]to resume the previous thread.[/dim]",
@@ -5354,13 +5957,458 @@ class DeepAgentsApp(App):
         screen = NotificationSettingsScreen(suppressed=suppressed)
         self.push_screen(screen, handle_result)
 
+    def _notify_actionable(
+        self,
+        notification: PendingNotification,
+        *,
+        severity: Literal["information", "warning", "error"] = "information",
+        timeout: float | None = None,
+    ) -> None:
+        """Register *notification* and post its actionable toast.
+
+        Posts the toast as a raw `Notification` so the identity can be
+        captured and bound to the registry entry for click routing.
+
+        Args:
+            notification: Registry entry to register and surface.
+            severity: Toast severity banner color.
+            timeout: Seconds the toast stays on screen (defaults to
+                `App.NOTIFICATION_TIMEOUT`).
+        """
+        self._notice_registry.add(notification)
+
+        toast_body = f"{notification.body}\n\nctrl+n for options"
+        effective_timeout = (
+            timeout if timeout is not None else self.NOTIFICATION_TIMEOUT
+        )
+        # `markup=False` is load-bearing: `notification.body` can carry
+        # dynamic content (tool names, versions, URLs, exception text)
+        # with square brackets that would crash Textual's toast
+        # renderer if parsed as Rich markup.
+        toast = _Notification(
+            message=toast_body,
+            title=notification.title,
+            severity=severity,
+            timeout=effective_timeout,
+            markup=False,
+        )
+        self._notice_registry.bind_toast(notification.key, toast.identity)
+        self.post_message(_Notify(toast))
+
+    def _inject_debug_notifications(self) -> None:
+        """Register sample missing-dependency entries for UI testing.
+
+        Gated by `DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS`; no-op without it.
+        Uses `_notify_actionable` so each entry also posts a clickable
+        toast — mirroring the real missing-dep path and exercising both
+        the toast surface and the notification center.
+
+        Deliberately does *not* register an update-available entry or
+        open the update modal — that flow is exercised via
+        `DEEPAGENTS_CLI_DEBUG_UPDATE` / `_inject_debug_update`, so the
+        notification center can be browsed without focus being stolen
+        by the update modal.
+        """
+        try:
+            from deepagents_cli.main import build_missing_tool_notification
+        except ImportError:
+            logger.warning(
+                "Could not inject debug notifications; main import failed",
+                exc_info=True,
+            )
+            return
+
+        for tool in ("ripgrep", "tavily"):
+            self._notify_actionable(
+                build_missing_tool_notification(tool),
+                severity="warning",
+                timeout=15,
+            )
+
+    def _inject_debug_update(self) -> None:
+        """Register a sample update entry and auto-open the update modal.
+
+        Gated by `DEEPAGENTS_CLI_DEBUG_UPDATE`; no-op without it.
+        Mirrors the real update-check path so the dedicated modal can
+        be exercised without waiting for a PyPI release.
+        """
+        update_notification = self._build_update_notification(
+            latest="9.9.9",
+            cli_version="0.0.1",
+            age_suffix=", released 2 days ago",
+            upgrade_cmd="uv tool upgrade deepagents-cli",
+        )
+        self._notice_registry.add(update_notification)
+        self._update_modal_pending.set()
+        self.call_after_refresh(self._open_update_available_modal, update_notification)
+
+    def action_open_notifications(self) -> None:
+        """Open the notification center via the `ctrl+n` keybind."""
+        self._open_notification_center()
+
+    def _open_notification_center(self) -> None:
+        """Push the notification center modal, or toast when empty."""
+        from deepagents_cli.widgets.notification_center import (
+            NotificationActionResult,
+            NotificationCenterScreen,
+        )
+
+        if isinstance(self.screen, ModalScreen):
+            # Don't stack on top of another modal (e.g. approval, model
+            # selector). Surface feedback so the user knows why ctrl+n
+            # appeared to do nothing.
+            self.notify(
+                "Close the current dialog to view notifications.",
+                severity="information",
+                timeout=3,
+                markup=False,
+            )
+            return
+
+        pending = self._notice_registry.list_all()
+        if not pending:
+            self.notify(
+                "No pending notifications.",
+                severity="information",
+                timeout=2,
+                markup=False,
+            )
+            return
+
+        self._dismiss_registered_toasts()
+
+        def handle_result(result: NotificationActionResult | None) -> None:
+            if result is not None:
+                self.run_worker(
+                    self._dispatch_notification_action(result.key, result.action_id),
+                    exclusive=False,
+                    group=f"notification-action-{result.key}",
+                )
+            elif self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(NotificationCenterScreen(pending), handle_result)
+
+    def _dismiss_registered_toasts(self) -> None:
+        """Drop toasts bound to pending notifications.
+
+        Called when the notification center opens so the live toast
+        surface doesn't duplicate the modal list. Only toasts classified
+        as actionable by `NotificationRegistry.is_actionable_toast` are
+        dismissed; unrelated toasts (errors, generic info toasts) stay
+        visible.
+        """
+        to_dismiss = [
+            notif
+            for notif in list(self._notifications)
+            if self._notice_registry.is_actionable_toast(notif.identity)
+        ]
+        if not to_dismiss:
+            return
+        for notif in to_dismiss:
+            self._unnotify(notif, refresh=False)
+            self._notice_registry.unbind_toast(notif.identity)
+        self._refresh_notifications()
+
+    async def on_notification_suppress_requested(
+        self,
+        message: NotificationSuppressRequested,
+    ) -> None:
+        """Suppress the notice in place and refresh the open center."""
+        from deepagents_cli.widgets.notification_center import NotificationCenterScreen
+
+        message.stop()
+        await self._dispatch_notification_action(message.key, ActionId.SUPPRESS)
+        screen = self.screen
+        if not isinstance(screen, NotificationCenterScreen):
+            return
+        try:
+            await screen.reload(self._notice_registry.list_all())
+        except Exception as exc:  # defend against dismiss/mount races
+            # A concurrent dismissal can detach the VerticalScroll before
+            # `reload` queries it. The worst case is a stale row list,
+            # which the next open of the center will heal. Log + toast
+            # so the failure surfaces instead of vanishing into a worker.
+            logger.warning(
+                "Failed to refresh notification center after suppress: %s",
+                exc,
+                exc_info=True,
+            )
+            self.notify(
+                f"Could not refresh notifications: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+    def _open_update_available_modal(self, entry: PendingNotification) -> None:
+        """Push the dedicated update-available modal for *entry*.
+
+        When another modal is already open the entry stays registered
+        and a toast hint points the user at `ctrl+n` once the blocking
+        modal closes. Also clears `_update_modal_pending` so
+        missing-dep toasts stop suppressing themselves.
+        """
+        from deepagents_cli.widgets.update_available import UpdateAvailableScreen
+
+        if isinstance(self.screen, ModalScreen):
+            # We can't stack; leave the entry in the registry and tell
+            # the user how to reach it.
+            self._update_modal_pending.clear()
+            self.notify(
+                "Update available. Close the current dialog, "
+                "then press ctrl+n to review it.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
+            return
+
+        # Textual layers are per-screen, so base-screen toasts visually
+        # bleed through the modal's dim. Drop them before opening so
+        # the modal reads cleanly; underlying notification entries
+        # stay in the registry and remain reachable via ctrl+n.
+        self.clear_notifications()
+
+        def handle_result(result: ActionId | None) -> None:
+            if result is not None:
+                self.run_worker(
+                    self._dispatch_notification_action(entry.key, result),
+                    exclusive=False,
+                    group=f"notification-action-{entry.key}",
+                )
+            elif self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(UpdateAvailableScreen(entry), handle_result)
+
+    async def _dispatch_notification_action(
+        self, key: str, action_id: ActionId
+    ) -> None:
+        """Execute the side effect for a notification action.
+
+        Catches `Exception` broadly so any failure in the handler
+        surfaces as a warning toast instead of vanishing into the
+        background worker's log — this is the user-visibility guarantee
+        the registry is designed to provide.
+
+        Args:
+            key: Registry key of the notification.
+            action_id: The action the user selected.
+        """
+        entry = self._notice_registry.get(key)
+        if entry is None:
+            return
+
+        action_label = _action_label(entry, action_id)
+        try:
+            await self._route_payload_action(entry, action_id)
+        except Exception as exc:  # every failure surfaces to the user
+            logger.warning(
+                "Action %r on %r failed: %s", action_id, key, exc, exc_info=True
+            )
+            self.notify(
+                f"{action_label} failed: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+
+        if self._chat_input:
+            self._chat_input.focus_input()
+
+    async def _route_payload_action(
+        self, entry: PendingNotification, action_id: ActionId
+    ) -> None:
+        """Dispatch *action_id* to the payload-specific handler.
+
+        Raises:
+            TypeError: When `entry.payload` has no registered handler.
+        """
+        if isinstance(entry.payload, MissingDepPayload):
+            await self._handle_missing_dep_action(entry, entry.payload, action_id)
+            return
+        if isinstance(entry.payload, UpdateAvailablePayload):
+            await self._handle_update_action(entry, entry.payload, action_id)
+            return
+        msg = f"unhandled payload type {type(entry.payload).__name__}"
+        raise TypeError(msg)
+
+    @staticmethod
+    def _log_unknown_action(entry: PendingNotification, action_id: ActionId) -> None:
+        """Log a warning for an action id the handler does not recognize."""
+        logger.warning(
+            "Unknown action_id %r for %s entry %s",
+            action_id,
+            type(entry.payload).__name__,
+            entry.key,
+        )
+
+    async def _handle_missing_dep_action(
+        self,
+        entry: PendingNotification,
+        payload: MissingDepPayload,
+        action_id: ActionId,
+    ) -> None:
+        """Complete a missing-dependency action.
+
+        Args:
+            entry: The notification entry for the affected tool.
+            payload: Typed payload (tool name + install hint or URL).
+            action_id: The specific action the user selected.
+                Unknown ids are logged and treated as a no-op.
+        """
+        if action_id == ActionId.SUPPRESS:
+            from deepagents_cli._env_vars import DEBUG_NOTIFICATIONS
+            from deepagents_cli.model_config import suppress_warning
+
+            # Debug mode injects sample entries via `_inject_debug_notifications`
+            # — persisted suppressions would silence the real warning on
+            # subsequent runs, defeating the point of replaying the UI.
+            if os.environ.get(DEBUG_NOTIFICATIONS):
+                self._notice_registry.remove(entry.key)
+                self.notify(
+                    f"Suppressed {payload.tool} (debug mode; not persisted).",
+                    severity="information",
+                    timeout=4,
+                    markup=False,
+                )
+                return
+
+            if await asyncio.to_thread(suppress_warning, payload.tool):
+                self._notice_registry.remove(entry.key)
+                self.notify(
+                    f"Won't warn about {payload.tool} again.",
+                    severity="information",
+                    timeout=4,
+                    markup=False,
+                )
+            else:
+                self.notify(
+                    "Could not save notification preference. "
+                    "Check file permissions for ~/.deepagents/config.toml.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+            return
+        if action_id == ActionId.COPY_INSTALL:
+            if payload.install_command is None:
+                logger.warning(
+                    "COPY_INSTALL action fired without install_command on %r",
+                    entry.key,
+                )
+                self.notify(
+                    "No install command recorded for this notification.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+                return
+            self.copy_to_clipboard(payload.install_command)
+            self.notify(
+                f"Copied: {payload.install_command}",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
+            return
+        if action_id == ActionId.OPEN_WEBSITE:
+            if payload.url is None:
+                logger.warning("OPEN_WEBSITE action fired without url on %r", entry.key)
+                self.notify(
+                    "No URL recorded for this notification.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+                return
+            if await open_url_async(payload.url, app=self):
+                self.notify(
+                    f"Opened {payload.url}",
+                    severity="information",
+                    timeout=3,
+                    markup=False,
+                )
+            return
+        self._log_unknown_action(entry, action_id)
+
+    async def _handle_update_action(
+        self,
+        entry: PendingNotification,
+        payload: UpdateAvailablePayload,
+        action_id: ActionId,
+    ) -> None:
+        """Complete an update-available action.
+
+        Args:
+            entry: The update notification entry.
+            payload: Typed payload (target version + upgrade command).
+            action_id: The specific action the user selected.
+                Unknown ids are logged and treated as a no-op.
+        """
+        from deepagents_cli.update_check import (
+            clear_update_notified,
+            mark_update_notified,
+            perform_upgrade,
+            upgrade_command,
+        )
+
+        if action_id == ActionId.INSTALL:
+            self.notify(
+                f"Updating to v{payload.latest}...",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
+            success, output = await perform_upgrade()
+            if success:
+                self._notice_registry.remove(entry.key)
+                self.notify(
+                    f"Updated to v{payload.latest}. Restart to use the new version.",
+                    severity="information",
+                    timeout=10,
+                    markup=False,
+                )
+                return
+            logger.warning(
+                "Auto-upgrade failed for v%s. Output:\n%s", payload.latest, output
+            )
+            self._notice_registry.remove(entry.key)
+            cmd = upgrade_command()
+            snippet = _truncate(output, limit=160) if output else ""
+            message = f"Auto-update failed. Run manually: {cmd}"
+            if snippet:
+                message = f"{message}\n{snippet}"
+            self.notify(
+                message,
+                severity="warning",
+                timeout=15,
+                markup=False,
+            )
+            return
+        if action_id == ActionId.SKIP_VERSION:
+            await asyncio.to_thread(mark_update_notified, payload.latest)
+            self._notice_registry.remove(entry.key)
+            return
+        if action_id == ActionId.SKIP_ONCE:
+            await asyncio.to_thread(clear_update_notified)
+            self._notice_registry.remove(entry.key)
+            return
+        self._log_unknown_action(entry, action_id)
+
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
 
-        screen = MCPViewerScreen(server_info=self._mcp_server_info or [])
+        screen = MCPViewerScreen(
+            server_info=self._mcp_server_info or [],
+            connecting=self._connecting,
+        )
+        self._active_mcp_viewer = screen
 
         def handle_result(result: None) -> None:  # noqa: ARG001
+            self._active_mcp_viewer = None
             if self._chat_input:
                 self._chat_input.focus_input()
 
@@ -5580,6 +6628,36 @@ class DeepAgentsApp(App):
             model_spec = model_spec.removeprefix(":")
 
             if not self._remote_agent():
+                if self._connecting:
+                    from functools import partial
+
+                    self._defer_action(
+                        DeferredAction(
+                            kind="model_switch",
+                            execute=partial(
+                                self._switch_model,
+                                model_spec,
+                                extra_kwargs=extra_kwargs,
+                            ),
+                        )
+                    )
+                    self.notify(
+                        "Model will switch once the session is ready.",
+                        timeout=3,
+                    )
+                    return
+                # Recover from a failed startup (e.g., `MissingCredentialsError`).
+                # The server never came up, so the only way out without
+                # restarting the CLI is to retry startup with the new model.
+                # Only valid for CLI-owned servers.
+                if (
+                    self._server_startup_error is not None
+                    and self._server_kwargs is not None
+                ):
+                    await self._retry_startup_with_model(
+                        model_spec, extra_kwargs=extra_kwargs
+                    )
+                    return
                 await self._mount_message(
                     ErrorMessage("Model switching requires a server-backed session.")
                 )
@@ -5671,6 +6749,107 @@ class DeepAgentsApp(App):
                 self.query_one("#chat", VerticalScroll).anchor()
         finally:
             self._model_switching = False
+
+    async def _retry_startup_with_model(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Retry deferred server startup after a failed initial startup.
+
+        Exists because the server never came up (typically a
+        `MissingCredentialsError`), so the only escape without restarting
+        the CLI is re-running the deferred startup worker with a new spec.
+
+        Args:
+            model_spec: The new model specification (`provider:model` or bare
+                model name for auto-detection).
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from deepagents_cli.config import detect_provider
+        from deepagents_cli.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            has_provider_credentials,
+        )
+
+        if self._server_kwargs is None:
+            await self._mount_message(
+                ErrorMessage("Cannot retry startup: server is not CLI-owned.")
+            )
+            return
+
+        parsed = ModelSpec.try_parse(model_spec)
+        if parsed:
+            provider: str | None = parsed.provider
+            model_name = parsed.model
+        else:
+            model_name = model_spec
+            provider = detect_provider(model_spec)
+
+        # Tri-state credentials check (`None` = unknown provider, treated as
+        # proceed); bail early so retrying with still-missing creds doesn't
+        # loop right back into the same `MissingCredentialsError`.
+        has_creds = has_provider_credentials(provider) if provider else None
+        if has_creds is False and provider is not None:
+            env_var = get_credential_env_var(provider)
+            detail = (
+                f"{env_var} is not set or is empty"
+                if env_var
+                else (
+                    f"provider '{provider}' is not recognized. "
+                    "Add it to ~/.deepagents/config.toml with an "
+                    "api_key_env field"
+                )
+            )
+            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
+            return
+
+        display = model_spec
+        if provider and not parsed:
+            display = f"{provider}:{model_name}"
+
+        new_model_kwargs: dict[str, Any] = {
+            "model_spec": display,
+            "extra_kwargs": extra_kwargs,
+            "profile_overrides": self._profile_override,
+        }
+        self._model_kwargs = new_model_kwargs
+        self._server_kwargs["model_name"] = display
+        if extra_kwargs is not None:
+            self._server_kwargs["model_params"] = extra_kwargs
+
+        self._server_startup_error = None
+        self._server_startup_missing_credentials_provider = None
+        self._connecting = True
+        try:
+            banner = self.query_one("#welcome-banner", WelcomeBanner)
+            banner.set_connecting()
+        except (NoMatches, ScreenStackError):
+            logger.debug("Welcome banner not found during startup retry", exc_info=True)
+
+        if self._retry_status_widget is not None:
+            with suppress(NoMatches, ScreenStackError):
+                await self._retry_status_widget.remove()
+            self._retry_status_widget = None
+        try:
+            messages = self.query_one("#messages", Container)
+        except (NoMatches, ScreenStackError):
+            messages = None
+        if messages is not None and messages.is_attached:
+            new_widget = AppMessage(f"Retrying startup with {display}…")
+            # Mount before storing the reference so `on_deep_agents_app_server_ready`
+            # cannot observe a half-mounted widget if it races during this await.
+            await self._mount_before_queued(messages, new_widget)
+            self._retry_status_widget = new_widget
+        logger.info("Retrying server startup with model %s", display)
+
+        self.run_worker(
+            self._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.

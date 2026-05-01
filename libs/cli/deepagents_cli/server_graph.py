@@ -23,9 +23,28 @@ from deepagents_cli.project_utils import ProjectContext, get_server_project_cont
 
 logger = logging.getLogger(__name__)
 
-# Module-level sandbox state kept alive for the server process lifetime.
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
+_mcp_session_manager: Any = None
+
+
+def _get_mcp_session_manager() -> Any:  # noqa: ANN401
+    """Return the process-wide MCP session manager singleton.
+
+    Sessions are bound to the langgraph dev server's event loop. Cleanup
+    therefore belongs to that loop's normal shutdown path, not `atexit` —
+    an atexit handler runs after the loop is already closed and cannot
+    await `AsyncExitStack.aclose()` safely. Subprocess handles held by
+    stdio transports are released when the Python process exits.
+    """
+    global _mcp_session_manager  # noqa: PLW0603
+
+    if _mcp_session_manager is None:
+        from deepagents_cli.mcp_tools import MCPSessionManager
+
+        _mcp_session_manager = MCPSessionManager()
+
+    return _mcp_session_manager
 
 
 def _build_tools(
@@ -39,7 +58,9 @@ def _build_tools(
 
     MCP discovery runs synchronously via `asyncio.run` because this function is
     called during module-level graph construction (before the server's async
-    event loop is available).
+    event loop is available). `stateless=True` ensures discovery only uses
+    throwaway sessions, while the shared runtime session manager binds real
+    sessions lazily inside the server loop on first tool invocation.
 
     Args:
         config: Deserialized server configuration.
@@ -72,6 +93,8 @@ def _build_tools(
                     no_mcp=config.no_mcp,
                     trust_project_mcp=config.trust_project_mcp,
                     project_context=project_context,
+                    stateless=True,
+                    session_manager=_get_mcp_session_manager(),
                 )
             )
         except FileNotFoundError:

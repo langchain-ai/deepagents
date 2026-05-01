@@ -111,11 +111,33 @@ def _make_env(
     )
 
 
-def _mock_async_client() -> MagicMock:
-    """Build a mock AsyncSandboxClient wired for start() tests."""
+@dataclass
+class _FakeSnapshot:
+    """Stand-in for langsmith Snapshot with a safe ``name`` attribute.
+
+    MagicMock reserves ``.name`` as a descriptor for the mock itself, so we
+    use a plain dataclass here to make assertions on ``snap.name`` behave
+    normally.
+    """
+
+    name: str
+    status: str = "ready"
+    id: str = "snap-id-test"
+
+
+def _mock_async_client(*, existing_snapshots: list[Any] | None = None) -> AsyncMock:
+    """Build a mock AsyncSandboxClient wired for start() tests.
+
+    Defaults mirror the "happy path": no existing snapshot → `create_snapshot`
+    will be invoked → `create_sandbox` returns a fake sandbox. Tests can
+    override by passing `existing_snapshots` or reassigning the individual
+    method mocks.
+    """
     mock = AsyncMock()
     fake_sb = _FakeSandbox()
     mock.create_sandbox.return_value = fake_sb
+    mock.list_snapshots = AsyncMock(return_value=existing_snapshots or [])
+    mock.create_snapshot = AsyncMock(return_value=_FakeSnapshot(name="snap-test", status="ready"))
     return mock
 
 
@@ -304,7 +326,12 @@ class TestSanitizeName:
 
 
 class TestResourceConversion:
-    """Tests for task resource config → LangSmith format."""
+    """Tests for task resource config → LangSmith create_sandbox/create_snapshot kwargs.
+
+    Memory and CPU live on ``create_sandbox`` (vcpus/mem_bytes). Filesystem
+    capacity is passed to both ``create_snapshot`` (when building) and
+    ``create_sandbox`` so per-trial disk sizing takes effect.
+    """
 
     async def test_memory_under_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=512)
@@ -315,7 +342,7 @@ class TestResourceConversion:
 
             await env.start(force_build=True)
 
-            assert mock_client.create_template.call_args.kwargs["memory"] == "512Mi"
+            assert mock_client.create_sandbox.call_args.kwargs["mem_bytes"] == 512 * 1024 * 1024
 
     async def test_memory_over_1gb(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, memory_mb=2048)
@@ -326,7 +353,7 @@ class TestResourceConversion:
 
             await env.start(force_build=True)
 
-            assert mock_client.create_template.call_args.kwargs["memory"] == "2Gi"
+            assert mock_client.create_sandbox.call_args.kwargs["mem_bytes"] == 2048 * 1024 * 1024
 
     async def test_cpu_conversion(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, cpus=2)
@@ -337,9 +364,9 @@ class TestResourceConversion:
 
             await env.start(force_build=True)
 
-            assert mock_client.create_template.call_args.kwargs["cpu"] == "2000m"
+            assert mock_client.create_sandbox.call_args.kwargs["vcpus"] == 2
 
-    async def test_storage_always_gi(self, tmp_path: Path) -> None:
+    async def test_storage_bytes_on_snapshot_and_sandbox(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path, storage_mb=10240)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
@@ -348,9 +375,16 @@ class TestResourceConversion:
 
             await env.start(force_build=True)
 
-            assert mock_client.create_template.call_args.kwargs["storage"] == "10Gi"
+            expected_bytes = 10240 * 1024 * 1024
+            assert (
+                mock_client.create_snapshot.call_args.kwargs["fs_capacity_bytes"] == expected_bytes
+            )
+            assert (
+                mock_client.create_sandbox.call_args.kwargs["fs_capacity_bytes"] == expected_bytes
+            )
 
-    async def test_storage_rounds_up(self, tmp_path: Path) -> None:
+    async def test_storage_passes_exact_bytes(self, tmp_path: Path) -> None:
+        """No more Gi rounding -- we forward whatever the task requested, byte-for-byte."""
         env = _make_env(tmp_path, storage_mb=1500)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
@@ -359,17 +393,85 @@ class TestResourceConversion:
 
             await env.start(force_build=True)
 
-            assert mock_client.create_template.call_args.kwargs["storage"] == "2Gi"
+            expected_bytes = 1500 * 1024 * 1024
+            assert (
+                mock_client.create_snapshot.call_args.kwargs["fs_capacity_bytes"] == expected_bytes
+            )
+            assert (
+                mock_client.create_sandbox.call_args.kwargs["fs_capacity_bytes"] == expected_bytes
+            )
 
 
-class TestStartTemplateProvisioning:
-    """Tests for per-session template creation in start().
+class TestStartSnapshotProvisioning:
+    """Tests for shared-per-image snapshot provisioning in start().
 
-    Each trial creates its own template unconditionally — there is no
-    template reuse, conditional deletion, or force-rebuild logic.
+    Snapshots are keyed purely by image and reused across trials; trial-local
+    resource sizing moves onto ``create_sandbox``.
     """
 
-    async def test_always_creates_template(self, tmp_path: Path) -> None:
+    async def test_builds_snapshot_when_missing(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(existing_snapshots=[])
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            expected_name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
+            mock_client.create_snapshot.assert_called_once()
+            kwargs = mock_client.create_snapshot.call_args.kwargs
+            assert kwargs["name"] == expected_name
+            assert kwargs["docker_image"] == "ubuntu:24.04"
+
+    async def test_reuses_existing_ready_snapshot(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        expected_name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                existing_snapshots=[_FakeSnapshot(name=expected_name, status="ready")]
+            )
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            mock_client.create_snapshot.assert_not_called()
+            create_kwargs = mock_client.create_sandbox.call_args.kwargs
+            assert create_kwargs["snapshot_name"] == expected_name
+            assert "snapshot_id" not in create_kwargs
+            assert "template_name" not in create_kwargs
+
+    async def test_raises_when_existing_snapshot_not_ready(self, tmp_path: Path) -> None:
+        env = _make_env(tmp_path)
+        expected_name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client(
+                existing_snapshots=[_FakeSnapshot(name=expected_name, status="building")]
+            )
+            mock_cls.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="building"):
+                await env.start(force_build=False)
+
+            mock_client.create_snapshot.assert_not_called()
+            mock_client.create_sandbox.assert_not_called()
+
+    async def test_list_snapshots_called_with_name_contains(self, tmp_path: Path) -> None:
+        """Readiness check must use the server-side ``name_contains`` filter."""
+        env = _make_env(tmp_path)
+        expected_name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
+
+        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
+            mock_client = _mock_async_client()
+            mock_cls.return_value = mock_client
+
+            await env.start(force_build=False)
+
+            mock_client.list_snapshots.assert_awaited_once_with(name_contains=expected_name)
+
+    async def test_creates_sandbox_from_snapshot(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
@@ -378,9 +480,16 @@ class TestStartTemplateProvisioning:
 
             await env.start(force_build=False)
 
-            mock_client.create_template.assert_called_once()
-            mock_client.get_template.assert_not_called()
-            mock_client.delete_template.assert_not_called()
+            expected_name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
+            mock_client.create_sandbox.assert_called_once()
+            kwargs = mock_client.create_sandbox.call_args.kwargs
+            assert kwargs["snapshot_name"] == expected_name
+            assert kwargs["vcpus"] == 1
+            assert kwargs["mem_bytes"] == 2048 * 1024 * 1024
+            assert kwargs["fs_capacity_bytes"] == 10240 * 1024 * 1024
+            assert kwargs["timeout"] == 120
+            assert "template_name" not in kwargs
+            assert "snapshot_id" not in kwargs
 
     async def test_force_build_is_noop(self, tmp_path: Path) -> None:
         """force_build accepted for interface compat but does not change calls."""
@@ -399,80 +508,37 @@ class TestStartTemplateProvisioning:
             mock_cls.return_value = mock_b
             await env_b.start(force_build=True)
 
-        assert mock_a.create_template.call_count == mock_b.create_template.call_count == 1
-        mock_b.get_template.assert_not_called()
-        mock_b.delete_template.assert_not_called()
-
-    async def test_template_name_derived_from_image(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path, docker_image="ghcr.io/my-org/my-image:v1.2")
-
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client()
-            mock_cls.return_value = mock_client
-
-            await env.start(force_build=False)
-
-            expected = LangSmithEnvironment._build_template_name(
-                "ghcr.io/my-org/my-image:v1.2", "test-session-001"
-            )
-            mock_client.create_template.assert_called_once()
-            assert mock_client.create_template.call_args.kwargs["name"] == expected
-
-    async def test_creates_sandbox_from_template(self, tmp_path: Path) -> None:
-        env = _make_env(tmp_path)
-
-        with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = _mock_async_client()
-            mock_cls.return_value = mock_client
-
-            await env.start(force_build=False)
-
-            expected_name = LangSmithEnvironment._build_template_name(
-                "ubuntu:24.04", "test-session-001"
-            )
-            mock_client.create_sandbox.assert_called_once_with(
-                template_name=expected_name,
-                timeout=120,
-            )
+        assert mock_a.create_sandbox.call_count == mock_b.create_sandbox.call_count == 1
 
 
-class TestBuildTemplateName:
-    """Tests for _build_template_name uniqueness guarantees."""
+class TestBuildSnapshotName:
+    """Tests for _build_snapshot_name shape and sharing contract."""
 
-    def test_short_image_includes_session_context(self) -> None:
-        name = LangSmithEnvironment._build_template_name("ubuntu:24.04", "sess-001")
+    def test_starts_with_harbor_prefix(self) -> None:
+        name = LangSmithEnvironment._build_snapshot_name("ubuntu:24.04")
         assert name.startswith("harbor-")
         assert len(name) <= 63
 
     def test_long_image_stays_within_limit(self) -> None:
         long_image = "alexgshaw/log-summary-date-ranges:20251031"
-        name = LangSmithEnvironment._build_template_name(long_image, "session-abc")
+        name = LangSmithEnvironment._build_snapshot_name(long_image)
         assert len(name) <= 63
 
-    def test_different_sessions_produce_different_names(self) -> None:
-        """Regression: long image names must not cause name collisions."""
-        image = "alexgshaw/log-summary-date-ranges:20251031"
-        names = {
-            LangSmithEnvironment._build_template_name(image, f"task__{suffix}")
-            for suffix in ("yTtDpUN", "aRm97it", "3k4jKqE")
-        }
-        assert len(names) == 3
-
-    def test_collision_regression_multi_source(self) -> None:
-        image = "alexgshaw/multi-source-data-merger:20251031"
-        names = {
-            LangSmithEnvironment._build_template_name(image, f"task__{suffix}")
-            for suffix in ("yZW2Gye", "yurd9SN", "csWfiWu")
-        }
-        assert len(names) == 3
-
     def test_deterministic(self) -> None:
-        a = LangSmithEnvironment._build_template_name("img:v1", "session-x")
-        b = LangSmithEnvironment._build_template_name("img:v1", "session-x")
+        a = LangSmithEnvironment._build_snapshot_name("img:v1")
+        b = LangSmithEnvironment._build_snapshot_name("img:v1")
         assert a == b
 
+    def test_same_image_different_sessions_share_name(self) -> None:
+        """Snapshots are shared across trials: name depends on image alone."""
+        image = "alexgshaw/log-summary-date-ranges:20251031"
+        # _build_snapshot_name takes no session_id; calling it from multiple
+        # "trials" must produce the exact same name.
+        names = {LangSmithEnvironment._build_snapshot_name(image) for _ in range(5)}
+        assert len(names) == 1
+
     def test_name_starts_with_letter(self) -> None:
-        name = LangSmithEnvironment._build_template_name("123image:latest", "s1")
+        name = LangSmithEnvironment._build_snapshot_name("123image:latest")
         assert name[0].isalpha()
 
 
@@ -679,7 +745,7 @@ class TestWorkdirDetection:
         env = _make_env(tmp_path)
         env._sandbox = _FakeSandbox()  # type: ignore[assignment]
         env._client = AsyncMock()
-        env._template_name = "tmpl"
+        env._snapshot_name = "snap-tmpl"
         env._default_cwd = "/app"
 
         await env.stop(delete=False)
@@ -803,68 +869,74 @@ class TestFileOps:
 
 
 class TestStop:
-    """Tests for teardown."""
+    """Tests for teardown.
 
-    async def test_stop_deletes_sandbox_and_template(self, tmp_path: Path) -> None:
+    Snapshots are shared resources — ``stop()`` must never delete them,
+    regardless of the ``delete`` flag.
+    """
+
+    async def test_stop_deletes_sandbox_but_not_snapshot(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_sandbox = _FakeSandbox(name="my-sandbox")
         env._sandbox = mock_sandbox  # type: ignore[assignment]
         env._client = mock_client
-        env._template_name = "my-template"
+        env._snapshot_name = "harbor-ubuntu-24-04"
 
         await env.stop(delete=True)
 
         mock_client.delete_sandbox.assert_called_once_with("my-sandbox")
-        mock_client.delete_template.assert_called_once_with("my-template")
+        mock_client.delete_snapshot.assert_not_called()
         mock_client.aclose.assert_called_once()
         assert env._sandbox is None
         assert env._client is None
+        assert env._snapshot_name is None
 
     async def test_stop_no_delete_skips_cleanup(self, tmp_path: Path) -> None:
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         env._sandbox = _FakeSandbox()  # type: ignore[assignment]
         env._client = mock_client
-        env._template_name = "tmpl"
+        env._snapshot_name = "snap-tmpl"
 
         await env.stop(delete=False)
 
         mock_client.delete_sandbox.assert_not_called()
-        mock_client.delete_template.assert_not_called()
+        mock_client.delete_snapshot.assert_not_called()
         mock_client.aclose.assert_called_once()
 
     async def test_stop_continues_after_sandbox_delete_fails(self, tmp_path: Path) -> None:
-        """If sandbox deletion fails, template deletion and aclose still run."""
+        """If sandbox deletion fails, aclose still runs and snapshot is untouched."""
         env = _make_env(tmp_path)
         mock_client = AsyncMock()
         mock_client.delete_sandbox.side_effect = RuntimeError("API timeout")
         env._sandbox = _FakeSandbox(name="my-sandbox")  # type: ignore[assignment]
         env._client = mock_client
-        env._template_name = "my-template"
+        env._snapshot_name = "harbor-my-image"
 
         await env.stop(delete=True)
 
         mock_client.delete_sandbox.assert_called_once_with("my-sandbox")
-        mock_client.delete_template.assert_called_once_with("my-template")
+        mock_client.delete_snapshot.assert_not_called()
         mock_client.aclose.assert_called_once()
         assert env._sandbox is None
         assert env._client is None
-        assert env._template_name is None
+        assert env._snapshot_name is None
 
     async def test_stop_clean_after_failed_start(self, tmp_path: Path) -> None:
-        """If create_template fails, _template_name stays None and stop is safe."""
+        """If create_snapshot fails, _snapshot_name stays None and stop is safe."""
         env = _make_env(tmp_path)
 
         with patch("deepagents_harbor.langsmith_environment.AsyncSandboxClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.create_template.side_effect = RuntimeError("API 422")
+            mock_client = _mock_async_client()
+            mock_client.create_snapshot = AsyncMock(side_effect=RuntimeError("API 422"))
             mock_cls.return_value = mock_client
 
             with pytest.raises(RuntimeError, match="API 422"):
                 await env.start(force_build=False)
 
-        assert env._template_name is None
+        assert env._snapshot_name is None
         assert env._sandbox is None
 
         await env.stop(delete=True)
+        mock_client.delete_snapshot.assert_not_called()

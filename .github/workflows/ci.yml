@@ -36,6 +36,7 @@ jobs:
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
       cli: ${{ steps.filter.outputs.cli }}
+      code: ${{ steps.filter.outputs.code }}
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
@@ -75,6 +76,12 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/workflows/_benchmark.yml'
+              - '.github/actions/**'
+            code:
+              - 'libs/code/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
@@ -130,6 +137,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/cli"
+      python-version: "3.11"
+
+  lint-code:
+    name: "🧹 Lint code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/code"
       python-version: "3.11"
 
   lint-evals:
@@ -205,6 +221,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/cli"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-code:
+    name: "🧪 Test deepagents-code"
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/code"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
@@ -300,6 +326,7 @@ jobs:
       - changes
       - lint-deepagents
       - lint-cli
+      - lint-code
       - lint-evals
       - lint-daytona
       - lint-modal
@@ -308,6 +335,7 @@ jobs:
       - lint-quickjs
       - test-deepagents
       - test-cli
+      - test-code
       - test-evals
       - test-daytona
       - test-modal
@@ -320,15 +348,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "🎉 All Checks Passed"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Get all job results (excluding 'changes' which always succeeds)
           results='${{ toJSON(needs.*.result) }}'
           echo "Job results: $results"
 
-          # Check for failures or cancellations
-          if echo "$results" | grep -qE '"failure"|"cancelled"'; then
-            echo "Some jobs failed or were cancelled"
+          if echo "$results" | grep -q '"failure"'; then
+            echo "Some jobs failed"
             exit 1
+          fi
+
+          # On main pushes, concurrency preemption routinely cancels
+          # in-flight jobs when a newer commit arrives — the next run will
+          # validate the latest state, so don't flag those as failures.
+          # On PRs and merge_group runs, a cancellation is almost always a
+          # human action or a real problem, so keep the gate strict.
+          if [ "$EVENT_NAME" != "push" ]; then
+            if echo "$results" | grep -q '"cancelled"'; then
+              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs)"
+              exit 1
+            fi
           fi
 
           echo "All required checks passed (skipped jobs are OK)"

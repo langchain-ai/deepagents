@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,9 @@ from deepagents_cli.deploy.config import (
     load_subagents,
 )
 from deepagents_cli.deploy.templates import (
+    APP_PY_TEMPLATE,
+    AUTH_BLOCKS,
+    AUTH_ON_HANDLER,
     DEPLOY_GRAPH_TEMPLATE,
     MCP_TOOLS_TEMPLATE,
     PYPROJECT_TEMPLATE,
@@ -66,6 +71,97 @@ _MODEL_PROVIDER_DEPS: dict[str, str] = {
     "xai": "langchain-xai",
 }
 """Dependencies inferred from a provider: prefix on the model string."""
+
+_FRONTEND_DIST_SRC = Path(__file__).parent / "frontend_dist"
+"""Location of the shipped pre-built frontend, inside this Python package."""
+
+_FRONTEND_PLACEHOLDER_RE = re.compile(
+    r"window\.__DEEPAGENTS_CONFIG__\s*=\s*\{[^<]*?\};",
+    re.DOTALL,
+)
+"""Matches the placeholder script we injected into index.html at build time."""
+
+
+def _build_runtime_config_json(config: DeployConfig) -> str:
+    """Build the JSON value injected into `window.__DEEPAGENTS_CONFIG__`.
+
+    Only reached when `[frontend].enabled` and `[auth]` is set —
+    validation guarantees both. The `is None` guards below exist so
+    the optional fields narrow for type-checkers.
+    """
+    if config.frontend is None:
+        msg = "runtime config requires [frontend] to be configured"
+        raise ValueError(msg)
+    if config.auth is None:
+        msg = "runtime config requires [auth] to be configured"
+        raise ValueError(msg)
+
+    app_name = config.frontend.app_name or config.agent.name
+    payload: dict[str, Any] = {
+        "appName": app_name,
+        "assistantId": "agent",
+    }
+    # Optional UI-customization fields — only injected when the user
+    # set them, so the default-bundle case stays small.
+    if config.frontend.subtitle is not None:
+        payload["subtitle"] = config.frontend.subtitle
+    if config.frontend.prompts is not None:
+        payload["prompts"] = list(config.frontend.prompts)
+
+    provider = config.auth.provider
+    payload["auth"] = provider
+    if provider == "supabase":
+        payload["supabaseUrl"] = os.environ["SUPABASE_URL"]
+        payload["supabaseAnonKey"] = os.environ["SUPABASE_PUBLISHABLE_DEFAULT_KEY"]
+    elif provider == "clerk":
+        payload["clerkPublishableKey"] = os.environ["CLERK_PUBLISHABLE_KEY"]
+    elif provider == "anonymous":
+        # No env vars; payload["auth"] = "anonymous" is enough.
+        pass
+    else:
+        msg = f"Unknown auth provider for frontend: {provider}"
+        raise ValueError(msg)
+
+    # Escape `<` so a hostile or accidental `</script>` inside a string value
+    # can't break out of the inline <script> tag.
+    return json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
+
+
+def _copy_frontend_dist(config: DeployConfig, build_dir: Path) -> None:
+    """Copy the pre-built bundle into build_dir and rewrite the config placeholder."""
+    if not _FRONTEND_DIST_SRC.is_dir():
+        msg = (
+            f"Shipped frontend bundle not found at {_FRONTEND_DIST_SRC}. "
+            "Did you run `make build-frontends`?"
+        )
+        raise RuntimeError(msg)
+
+    dest = build_dir / "frontend_dist"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(_FRONTEND_DIST_SRC, dest)
+
+    index_html = dest / "index.html"
+    if not index_html.is_file():
+        msg = f"expected index.html inside {_FRONTEND_DIST_SRC}"
+        raise RuntimeError(msg)
+
+    html = index_html.read_text(encoding="utf-8")
+    payload = _build_runtime_config_json(config)
+    replacement = f"window.__DEEPAGENTS_CONFIG__ = {payload};"
+    new_html, count = _FRONTEND_PLACEHOLDER_RE.subn(
+        lambda _m: replacement,
+        html,
+        count=1,
+    )
+    if count == 0:
+        msg = (
+            "Could not find window.__DEEPAGENTS_CONFIG__ placeholder in the "
+            "shipped index.html. The frontend bundle is out of sync with the "
+            "bundler — rebuild with `make build-frontends`."
+        )
+        raise RuntimeError(msg)
+    index_html.write_text(new_html, encoding="utf-8")
 
 
 def bundle(
@@ -125,9 +221,38 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 6. Render langgraph.json.
+    # 6. Generate auth.py from the [auth] provider, if any. Skipped
+    # entirely when [auth] is omitted — in that case LangSmith Cloud's
+    # default x-api-key auth applies. Validation guarantees [auth] is
+    # set whenever [frontend].enabled, so auth.py is always present
+    # for frontend deploys (including the "anonymous" provider, whose
+    # permissive handler lets the bundled UI reach /threads).
+    frontend_enabled = config.frontend is not None and config.frontend.enabled
+    auth_provider: str | None = (
+        config.auth.provider if config.auth is not None else None
+    )
+
+    auth_present = auth_provider is not None
+    if auth_provider is not None:
+        (build_dir / "auth.py").write_text(
+            _render_auth_py(auth_provider),
+            encoding="utf-8",
+        )
+        logger.info("Generated auth.py (%s)", auth_provider)
+
+    # 6b. Copy frontend bundle when enabled.
+    if frontend_enabled:
+        _copy_frontend_dist(config, build_dir)
+        (build_dir / "app.py").write_text(APP_PY_TEMPLATE, encoding="utf-8")
+        logger.info("Copied frontend bundle and wrote app.py (%s)", auth_provider)
+
+    # 7. Render langgraph.json.
     (build_dir / "langgraph.json").write_text(
-        _render_langgraph_json(env_present=env_present),
+        _render_langgraph_json(
+            env_present=env_present,
+            auth_present=auth_present,
+            frontend_present=frontend_enabled,
+        ),
         encoding="utf-8",
     )
 
@@ -292,8 +417,22 @@ def _render_deploy_graph(
     )
 
 
-def _render_langgraph_json(*, env_present: bool) -> str:
-    """Render `langgraph.json` — adds `"env": ".env"` when a `.env` was copied."""
+def _render_auth_py(provider: str) -> str:
+    """Render the generated `auth.py` for the given auth provider."""
+    if provider not in AUTH_BLOCKS:
+        msg = f"Unknown auth provider {provider!r}. Valid: {sorted(AUTH_BLOCKS)}"
+        raise ValueError(msg)
+    auth_block, _ = AUTH_BLOCKS[provider]
+    return auth_block + AUTH_ON_HANDLER
+
+
+def _render_langgraph_json(
+    *,
+    env_present: bool,
+    auth_present: bool = False,
+    frontend_present: bool = False,
+) -> str:
+    """Render `langgraph.json` — adds `"env"`, `"auth"`, `"http"` when applicable."""
     data: dict = {
         "dependencies": ["."],
         "graphs": {"agent": "./deploy_graph.py:make_graph"},
@@ -301,6 +440,10 @@ def _render_langgraph_json(*, env_present: bool) -> str:
     }
     if env_present:
         data["env"] = ".env"
+    if auth_present:
+        data["auth"] = {"path": "./auth.py:auth"}
+    if frontend_present:
+        data["http"] = {"app": "./app.py:app"}
     return json.dumps(data, indent=2) + "\n"
 
 
@@ -340,6 +483,11 @@ def _render_pyproject(
     if partner_pkg:
         deps.append(partner_pkg)
 
+    if config.auth is not None:
+        _, auth_pkg = AUTH_BLOCKS.get(config.auth.provider, (None, None))
+        if auth_pkg:
+            deps.append(auth_pkg)
+
     extra_deps_lines = "".join(f'    "{dep}",\n' for dep in deps)
 
     return PYPROJECT_TEMPLATE.format(
@@ -364,6 +512,13 @@ def print_bundle_summary(config: DeployConfig, build_dir: Path) -> None:
 
     print(f"\n  Agent: {config.agent.name}")
     print(f"  Model: {config.agent.model}")
+    if config.auth is not None:
+        if config.auth.provider == "anonymous":
+            print("  Auth: anonymous (API open to anyone)")
+        else:
+            print(f"  Auth: {config.auth.provider}")
+    else:
+        print("  Auth: none (LangSmith API key required to call the API)")
 
     memory_files = sorted(seed.get("memories", {}).keys())
     if memory_files:

@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on
 from textual.containers import Vertical
@@ -32,6 +32,7 @@ from deepagents_cli.widgets._links import open_style_link
 from deepagents_cli.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
+    from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
     from textual.app import ComposeResult
     from textual.timer import Timer
     from textual.widgets import Markdown
@@ -1685,6 +1686,59 @@ class ErrorMessage(_TimestampClickMixin, Static):
             self.styles.border_left = ("ascii", colors.error)
 
 
+class _MutedRichMarkdown:
+    """Render Rich markdown to match `AppMessage`'s muted-italic base.
+
+    Plain `AppMessage` strings render as `dim italic` via `Content.styled`
+    plus the widget's CSS. Rich's default markdown theme paints h2-h4
+    magenta and table headers/borders cyan, and doesn't apply `dim` to
+    paragraphs, so markdown blocks look visually distinct. This wrapper:
+
+    - Applies a `rich.theme.Theme` while rendering that strips the stock
+        colors while keeping structural emphasis (bold/underline/italic), and
+    - Layers `dim` over the whole document via `rich.styled.Styled` so
+        body text matches the `dim italic` baseline used elsewhere.
+    """
+
+    _THEME_OVERRIDES: ClassVar[dict[str, str]] = {
+        "markdown.h1": "bold underline",
+        "markdown.h2": "bold underline",
+        "markdown.h3": "bold",
+        "markdown.h4": "italic",
+        "markdown.table.header": "bold",
+        "markdown.table.border": "",
+    }
+
+    def __init__(self, markup: str) -> None:
+        from rich.markdown import Markdown as RichMarkdown
+
+        self._markdown = RichMarkdown(markup)
+        self._markup = markup
+
+    def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
+        self, console: RichConsole, options: ConsoleOptions
+    ) -> RenderResult:
+        from rich.styled import Styled
+        from rich.theme import Theme
+
+        theme = Theme(self._THEME_OVERRIDES, inherit=True)
+        try:
+            with console.use_theme(theme):
+                yield from Styled(self._markdown, "dim").__rich_console__(
+                    console, options
+                )
+        except Exception:
+            # Rich markdown or theme application blew up on malformed input.
+            # Fall back to the raw source so the chat view keeps rendering.
+            logger.warning(
+                "Rich markdown rendering failed; falling back to plain text",
+                exc_info=True,
+            )
+            yield from Styled(self._markup, "dim italic").__rich_console__(
+                console, options
+            )
+
+
 class AppMessage(Static):
     """Widget displaying an app message."""
 
@@ -1704,20 +1758,39 @@ class AppMessage(Static):
     }
     """
 
-    def __init__(self, message: str | Content, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        message: str | Content,
+        *,
+        markdown: bool = False,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a system message.
 
         Args:
             message: The system message as a string or pre-styled `Content`.
-            **kwargs: Additional arguments passed to parent
+            markdown: When `True`, render `message` as markdown via Rich's
+                markdown renderer (tables, headings, bold, etc.).
+
+                Requires a string message — `Content` objects already carry
+                their own structure.
+            **kwargs: Additional arguments passed to parent.
+
+        Raises:
+            TypeError: If `markdown=True` is combined with a non-string
+                `message`.
         """
-        # Store raw content for serialization
         self._content = message
-        rendered = (
-            message
-            if isinstance(message, Content)
-            else Content.styled(message, "dim italic")
-        )
+        self._is_markdown = markdown
+        if markdown:
+            if not isinstance(message, str):
+                msg = "AppMessage(markdown=True) requires a string message"
+                raise TypeError(msg)
+            rendered = _MutedRichMarkdown(message)
+        elif isinstance(message, Content):
+            rendered = message
+        else:
+            rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
 
     def on_click(self, event: Click) -> None:

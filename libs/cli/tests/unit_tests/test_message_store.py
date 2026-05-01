@@ -114,12 +114,43 @@ class TestMessageData:
         assert data.type == MessageType.APP
         assert data.content == "Session started"
         assert data.id == "test-app-1"
+        assert data.is_markdown is False
 
         # Deserialize
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._content == "Session started"
         assert restored.id == "test-app-1"
+        assert restored._is_markdown is False
+
+    def test_app_message_markdown_roundtrip(self):
+        """Markdown AppMessages must survive dehydrate/rehydrate with their flag.
+
+        Regression guard: dropping `is_markdown` from either `from_widget`
+        or `to_widget` would silently downgrade rehydrated `/version` extras
+        tables to plain-text rendering.
+        """
+        from deepagents_cli.widgets.messages import _MutedRichMarkdown
+
+        markdown_source = (
+            "### Installed optional dependencies\n"
+            "\n"
+            "| Extra | Package | Version |\n"
+            "| --- | --- | --- |\n"
+            "| anthropic | langchain-anthropic | 1.4.0 |\n"
+        )
+        original = AppMessage(markdown_source, markdown=True, id="test-app-md-1")
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.APP
+        assert data.content == markdown_source
+        assert data.is_markdown is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, AppMessage)
+        assert restored._is_markdown is True
+        rendered = restored._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, _MutedRichMarkdown)
 
     def test_diff_message_roundtrip(self):
         """Test DiffMessage serialization and deserialization."""

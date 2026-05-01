@@ -27,8 +27,8 @@
 #   * hotfix     — urgent fix that won't trigger a release
 #
 # Allowed Scope(s) (required):
-#   acp, ci, cli, cli-gha, daytona, deepagents, deepagents-acp, deepagents-cli, deps,
-#   deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
+#   acp, ci, cli, cli-gha, code, daytona, deepagents, deepagents-acp, deepagents-cli,
+#   deepagents-code, deps, deps-dev, evals, examples, harbor, infra, langchain-daytona, langchain-modal,
 #   langchain-quickjs, langchain-repl, langchain-runloop, langsmith-sandbox, modal,
 #   quickjs, repl, runloop, sdk
 #
@@ -51,7 +51,11 @@ permissions:
 
 on:
   pull_request:
-    types: [ opened, edited, synchronize ]
+    # `labeled`/`unlabeled` are required so the bypass-label warning comment
+    # appears (or gets cleaned up) the moment a maintainer toggles
+    # `ignore-lint-pr-title`. Without them, the warning would only update on
+    # the next title edit or push.
+    types: [ opened, edited, synchronize, labeled, unlabeled ]
 
 jobs:
   # Validates that PR title follows Conventional Commits 1.0.0 specification
@@ -92,10 +96,12 @@ jobs:
             ci
             cli
             cli-gha
+            code
             daytona
             deepagents
             deepagents-acp
             deepagents-cli
+            deepagents-code
             deps
             deps-dev
             evals
@@ -119,3 +125,136 @@ jobs:
             [A-Z]+
           ignoreLabels: |
             ignore-lint-pr-title
+
+  # When a maintainer applies the `ignore-lint-pr-title` label to bypass the
+  # Conventional Commits check, post a sticky comment so the bypass is visible
+  # to reviewers and to release-please consumers (a non-conventional title
+  # typically means no changelog entry on merge, unless a
+  # `BEGIN_COMMIT_OVERRIDE` block is supplied in the PR description). Removes
+  # the comment when the label is taken off.
+  warn-on-bypass:
+    name: "warn on bypass label"
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    # Serialize per-PR. Rapid label toggles or near-simultaneous
+    # labeled/synchronize events can otherwise produce two concurrent runs
+    # that both observe "no existing sticky" and both call `createComment`,
+    # leaving a duplicate warning that the find-first update logic will
+    # never reconcile.
+    concurrency:
+      group: pr-lint-bypass-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    # Run when the bypass label is toggled, or on any other event while the
+    # label is currently present (so opened/edited/synchronize keep the
+    # comment in sync). The `unlabeled` branch is what triggers the cleanup
+    # path — without it, removing the label would leave the warning comment
+    # behind until the next title edit or push.
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'ignore-lint-pr-title') ||
+      (github.event.action == 'unlabeled' && github.event.label.name == 'ignore-lint-pr-title') ||
+      contains(github.event.pull_request.labels.*.name, 'ignore-lint-pr-title')
+    steps:
+      - name: "post or remove bypass-warning comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number;
+            // Defensive guard — every supported trigger type carries a PR
+            // payload, but a future trigger expansion (or a payload schema
+            // drift) should fail with an actionable message rather than a
+            // raw `TypeError: cannot read properties of undefined`.
+            if (!prNumber) {
+              core.setFailed('No PR number in payload — workflow may have triggered on an unexpected event type.');
+              return;
+            }
+            const STICKY_MARKER = '<!-- pr-title-lint-bypass -->';
+            const BYPASS_LABEL = 'ignore-lint-pr-title';
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            // Mirrors `postStickyOrSummary` in release_please_parse_check.yml.
+            // Comment write paths can fail for several reasons that should
+            // not turn this advisory job red: fork PRs run with restricted
+            // tokens, secondary rate limits, transient API errors. Falling
+            // back to `core.summary` keeps the bypass visible to a
+            // maintainer who can paste it manually.
+            async function postStickyOrSummary(commentBody, summaryHeading) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  if (existing.body !== commentBody) {
+                    await github.rest.issues.updateComment({
+                      owner, repo, comment_id: existing.id, body: commentBody,
+                    });
+                    console.log('Updated sticky warning comment');
+                  } else {
+                    console.log('Sticky warning comment already up to date');
+                  }
+                } else {
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: prNumber, body: commentBody,
+                  });
+                  console.log('Posted sticky warning comment');
+                }
+              } catch (commentErr) {
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                await core.summary
+                  .addHeading(summaryHeading)
+                  .addRaw('Paste the following into the PR as a comment:')
+                  .addCodeBlock(commentBody, 'markdown')
+                  .write();
+              }
+            }
+
+            // Use live labels rather than the payload — the payload reflects
+            // pre-event state on `labeled`/`unlabeled`, which would race the
+            // sticky comment cleanup.
+            let liveLabels;
+            try {
+              ({ data: liveLabels } = await github.rest.issues.listLabelsOnIssue({
+                owner, repo, issue_number: prNumber,
+              }));
+            } catch (e) {
+              throw new Error(`Failed to fetch live labels for PR #${prNumber}: ${e.message}`);
+            }
+            const labelPresent = liveLabels.some(l => l.name === BYPASS_LABEL);
+
+            if (!labelPresent) {
+              // Best-effort cleanup — a transient API failure on the green
+              // "label removed" path must NOT flip this check to red.
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    owner, repo, comment_id: existing.id,
+                  });
+                  console.log('Bypass label removed — deleted sticky warning comment');
+                }
+              } catch (e) {
+                core.warning(`Could not clean up sticky comment for PR #${prNumber}: ${e.message}`);
+              }
+              return;
+            }
+
+            const body = [
+              STICKY_MARKER,
+              '⚠️ **PR title Conventional Commits lint is being bypassed.**',
+              '',
+              `This PR carries the \`${BYPASS_LABEL}\` label, which tells the lint check to skip Conventional Commits validation on the title.`,
+              '',
+              '**Why this matters:** release-please parses the squash-merge message (title + body) to generate changelog entries. A non-conventional title typically means **no changelog entry will be generated** for this commit on release, unless a `BEGIN_COMMIT_OVERRIDE` block is supplied in the PR description.',
+              '',
+              'Reviewers: confirm the bypass is intentional. Remove the label to re-enable the check, or add a `BEGIN_COMMIT_OVERRIDE` block to the PR description so release-please still gets a parseable message.',
+            ].join('\n');
+
+            await postStickyOrSummary(
+              body,
+              'PR title lint bypass active; warning comment could not be posted',
+            );

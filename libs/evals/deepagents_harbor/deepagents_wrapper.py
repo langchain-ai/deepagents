@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.graph import get_default_model
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
@@ -75,7 +74,7 @@ class DeepAgentsWrapper(BaseAgent):
     def __init__(
         self,
         logs_dir: Path,
-        model_name: str | None = None,
+        model_name: str,
         temperature: float = 0.0,
         verbose: bool = True,
         use_cli_agent: bool = True,
@@ -86,40 +85,40 @@ class DeepAgentsWrapper(BaseAgent):
         """Initialize Deep AgentsWrapper.
 
         Args:
-            logs_dir: Directory for storing logs
-            model_name: Name of the LLM model to use
-            temperature: Temperature setting for the model
-            verbose: Enable verbose output
-            use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                If False, use create_deep_agent from SDK.
+            logs_dir: Directory for storing logs.
+            model_name: Name of the LLM model to use.
+            temperature: Temperature setting for the model.
+            verbose: Enable verbose output.
+            use_cli_agent: If `True`, use `create_cli_agent` from
+                `deepagents-cli` (default). If `False`, use
+                `create_deep_agent` from the SDK.
             openrouter_provider: Pin OpenRouter routing to a single provider
                 (e.g. `"MiniMax"`).
 
                 Requires an `openrouter:` model prefix.
+
+        Raises:
+            ValueError: If `model_name` is empty/whitespace, or if
+                `openrouter_provider` is set without an `openrouter:` prefix.
         """
+        if not model_name or not model_name.strip():
+            msg = "model_name must be a non-empty string"
+            raise ValueError(msg)
+
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
-        if openrouter_provider and (model_name is None or not model_name.startswith("openrouter:")):
+        if openrouter_provider and not model_name.startswith("openrouter:"):
             msg = "openrouter_provider requires an openrouter: model prefix"
             raise ValueError(msg)
 
-        if model_name is None:
-            # Keep Harbor default aligned with the SDK default model.
-            model = get_default_model()
-            # Apply Harbor's runtime temperature knob to the SDK default when supported.
-            if hasattr(model, "temperature"):
-                model = model.model_copy(update={"temperature": temperature})
-            self._model = model
-            self._model_name = model.model
-        else:
-            self._model_name = model_name
-            model_kwargs: dict[str, Any] = {}
-            if openrouter_provider:
-                model_kwargs["openrouter_provider"] = {
-                    "only": [openrouter_provider],
-                    "allow_fallbacks": False,
-                }
-            self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
+        self._model_name = model_name
+        model_kwargs: dict[str, Any] = {}
+        if openrouter_provider:
+            model_kwargs["openrouter_provider"] = {
+                "only": [openrouter_provider],
+                "allow_fallbacks": False,
+            }
+        self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
 
         self._temperature = temperature
         self._verbose = verbose
@@ -210,7 +209,7 @@ class DeepAgentsWrapper(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,  # noqa: ARG002  # required by BaseAgent interface
     ) -> None:
-        """Execute the Deep Agent on the given instruction.
+        """Execute the deep agent on the given instruction.
 
         Args:
             instruction: The task to complete

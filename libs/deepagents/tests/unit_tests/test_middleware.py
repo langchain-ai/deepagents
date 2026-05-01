@@ -26,8 +26,8 @@ from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
     format_content_with_line_numbers,
-    format_read_response,
     sanitize_tool_call_id,
+    slice_read_response,
     truncate_if_too_long,
     update_file_data,
 )
@@ -869,7 +869,9 @@ class TestFilesystemMiddleware:
         long_line = "z" * 15000
         content = f"first line\n{long_line}\nthird line"
         file_data = create_file_data(content)
-        result = format_read_response(file_data, offset=0, limit=100)
+        sliced = slice_read_response(file_data, offset=0, limit=100)
+        assert isinstance(sliced, str)
+        result = format_content_with_line_numbers(sliced, start_line=1)
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
         assert "     1\tfirst line" in lines[0]
@@ -886,7 +888,9 @@ class TestFilesystemMiddleware:
         long_line = "m" * 12000
         content = f"line1\nline2\n{long_line}\nline4"
         file_data = create_file_data(content)
-        result = format_read_response(file_data, offset=2, limit=10)
+        sliced = slice_read_response(file_data, offset=2, limit=10)
+        assert isinstance(sliced, str)
+        result = format_content_with_line_numbers(sliced, start_line=3)
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
         assert "     3\t" in lines[0]

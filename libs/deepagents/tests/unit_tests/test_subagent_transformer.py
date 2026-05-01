@@ -22,8 +22,8 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphInterrupt
-from langgraph.stream._event_log import EventLog
 from langgraph.stream._mux import StreamMux
+from langgraph.stream.stream_channel import StreamChannel
 from langgraph.stream.transformers import (
     LifecycleTransformer,
     MessagesTransformer,
@@ -150,14 +150,14 @@ def _values(payload: dict[str, Any], *, namespace: list[str]) -> ProtocolEvent:
     }
 
 
-def _subscribe(log: EventLog) -> None:
+def _subscribe(log: StreamChannel[Any]) -> None:
     log._subscribed = True
 
 
 def _pre_subscribe_handle(handle: SubagentRunStream) -> None:
-    """Flip `_subscribed` on every EventLog inside the handle's mini-mux."""
+    """Flip `_subscribed` on every StreamChannel inside the handle's mini-mux."""
     for value in handle._mux.extensions.values():
-        if isinstance(value, EventLog):
+        if isinstance(value, StreamChannel):
             _subscribe(value)
 
 
@@ -175,11 +175,11 @@ def _factories(names: frozenset[str]):
 
 
 def _handle_values_items(handle: SubagentRunStream) -> list:
-    return list(handle._mux.extensions["values"]._items)
+    return [item for _, item in handle._mux.extensions["values"]._items]
 
 
 def _handle_subagents_items(handle: SubagentRunStream) -> list:
-    return list(handle._mux.extensions["subagents"]._items)
+    return [item for _, item in handle._mux.extensions["subagents"]._items]
 
 
 class TestSubagentTransformerUnit:
@@ -193,7 +193,8 @@ class TestSubagentTransformerUnit:
         return mux, transformer
 
     def _handle(self, transformer: SubagentTransformer) -> SubagentRunStream:
-        (handle,) = list(transformer._log._items)
+        items = [item for _, item in transformer._log._items]
+        (handle,) = items
         return handle
 
     def test_nondeclared_subagent_type_is_ignored(self) -> None:

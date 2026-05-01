@@ -27,14 +27,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from langgraph.stream._event_log import EventLog
 from langgraph.stream.run_stream import (
     AsyncSubgraphRunStream,
     SubgraphRunStream,
 )
+from langgraph.stream.stream_channel import StreamChannel
 from langgraph.stream.transformers import (
     SubgraphStatus,
-    ValuesTransformer,
     _TasksLifecycleBase,
 )
 
@@ -84,7 +83,7 @@ class SubagentTransformer(_TasksLifecycleBase):
     ) -> None:
         super().__init__(scope)
         self._names = subagent_names
-        self._log: EventLog[SubagentRunStream | AsyncSubagentRunStream] = EventLog()
+        self._log: StreamChannel[SubagentRunStream | AsyncSubagentRunStream] = StreamChannel()
         self._handles: dict[tuple[str, ...], SubagentRunStream | AsyncSubagentRunStream] = {}
         self._mux: StreamMux | None = None
         # parent_task_id -> {"subagent_type": ..., "tool_call_id": ...}
@@ -155,13 +154,9 @@ class SubagentTransformer(_TasksLifecycleBase):
             child_mux = self._mux._make_child(ns)
         except RuntimeError:
             return
-        values_t = child_mux.transformer_by_key("values")
-        if not isinstance(values_t, ValuesTransformer):
-            return
         handle_cls = AsyncSubagentRunStream if child_mux.is_async else SubagentRunStream
         handle = handle_cls(
             mux=child_mux,
-            values_transformer=values_t,
             path=ns,
             graph_name=subagent_type,
             trigger_call_id=info["tool_call_id"] or None,
@@ -189,7 +184,7 @@ class SubagentTransformer(_TasksLifecycleBase):
         else:
             handle._mux.close()
 
-    def _child_mux_for_event(self, event: ProtocolEvent) -> StreamMux | None:
+    def _handle_for_event(self, event: ProtocolEvent) -> SubagentRunStream | AsyncSubagentRunStream | None:
         ns = tuple(event["params"]["namespace"])
         depth = len(self.scope)
         if len(ns) < depth + 1:
@@ -197,13 +192,14 @@ class SubagentTransformer(_TasksLifecycleBase):
         handle = self._handles.get(ns[: depth + 1])
         if handle is None or handle._mux is None or handle._mux._events._closed:
             return None
-        return handle._mux
+        return handle
 
     def process(self, event: ProtocolEvent) -> bool:
         if event.get("method") == "tasks":
             self._capture_pending_from_parent(event)
         keep = super().process(event)
-        child_mux = self._child_mux_for_event(event)
-        if child_mux is not None:
-            child_mux.push(event)
+        handle = self._handle_for_event(event)
+        if handle is not None:
+            handle._observe_event(event)
+            handle._mux.push(event)
         return keep

@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [tool.uv]
+prerelease = "allow"
 override-dependencies = [
     "nbconvert>=7.17.0",  # CVE-2025-53000
     "protobuf>=6.33.5",  # CVE-2026-0994

@@ -1,3 +1,6 @@
+[tool.uv]
+prerelease = "allow"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

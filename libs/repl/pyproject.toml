@@ -50,6 +50,7 @@ test = [
 ]
 
 [tool.uv]
+prerelease = "allow"
 constraint-dependencies = ["urllib3>=2.6.3"]
 
 [tool.uv.sources]

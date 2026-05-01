@@ -90,6 +90,7 @@ include = ["deepagents_harbor*", "deepagents_evals*"]
 deepagents_evals = ["categories.json"]
 
 [tool.uv]
+prerelease = "allow"
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",

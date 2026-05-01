@@ -2,6 +2,9 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <4.0"
 
+[options]
+prerelease-mode = "allow"
+
 [[package]]
 name = "backports-tarfile"
 version = "1.2.0"

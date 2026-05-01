@@ -10,7 +10,6 @@ from deepagents_cli.widgets.welcome import (
     _TIPS,
     WelcomeBanner,
     build_connecting_footer,
-    build_failure_footer,
     build_welcome_footer,
 )
 
@@ -393,20 +392,6 @@ class TestBannerFooterPosition:
         idx = plain.index("Ready to code")
         assert plain[idx - 1] == "\n"
         assert plain[idx - 2] == "\n"
-
-
-class TestBuildFailureFooter:
-    """Tests for the `build_failure_footer` standalone function."""
-
-    def test_returns_content(self) -> None:
-        """Footer should return a `Content` object."""
-        assert isinstance(build_failure_footer("oops"), Content)
-
-    def test_contains_error_message(self) -> None:
-        """Footer should include the failure prefix and error text."""
-        plain = build_failure_footer("connection refused").plain
-        assert "Server failed to start: " in plain
-        assert "connection refused" in plain
 
 
 class TestBuildConnectingFooter:

@@ -40,7 +40,7 @@ dependencies = [
     "langchain-nvidia-ai-endpoints>=1.0.0",
     "langchain-ollama>=1.0.0",
     "langchain-openai>=1.1.14",
-    "langchain-openrouter>=0.1.0",
+    "langchain-openrouter>=0.2.2",
     "langchain-xai>=1.0.0",
     # Eval-specific dependencies
     "datasets>=3.0.0",

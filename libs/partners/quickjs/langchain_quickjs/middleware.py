@@ -282,6 +282,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             coroutine=async_eval,
             infer_schema=False,
             args_schema=EvalSchema,
+            metadata={"ls_code_input_language": "javascript"},
         )
 
     def _skills_for_eval(

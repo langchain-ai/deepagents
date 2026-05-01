@@ -106,10 +106,12 @@ REGISTRY: tuple[Model, ...] = (
                 "eval:set0",
                 "eval:set1",
                 "eval:frontier",
+                "eval:docs",
                 "eval:anthropic",
                 "harbor:set0",
                 "harbor:set1",
                 "harbor:frontier",
+                "harbor:docs",
                 "harbor:anthropic",
             }
         ),
@@ -149,7 +151,16 @@ REGISTRY: tuple[Model, ...] = (
     ),
     Model(
         "baseten:moonshotai/Kimi-K2.6",
-        frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
+        frozenset(
+            {
+                "eval:set0",
+                "eval:docs",
+                "eval:baseten",
+                "harbor:set0",
+                "harbor:docs",
+                "harbor:baseten",
+            }
+        ),
     ),
     Model(
         "baseten:nvidia/Nemotron-120B-A12B",
@@ -244,10 +255,12 @@ REGISTRY: tuple[Model, ...] = (
                 "eval:set0",
                 "eval:set1",
                 "eval:frontier",
+                "eval:docs",
                 "eval:google_genai",
                 "harbor:set0",
                 "harbor:set1",
                 "harbor:frontier",
+                "harbor:docs",
                 "harbor:google_genai",
             }
         ),
@@ -451,10 +464,12 @@ REGISTRY: tuple[Model, ...] = (
                 "eval:set0",
                 "eval:set1",
                 "eval:frontier",
+                "eval:docs",
                 "eval:openai",
                 "harbor:set0",
                 "harbor:set1",
                 "harbor:frontier",
+                "harbor:docs",
                 "harbor:openai",
             }
         ),
@@ -486,7 +501,9 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:minimax/minimax-m2.7",
         frozenset(
             {
+                "eval:docs",
                 "eval:openrouter",
+                "harbor:docs",
                 "harbor:openrouter",
             }
         ),
@@ -514,8 +531,10 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:open",
+                "eval:docs",
                 "eval:openrouter",
                 "harbor:open",
+                "harbor:docs",
                 "harbor:openrouter",
             }
         ),
@@ -525,6 +544,17 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:openrouter",
+                "harbor:openrouter",
+            }
+        ),
+    ),
+    Model(
+        "openrouter:deepseek/deepseek-v4-pro",
+        frozenset(
+            {
+                "eval:docs",
+                "eval:openrouter",
+                "harbor:docs",
                 "harbor:openrouter",
             }
         ),
@@ -561,6 +591,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
+            ("docs", "docs"),
         ],
     ),
     (
@@ -607,12 +638,107 @@ _WORKFLOW_CONFIG: dict[str, tuple[str, dict[str, str | None]]] = {
     "harbor": ("HARBOR_MODELS", _HARBOR_PRESETS),
 }
 
+_EVAL_PROVIDER_OUTPUTS: tuple[str, ...] = (
+    "anthropic",
+    "baseten",
+    "fireworks",
+    "google_genai",
+    "groq",
+    "nvidia",
+    "ollama",
+    "openai",
+    "openrouter",
+    "xai",
+    "other",
+)
+"""Names of the per-provider matrix outputs emitted for the evals workflow.
+
+All entries except `"other"` are real provider prefixes matched against
+`_provider(model_spec)`. The `"other"` bucket is a catch-all for model specs
+whose provider is not enumerated here, so they still flow into a real eval
+job (see `_matrix_outputs`). Adding a new provider here also requires adding
+a matching `eval-<provider>` job in `evals.yml`; the test suite enforces this
+contract.
+"""
+
+_ARTIFACT_KEY_RE = re.compile(r"[^a-zA-Z0-9._-]+")
+"""Characters disallowed in GHA artifact names (model specs use `:` and `/`)."""
+
 
 def _filter_by_tag(prefix: str, tag: str | None) -> list[str]:
     """Return model specs matching a tag filter, in REGISTRY order."""
     if tag is not None:
         return [m.spec for m in REGISTRY if tag in m.groups]
     return [m.spec for m in REGISTRY if any(g.startswith(prefix) for g in m.groups)]
+
+
+def _provider(model_spec: str) -> str:
+    """Return the provider prefix from a model spec."""
+    return model_spec.split(":", 1)[0]
+
+
+def _artifact_key(index: int, model_spec: str) -> str:
+    """Build a stable, artifact-safe key for one model matrix entry.
+
+    GitHub Actions artifact names disallow several characters that appear in
+    model specs (e.g., `:` and `/`), and two artifacts cannot share a name
+    within a workflow run. The numeric `index` prefix guarantees uniqueness
+    even if two specs collapse to the same slug; the regex replaces every
+    disallowed character with `-`.
+    """
+    slug = _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
+    return f"{index:03d}-{slug}"
+
+
+def _matrix_entry(index: int, model_spec: str) -> dict[str, str]:
+    """Build one GitHub Actions matrix entry for a model."""
+    return {
+        "model": model_spec,
+        "provider": _provider(model_spec),
+        "artifact_key": _artifact_key(index, model_spec),
+    }
+
+
+def _matrix_outputs(workflow: str, models: list[str]) -> dict[str, object]:
+    """Build matrix outputs consumed by GitHub Actions workflows.
+
+    The evals workflow needs one matrix per provider so each provider can use
+    `strategy.max-parallel: 1` as a real per-provider queue. The catch-all
+    `other` matrix runs any models whose provider is not enumerated in
+    `_EVAL_PROVIDER_OUTPUTS`, so newly added providers (or one-off
+    `models_override` entries) still execute even before a dedicated
+    `eval-<provider>` job is wired up in `evals.yml`.
+
+    Args:
+        workflow: "eval" or "harbor".
+        models: Ordered model specs selected for the workflow.
+
+    Returns:
+        Mapping of GitHub output names to JSON-serializable values.
+    """
+    entries = [_matrix_entry(index, model) for index, model in enumerate(models)]
+    outputs: dict[str, object] = {"matrix": {"include": entries}}
+
+    if workflow != "eval":
+        return outputs
+
+    provider_entries: dict[str, list[dict[str, str]]] = {
+        provider: [] for provider in _EVAL_PROVIDER_OUTPUTS
+    }
+    for entry in entries:
+        provider = entry["provider"]
+        output_provider = provider if provider in provider_entries else "other"
+        provider_entries[output_provider].append(entry)
+
+    # Empty includes are emitted intentionally and *must* be guarded by
+    # `<provider>_has_models == 'true'` in evals.yml — GitHub Actions fails
+    # the workflow when `matrix.include == []`. See the per-provider job
+    # `if:` clauses in evals.yml.
+    for provider, include in provider_entries.items():
+        outputs[f"{provider}_matrix"] = {"include": include}
+        outputs[f"{provider}_has_models"] = bool(include)
+
+    return outputs
 
 
 def _resolve_models(workflow: str, selection: str) -> list[str]:
@@ -659,17 +785,17 @@ def main() -> None:
     env_var, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
-    matrix = {
-        "include": [{"model": m, "provider": m.split(":")[0]} for m in models],
-    }
+    outputs = _matrix_outputs(workflow, models)
 
     github_output = os.environ.get("GITHUB_OUTPUT")
-    line = f"matrix={json.dumps(matrix, separators=(',', ':'))}"
     if github_output:
         with open(github_output, "a") as f:  # noqa: PTH123
-            f.write(line + "\n")
+            for key, value in outputs.items():
+                payload = json.dumps(value, separators=(",", ":"))
+                f.write(f"{key}={payload}\n")
     else:
-        print(line)  # noqa: T201
+        payload = json.dumps(outputs["matrix"], separators=(",", ":"))
+        print(f"matrix={payload}")  # noqa: T201
 
 
 if __name__ == "__main__":

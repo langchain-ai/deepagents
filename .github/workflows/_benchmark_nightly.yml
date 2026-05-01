@@ -1,0 +1,29 @@
+# Nightly full-sweep CodSpeed benchmarks
+#
+# Manual `workflow_dispatch` is provided for ad-hoc full sweeps.
+
+name: "Benchmark (nightly)"
+
+on:
+  schedule:
+    # 09:00 UTC daily (off-peak for US contributors).
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-deepagents:
+    name: "⏱️ Benchmark deepagents"
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/deepagents"
+    secrets: inherit
+
+  benchmark-cli:
+    name: "⏱️ Benchmark cli"
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/cli"
+    secrets: inherit

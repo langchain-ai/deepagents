@@ -42,7 +42,7 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 test = [
     "pytest>=7.3.0,<10.0.0",
     "pytest-benchmark",
-    "pytest-codspeed",
+    "pytest-codspeed>=4.4.0,<5.0.0",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",

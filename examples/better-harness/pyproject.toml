@@ -15,6 +15,9 @@ dev = [
 [project.scripts]
 better-harness = "better_harness:main"
 
+[tool.uv]
+prerelease = "allow"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

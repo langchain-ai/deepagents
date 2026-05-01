@@ -12,3 +12,6 @@ dependencies = [
 [tool.uv.sources]
 deepagents = { path = "../../libs/deepagents", editable = true }
 langchain-quickjs = { path = "../../libs/partners/quickjs", editable = true }
+
+[tool.uv]
+prerelease = "allow"

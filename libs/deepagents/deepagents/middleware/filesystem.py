@@ -239,13 +239,16 @@ def _file_data_delta_reducer(
     """Batch reducer for use with DeltaChannel.
 
     DeltaChannel calls reducer(base, list(values)) where values is a list of
-    all writes in the current step. Apply each dict sequentially via
-    _file_data_reducer so deletions and overwrites compose correctly.
+    all writes in the current step. Single dict copy + one pass over all writes.
     """
-    result = left
-    for right in values:
-        result = _file_data_reducer(result, right)
-    return result or {}
+    result: dict[str, FileData] = dict(left) if left else {}
+    for writes in values:
+        for key, value in writes.items():
+            if value is None:
+                result.pop(key, None)
+            else:
+                result[key] = value
+    return result
 
 
 class FilesystemState(AgentState):

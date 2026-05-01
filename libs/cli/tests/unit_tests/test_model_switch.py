@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from deepagents_cli import model_config
-from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
+from deepagents_cli.app import (
+    DeepAgentsApp,
+    _extract_model_params_flag,
+    _format_model_params,
+)
 from deepagents_cli.config import settings
 from deepagents_cli.model_config import ModelSpec, clear_caches
 from deepagents_cli.remote_client import RemoteAgent
@@ -97,6 +101,41 @@ def mock_create_model() -> Iterator[Mock]:
         yield mock
 
 
+class TestFormatModelParams:
+    """Tests for the `_format_model_params` rendering helper."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """`None` produces no suffix so callers can concatenate unconditionally."""
+        assert _format_model_params(None) == ""
+
+    def test_empty_dict_returns_empty_string(self) -> None:
+        """An empty dict has no params worth echoing — collapse to empty."""
+        assert _format_model_params({}) == ""
+
+    def test_single_key_renders_with_leading_space(self) -> None:
+        """Single key renders as a space-prefixed suffix that callers append."""
+        assert _format_model_params({"num_ctx": 16384}) == (
+            ' with model params {"num_ctx": 16384}'
+        )
+
+    def test_keys_are_sorted_regardless_of_insertion_order(self) -> None:
+        """`sort_keys=True` must produce stable output across call sites and dicts.
+
+        Insertion-reversed keys would render in insertion order without
+        `sort_keys=True`, so this test would fail if the flag were dropped.
+        """
+        params = {"temperature": 0.2, "num_ctx": 16384}
+        assert _format_model_params(params) == (
+            ' with model params {"num_ctx": 16384, "temperature": 0.2}'
+        )
+
+    def test_string_values_are_json_escaped(self) -> None:
+        """Values containing quotes must be JSON-escaped, not interpolated raw."""
+        assert _format_model_params({"stop": '"end"'}) == (
+            ' with model params {"stop": "\\"end\\""}'
+        )
+
+
 class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
 
@@ -140,6 +179,77 @@ class TestModelSwitchNoOp:
         assert "Already using" in captured_messages[0]
         assert "Switched to" not in captured_messages[0]
         assert app._model_switching is False
+
+    async def test_same_model_with_new_params_applies_overrides(self) -> None:
+        """`/model <current> --model-params {...}` should apply params per-session.
+
+        Regression test for the bug where the early return on the
+        already-active-model branch silently dropped `--model-params`,
+        leaving `_model_params_override` unset.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={"num_ctx": 16384, "temperature": 0.2},
+            )
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override == {
+            "num_ctx": 16384,
+            "temperature": 0.2,
+        }
+        assert len(captured_messages) == 1
+        message = captured_messages[0]
+        assert message.startswith("Already using anthropic:claude-opus-4-5")
+        # Stable, key-sorted JSON in the echoed suffix.
+        assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
+
+    async def test_same_model_without_params_clears_prior_override(self) -> None:
+        """Re-selecting the same model with no params must clear stale params.
+
+        Regression test for the asymmetry where the regular-switch path always
+        wrote `_model_params_override = extra_kwargs` (clearing on `None`) but
+        the already-active branch left previously-set params in place.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        # Simulate a prior `/model <current> --model-params {...}` call.
+        app._model_override = "anthropic:claude-opus-4-5"
+        app._model_params_override = {"num_ctx": 16384}
+
+        with patch(
+            "deepagents_cli.model_config.has_provider_credentials",
+            return_value=True,
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override is None
 
 
 class TestModelSwitchErrorHandling:
@@ -319,6 +429,41 @@ class TestModelSwitchErrorHandling:
             "temperature": 0.7,
             "max_tokens": 1024,
         }
+
+    async def test_switched_to_message_echoes_params(self) -> None:
+        """The 'Switched to' confirmation should echo `--model-params`."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7, "num_ctx": 16384},
+            )
+
+        assert any(
+            m == "Switched to anthropic:claude-sonnet-4-5 with model params "
+            '{"num_ctx": 16384, "temperature": 0.7}'
+            for m in captured_messages
+        )
 
 
 class TestModelSwitchConcurrencyGuard:

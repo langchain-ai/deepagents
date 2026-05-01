@@ -66,7 +66,7 @@ def _make_backend(files=None):
 
 
 def _runtime(tool_call_id=""):
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, tools=[], config={})
 
 
 class TestAddMiddleware:
@@ -1200,6 +1200,7 @@ class TestFilesystemMiddleware:
             tool_call_id="img-read-1",
             store=None,
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1231,6 +1232,7 @@ class TestFilesystemMiddleware:
             tool_call_id="img-read-err",
             store=None,
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1255,6 +1257,7 @@ class TestFilesystemMiddleware:
             tool_call_id="str-read",
             store=None,
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1280,6 +1283,7 @@ class TestFilesystemMiddleware:
             tool_call_id="str-trunc",
             store=None,
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1310,6 +1314,7 @@ class TestFilesystemMiddleware:
             tool_call_id="str-tok",
             store=None,
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1350,6 +1355,7 @@ class TestFilesystemMiddleware:
             tool_call_id="test_exec",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1383,6 +1389,7 @@ class TestFilesystemMiddleware:
             tool_call_id="test_fmt",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1419,6 +1426,7 @@ class TestFilesystemMiddleware:
             tool_call_id="test_fail",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1455,6 +1463,7 @@ class TestFilesystemMiddleware:
             tool_call_id="test_trunc",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1486,6 +1495,7 @@ class TestFilesystemMiddleware:
             tool_call_id="test",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1948,6 +1958,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_zero_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -1979,6 +1990,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_neg_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -2012,6 +2024,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_fwd_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -2041,6 +2054,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_max_execute_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -2075,6 +2089,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_at_max_execute_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 
@@ -2106,6 +2121,7 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_none_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
+            tools=[],
             config={},
         )
 

@@ -19,7 +19,7 @@ from deepagents.middleware.filesystem import (
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, tools=[], config={})
 
 
 def _make_backend(files: dict | None = None) -> StoreBackend:

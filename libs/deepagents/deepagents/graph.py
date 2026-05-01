@@ -31,6 +31,7 @@ from deepagents._excluded_middleware import (
     _verify_excluded_middleware_coverage,
 )
 from deepagents._models import resolve_model
+from deepagents._subagent_transformer import SubagentTransformer
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -628,14 +629,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
+    sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
-        deepagent_middleware.append(
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-                task_description=_profile.tool_description_overrides.get("task"),
-            )
+        sub_agent_middleware = SubAgentMiddleware(
+            backend=backend,
+            subagents=inline_subagents,
+            # Overrides the task tool description. Value should include
+            # {available_agents} — a format placeholder replaced with the
+            # subagent name/description list. Without it the model can't
+            # see which subagents exist. None (default) uses the built-in
+            # template. Stale keys silently no-op if the tool is renamed.
+            task_description=_profile.tool_description_overrides.get("task"),
         )
+        deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -696,6 +702,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
+    # Bake declared subagent names into a scope-aware factory so each
+    # subgraph mini-mux spawns a fresh `SubagentTransformer` that knows
+    # which nested runs belong to declared subagents.
+    subagent_names = frozenset(sub_agent_middleware.subagent_names if sub_agent_middleware is not None else ())
+
+    def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
+        return SubagentTransformer(scope, subagent_names=subagent_names)
+
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -708,6 +722,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
+        transformers=[_subagent_factory],
     ).with_config(
         {
             "recursion_limit": 9_999,

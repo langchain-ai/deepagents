@@ -7,7 +7,7 @@ middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -16,9 +16,11 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
+from langgraph.channels.delta import DeltaChannel
+from langgraph.graph.message import _messages_delta_reducer
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -52,6 +54,13 @@ from deepagents.profiles import GeneralPurposeSubagentProfile
 from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt, _harness_profile_for_model
 
 logger = logging.getLogger(__name__)
+
+
+class _DeepAgentState(AgentState):
+    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+
+    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -709,6 +718,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         system_prompt=final_system_prompt,
         tools=_tools,
         middleware=deepagent_middleware,
+        state_schema=_DeepAgentState,
         response_format=response_format,
         context_schema=context_schema,
         checkpointer=checkpointer,

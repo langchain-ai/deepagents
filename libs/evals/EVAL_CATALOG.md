@@ -4,7 +4,7 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**108 evals** across **7 categories**
+**110 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -107,10 +107,12 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L232) — `tests/evals/test_memory_multiturn.py:232`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L259) — `tests/evals/test_memory_multiturn.py:259`
 
-## Conversation (`conversation`) (2 evals)
+## Conversation (`conversation`) (4 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
+- [`test_plan_narrative_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_plan_narrative.py#L274) — `tests/evals/test_plan_narrative.py:274`
+- [`test_plan_calibration`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_plan_narrative.py#L356) — `tests/evals/test_plan_narrative.py:356`
 
 ## Summarization (`summarization`) (5 evals)
 

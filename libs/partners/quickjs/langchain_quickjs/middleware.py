@@ -52,9 +52,7 @@ _DEFAULT_TOOL_NAME = "eval"
 class REPLState(AgentState):
     """State schema for ``REPLMiddleware``."""
 
-    _quickjs_snapshot_payload: NotRequired[
-        Annotated[bytes | None, PrivateStateAttr]
-    ]
+    _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
 
 
 class EvalSchema(BaseModel):

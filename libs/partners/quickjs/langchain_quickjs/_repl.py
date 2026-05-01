@@ -558,9 +558,7 @@ class _ThreadREPL:
             self._arestore_snapshot(payload, inject_globals=inject_globals)
         )
 
-    async def _arestore_snapshot(
-        self, payload: bytes, *, inject_globals: bool
-    ) -> None:
+    async def _arestore_snapshot(self, payload: bytes, *, inject_globals: bool) -> None:
         ctx = self._require_ctx()
         snapshot = Snapshot.from_bytes(payload)
         self._runtime.restore_snapshot(

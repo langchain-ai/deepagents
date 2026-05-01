@@ -94,10 +94,7 @@ def _script_two_turns_with_skill() -> list[AIMessage]:
                 {
                     "name": "eval",
                     "args": {
-                        "code": (
-                            'const m = await import("@/skills/inc");\n'
-                            "m.inc(10);"
-                        )
+                        "code": ('const m = await import("@/skills/inc");\nm.inc(10);')
                     },
                     "id": "call_1",
                     "type": "tool_call",
@@ -111,10 +108,7 @@ def _script_two_turns_with_skill() -> list[AIMessage]:
                 {
                     "name": "eval",
                     "args": {
-                        "code": (
-                            'const m = await import("@/skills/inc");\n'
-                            "m.inc(41);"
-                        )
+                        "code": ('const m = await import("@/skills/inc");\nm.inc(41);')
                     },
                     "id": "call_2",
                     "type": "tool_call",

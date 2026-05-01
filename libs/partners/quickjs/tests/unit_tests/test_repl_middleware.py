@@ -163,9 +163,7 @@ def test_system_prompt_injected_once() -> None:
 
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
     mw = REPLMiddleware(snapshot_between_turns=False)
-    assert (
-        "DO NOT persist across multiple turns" in mw._base_system_prompt
-    )
+    assert "DO NOT persist across multiple turns" in mw._base_system_prompt
 
 
 # ---------------------------------------------------------------------------

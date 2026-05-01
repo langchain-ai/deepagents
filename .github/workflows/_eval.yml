@@ -46,6 +46,11 @@ on:
         required: false
         default: ""
         type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models (minimal | low | medium | high | xhigh)."
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -152,6 +157,14 @@ jobs:
         run: |
           provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
           printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s\n' "${PYTEST_ADDOPTS}" "${provider}" >> "$GITHUB_ENV"
+
+      - name: "🧠 Apply OpenAI reasoning effort"
+        if: inputs.openai_reasoning_effort != '' && inputs.provider == 'openai'
+        env:
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
+        run: |
+          effort=$(echo "$OPENAI_REASONING_EFFORT" | xargs)
+          printf 'PYTEST_ADDOPTS=%s --openai-reasoning-effort %s\n' "${PYTEST_ADDOPTS}" "${effort}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

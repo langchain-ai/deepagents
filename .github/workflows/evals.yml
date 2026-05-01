@@ -178,6 +178,18 @@ on:
         required: false
         default: ""
         type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models (applied as the `reasoning_effort` model kwarg). Only applies to openai: models."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
 
 permissions:
   contents: write
@@ -223,6 +235,7 @@ jobs:
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
@@ -275,6 +288,9 @@ jobs:
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
+            echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -317,6 +333,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-baseten:
@@ -337,6 +354,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-fireworks:
@@ -357,6 +375,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-google-genai:
@@ -377,6 +396,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-groq:
@@ -397,6 +417,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-nvidia:
@@ -417,6 +438,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-ollama:
@@ -437,6 +459,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-openai:
@@ -457,6 +480,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-openrouter:
@@ -477,6 +501,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-xai:
@@ -497,6 +522,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   eval-other:
@@ -517,6 +543,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
     secrets: inherit
 
   aggregate:

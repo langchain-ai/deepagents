@@ -117,27 +117,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete_file
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete_file
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete_file
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete_file
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})

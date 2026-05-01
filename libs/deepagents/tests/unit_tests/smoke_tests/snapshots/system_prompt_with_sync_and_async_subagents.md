@@ -78,6 +78,12 @@ All file paths must start with a /. Follow the tool docs for the available tools
 
 When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `/large_tool_results/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `/large_tool_results/<tool_call_id>`.
 
+## Delete Tool `delete_file`
+
+You have access to a `delete_file` tool for permanently removing files from the filesystem.
+
+- delete_file: permanently delete a file (cannot be undone)
+
 
 ## `task` (subagent spawner)
 

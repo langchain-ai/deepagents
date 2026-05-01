@@ -146,6 +146,25 @@
   },
   {
     "function": {
+      "description": "Deletes a file from the filesystem.\n\nUsage:\n- Permanently removes the specified file.\n- This operation cannot be undone.\n- Returns an error if the file does not exist or if the path points to a directory.",
+      "name": "delete_file",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to delete. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "Find files matching a glob pattern.\n\nSupports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).\nReturns a list of absolute file paths that match the pattern.\n\nExamples:\n- `**/*.py` - Find all Python files\n- `*.txt` - Find all text files in root\n- `/subdir/**/*.md` - Find all markdown files under /subdir",
       "name": "glob",
       "parameters": {

@@ -38,6 +38,7 @@ from deepagents.backends import CompositeBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
@@ -69,6 +70,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
+    "delete_file": "write",
 }
 
 
@@ -277,6 +279,12 @@ class EditFileSchema(BaseModel):
     )
 
 
+class DeleteFileSchema(BaseModel):
+    """Input schema for the `delete_file` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
+
+
 class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
@@ -349,6 +357,14 @@ WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
 Usage:
 - The write_file tool will create the a new file.
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
+"""
+
+DELETE_FILE_TOOL_DESCRIPTION = """Deletes a file from the filesystem.
+
+Usage:
+- Permanently removes the specified file.
+- This operation cannot be undone.
+- Returns an error if the file does not exist or if the path points to a directory.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -449,6 +465,12 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
 
+DELETION_SYSTEM_PROMPT = """## Delete Tool `delete_file`
+
+You have access to a `delete_file` tool for permanently removing files from the filesystem.
+
+- delete_file: permanently delete a file (cannot be undone)"""
+
 
 def supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
@@ -468,6 +490,30 @@ def supports_execution(backend: BackendProtocol) -> bool:
 
     # For other backends, use isinstance check
     return isinstance(backend, SandboxBackendProtocol)
+
+
+def _get_tool_name(tool: object) -> str | None:
+    """Return the name of a tool, whether it's a BaseTool instance or a dict."""
+    if hasattr(tool, "name"):
+        return tool.name  # type: ignore[union-attr]
+    if hasattr(tool, "get"):
+        return tool.get("name")  # type: ignore[union-attr]
+    return None
+
+
+def supports_delete(backend: BackendProtocol) -> bool:
+    """Check if a backend supports file deletion.
+
+    Returns True if the backend class overrides `delete` (i.e. doesn't
+    inherit the `NotImplementedError` stub from `BackendProtocol`).
+
+    Args:
+        backend: The backend to check.
+
+    Returns:
+        True if the backend supports deletion, False otherwise.
+    """
+    return type(backend).delete is not BackendProtocol.delete
 
 
 # Tools that should be excluded from the large result eviction logic.
@@ -498,6 +544,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
+    "delete_file",
 )
 
 
@@ -762,6 +809,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_read_file_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
+            self._create_delete_file_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
             self._create_execute_tool(),
@@ -1107,6 +1155,65 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
+    def _create_delete_file_tool(self) -> BaseTool:
+        """Create the delete_file tool."""
+        tool_description = self._custom_tool_descriptions.get("delete_file") or DELETE_FILE_TOOL_DESCRIPTION
+
+        def sync_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage | str:
+            """Synchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res: DeleteResult = resolved_backend.delete(validated_path)
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        async def async_delete_file(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage | str:
+            """Asynchronous wrapper for delete_file tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
+
+            if _check_fs_permission(self._permissions, "write", validated_path) == "deny":
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path}",
+                    name="delete_file",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res = await resolved_backend.adelete(validated_path)
+            if res.error:
+                return res.error
+            return f"Deleted file {res.path}"
+
+        return StructuredTool.from_function(
+            name="delete_file",
+            description=tool_description,
+            func=sync_delete_file,
+            coroutine=async_delete_file,
+            infer_schema=False,
+            args_schema=DeleteFileSchema,
+        )
+
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
@@ -1397,7 +1504,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=ExecuteSchema,
         )
 
-    def wrap_model_call(
+    def wrap_model_call(  # noqa: C901, PLR0912
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
@@ -1422,20 +1529,28 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response, or an `ExtendedModelResponse` with a state
             update tagging a newly evicted message.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        # Check if execute/delete tools are present and filter based on backend support
+        has_execute_tool = any(_get_tool_name(t) == "execute" for t in request.tools)
+        has_delete_tool = any(_get_tool_name(t) == "delete_file" for t in request.tools)
 
         backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
+        backend_supports_deletion = False
+        if has_execute_tool or has_delete_tool:
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = supports_execution(backend)
+            if has_execute_tool:
+                backend_supports_execution = supports_execution(backend)
+            if has_delete_tool:
+                backend_supports_deletion = supports_delete(backend)
 
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
+        tools_to_filter = set()
+        if has_execute_tool and not backend_supports_execution:
+            tools_to_filter.add("execute")
+            has_execute_tool = False
+        if has_delete_tool and not backend_supports_deletion:
+            tools_to_filter.add("delete_file")
+            has_delete_tool = False
+        if tools_to_filter:
+            request = request.override(tools=[t for t in request.tools if _get_tool_name(t) not in tools_to_filter])
 
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
@@ -1448,9 +1563,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             ]
 
-            # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+            if has_delete_tool and backend_supports_deletion:
+                prompt_parts.append(DELETION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 
@@ -1469,7 +1585,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return handler(request)
 
-    async def awrap_model_call(
+    async def awrap_model_call(  # noqa: C901, PLR0912
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
@@ -1487,20 +1603,28 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response from the handler, or an `ExtendedModelResponse`
             with a state update tagging newly evicted messages.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
+        # Check if execute/delete tools are present and filter based on backend support
+        has_execute_tool = any(_get_tool_name(t) == "execute" for t in request.tools)
+        has_delete_tool = any(_get_tool_name(t) == "delete_file" for t in request.tools)
 
         backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
+        backend_supports_deletion = False
+        if has_execute_tool or has_delete_tool:
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = supports_execution(backend)
+            if has_execute_tool:
+                backend_supports_execution = supports_execution(backend)
+            if has_delete_tool:
+                backend_supports_deletion = supports_delete(backend)
 
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
+        tools_to_filter = set()
+        if has_execute_tool and not backend_supports_execution:
+            tools_to_filter.add("execute")
+            has_execute_tool = False
+        if has_delete_tool and not backend_supports_deletion:
+            tools_to_filter.add("delete_file")
+            has_delete_tool = False
+        if tools_to_filter:
+            request = request.override(tools=[t for t in request.tools if _get_tool_name(t) not in tools_to_filter])
 
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
@@ -1513,9 +1637,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             ]
 
-            # Add execution instructions if execute tool is available
             if has_execute_tool and backend_supports_execution:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+            if has_delete_tool and backend_supports_deletion:
+                prompt_parts.append(DELETION_SYSTEM_PROMPT)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 

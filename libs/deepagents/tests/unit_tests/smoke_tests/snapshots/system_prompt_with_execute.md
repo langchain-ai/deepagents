@@ -85,6 +85,12 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 
 - execute: run a shell command in the sandbox (returns output and exit code)
 
+## Delete Tool `delete_file`
+
+You have access to a `delete_file` tool for permanently removing files from the filesystem.
+
+- delete_file: permanently delete a file (cannot be undone)
+
 
 ## `task` (subagent spawner)
 

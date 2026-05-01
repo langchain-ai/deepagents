@@ -1,6 +1,6 @@
 ---
 name: sample-data
-description: Discover and select one or more files from /memories/skills/data for analysis, including demo data and user-provided datasets.
+description: Discover and select one or more files from /uploads or /memories/skills/data for analysis, including uploaded files and demo data.
 ---
 
 # Data Directory
@@ -9,15 +9,19 @@ Use this skill when selecting, inspecting, or explaining files in the data direc
 
 ## Location
 
-All analysis inputs should be discovered under:
+Analysis inputs should be discovered under:
 
 `/memories/skills/data/`
 
-The directory can contain one or more data files. Do not assume a specific schema or business domain until you inspect the files. The bundled `sample_saas_metrics.csv` is only demo data.
+and:
+
+`/uploads/`
+
+The directories can contain one or more data files. Do not assume a specific schema or business domain until you inspect the files. The bundled `sample_saas_metrics.csv` is only demo data.
 
 ## Discovery Workflow
 
-1. List `/memories/skills/data/` before choosing files.
+1. List `/uploads/` and `/memories/skills/data/` before choosing files.
 2. Identify supported files such as `.csv`, `.tsv`, `.json`, `.jsonl`, `.xlsx`, or `.parquet` when available.
 3. For each relevant file, inspect the header/schema, row count, column names, and a small sample.
 4. If there are multiple files, decide whether they should be analyzed separately, joined by keys, concatenated, or treated as unrelated inputs.

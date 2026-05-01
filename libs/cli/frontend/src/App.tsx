@@ -4,7 +4,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
-import { ASSISTANT_ID } from "./constants";
+import { ASSISTANT_ID, UPLOADS_ENABLED } from "./constants";
 import AppHeader from "./components/AppHeader";
 import ThreadPicker from "./components/ThreadPicker";
 import MessageList from "./components/MessageList";
@@ -75,6 +75,27 @@ function AuthenticatedApp({
   );
 }
 
+type UploadResponse = {
+  path?: string;
+  error?: string;
+};
+
+function isSupportedUpload(file: File) {
+  if (file.type.startsWith("text/") || file.type.startsWith("image/")) {
+    return true;
+  }
+  return /\.(csv|gif|jpe?g|jsonl?|md|png|tsv|txt|webp)$/i.test(file.name);
+}
+
+function uploadedFilesPrompt(paths: string[]) {
+  if (paths.length === 1) {
+    return `I uploaded a file and it is available at ${paths[0]}.`;
+  }
+  return `I uploaded files and they are available at:\n${paths
+    .map((path) => `- ${path}`)
+    .join("\n")}`;
+}
+
 function NewChatApp({
   accessToken,
   userEmail,
@@ -92,6 +113,9 @@ function NewChatApp({
   const [threadId, setThreadId] = useState<string | null>(null);
   const [showTodos, setShowTodos] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const mainRef = useRef<HTMLDivElement | null>(null);
   const isNearBottom = useRef(true);
@@ -137,6 +161,14 @@ function NewChatApp({
     [client, isAnonymous, userIdentity],
   );
 
+  const ensureThreadId = useCallback(async () => {
+    if (threadId != null) return threadId;
+    const thread = await client.threads.create();
+    const id = thread.thread_id;
+    handleThreadId(id);
+    return id;
+  }, [client, handleThreadId, threadId]);
+
   const stream = useAgentStream({
     apiUrl: window.location.origin,
     assistantId: ASSISTANT_ID,
@@ -176,9 +208,64 @@ function NewChatApp({
 
   useEffect(() => () => cancelAnimationFrame(rafId.current), []);
 
+  const uploadFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList || fileList.length === 0 || uploadingFiles) return;
+
+      const filesToUpload = Array.from(fileList);
+      const unsupported = filesToUpload.find((file) => !isSupportedUpload(file));
+      if (unsupported) {
+        setUploadError(`Unsupported file type: ${unsupported.name}`);
+        return;
+      }
+
+      setUploadingFiles(true);
+      setUploadError(null);
+      try {
+        const id = await ensureThreadId();
+        const uploadedPaths: string[] = [];
+
+        for (const file of filesToUpload) {
+          const params = new URLSearchParams({
+            filename: file.name,
+            thread_id: id,
+            assistant_id: ASSISTANT_ID,
+          });
+          const response = await fetch(
+            `/deepagents/files/upload?${params.toString()}`,
+            {
+              method: "POST",
+              headers: {
+                ...defaultHeaders,
+                "content-type": file.type || "application/octet-stream",
+              },
+              body: file,
+            },
+          );
+          const payload = (await response.json().catch(() => ({}))) as UploadResponse;
+          if (!response.ok || !payload.path) {
+            throw new Error(payload.error || `Failed to upload ${file.name}`);
+          }
+          uploadedPaths.push(payload.path);
+        }
+
+        const prompt = uploadedFilesPrompt(uploadedPaths);
+        setInput((current) => {
+          const trimmed = current.trim();
+          return trimmed ? `${trimmed}\n\n${prompt}` : prompt;
+        });
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : "Upload failed");
+      } finally {
+        setUploadingFiles(false);
+      }
+    },
+    [defaultHeaders, ensureThreadId, uploadingFiles],
+  );
+
   const submitInput = useCallback(async () => {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if (!text || isLoading || uploadingFiles) return;
 
     // Capture the first-message text before we submit. If the thread is
     // brand new (threadId is null), handleThreadId will write this as the
@@ -199,7 +286,7 @@ function NewChatApp({
       },
       { streamSubgraphs: true },
     );
-  }, [input, isLoading, stream, threadId]);
+  }, [input, isLoading, stream, threadId, uploadingFiles]);
 
   const threadPicker = (
     <ThreadPicker
@@ -251,6 +338,11 @@ function NewChatApp({
           className="mx-auto max-w-4xl"
         >
           <div className="composer">
+            {uploadError && (
+              <div className="border-b border-[var(--border)] px-4 py-2 text-[11px] text-red-500">
+                {uploadError}
+              </div>
+            )}
             <textarea
               value={input}
               onChange={(event) => {
@@ -271,6 +363,33 @@ function NewChatApp({
             />
             <div className="flex items-center justify-between px-4 pb-3">
               <div className="flex items-center gap-1.5">
+                {UPLOADS_ENABLED && (
+                  <>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept="text/*,image/*,.csv,.json,.jsonl,.md,.tsv,.txt"
+                      className="hidden"
+                      onChange={(event) => {
+                        const files = event.currentTarget.files;
+                        void uploadFiles(files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploadingFiles || isLoading}
+                      className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-50"
+                    >
+                      <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                      </svg>
+                      {uploadingFiles ? "Uploading..." : "Upload"}
+                    </button>
+                  </>
+                )}
                 {todoCount > 0 && (
                   <button
                     type="button"
@@ -315,7 +434,7 @@ function NewChatApp({
               <button
                 type={isLoading ? "button" : "submit"}
                 onClick={isLoading ? () => void stream.stop() : undefined}
-                disabled={!isLoading && !input.trim()}
+                disabled={!isLoading && (!input.trim() || uploadingFiles)}
                 className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all disabled:opacity-30 ${
                   isLoading
                     ? "bg-red-500 text-white hover:bg-red-600"

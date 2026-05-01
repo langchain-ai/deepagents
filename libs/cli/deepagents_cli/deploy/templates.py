@@ -1372,14 +1372,55 @@ install step that `langgraph dev` does not perform.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from deploy_graph import DEFAULT_ASSISTANT_ID, SANDBOX_SCOPE, _get_or_create_sandbox
+
 _FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
+_UPLOADS_ENABLED = __DEEPAGENTS_UPLOADS_ENABLED__
+_UPLOADS_DIR = "/uploads"
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+def _sanitize_filename(raw_name: str | None) -> str:
+    """Return a single safe filename component."""
+    name = Path(raw_name or "upload").name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return name or "upload"
+
+
+def _is_allowed_upload(filename: str, content_type: str) -> bool:
+    if content_type.startswith(("text/", "image/")):
+        return True
+    suffix = Path(filename).suffix.lower()
+    return suffix in {
+        ".csv",
+        ".gif",
+        ".jpeg",
+        ".jpg",
+        ".json",
+        ".jsonl",
+        ".md",
+        ".png",
+        ".tsv",
+        ".txt",
+        ".webp",
+    }
+
+
+def _sandbox_cache_key(thread_id: str | None, assistant_id: str) -> str:
+    if SANDBOX_SCOPE == "assistant":
+        return f"assistant:{assistant_id}"
+    if not thread_id:
+        raise ValueError("thread_id is required for thread-scoped sandbox uploads")
+    return f"thread:{thread_id}"
 
 
 async def healthz(_request):
@@ -1392,9 +1433,56 @@ async def app_root_redirect(_request):
     return RedirectResponse(url="/app/", status_code=308)
 
 
+async def upload_file(request: Request):
+    if not _UPLOADS_ENABLED:
+        return JSONResponse({"error": "file uploads require a sandbox"}, status_code=404)
+
+    filename = _sanitize_filename(request.query_params.get("filename"))
+    content_type = request.headers.get("content-type", "")
+    if not _is_allowed_upload(filename, content_type):
+        return JSONResponse(
+            {"error": "only text and image uploads are supported"},
+            status_code=415,
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            content_length_bytes = int(content_length)
+        except ValueError:
+            return JSONResponse({"error": "invalid content length"}, status_code=400)
+        if content_length_bytes > _MAX_UPLOAD_BYTES:
+            return JSONResponse({"error": "file is too large"}, status_code=413)
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "file is empty"}, status_code=400)
+    if len(body) > _MAX_UPLOAD_BYTES:
+        return JSONResponse({"error": "file is too large"}, status_code=413)
+
+    assistant_id = request.query_params.get("assistant_id") or DEFAULT_ASSISTANT_ID
+    thread_id = request.query_params.get("thread_id")
+    try:
+        cache_key = _sandbox_cache_key(thread_id, assistant_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    path = f"{_UPLOADS_DIR}/{filename}"
+    sandbox = _get_or_create_sandbox(cache_key)
+    results = await sandbox.aupload_files([(path, body)])
+    result = results[0] if results else None
+    if result is None or result.error is not None:
+        return JSONResponse(
+            {"error": getattr(result, "error", "upload failed")},
+            status_code=500,
+        )
+    return JSONResponse({"path": result.path, "mime_type": content_type})
+
+
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+        Route("/deepagents/files/upload", upload_file, methods=["POST"]),
         Route("/app", app_root_redirect),
         Mount(
             "/app",

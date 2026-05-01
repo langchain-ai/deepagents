@@ -3,6 +3,9 @@ interface RuntimeConfigBase {
   assistantId: string;
   subtitle?: string;
   prompts?: string[];
+  uploads?: {
+    enabled?: boolean;
+  };
 }
 
 export interface RuntimeConfigSupabase extends RuntimeConfigBase {
@@ -43,6 +46,7 @@ export function getRuntimeConfig(): RuntimeConfig {
     assistantId: cfg.assistantId ?? "agent",
     subtitle: cfg.subtitle,
     prompts: cfg.prompts,
+    uploads: cfg.uploads,
   };
   if (cfg.auth === "supabase") {
     if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {

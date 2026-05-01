@@ -2,7 +2,7 @@
 
 A data scientist agent deployed with `deepagents deploy`. It analyzes one or more data files in a LangSmith sandbox, runs Python for reproducible calculations, creates charts, and writes stakeholder-ready reports.
 
-This example reads datasets from a bundled `skills/data/` directory so it works without MCP, database credentials, or third-party integrations. It includes a synthetic SaaS metrics CSV as demo data, but the agent instructions are generalized for arbitrary files placed in that data directory.
+This example reads datasets from a bundled `skills/data/` directory and from files uploaded through the bundled frontend, so it works without MCP, database credentials, or third-party integrations. It includes a synthetic SaaS metrics CSV as demo data, but the agent instructions are generalized for arbitrary files.
 
 ## Prerequisites
 
@@ -57,6 +57,14 @@ and at runtime:
 
 The source generator is in `scripts/generate_sample_data.py`. It writes both the local `data/sample_saas_metrics.csv` copy and the deploy-bundled `skills/data/sample_saas_metrics.csv` copy. You can add additional files under `skills/data/`; the agent will list the directory, inspect schemas, and decide whether to analyze files separately, join them, or compare them.
 
+You can also upload text files, CSVs, JSON, markdown files, and images from the bundled frontend. Uploaded files are written directly to the thread's sandbox under:
+
+```text
+/uploads/
+```
+
+Uploads are available only when a sandbox is configured and are not persisted to Store or Context Hub in this first version.
+
 ## What To Try
 
 Once deployed, open the agent in LangSmith and send prompts like:
@@ -65,6 +73,7 @@ Once deployed, open the agent in LangSmith and send prompts like:
 - `"Create charts showing monthly revenue by segment and churn rate by plan."`
 - `"Is support response time related to NPS? Use Python and explain your method."`
 - `"Inspect every file in the data folder and tell me which files can be joined."`
+- Upload a CSV in the frontend, then ask: `"Analyze the uploaded file and create a chart."`
 - `"Write an executive report with findings, limitations, and recommendations."`
 
 The agent follows the workflow in `AGENTS.md`: inspect data, plan, run Python, validate results, create artifacts, and report findings with caveats.

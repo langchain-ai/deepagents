@@ -13,6 +13,7 @@ from deepagents_cli.deploy.config import (
     AuthConfig,
     DeployConfig,
     FrontendConfig,
+    SandboxConfig,
 )
 
 
@@ -84,6 +85,8 @@ def test_bundle_emits_app_py(
     content = app_py.read_text(encoding="utf-8")
     assert "Starlette" in content
     assert "StaticFiles" in content
+    assert 'Route("/deepagents/files/upload"' in content
+    assert "_UPLOADS_ENABLED = False" in content
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
@@ -115,6 +118,29 @@ def test_bundle_rewrites_placeholder_supabase(
     assert '"supabaseUrl":"https://xyz.supabase.co"' in html
     assert '"supabaseAnonKey":"anon-xyz"' in html
     assert '"appName":"My App"' in html
+    assert '"uploads":{"enabled":false}' in html
+
+
+@pytest.mark.usefixtures("shipped_frontend_dist")
+def test_bundle_enables_uploads_when_sandbox_configured(
+    project: Path,
+    build_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://xyz.supabase.co")
+    monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "anon-xyz")
+    cfg = DeployConfig(
+        agent=AgentConfig(name="my-agent", model="anthropic:claude-sonnet-4-6"),
+        auth=AuthConfig(provider="supabase"),
+        frontend=FrontendConfig(enabled=True, app_name="My App"),
+        sandbox=SandboxConfig(provider="langsmith"),
+    )
+    bundle(cfg, project, build_dir)
+
+    html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")
+    app_py = (build_dir / "app.py").read_text(encoding="utf-8")
+    assert '"uploads":{"enabled":true}' in html
+    assert "_UPLOADS_ENABLED = True" in app_py
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
@@ -387,6 +413,7 @@ def test_build_runtime_config_json_anonymous_provider():
         "auth": "anonymous",
         "appName": "My App",
         "assistantId": "agent",
+        "uploads": {"enabled": False},
     }
 
 

@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-code"
+description = "Reserved package name for Deep Agents Code."
+license = { text = "MIT" }
+readme = "README.md"
+version = "0.0.1"
+requires-python = ">=3.11,<4.0"
+keywords = ["agents", "ai", "deepagents", "code"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_code"]
+
+[project.urls]
+Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/code"
+Repository = "https://github.com/langchain-ai/deepagents"
+
+[dependency-groups]
+test = [
+    "pytest>=7.3.0,<10.0.0",
+    "pytest-cov",
+    "pytest-socket",
+    "pytest-xdist",
+    "pytest-timeout>=2.3.1,<3.0.0",
+    "ruff>=0.13.1,<0.16.0",
+    "ty>=0.0.1,<1.0.0",
+    "twine",
+    "build",
+]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+division-by-zero = "error"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",
+    "ISC001",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-markers --strict-config --durations=5"
+testpaths = ["tests"]
+filterwarnings = []
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**/*.py" = [
+    "S101",
+    "D",
+    "ANN",
+    "INP001",
+]

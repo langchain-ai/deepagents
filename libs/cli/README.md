@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/deepagents-cli?label=%20)](https://pypi.org/project/deepagents-cli/#history)
 [![PyPI - License](https://img.shields.io/pypi/l/deepagents-cli)](https://opensource.org/licenses/MIT)
 [![PyPI - Downloads](https://img.shields.io/pepy/dt/deepagents-cli)](https://pypistats.org/packages/deepagents-cli)
-[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain)
+[![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain_oss)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/images/cli.png" alt="Deep Agents CLI" width="600"/>
@@ -12,13 +12,13 @@
 ## Quick Install
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+curl -LsSf https://langch.in/gh-da-cli | bash
 ```
 
 ```bash
 # With model provider extras
 # OpenAI, Anthropic, and Gemini are included by default
-DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/gh-da-cli | bash
 ```
 
 Or install directly with `uv`:

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli.agent import (
     DEFAULT_AGENT_NAME,
+    _add_interrupt_on,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -37,6 +38,14 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+def test_add_interrupt_on_gates_async_task_tools() -> None:
+    """Async subagent tools should use their actual tool names in HITL config."""
+    interrupt_on = _add_interrupt_on()
+
+    for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
+        assert tool_name in interrupt_on
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:

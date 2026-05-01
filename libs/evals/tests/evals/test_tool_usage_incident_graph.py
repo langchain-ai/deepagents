@@ -14,7 +14,7 @@ from deepagents import create_deep_agent
 from langchain.agents.middleware.types import ToolCallRequest, wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException, tool
-from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_quickjs import REPLMiddleware
 from langchain_repl.middleware import ReplMiddleware
 
 if TYPE_CHECKING:
@@ -772,7 +772,7 @@ def _create_agent(model: BaseChatModel, repl_name: str | None):
     if repl_name == "langchain":
         middleware.append(ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
     elif repl_name == "quickjs":
-        middleware.append(QuickJSMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
+        middleware.append(REPLMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
     elif repl_name is not None:
         msg = f'Unknown repl_name "{repl_name}"'
         raise ValueError(msg)

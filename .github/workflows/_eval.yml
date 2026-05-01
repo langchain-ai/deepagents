@@ -1,0 +1,305 @@
+# Reusable workflow: one GHA eval run for a single model.
+#
+# Called by the per-provider matrix jobs in `evals.yml`. Inputs are validated
+# upstream by `prep` (`_SAFE_SPEC_RE` in `.github/scripts/models.py`); this
+# workflow trusts that contract.
+
+name: "📊 Eval"
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Full model spec to evaluate."
+        required: true
+        type: string
+      provider:
+        description: "Provider prefix for the model spec."
+        required: true
+        type: string
+      artifact_key:
+        description: "Stable, artifact-safe suffix for uploaded reports."
+        required: true
+        type: string
+      eval_categories:
+        description: "Comma-separated eval categories to run."
+        required: false
+        default: ""
+        type: string
+      eval_tiers:
+        description: "Comma-separated eval tiers to run."
+        required: false
+        default: ""
+        type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after evals."
+        required: false
+        default: false
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when `analyze_failures` is true."
+        required: false
+        default: "anthropic:claude-haiku-4-5-20251001"
+        type: string
+      openrouter_provider:
+        description: "Pin OpenRouter to a single provider."
+        required: false
+        default: ""
+        type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models (minimal | low | medium | high | xhigh)."
+        required: false
+        default: ""
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      BASETEN_API_KEY:
+        required: false
+      FIREWORKS_API_KEY:
+        required: false
+      GOOGLE_API_KEY:
+        required: false
+      GROQ_API_KEY:
+        required: false
+      LANGSMITH_API_KEY:
+        required: false
+      NVIDIA_API_KEY:
+        required: false
+      OLLAMA_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+      XAI_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
+
+jobs:
+  eval:
+    name: "📊 Eval (${{ inputs.model }})"
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      PYTEST_ADDOPTS: "--evals-report-file evals_report.json"
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
+      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: "true"
+      LANGSMITH_EXPERIMENT: ${{ inputs.model }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+      OLLAMA_HOST: "https://ollama.com"
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # Group all OpenRouter calls in this per-model eval job under a stable
+      # session ID derived from GHA runner env. Picked up by ChatOpenRouter
+      # via from_env (langchain-openrouter >= 0.2.2). Re-runs get a new
+      # session via run_attempt; different models get distinct sessions via
+      # artifact_key.
+      OPENROUTER_SESSION_ID: deepagents-evals-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.artifact_key }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: evals
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test
+
+      - name: "🏷️ Apply category filter"
+        if: inputs.eval_categories != ''
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+        run: |
+          flags=()
+          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
+          for cat in "${cats[@]}"; do
+            cat=$(echo "$cat" | xargs)
+            [ -z "$cat" ] && continue
+            flags+=(--eval-category "$cat")
+          done
+          printf 'PYTEST_ADDOPTS=%s %s\n' "${PYTEST_ADDOPTS}" "${flags[*]}" >> "$GITHUB_ENV"
+
+      - name: "🏷️ Apply tier filter"
+        if: inputs.eval_tiers != ''
+        env:
+          EVAL_TIERS: ${{ inputs.eval_tiers }}
+        run: |
+          flags=()
+          IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
+          for tier in "${tiers[@]}"; do
+            tier=$(echo "$tier" | xargs)
+            [ -z "$tier" ] && continue
+            flags+=(--eval-tier "$tier")
+          done
+          printf 'PYTEST_ADDOPTS=%s %s\n' "${PYTEST_ADDOPTS}" "${flags[*]}" >> "$GITHUB_ENV"
+
+      - name: "🔒 Apply OpenRouter provider pin"
+        if: inputs.openrouter_provider != '' && inputs.provider == 'openrouter'
+        env:
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+        run: |
+          provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
+          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s\n' "${PYTEST_ADDOPTS}" "${provider}" >> "$GITHUB_ENV"
+
+      - name: "🧠 Apply OpenAI reasoning effort"
+        if: inputs.openai_reasoning_effort != '' && inputs.provider == 'openai'
+        env:
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
+        run: |
+          effort=$(echo "$OPENAI_REASONING_EFFORT" | xargs)
+          printf 'PYTEST_ADDOPTS=%s --openai-reasoning-effort %s\n' "${PYTEST_ADDOPTS}" "${effort}" >> "$GITHUB_ENV"
+
+      - name: "📊 Run Evals"
+        env:
+          MODEL: ${{ inputs.model }}
+        run: make evals MODEL="$MODEL"
+
+      - name: "🔍 Check eval report"
+        if: "!cancelled()"
+        run: |
+          if [ ! -f evals_report.json ]; then
+            echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
+            exit 1
+          fi
+
+      - name: "📊 Post results to summary"
+        if: "!cancelled()"
+        run: |
+          python3 << 'PYEOF'
+          import json, os, sys, traceback
+          from pathlib import Path
+
+          report_path = Path("evals_report.json")
+          # The upstream "Check eval report" step already emits ::error:: and
+          # exits 1 when this file is missing; exit 0 here so we don't
+          # double-fail the job.
+          if not report_path.exists():
+              print("evals_report.json not found, skipping summary", file=sys.stderr)
+              sys.exit(0)
+
+          try:
+              report = json.loads(report_path.read_text())
+          except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+              print(f"::error::evals_report.json is malformed: {exc}")
+              sys.exit(1)
+          model = report.get("model", "unknown")
+          if model == "unknown":
+              print("::warning::evals_report.json has no 'model' key; using 'unknown'")
+
+          # Load category labels for friendly display names.
+          cats_json = Path("deepagents_evals/categories.json")
+          labels = {}
+          try:
+              labels = json.loads(cats_json.read_text()).get("labels", {})
+          except (FileNotFoundError, json.JSONDecodeError) as exc:
+              print(f"::warning::Could not load category labels from {cats_json}: {exc}")
+
+          lines = [
+              "<details>",
+              "<summary>(click to expand)</summary>",
+              "",
+          ]
+
+          try:
+              # -- Metrics table --
+              metrics = [
+                  ("passed", None), ("failed", None), ("skipped", None),
+                  ("total", None), ("correctness", None), ("solve_rate", "n/a"),
+                  ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
+                  ("median_duration_s", None),
+              ]
+              header = "| " + " | ".join(f"`{k}`" for k, _ in metrics) + " |"
+              sep = "|" + "|".join("---:" for _ in metrics) + "|"
+              vals = []
+              for key, default in metrics:
+                  val = report.get(key, default)
+                  if val is None:
+                      val = 0
+                  vals.append(str(val))
+              row = "| " + " | ".join(vals) + " |"
+              lines += [header, sep, row]
+
+              # -- Per-category scores (horizontal) --
+              cat_scores = report.get("category_scores")
+              if isinstance(cat_scores, dict) and cat_scores:
+                  sorted_cats = sorted(cat_scores.items())
+                  def esc(s): return str(s).replace("|", "\\|")
+                  cat_header = "| " + " | ".join(esc(labels.get(c, c)) for c, _ in sorted_cats) + " |"
+                  cat_sep = "|" + "|".join("---:" for _ in sorted_cats) + "|"
+                  cat_row = "| " + " | ".join(esc(s) for _, s in sorted_cats) + " |"
+                  lines += ["", "### Per-category correctness", "", cat_header, cat_sep, cat_row]
+
+              # -- Experiment links --
+              exp_links = report.get("experiment_links")
+              if isinstance(exp_links, list) and exp_links:
+                  lines += ["", "### LangSmith experiments", ""]
+                  for link in exp_links:
+                      if not isinstance(link, dict):
+                          continue
+                      name = link.get("name", "")
+                      url = link.get("url", "")
+                      public_url = link.get("public_url", "")
+                      if public_url:
+                          lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
+                      elif url:
+                          lines.append(f"- [{name or url}]({url})")
+          except (KeyError, TypeError, ValueError, AttributeError) as exc:
+              tb = traceback.format_exc()
+              lines.append(f"\n\n**Error building summary:** `{exc}` (see job logs)\n")
+              print(f"::warning::Error building summary for {model}: {exc}\n{tb}")
+          finally:
+              lines += ["", "</details>"]
+
+          text = "\n".join(lines) + "\n"
+          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write(text)
+          print(text)
+          PYEOF
+
+      - name: "🧠 Analyze eval failures"
+        if: ${{ !cancelled() && inputs.analyze_failures }}
+        continue-on-error: true
+        env:
+          ANALYSIS_MODEL: ${{ inputs.analysis_model }}
+        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+
+      - name: "📤 Upload failure analysis"
+        if: ${{ !cancelled() && inputs.analyze_failures && hashFiles('libs/evals/failure_analysis.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: failure-analysis-${{ inputs.artifact_key }}
+          path: libs/evals/failure_analysis.json
+          if-no-files-found: error
+
+      - name: "📤 Upload eval report"
+        if: "!cancelled()"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: evals-report-${{ inputs.artifact_key }}
+          path: libs/evals/evals_report.json
+          if-no-files-found: error

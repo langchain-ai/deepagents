@@ -45,6 +45,7 @@ on:
           - mega
           - fast
           - open
+          - docs
           - anthropic
           - baseten
           - fireworks
@@ -56,11 +57,13 @@ on:
           - openrouter
           - xai
           - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
           - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
+          - "anthropic:claude-opus-4-7"
           - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
@@ -111,6 +114,7 @@ on:
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
+          - "openrouter:deepseek/deepseek-v4-pro"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -441,7 +445,7 @@ jobs:
 
       - name: "📤 Upload Harbor artifacts"
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: harbor-${{ strategy.job-index }}
           path: |

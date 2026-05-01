@@ -6,10 +6,13 @@ import pytest
 from langchain_core.messages.content import ContentBlock
 from pydantic import TypeAdapter
 
+from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _get_file_type,
     _glob_search_files,
+    perform_string_replacement,
+    slice_read_response,
     to_posix_path,
     validate_path,
 )
@@ -206,3 +209,147 @@ def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
     for file_type in _EXTENSION_TO_FILE_TYPE.values():
         block = {"type": file_type, "base64": "dGVzdA==", "mime_type": "application/octet-stream"}
         _content_block_adapter.validate_python(block)
+
+
+class TestPerformStringReplacement:
+    """`perform_string_replacement` underpins every backend's `edit()` path."""
+
+    def test_basic_single_replacement(self) -> None:
+        result = perform_string_replacement("hello world", "world", "there")
+        assert result == ("hello there", 1)
+
+    def test_not_found_returns_error_string(self) -> None:
+        result = perform_string_replacement("hello world", "missing", "x")
+        assert isinstance(result, str)
+        assert "not found" in result
+
+    def test_multiple_matches_without_replace_all(self) -> None:
+        result = perform_string_replacement("a a a", "a", "b")
+        assert isinstance(result, str)
+        assert "appears 3 times" in result
+
+    def test_multiple_matches_with_replace_all(self) -> None:
+        result = perform_string_replacement("a a a", "a", "b", replace_all=True)
+        assert result == ("b b b", 3)
+
+    def test_eof_newline_mismatch_returns_actionable_error(self) -> None:
+        """Trailing-newline mismatch at EOF must surface a precise hint.
+
+        Models infer terminators on what looks like a well-formed line. When
+        the file lacks one, exact-match must hold; the caller needs an
+        actionable error so it can self-correct rather than loop on a
+        generic "not found".
+        """
+        content = "# Agent Role:\nyou are an assistant"
+        old_string = "# Agent Role:\nyou are an assistant\n"
+        new_string = "# Agent Role:\nyou are an assistant\nYou can do anything\n"
+        result = perform_string_replacement(content, old_string, new_string)
+        assert isinstance(result, str)
+        assert "old_string ends with a newline" in result
+        assert "Retry with the trailing newline removed" in result
+
+    def test_eof_newline_mismatch_reports_ambiguous_stripped_match(self) -> None:
+        """When the stripped key would also be ambiguous, the hint must say so.
+
+        Otherwise the caller fixes the trailing newline, retries, and hits a
+        separate `appears N times` error — two round-trips for one cause.
+        """
+        content = "x x x"
+        old_string = "x\n"
+        new_string = "Y\n"
+        result = perform_string_replacement(content, old_string, new_string)
+        assert isinstance(result, str)
+        assert "old_string ends with a newline" in result
+        assert "appear 3 times" in result
+        assert "add surrounding context" in result
+
+    def test_eof_newline_mismatch_does_not_fire_when_match_succeeds(self) -> None:
+        """Primary match wins; the EOF-mismatch hint stays dormant."""
+        content = "alpha\nbeta\n"
+        old_string = "beta\n"
+        new_string = "BETA\n"
+        result = perform_string_replacement(content, old_string, new_string)
+        assert result == ("alpha\nBETA\n", 1)
+
+    def test_eof_newline_mismatch_does_not_fire_for_lone_newline(self) -> None:
+        """A lone-newline `old_string` falls through to the generic error."""
+        result = perform_string_replacement("hello", "\n", "x")
+        assert isinstance(result, str)
+        assert "not found" in result
+        assert "old_string ends with a newline" not in result
+
+    def test_eof_newline_mismatch_does_not_fire_for_interior_prefix(self) -> None:
+        """Interior prefix matches must not trigger the EOF hint.
+
+        `old_string="return foo\n"` against `content="return foobar"`: the
+        stripped key matches mid-content, not at EOF. Caller gets the
+        generic "not found" error, never a misleading EOF hint that would
+        invite a corrupting retry.
+        """  # noqa: D301
+        content = "return foobar"
+        old_string = "return foo\n"
+        new_string = "return baz\n"
+        result = perform_string_replacement(content, old_string, new_string)
+        assert isinstance(result, str)
+        assert "not found" in result
+        assert "old_string ends with a newline" not in result
+
+    def test_eof_newline_mismatch_does_not_fire_when_eof_text_differs(self) -> None:
+        """If file's EOF text doesn't match the stripped key, no EOF hint."""
+        content = "x foo y"
+        old_string = "x foo\n"
+        new_string = "REPLACED\n"
+        result = perform_string_replacement(content, old_string, new_string)
+        assert isinstance(result, str)
+        assert "not found" in result
+        assert "old_string ends with a newline" not in result
+
+
+class TestSliceReadResponse:
+    """`slice_read_response` must round-trip the file's trailing-newline state.
+
+    That state is the load-bearing input to `perform_string_replacement`'s
+    EOF-mismatch detection. If it gets dropped here, the EOF hint can't
+    fire and callers fall back to the generic "not found" loop.
+    """
+
+    @staticmethod
+    def _file(content: str) -> FileData:
+        return FileData(content=content, encoding="utf-8")
+
+    def test_preserves_trailing_newline_when_file_has_one(self) -> None:
+        result = slice_read_response(self._file("foo\nbar\n"), offset=0, limit=2000)
+        assert result == "foo\nbar\n"
+
+    def test_preserves_no_trailing_newline_when_file_lacks_one(self) -> None:
+        result = slice_read_response(self._file("foo\nbar"), offset=0, limit=2000)
+        assert result == "foo\nbar"
+
+    def test_normalizes_crlf_to_lf(self) -> None:
+        """State/Store callers may carry CRLF; downstream tooling assumes LF."""
+        result = slice_read_response(self._file("foo\r\nbar\r\n"), offset=0, limit=2000)
+        assert isinstance(result, str)
+        assert "\r" not in result
+        assert result == "foo\nbar\n"
+
+    def test_normalizes_bare_cr_to_lf(self) -> None:
+        result = slice_read_response(self._file("foo\rbar\r"), offset=0, limit=2000)
+        assert isinstance(result, str)
+        assert "\r" not in result
+        assert result == "foo\nbar\n"
+
+    def test_partial_window_keeps_terminator_on_internal_lines(self) -> None:
+        """A window ending on a non-terminal line still ends with that line's terminator."""
+        result = slice_read_response(self._file("a\nb\nc\nd\n"), offset=1, limit=2)
+        assert result == "b\nc\n"
+
+    def test_partial_window_ending_on_unterminated_last_line(self) -> None:
+        """A window covering the last line keeps that line's missing-terminator state."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=2, limit=1)
+        assert result == "c"
+
+    def test_offset_beyond_file_returns_error_result(self) -> None:
+        result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
+        assert isinstance(result, ReadResult)
+        assert result.error is not None
+        assert "exceeds file length" in result.error

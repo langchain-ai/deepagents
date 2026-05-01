@@ -8,14 +8,16 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ContextT,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
 )
 from langchain.tools import BaseTool, ToolRuntime
@@ -45,6 +47,17 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
+
+
+class REPLState(AgentState):
+    """State schema for ``REPLMiddleware``."""
+
+    _quickjs_snapshot_payload: NotRequired[
+        Annotated[bytes | None, PrivateStateAttr]
+    ]
+
+
+REPLStateUpdate = dict[Literal["_quickjs_snapshot_payload"], bytes | None]
 
 
 class EvalSchema(BaseModel):
@@ -80,12 +93,11 @@ def _resolve_thread_id(fallback: str) -> str:
     return fallback
 
 
-class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a persistent JS REPL to the agent.
 
-    One ``quickjs_rs.Runtime`` is created lazily per middleware instance
-    and shared across threads; each LangGraph thread gets its own
-    ``Context`` so globals from one conversation cannot leak into another.
+    Each LangGraph thread gets its own QuickJS slot (worker + runtime +
+    context), so globals from one conversation cannot leak into another.
 
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
@@ -143,6 +155,10 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             The REPL's own tool is always excluded; a model asking for
             ``tools.eval("...")`` would recurse pointlessly.
+        snapshot_between_turns: If ``True`` (default), persist REPL state
+            across agent turns by creating a snapshot in ``after_agent`` and
+            restoring it in ``before_agent``. If ``False``, preserve the
+            previous behavior where state resets each turn.
 
     Example:
         ```python
@@ -156,6 +172,8 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         ```
     """
 
+    state_schema = REPLState
+
     def __init__(
         self,
         *,
@@ -167,6 +185,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         capture_console: bool = True,
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
+        snapshot_between_turns: bool = True,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -181,6 +200,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._capture_console = capture_console
         self._ptc = ptc
         self._skills_backend = skills_backend
+        self._snapshot_between_turns = snapshot_between_turns
         self._registry = _Registry(
             memory_limit=memory_limit,
             timeout=timeout,
@@ -192,6 +212,7 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             tool_name=tool_name,
             timeout=timeout,
             memory_limit_mb=memory_limit // (1024 * 1024),
+            snapshot_between_turns=snapshot_between_turns,
         )
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         # Stable fallback thread id — used when ``thread_id`` isn't in
@@ -297,6 +318,54 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         )
         return {m["name"]: m for m in metadata_list}
 
+    def before_agent(
+        self,
+        state: REPLState,
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> REPLStateUpdate | None:
+        """Restore REPL snapshot bytes into the current thread slot."""
+        if not self._snapshot_between_turns:
+            return None
+        payload = state.get("_quickjs_snapshot_payload")
+        if payload is None:
+            return None
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        repl = self._registry.get(thread_id)
+        try:
+            repl.restore_snapshot(payload, inject_globals=True)
+        except Exception:  # noqa: BLE001  # best-effort restore path
+            logger.warning(
+                "Failed to restore QuickJS snapshot for thread_id=%s",
+                thread_id,
+                exc_info=True,
+            )
+            return {"_quickjs_snapshot_payload": None}
+        return None
+
+    async def abefore_agent(
+        self,
+        state: REPLState,
+        runtime: "Runtime[ContextT]",  # noqa: ARG002
+    ) -> REPLStateUpdate | None:
+        """Async variant of ``before_agent`` snapshot restore."""
+        if not self._snapshot_between_turns:
+            return None
+        payload = state.get("_quickjs_snapshot_payload")
+        if payload is None:
+            return None
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        repl = self._registry.get(thread_id)
+        try:
+            await repl.arestore_snapshot(payload, inject_globals=True)
+        except Exception:  # noqa: BLE001  # best-effort restore path
+            logger.warning(
+                "Failed to restore QuickJS snapshot for thread_id=%s",
+                thread_id,
+                exc_info=True,
+            )
+            return {"_quickjs_snapshot_payload": None}
+        return None
+
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -367,19 +436,59 @@ class REPLMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     def after_agent(
         self,
-        state: Any,  # noqa: ARG002
+        state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> None:
-        """Evict this thread's REPL slot so the next run starts fresh."""
-        self._registry.evict(_resolve_thread_id(self._fallback_thread_id))
+    ) -> REPLStateUpdate | None:
+        """Snapshot REPL state (optional) and evict this turn's REPL slot."""
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        if not self._snapshot_between_turns:
+            self._registry.evict(thread_id)
+            return None
+
+        repl = self._registry.get_if_exists(thread_id)
+        if repl is None:
+            return None
+        update: REPLStateUpdate
+        try:
+            update = {"_quickjs_snapshot_payload": repl.create_snapshot()}
+        except Exception:  # noqa: BLE001  # best-effort snapshot path
+            logger.warning(
+                "Failed to create QuickJS snapshot for thread_id=%s",
+                thread_id,
+                exc_info=True,
+            )
+            update = {"_quickjs_snapshot_payload": None}
+        finally:
+            self._registry.evict(thread_id)
+        return update
 
     async def aafter_agent(
         self,
-        state: Any,  # noqa: ARG002
+        state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> None:
-        """Evict this thread's REPL slot so the next run starts fresh."""
-        await self._registry.aevict(_resolve_thread_id(self._fallback_thread_id))
+    ) -> REPLStateUpdate | None:
+        """Async variant of ``after_agent`` snapshot+evict behavior."""
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        if not self._snapshot_between_turns:
+            await self._registry.aevict(thread_id)
+            return None
+
+        repl = self._registry.get_if_exists(thread_id)
+        if repl is None:
+            return None
+        update: REPLStateUpdate
+        try:
+            update = {"_quickjs_snapshot_payload": await repl.acreate_snapshot()}
+        except Exception:  # noqa: BLE001  # best-effort snapshot path
+            logger.warning(
+                "Failed to create QuickJS snapshot for thread_id=%s",
+                thread_id,
+                exc_info=True,
+            )
+            update = {"_quickjs_snapshot_payload": None}
+        finally:
+            await self._registry.aevict(thread_id)
+        return update
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""

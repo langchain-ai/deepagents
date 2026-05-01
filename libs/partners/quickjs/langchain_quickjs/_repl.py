@@ -14,7 +14,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from quickjs_rs import (
     UNDEFINED,
@@ -27,6 +27,7 @@ from quickjs_rs import (
     MemoryLimitError,
     ModuleScope,
     Runtime,
+    Snapshot,
     ThreadWorker,
 )
 from quickjs_rs import (
@@ -353,8 +354,15 @@ class _ThreadREPL:
         if self._capture_console:
             self._install_console()
 
+    def _require_ctx(self) -> Context:
+        """Return the live QuickJS context or raise if this REPL is closed."""
+        if self._ctx is None:
+            msg = "QuickJS context is closed"
+            raise RuntimeError(msg)
+        return self._ctx
+
     def _install_console(self) -> None:
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         buf = self._console
 
         @ctx.function(name="__console_log")
@@ -396,7 +404,7 @@ class _ThreadREPL:
         self._worker.run_sync(self._ainstall_tools(tools))
 
     async def _ainstall_tools(self, tools: Sequence[BaseTool]) -> None:
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         name_to_tool: dict[str, BaseTool] = {}
         for tool in tools:
             camel = to_camel_case(tool.name)
@@ -455,7 +463,7 @@ class _ThreadREPL:
         later ``install_tools`` that swaps the underlying object (same
         name, different instance) is picked up without re-registration.
         """
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         registered = self._registered_tools
 
         async def _bridge(raw_input: Any = None) -> str:
@@ -468,7 +476,7 @@ class _ThreadREPL:
                 raise RuntimeError(msg)
             if self._ptc_state is None:
                 msg = "PTC bridge called outside active eval"
-                raise RuntimeError(msg)
+                raise ConcurrentEvalError(msg)
             self._ptc_state = self._ptc_state.consume_call_budget(
                 function_name=f"tools.{camel}",
                 max_ptc_calls=self._max_ptc_calls,
@@ -523,6 +531,44 @@ class _ThreadREPL:
             )
         )
 
+    def create_snapshot(self) -> bytes:
+        """Capture the current context snapshot as bytes."""
+        return self._worker.run_sync(self._acreate_snapshot())
+
+    async def acreate_snapshot(self) -> bytes:
+        """Async variant of ``create_snapshot``."""
+        return await self._worker.run_async(self._acreate_snapshot())
+
+    async def _acreate_snapshot(self) -> bytes:
+        ctx = self._require_ctx()
+        snapshot = ctx.create_snapshot()
+        return snapshot.to_bytes()
+
+    def restore_snapshot(self, payload: bytes, *, inject_globals: bool = True) -> None:
+        """Restore snapshot bytes into this REPL's context."""
+        self._worker.run_sync(
+            self._arestore_snapshot(payload, inject_globals=inject_globals)
+        )
+
+    async def arestore_snapshot(
+        self, payload: bytes, *, inject_globals: bool = True
+    ) -> None:
+        """Async variant of ``restore_snapshot``."""
+        await self._worker.run_async(
+            self._arestore_snapshot(payload, inject_globals=inject_globals)
+        )
+
+    async def _arestore_snapshot(
+        self, payload: bytes, *, inject_globals: bool
+    ) -> None:
+        ctx = self._require_ctx()
+        snapshot = Snapshot.from_bytes(payload)
+        self._runtime.restore_snapshot(
+            snapshot,
+            ctx,
+            inject_globals=inject_globals,
+        )
+
     def _collect_pending_skills(
         self,
         referenced: frozenset[str],
@@ -568,7 +614,7 @@ class _ThreadREPL:
                 self._installed_skills.add(cache_key)
         return errors
 
-    async def _aeval_async(  # noqa: C901
+    async def _aeval_async(
         self,
         code: str,
         *,
@@ -583,7 +629,7 @@ class _ThreadREPL:
         evals against shared state is almost always a prompting bug,
         and a loud failure is a better signal than silent serialisation.
         """
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         outcome = EvalOutcome()
         if skills_backend is not None:
             referenced = scan_skill_references(code)
@@ -607,50 +653,68 @@ class _ThreadREPL:
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)
-        except _PTCCallBudgetExceededError as e:
-            # Raised from inside the PTC bridge; quickjs-rs propagates the
-            # original exception out of eval_async. Surface it as a
-            # distinct, model-recoverable error so the agent can shorten
-            # its script rather than crash.
-            outcome.error_type = "PTCCallBudgetExceeded"
-            outcome.error_message = e.render_message()
-        except MarshalError as e:
-            outcome.result_kind = "handle"
-            outcome.result = await self._describe_via_handle_async(code)
-            _clear_exception_references(e)
-        except QJSTimeoutError as e:
-            outcome.error_type = "Timeout"
-            outcome.error_message = str(e)
-            _clear_exception_references(e)
-        except DeadlockError as e:
-            # Top-level Promise never resolved and no async host work in
-            # flight. Surface as a distinct error type because the fix
-            # is user-level (their JS has an un-resolvable Promise or a
-            # sync host fn that should be async); a plain error-type
-            # message without context would make this hard to diagnose.
-            outcome.error_type = "Deadlock"
-            outcome.error_message = str(e)
-            _clear_exception_references(e)
         except HostCancellationError:
             # JS declined to catch a cancellation — re-raise as
             # CancelledError so asyncio unwinds the caller's task.
             # Do not record anything in ``outcome``; the call is dead.
             raise asyncio.CancelledError from None
-        except JSError as e:
-            self._record_js_error(outcome, e)
-            _clear_exception_references(e)
-        except ConcurrentEvalError as e:
-            outcome.error_type = "ConcurrentEval"
-            outcome.error_message = str(e)
-            _clear_exception_references(e)
-        except MemoryLimitError as e:
-            outcome.error_type = "OutOfMemory"
-            outcome.error_message = str(e)
-            _clear_exception_references(e)
+        except Exception as e:  # noqa: BLE001
+            await self._record_eval_error(outcome, error=e, code=code)
         finally:
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
+
+    async def _record_eval_error(
+        self,
+        outcome: EvalOutcome,
+        *,
+        error: Exception,
+        code: str,
+    ) -> None:
+        """Map eval exceptions to wire-visible outcome fields."""
+        try:
+            if isinstance(error, MarshalError):
+                outcome.result_kind = "handle"
+                outcome.result = await self._describe_via_handle_async(code)
+                return
+            if isinstance(error, QJSTimeoutError):
+                outcome.error_type = "Timeout"
+                outcome.error_message = str(error)
+                return
+            if isinstance(error, DeadlockError):
+                # Top-level Promise never resolved and no async host work in
+                # flight. Surface as a distinct error type because the fix
+                # is user-level (their JS has an un-resolvable Promise or a
+                # sync host fn that should be async); a plain error-type
+                # message without context would make this hard to diagnose.
+                outcome.error_type = "Deadlock"
+                outcome.error_message = str(error)
+                return
+            if isinstance(error, JSError):
+                self._record_js_error(outcome, error)
+                return
+            if isinstance(error, ConcurrentEvalError):
+                outcome.error_type = "ConcurrentEval"
+                outcome.error_message = str(error)
+                return
+            if isinstance(error, MemoryLimitError):
+                outcome.error_type = "OutOfMemory"
+                outcome.error_message = str(error)
+                return
+            # quickjs-rs can re-raise host callback exceptions directly
+            # (tool failures, bridge runtime errors) instead of always
+            # wrapping them as JSError(name="HostError", ...). Preserve the
+            # REPL contract and surface them as HostError blocks.
+            if isinstance(error, _PTCCallBudgetExceededError):
+                outcome.error_type = "PTCCallBudgetExceeded"
+                outcome.error_message = error.render_message()
+                return
+            logger.warning("console-bridge host error: %s", error)
+            outcome.error_type = "HostError"
+            outcome.error_message = "Host function failed"
+        finally:
+            _clear_exception_references(error)
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name
@@ -658,7 +722,7 @@ class _ThreadREPL:
         outcome.error_stack = e.stack
 
     async def _describe_via_handle_async(self, code: str) -> str:
-        ctx = cast("Context", self._ctx)
+        ctx = self._require_ctx()
         try:
             handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
         except Exception:  # noqa: BLE001 — describe-only path; swallow to placeholder
@@ -714,8 +778,7 @@ class _Registry:
 
     Each LangGraph ``thread_id`` gets its own ``_Slot`` (worker + Runtime
     + Context). Eviction is driven externally via ``evict(thread_id)`` —
-    typically from the middleware's ``after_agent`` hook — so each agent
-    invocation runs against a fresh REPL.
+    typically from the middleware's ``after_agent`` hook.
     """
 
     memory_limit: int
@@ -733,6 +796,12 @@ class _Registry:
                 slot = self._build_slot_locked(thread_id)
                 self._slots[thread_id] = slot
             return slot.repl
+
+    def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
+        """Return existing REPL for ``thread_id`` without creating a new slot."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+            return slot.repl if slot is not None else None
 
     def evict(self, thread_id: str) -> None:
         """Close and remove the slot for ``thread_id``. No-op if absent."""

@@ -74,7 +74,9 @@ The middleware:
 
 ### Persistence
 
-The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls within the same run. Assign to `globalThis.X` to keep a value around under an explicit name.
+The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. By default (`snapshot_between_turns=True`), state also persists across turns in the same LangGraph `thread_id` by snapshotting after each run and restoring before the next.
+
+Set `snapshot_between_turns=False` to reset REPL state after each turn.
 
 ```js
 // call 1
@@ -240,6 +242,7 @@ REPLMiddleware(
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
+    snapshot_between_turns=True,     # snapshot in after_agent, restore in before_agent
     ptc=None,                        # None | list[str] | list[BaseTool]
     skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )

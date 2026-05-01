@@ -289,12 +289,12 @@ jobs:
         run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
 
       - name: "📤 Upload failure analysis"
-        if: ${{ !cancelled() && inputs.analyze_failures }}
+        if: ${{ !cancelled() && inputs.analyze_failures && hashFiles('libs/evals/failure_analysis.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: failure-analysis-${{ inputs.artifact_key }}
           path: libs/evals/failure_analysis.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: "📤 Upload eval report"
         if: "!cancelled()"

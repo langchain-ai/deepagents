@@ -8,6 +8,7 @@ async paths.
 
 import asyncio
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -281,23 +282,17 @@ class TestCreateDeepAgentAstreamV2:
         handles: list[AsyncSubagentRunStream] = []
 
         async def collect_subagents() -> None:
-            try:
+            with suppress(RuntimeError):
                 async for sub in run.subagents:
                     handles.append(sub)
-                    try:
+                    with suppress(RuntimeError):
                         async for _ in sub.messages:
                             pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
         async def drain_parent() -> None:
-            try:
+            with suppress(RuntimeError):
                 async for _ in run.messages:
                     pass
-            except Exception:
-                pass
 
         # Drive both projections concurrently so the pump can advance
         # past the subagent's terminal event before the error escapes.

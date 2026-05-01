@@ -813,8 +813,12 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     assert len(result["messages"]) > 0
 
     # Verify memory was loaded from state
+    # Use get_state() rather than checkpointer.get() directly: the `files` channel
+    # uses DeltaChannel and only writes a snapshot blob every 50 steps, so
+    # checkpoint["channel_values"] won't contain "files" on non-snapshot steps.
+    state_values = agent.get_state(config).values
+    assert "/user/.deepagents/AGENTS.md" in state_values["files"]
     checkpoint = agent.checkpointer.get(config)
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["files"]
     assert "memory_contents" in checkpoint["channel_values"]
     assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
 

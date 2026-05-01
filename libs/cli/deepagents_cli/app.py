@@ -192,6 +192,9 @@ def _load_theme_preference() -> str:
         return theme.DEFAULT_THEME
 
     name = data.get("ui", {}).get("theme")
+    # Migrate legacy `textual-ansi` preference (pre-Textual 8.2.5) to `ansi-light`.
+    if name == "textual-ansi":
+        name = "ansi-light"
     if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
         return name
     if isinstance(name, str):

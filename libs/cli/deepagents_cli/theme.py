@@ -419,8 +419,35 @@ class ThemeEntry:
             raise ValueError(msg)
 
 
+# Curated labels for Textual built-in themes. Themes not listed here fall back
+# to a humanized version of the slug (e.g. `ansi-dark` → `Ansi Dark`), so newly
+# shipped Textual themes appear in the picker without code changes.
+_TEXTUAL_THEME_LABELS: Mapping[str, str] = MappingProxyType(
+    {
+        "textual-dark": "Textual Dark",
+        "textual-light": "Textual Light",
+        "ansi-dark": "Terminal ANSI Dark",
+        "ansi-light": "Terminal ANSI Light",
+        "catppuccin-frappe": "Catppuccin Frappé",
+        "rose-pine": "Rosé Pine",
+        "rose-pine-dawn": "Rosé Pine Dawn",
+        "rose-pine-moon": "Rosé Pine Moon",
+        "tokyo-night": "Tokyo Night",
+    }
+)
+
+
 def _builtin_themes() -> dict[str, ThemeEntry]:
     """Return the built-in theme entries as a mutable dict.
+
+    Textual built-ins are discovered from `textual.theme.BUILTIN_THEMES` so
+    newly shipped Textual themes appear automatically. They are not registered
+    via `register_theme()` — Textual's own `$primary`, `$background`, etc.
+    apply. The `colors` field provides fallback values for app-specific CSS
+    vars (`$mode-bash`, `$mode-command`) and Python-side styling. For standard
+    properties (primary, secondary, etc.), `get_theme_colors()` dynamically
+    resolves from the actual Textual theme at runtime so the Python and CSS
+    color systems stay in sync.
 
     Returns:
         Dict of built-in theme names to `ThemeEntry` instances.
@@ -436,42 +463,17 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
         dark=False,
         colors=LIGHT_COLORS,
     )
-    # Textual built-in themes — not registered via register_theme() (Textual's
-    # own $primary, $background, etc. apply). The `colors` field provides
-    # fallback values for app-specific CSS vars ($mode-bash, $mode-command) and
-    # Python-side styling.  For standard properties (primary, secondary, etc.),
-    # get_theme_colors() dynamically resolves from the actual Textual theme at
-    # runtime so the Python and CSS color systems stay in sync.
 
-    def _bi(label: str, *, is_dark: bool) -> ThemeEntry:
-        return ThemeEntry(
+    from textual.theme import BUILTIN_THEMES
+
+    for name, builtin in BUILTIN_THEMES.items():
+        label = _TEXTUAL_THEME_LABELS.get(name) or name.replace("-", " ").title()
+        r[name] = ThemeEntry(
             label=label,
-            dark=is_dark,
-            colors=DARK_COLORS if is_dark else LIGHT_COLORS,
+            dark=builtin.dark,
+            colors=DARK_COLORS if builtin.dark else LIGHT_COLORS,
             custom=False,
         )
-
-    r["textual-dark"] = _bi("Textual Dark", is_dark=True)
-    r["textual-light"] = _bi("Textual Light", is_dark=False)
-    r["textual-ansi"] = _bi("Terminal (ANSI)", is_dark=False)
-    # Popular community themes (all ship with Textual >= 8.0)
-    r["atom-one-dark"] = _bi("Atom One Dark", is_dark=True)
-    r["atom-one-light"] = _bi("Atom One Light", is_dark=False)
-    r["catppuccin-frappe"] = _bi("Catppuccin Frappé", is_dark=True)
-    r["catppuccin-latte"] = _bi("Catppuccin Latte", is_dark=False)
-    r["catppuccin-macchiato"] = _bi("Catppuccin Macchiato", is_dark=True)
-    r["catppuccin-mocha"] = _bi("Catppuccin Mocha", is_dark=True)
-    r["dracula"] = _bi("Dracula", is_dark=True)
-    r["flexoki"] = _bi("Flexoki", is_dark=True)
-    r["gruvbox"] = _bi("Gruvbox", is_dark=True)
-    r["monokai"] = _bi("Monokai", is_dark=True)
-    r["nord"] = _bi("Nord", is_dark=True)
-    r["rose-pine"] = _bi("Rosé Pine", is_dark=True)
-    r["rose-pine-dawn"] = _bi("Rosé Pine Dawn", is_dark=False)
-    r["rose-pine-moon"] = _bi("Rosé Pine Moon", is_dark=True)
-    r["solarized-dark"] = _bi("Solarized Dark", is_dark=True)
-    r["solarized-light"] = _bi("Solarized Light", is_dark=False)
-    r["tokyo-night"] = _bi("Tokyo Night", is_dark=True)
     return r
 
 

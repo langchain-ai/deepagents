@@ -126,7 +126,8 @@ class TestThemeEntryRegistry:
             ("langchain-light", False, True),
             ("textual-dark", True, False),
             ("textual-light", False, False),
-            ("textual-ansi", False, False),
+            ("ansi-dark", True, False),
+            ("ansi-light", False, False),
             # Community themes
             ("dracula", True, False),
             ("monokai", True, False),
@@ -332,11 +333,11 @@ class TestGetThemeColors:
             surface = "ansi_default"
 
         class FakeApp:
-            theme = "textual-ansi"
+            theme = "ansi-light"
             current_theme = CurrentTheme()
 
         colors = get_theme_colors(FakeApp())
-        # Non-hex values fall back to light base (ansi theme is dark=False)
+        # Non-hex values fall back to light base (ansi-light is dark=False)
         assert colors.primary == LIGHT_COLORS.primary
         assert colors.background == LIGHT_COLORS.background
 

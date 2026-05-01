@@ -36,6 +36,9 @@ PTC_AND_CONSOLE_CODE = (
     "  return values.length;"
     "})();"
 )
+MULTITURN_COUNTER_CODE = (
+    "globalThis.counter = (globalThis.counter ?? 0) + 1;globalThis.counter;"
+)
 THROUGHPUT_ITERATIONS = 200
 
 

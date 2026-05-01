@@ -17,6 +17,7 @@ import pytest
 from langchain_quickjs import REPLMiddleware
 from tests.benchmarks._common import (
     CONSOLE_LOG_CODE,
+    MULTITURN_COUNTER_CODE,
     PTC_ONLY_CODE,
     assert_eval_succeeded,
     echo_payload,
@@ -55,6 +56,32 @@ class TestQuickJSMemoryBenchmarks:
         with ThreadPoolExecutor(max_workers=thread_count) as executor:
             list(executor.map(_worker, range(thread_count)))
 
+    def _run_multiturn_memory_workload(
+        self,
+        *,
+        turn_count: int,
+        snapshot_between_turns: bool,
+    ) -> None:
+        middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
+        try:
+            agent = make_agent(
+                code=MULTITURN_COUNTER_CODE,
+                middleware=middleware,
+                repeats=turn_count,
+            )
+            result = None
+            for _ in range(turn_count):
+                result = agent.invoke(
+                    invoke_payload(),
+                    config={
+                        "configurable": {"thread_id": "memory-bench-multiturn-thread"}
+                    },
+                )
+                assert_eval_succeeded(result)
+            assert result is not None
+        finally:
+            middleware._registry.close()
+
     @pytest.mark.parametrize(
         "thread_count", [1, 8, 32, 64], ids=lambda n: f"{n}_threads"
     )
@@ -86,3 +113,29 @@ class TestQuickJSMemoryBenchmarks:
 
         benchmark.extra_info["scenario"] = scenario
         benchmark.extra_info["thread_count"] = thread_count
+
+    @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
+    @pytest.mark.parametrize(
+        "snapshot_between_turns",
+        [False, True],
+        ids=["snapshot_disabled", "snapshot_enabled"],
+    )
+    def test_multiturn_snapshot_memory_peak(
+        self,
+        benchmark: BenchmarkFixture,
+        turn_count: int,
+        snapshot_between_turns: bool,
+    ) -> None:
+        """Measure memory cost of multi-turn execution with optional snapshots."""
+
+        @benchmark
+        def _() -> None:
+            self._run_multiturn_memory_workload(
+                turn_count=turn_count,
+                snapshot_between_turns=snapshot_between_turns,
+            )
+
+        benchmark.extra_info["scenario"] = "multi_turn_snapshot_restore"
+        benchmark.extra_info["thread_count"] = 1
+        benchmark.extra_info["turn_count"] = turn_count
+        benchmark.extra_info["snapshot_between_turns"] = snapshot_between_turns

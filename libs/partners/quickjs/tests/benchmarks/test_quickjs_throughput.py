@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage
 
 from langchain_quickjs import REPLMiddleware
 from tests.benchmarks._common import (
+    MULTITURN_COUNTER_CODE,
     PTC_AND_CONSOLE_CODE,
     THROUGHPUT_ITERATIONS,
     FakeChatModel,
@@ -93,3 +94,50 @@ class TestQuickJSThroughputBenchmarks:
             benchmark=benchmark,
             turns_per_round=THROUGHPUT_ITERATIONS,
         )
+
+    @pytest.mark.throughput_benchmark
+    @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
+    @pytest.mark.parametrize(
+        "snapshot_between_turns",
+        [False, True],
+        ids=["snapshot_disabled", "snapshot_enabled"],
+    )
+    def test_multi_turn_snapshot_throughput(
+        self,
+        benchmark: BenchmarkFixture,
+        turn_count: int,
+        snapshot_between_turns: bool,
+    ) -> None:
+        """Measure throughput across multi-turn agent invocations."""
+
+        def _run_round() -> None:
+            middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
+            try:
+                agent = self._make_multi_turn_agent(
+                    middleware=middleware,
+                    codes=[MULTITURN_COUNTER_CODE] * turn_count,
+                )
+                result: dict[str, Any] | None = None
+                for _ in range(turn_count):
+                    result = agent.invoke(
+                        invoke_payload(),
+                        config={
+                            "configurable": {
+                                "thread_id": "throughput-bench-multiturn-thread"
+                            }
+                        },
+                    )
+                    assert_eval_succeeded(result)
+                assert result is not None
+            finally:
+                middleware._registry.close()
+
+        @benchmark
+        def _() -> None:
+            _run_round()
+
+        benchmark.extra_info["thread_count"] = 1
+        benchmark.extra_info["turn_count"] = turn_count
+        benchmark.extra_info["snapshot_between_turns"] = snapshot_between_turns
+        benchmark.extra_info["workload"] = "multi_turn_snapshot_restore"
+        self._record_turn_metrics(benchmark=benchmark, turns_per_round=turn_count)

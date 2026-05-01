@@ -719,6 +719,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     ).with_config(
         {
             "recursion_limit": 9_999,
+            "configurable": {"__pregel_durability": "exit"},
             "metadata": {
                 "ls_integration": "deepagents",
                 "versions": {"deepagents": __version__},

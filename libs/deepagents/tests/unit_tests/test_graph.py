@@ -74,6 +74,13 @@ class TestCreateDeepAgentMetadata:
         assert agent.config is not None
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
 
+    def test_default_durability_is_exit(self) -> None:
+        """`create_deep_agent` should default LangGraph durability to exit."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["configurable"]["__pregel_durability"] == "exit"
+
 
 class TestProfileForModel:
     """Tests for _harness_profile_for_model."""

@@ -34,7 +34,6 @@ from langgraph.stream.run_stream import (
 from langgraph.stream.stream_channel import StreamChannel as EventLog
 from langgraph.stream.transformers import (
     SubgraphStatus,
-    ValuesTransformer,
     _TasksLifecycleBase,
 )
 
@@ -154,9 +153,6 @@ class SubagentTransformer(_TasksLifecycleBase):
         try:
             child_mux = self._mux._make_child(ns)
         except RuntimeError:
-            return
-        values_t = child_mux.transformer_by_key("values")
-        if not isinstance(values_t, ValuesTransformer):
             return
         handle_cls = AsyncSubagentRunStream if child_mux.is_async else SubagentRunStream
         handle = handle_cls(

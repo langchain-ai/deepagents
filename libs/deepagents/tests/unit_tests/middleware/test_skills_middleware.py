@@ -1932,8 +1932,11 @@ def test_create_deep_agent_with_skills_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
+    # Use get_state() for `files`: DeltaChannel only writes a snapshot blob every
+    # 50 steps, so checkpoint["channel_values"] won't contain "files" on non-snapshot steps.
+    state_values = agent.get_state(config).values
+    assert "/skills/user/test-skill/SKILL.md" in state_values["files"]
     checkpoint = agent.checkpointer.get(config)
-    assert "/skills/user/test-skill/SKILL.md" in checkpoint["channel_values"]["files"]
     assert checkpoint["channel_values"]["skills_metadata"] == [
         {
             "allowed_tools": [],

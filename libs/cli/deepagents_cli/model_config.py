@@ -72,6 +72,34 @@ class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
 
 
+class MissingCredentialsError(ModelConfigError):
+    """Raised when a provider is selected but its API key env var is unset.
+
+    Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
+    keep working. Carries the `provider` name and the canonical `env_var` so
+    callers can render targeted recovery hints (e.g., "set OPENAI_API_KEY" or
+    "run `/model <other_provider>:<model>`") without string-matching on the
+    formatted exception message and without re-deriving the env-var name.
+    """
+
+    def __init__(
+        self, message: str, *, provider: str, env_var: str | None = None
+    ) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable message describing the missing credential.
+            provider: The provider whose credentials are missing
+                (e.g., `'openai'`).
+            env_var: The canonical env var name expected to hold the
+                credential (e.g., `'OPENAI_API_KEY'`). `None` when the
+                provider has no registered env-var mapping.
+        """
+        super().__init__(message)
+        self.provider = provider
+        self.env_var = env_var
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     """A model specification in `provider:model` format.

@@ -16,6 +16,7 @@ from deepagents_cli._server_config import ServerConfig
 from deepagents_cli.project_utils import ProjectContext
 from deepagents_cli.server_manager import (
     _apply_server_config,
+    _preflight_validate_mcp_config,
     _write_pyproject,
     server_session,
     start_server_and_get_agent,
@@ -278,3 +279,62 @@ class TestServerSession:
 
         mock_mcp.cleanup.assert_awaited_once()
         mock_server.stop.assert_called_once()
+
+
+class TestPreflightValidateMCPConfig:
+    """Pre-flight validation of `--mcp-config` raises an actionable error."""
+
+    def test_noop_when_no_mcp(self, tmp_path: Path) -> None:
+        """`no_mcp=True` short-circuits validation so a bad path is ignored."""
+        _preflight_validate_mcp_config(
+            mcp_config_path=str(tmp_path / "missing.json"),
+            no_mcp=True,
+        )
+
+    def test_noop_when_path_is_none(self) -> None:
+        """`None` path means the user didn't pass `--mcp-config`."""
+        _preflight_validate_mcp_config(mcp_config_path=None, no_mcp=False)
+
+    def test_missing_file_raises_mcp_config_error(self, tmp_path: Path) -> None:
+        """Missing file surfaces as `MCPConfigError`, not `FileNotFoundError`."""
+        from deepagents_cli.mcp_tools import MCPConfigError
+
+        with pytest.raises(MCPConfigError, match="not found") as excinfo:
+            _preflight_validate_mcp_config(
+                mcp_config_path=str(tmp_path / "nope.json"),
+                no_mcp=False,
+            )
+        assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+    def test_url_only_config_passes_preflight(self, tmp_path: Path) -> None:
+        """`url`-only remote servers validate cleanly (transport inferred as http)."""
+        import json as _json
+
+        path = tmp_path / "remote.json"
+        path.write_text(
+            _json.dumps(
+                {
+                    "mcpServers": {
+                        "notion": {"url": "https://mcp.notion.com/mcp"},
+                        "slack": {"url": "https://mcp.slack.com/mcp"},
+                    }
+                }
+            )
+        )
+        _preflight_validate_mcp_config(mcp_config_path=str(path), no_mcp=False)
+
+    def test_stdio_missing_command_wraps_with_path(self, tmp_path: Path) -> None:
+        """Validation failures are wrapped with the offending path for context."""
+        import json as _json
+
+        from deepagents_cli.mcp_tools import MCPConfigError
+
+        path = tmp_path / "stdio.json"
+        path.write_text(_json.dumps({"mcpServers": {"fs": {"args": []}}}))
+
+        with pytest.raises(MCPConfigError) as excinfo:
+            _preflight_validate_mcp_config(mcp_config_path=str(path), no_mcp=False)
+        msg = str(excinfo.value)
+        assert str(path) in msg
+        assert "missing required 'command' field" in msg
+        assert isinstance(excinfo.value.__cause__, ValueError)

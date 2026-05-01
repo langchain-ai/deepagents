@@ -2,7 +2,7 @@
 # Install deepagents-cli.
 #
 # Usage:
-#   curl -LsSf https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/cli/scripts/install.sh | bash
+#   curl -LsSf https://langch.in/gh-da-cli | bash
 #
 # Environment variables:
 #   DEEPAGENTS_EXTRAS  — comma-separated pip extras, e.g. "ollama",

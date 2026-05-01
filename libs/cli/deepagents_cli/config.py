@@ -2194,9 +2194,10 @@ def create_model(
         A `ModelResult` containing the model and its metadata.
 
     Raises:
-        ModelConfigError: If provider cannot be determined from the model name,
-            required provider package is not installed, or no credentials are
-            configured.
+        ModelConfigError: If provider cannot be determined from the model name
+            or required provider package is not installed.
+        MissingCredentialsError: If no credentials are configured for the
+            resolved provider.
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
@@ -2248,12 +2249,15 @@ def create_model(
     if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
         cred_status = has_provider_credentials(provider)
         if cred_status is False:
-            env_var = get_credential_env_var(provider) or f"<{provider} API key>"
+            from deepagents_cli.model_config import MissingCredentialsError
+
+            env_var = get_credential_env_var(provider)
+            display_env = env_var or f"<{provider} API key>"
             msg = (
                 f"No credentials found for provider '{provider}'. "
-                f"Please set the {env_var} environment variable."
+                f"Please set the {display_env} environment variable."
             )
-            raise ModelConfigError(msg)
+            raise MissingCredentialsError(msg, provider=provider, env_var=env_var)
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)

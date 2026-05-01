@@ -332,6 +332,12 @@ class ChatTextArea(TextArea):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
+        ),
     ]
     """Key bindings for the chat text area.
 

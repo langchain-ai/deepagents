@@ -112,6 +112,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             repl:
               - 'libs/repl/**'
@@ -304,7 +305,20 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
-  # Verify release.yml dropdown options stay in sync with package directories
+  benchmark-quickjs:
+    name: "⏱️ Benchmark quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_benchmark.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      has-memory-benchmarks: true
+    secrets: inherit
+
+  # Validates every helper script under .github/scripts/test_*.py — currently
+  # `test_release_options.py` (release dropdown ↔ package directories) and
+  # `test_models.py` (eval matrix outputs ↔ evals.yml). Job id/name are kept
+  # for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
     name: "Validate Release Options"
     runs-on: ubuntu-latest
@@ -316,8 +330,8 @@ jobs:
           python-version: "3.11"
       - name: "📦 Install Dependencies"
         run: python -m pip install pyyaml pytest
-      - name: "🔍 Check release dropdown matches packages"
-        run: python -m pytest .github/scripts/test_release_options.py -v
+      - name: "🔍 Check workflow helper scripts"
+        run: python -m pytest .github/scripts/test_*.py -v
 
   # Final status check - ensures all jobs passed
   ci_success:
@@ -343,6 +357,7 @@ jobs:
       - test-repl
       - benchmark-deepagents
       - benchmark-cli
+      - benchmark-quickjs
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

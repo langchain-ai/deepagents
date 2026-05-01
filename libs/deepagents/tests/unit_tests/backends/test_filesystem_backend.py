@@ -16,6 +16,13 @@ def write_file(p: Path, content: str):
     p.write_text(content)
 
 
+def make_symlink_loop(path: Path) -> None:
+    try:
+        path.symlink_to(path)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+
+
 def test_filesystem_backend_normal_mode(tmp_path: Path):
     root = tmp_path
     f1 = root / "a.txt"
@@ -683,6 +690,67 @@ class TestEditCrlfNormalization:
         final = (tmp_path / "history.md").read_text()
         assert "## Summary 2" in final
         assert "Human: next" in final
+
+
+def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
+    """A resolver failure in `ls` should not escape the backend boundary."""
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.ls("loop")
+
+    assert result.entries == []
+    assert result.error is not None
+    assert "Cannot list 'loop'" in result.error
+
+
+def test_ls_virtual_mode_reports_child_symlink_loop(tmp_path: Path) -> None:
+    """Virtual listings should report cyclic children without raising."""
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    result = be.ls("/")
+
+    assert result.error is not None
+    # Per-child failures are prefixed so callers can tell them apart from a
+    # top-level listing failure.
+    assert "child error:" in result.error
+    assert "loop" in result.error
+    assert result.entries == []
+
+
+def test_file_operations_return_errors_for_symlink_loop_paths(tmp_path: Path) -> None:
+    """Resolver failures should become operation errors for model-facing APIs.
+
+    Asserts on the resolver-failure phrase so a regression that drops the
+    `_resolve_path` guard (and falls back to "File not found") would fail.
+    """
+    make_symlink_loop(tmp_path / "loop")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    read_error = be.read("loop").error
+    assert read_error is not None
+    assert "Error reading file 'loop'" in read_error
+
+    write_error = be.write("loop", "content").error
+    assert write_error is not None
+    assert "Error writing file 'loop'" in write_error
+
+    edit_error = be.edit("loop", "old", "new").error
+    assert edit_error is not None
+    assert "Error editing file 'loop'" in edit_error
+
+    grep_error = be.grep("needle", path="loop").error
+    assert grep_error is not None
+    assert "Error searching path 'loop'" in grep_error
+
+    glob_error = be.glob("*", path="loop").error
+    assert glob_error is not None
+    assert "Error globbing path 'loop'" in glob_error
+
+    assert be.upload_files([("loop", b"content")])[0].error == "invalid_path"
+    assert be.download_files(["loop"])[0].error == "invalid_path"
 
 
 class TestVirtualModeDefaultDeprecation:

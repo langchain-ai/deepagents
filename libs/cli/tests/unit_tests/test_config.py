@@ -222,26 +222,159 @@ class TestProjectAgentMdFinding:
         assert result == []
 
     def test_skips_paths_with_permission_errors(self, tmp_path: Path) -> None:
-        """Test that OSError from Path.exists() is caught gracefully."""
+        """`OSError` from `Path.resolve()` is caught and the candidate is skipped."""
         project_root = tmp_path / "project"
         project_root.mkdir()
 
         real_md = project_root / "AGENTS.md"
         real_md.write_text("root instructions")
 
-        original_exists = Path.exists
+        original_resolve = Path.resolve
 
-        def patched_exists(self: Path) -> bool:
+        def patched_resolve(self: Path, *args: object, **kwargs: object) -> Path:
             if self.name == "AGENTS.md" and ".deepagents" in str(self):
                 msg = "Permission denied"
                 raise PermissionError(msg)
-            return original_exists(self)
+            return original_resolve(self, *args, **kwargs)  # type: ignore[arg-type]
 
-        with patch.object(Path, "exists", patched_exists):
+        with patch.object(Path, "resolve", patched_resolve):
             result = _find_project_agent_md(project_root)
 
         assert len(result) == 1
-        assert result[0] == real_md
+        assert result[0].samefile(real_md)
+        assert not result[0].is_symlink()
+
+    def test_in_tree_symlink_resolves_to_target(self, tmp_path: Path) -> None:
+        """`AGENTS.md -> CLAUDE.md` returns a non-symlink path same-file as target."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        target = project_root / "CLAUDE.md"
+        target.write_text("real instructions")
+
+        link = project_root / "AGENTS.md"
+        link.symlink_to(target)
+
+        result = _find_project_agent_md(project_root)
+
+        assert len(result) == 1
+        # Returned path must be the resolved target — not the symlink — so
+        # `FilesystemBackend.download_files` opens the regular file rather
+        # than tripping `O_NOFOLLOW` on the link itself.
+        assert not result[0].is_symlink()
+        assert result[0].samefile(target)
+        assert result[0].is_relative_to(project_root.resolve())
+
+    def test_out_of_tree_symlink_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Symlink pointing outside project root is skipped with a warning."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        outside_target = tmp_path / "outside.md"
+        outside_target.write_text("attacker-controlled")
+
+        link = project_root / "AGENTS.md"
+        link.symlink_to(outside_target)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.project_utils"):
+            result = _find_project_agent_md(project_root)
+
+        assert result == []
+        assert any("outside the project root" in r.getMessage() for r in caplog.records)
+
+    def test_out_of_tree_parent_symlink_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Parent directory symlink cannot bypass project-root containment."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_agent_md = outside / "AGENTS.md"
+        outside_agent_md.write_text("attacker-controlled")
+
+        (project_root / ".deepagents").symlink_to(outside, target_is_directory=True)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.project_utils"):
+            result = _find_project_agent_md(project_root)
+
+        assert result == []
+        assert any("outside the project root" in r.getMessage() for r in caplog.records)
+
+    def test_broken_symlink_skipped(self, tmp_path: Path) -> None:
+        """Symlink whose target does not exist is skipped without crashing."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        link = project_root / "AGENTS.md"
+        link.symlink_to(project_root / "missing.md")
+
+        result = _find_project_agent_md(project_root)
+
+        # `Path.exists()` returns False for broken symlinks, so the candidate
+        # is silently skipped — matches pre-existing behavior for absent files.
+        assert result == []
+
+    def test_symlink_loop_skipped(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Symlink loop is skipped with a warning instead of crashing the agent."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        a = project_root / "AGENTS.md"
+        b = project_root / "loop.md"
+        a.symlink_to(b)
+        b.symlink_to(a)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.project_utils"):
+            result = _find_project_agent_md(project_root)
+
+        assert result == []
+        assert any(
+            "Skipping AGENTS.md candidate" in r.getMessage() for r in caplog.records
+        )
+
+    def test_regular_file_unchanged_by_resolution(self, tmp_path: Path) -> None:
+        """Regular (non-symlink) AGENTS.md returns a non-symlink, in-tree path."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+
+        agent_md = project_root / "AGENTS.md"
+        agent_md.write_text("plain file")
+
+        result = _find_project_agent_md(project_root)
+
+        assert len(result) == 1
+        assert not result[0].is_symlink()
+        assert result[0].samefile(agent_md)
+        assert result[0].is_relative_to(project_root.resolve())
+
+    def test_non_canonical_project_root_handled(self, tmp_path: Path) -> None:
+        """Non-canonical `project_root` (symlinked ancestor) still locates AGENTS.md.
+
+        Regression test: a symlinked `project_root` previously caused the
+        regular-file candidate to fail the absolute-vs-resolved equality check
+        and be returned as the canonical target rather than reported as missing.
+        Pin behavior so that callers passing an uncanonicalized root (common
+        when `Settings.project_root` originates from an unresolved cwd) still
+        find a regular AGENTS.md.
+        """
+        real_root = tmp_path / "real"
+        real_root.mkdir()
+        agent_md = real_root / "AGENTS.md"
+        agent_md.write_text("instructions")
+
+        link_root = tmp_path / "link"
+        link_root.symlink_to(real_root, target_is_directory=True)
+
+        result = _find_project_agent_md(link_root)
+
+        assert len(result) == 1
+        assert not result[0].is_symlink()
+        assert result[0].samefile(agent_md)
+        assert result[0].is_relative_to(link_root.resolve())
 
 
 class TestSettingsGetProjectAgentMdPath:

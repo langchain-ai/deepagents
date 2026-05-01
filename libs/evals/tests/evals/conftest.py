@@ -88,6 +88,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
     )
     parser.addoption(
+        "--openai-reasoning-effort",
+        action="store",
+        choices=("minimal", "low", "medium", "high", "xhigh"),
+        default=None,
+        help="Apply reasoning effort to OpenAI models. E.g. --openai-reasoning-effort high",
+    )
+    parser.addoption(
         "--repl",
         action="store",
         choices=("quickjs", "langchain"),
@@ -202,4 +209,10 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
         # 5s read timeout. This causes indefinite hangs on TCP stalls.
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
+    reasoning_effort = request.config.getoption("--openai-reasoning-effort")
+    if reasoning_effort:
+        if not model_name.startswith("openai:"):
+            msg = "--openai-reasoning-effort requires an openai: model prefix"
+            raise ValueError(msg)
+        kwargs["reasoning_effort"] = reasoning_effort
     return init_chat_model(model_name, **kwargs)

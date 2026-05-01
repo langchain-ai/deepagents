@@ -6,6 +6,9 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[options]
+prerelease-mode = "allow"
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"

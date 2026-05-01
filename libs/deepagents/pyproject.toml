@@ -159,10 +159,6 @@ markers = [
     "benchmark: wall-time benchmarks for construction performance",
 ]
 
-[tool.uv]
-# langchain==1.2.x declares langgraph<1.2.0; override so uv accepts the 1.2.0a5 alpha.
-override-dependencies = ["langgraph>=1.2.0a5"]
-
 [tool.ty.environment]
 python-version = "3.11"
 

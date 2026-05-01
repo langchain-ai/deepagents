@@ -16,9 +16,6 @@ resolution-markers = [
 [options]
 prerelease-mode = "allow"
 
-[manifest]
-overrides = [{ name = "langgraph", specifier = ">=1.2.0a5" }]
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"

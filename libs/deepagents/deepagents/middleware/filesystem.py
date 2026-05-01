@@ -251,8 +251,8 @@ def _file_data_delta_reducer(
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_delta_reducer)]
-    """Files in the filesystem. Uses DeltaChannel to store per-step deltas, reducing checkpoint size from O(N²) to O(N)."""
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_delta_reducer, snapshot_frequency=50)]
+    """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
 class LsSchema(BaseModel):
@@ -1932,26 +1932,3 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return tool_result
 
         return await self._aintercept_large_tool_result(tool_result, request.runtime)
-
-
-class DeltaFilesystemMiddleware(FilesystemMiddleware):
-    """FilesystemMiddleware with DeltaChannel applied to the ``files`` state channel.
-
-    Stores per-step file deltas instead of the full accumulated state on every
-    checkpoint, reducing ``files`` channel storage from O(N²) to O(N).
-
-    Args:
-        snapshot_frequency: Every Nth pregel step writes a full snapshot blob,
-            bounding the ancestor-walk depth during state reconstruction.
-            ``None`` (default) = pure delta; no intermediate snapshots.
-        **kwargs: Forwarded to :class:`FilesystemMiddleware`.
-    """
-
-    def __init__(self, *, snapshot_frequency: int | None = None, **kwargs) -> None:
-        super().__init__(**kwargs)
-        channel = DeltaChannel(_file_data_delta_reducer, snapshot_frequency=snapshot_frequency)
-        self.state_schema = type(
-            "_DeltaFilesystemState",
-            (FilesystemState,),
-            {"__annotations__": {"files": Annotated[NotRequired[dict[str, FileData]], channel]}},
-        )

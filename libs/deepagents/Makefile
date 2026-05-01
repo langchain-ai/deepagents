@@ -1,4 +1,4 @@
-.PHONY: format lint test tests integration_test integration_tests test_watch benchmark help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
+.PHONY: format lint test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage type typecheck update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -43,6 +43,12 @@ test_watch: ## Run tests in watch mode
 
 benchmark: ## Run benchmark tests
 	uv run --group test pytest ./tests/benchmarks -m benchmark
+
+bench: ## Run benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m benchmark --codspeed
+
+bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m memory_benchmark --codspeed
 
 run: ## Reinstall and run package
 	uvx --no-cache --reinstall .

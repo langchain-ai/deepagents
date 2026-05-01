@@ -433,7 +433,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.5"
+version = "0.5.6"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -449,7 +449,7 @@ dependencies = [
 requires-dist = [
     { name = "langchain", specifier = ">=1.3.0a1,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.2,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.3.2,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.4.0a2,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langgraph", specifier = ">=1.2.0a5,<1.3.0" },
     { name = "langsmith", specifier = ">=0.7.35" },
@@ -464,7 +464,7 @@ test = [
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-benchmark" },
-    { name = "pytest-codspeed" },
+    { name = "pytest-codspeed", specifier = ">=4.4.0,<5.0.0" },
     { name = "pytest-cov" },
     { name = "pytest-socket" },
     { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },

@@ -40,7 +40,7 @@ dependencies = [
     "langchain-nvidia-ai-endpoints>=1.0.0",
     "langchain-ollama>=1.0.0",
     "langchain-openai>=1.1.14",
-    "langchain-openrouter>=0.1.0",
+    "langchain-openrouter>=0.2.2",
     "langchain-xai>=1.0.0",
     # Eval-specific dependencies
     "datasets>=3.0.0",
@@ -90,6 +90,7 @@ include = ["deepagents_harbor*", "deepagents_evals*"]
 deepagents_evals = ["categories.json"]
 
 [tool.uv]
+prerelease = "allow"
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",

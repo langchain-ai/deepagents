@@ -33,7 +33,7 @@ def _make_backend(files=None):
 
 
 def _runtime():
-    return ToolRuntime(state={}, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, tools=[], config={})
+    return ToolRuntime(state={}, context=None, tool_call_id="", store=None, stream_writer=lambda _: None, config={})
 
 
 class TestFilesystemMiddlewareAsync:
@@ -574,7 +574,7 @@ class TestFilesystemMiddlewareAsync:
             {
                 "file_path": "/test.txt",
                 "content": "Hello world",
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, tools=[], config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
             }
         )
         # StoreBackend writes to the store and returns a plain string
@@ -598,7 +598,7 @@ class TestFilesystemMiddlewareAsync:
                 "file_path": "/test.txt",
                 "old_string": "Hello",
                 "new_string": "Hi",
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, tools=[], config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
             }
         )
         # StoreBackend writes to the store and returns a plain string
@@ -623,7 +623,7 @@ class TestFilesystemMiddlewareAsync:
                 "old_string": "Hello",
                 "new_string": "Hi",
                 "replace_all": True,
-                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, tools=[], config={}),
+                "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
             }
         )
         assert isinstance(result, str)
@@ -644,7 +644,6 @@ class TestFilesystemMiddlewareAsync:
             tool_call_id="test_exec",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -683,7 +682,6 @@ class TestFilesystemMiddlewareAsync:
             tool_call_id="test_zero_timeout_async",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -726,7 +724,6 @@ class TestFilesystemMiddlewareAsync:
             tool_call_id="test_fmt",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -770,7 +767,6 @@ class TestFilesystemMiddlewareAsync:
             tool_call_id="test_fail",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -814,7 +810,6 @@ class TestFilesystemMiddlewareAsync:
             tool_call_id="test_trunc",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 

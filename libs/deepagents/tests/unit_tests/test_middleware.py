@@ -66,13 +66,13 @@ def _make_backend(files=None):
 
 
 def _runtime(tool_call_id=""):
-    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, tools=[], config={})
+    return ToolRuntime(state={}, context=None, tool_call_id=tool_call_id, store=None, stream_writer=lambda _: None, config={})
 
 
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -89,7 +89,7 @@ class TestAddMiddleware:
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             )
         ]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
@@ -100,7 +100,7 @@ class TestAddMiddleware:
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             ),
         ]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -1200,7 +1200,6 @@ class TestFilesystemMiddleware:
             tool_call_id="img-read-1",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1232,7 +1231,6 @@ class TestFilesystemMiddleware:
             tool_call_id="img-read-err",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1257,7 +1255,6 @@ class TestFilesystemMiddleware:
             tool_call_id="str-read",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1283,7 +1280,6 @@ class TestFilesystemMiddleware:
             tool_call_id="str-trunc",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1314,7 +1310,6 @@ class TestFilesystemMiddleware:
             tool_call_id="str-tok",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1355,7 +1350,6 @@ class TestFilesystemMiddleware:
             tool_call_id="test_exec",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1389,7 +1383,6 @@ class TestFilesystemMiddleware:
             tool_call_id="test_fmt",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1426,7 +1419,6 @@ class TestFilesystemMiddleware:
             tool_call_id="test_fail",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1463,7 +1455,6 @@ class TestFilesystemMiddleware:
             tool_call_id="test_trunc",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1495,7 +1486,6 @@ class TestFilesystemMiddleware:
             tool_call_id="test",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1958,7 +1948,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_zero_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -1990,7 +1979,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_neg_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -2024,7 +2012,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_fwd_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -2054,7 +2041,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_max_execute_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -2089,7 +2075,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_at_max_execute_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -2121,7 +2106,6 @@ class TestBuiltinTruncationTools:
             tool_call_id="test_none_timeout",
             store=InMemoryStore(),
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 

@@ -109,6 +109,16 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `ollama:minimax-m2.7:cloud`
 - `openrouter:z-ai/glm-5.1`
 
+### `docs` (7 models)
+
+- `anthropic:claude-opus-4-7`
+- `baseten:moonshotai/Kimi-K2.6`
+- `google_genai:gemini-3.1-pro-preview`
+- `openai:gpt-5.5`
+- `openrouter:minimax/minimax-m2.7`
+- `openrouter:z-ai/glm-5.1`
+- `openrouter:deepseek/deepseek-v4-pro`
+
 ## Provider groups
 
 ### `anthropic` (8 models)
@@ -188,20 +198,21 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openai:gpt-5.5`
 - `openai:gpt-5.4-mini`
 
-### `openrouter` (5 models)
+### `openrouter` (6 models)
 
 - `openrouter:minimax/minimax-m2.7`
 - `openrouter:moonshotai/kimi-k2.5`
 - `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
+- `openrouter:deepseek/deepseek-v4-pro`
 
 ### `xai` (2 models)
 
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (61 models)
+## `all` (62 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-haiku-4-5`
@@ -262,5 +273,6 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openrouter:moonshotai/kimi-k2.6`
 - `openrouter:z-ai/glm-5.1`
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
+- `openrouter:deepseek/deepseek-v4-pro`
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`

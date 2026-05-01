@@ -209,6 +209,14 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
         # 5s read timeout. This causes indefinite hangs on TCP stalls.
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
+    if model_name.startswith("openai:"):
+        # Match the SDK's built-in `openai` provider profile, which sets
+        # `use_responses_api=True` for all openai: models. The fixture
+        # pre-builds the model so the profile layer doesn't apply
+        # automatically — mirror it explicitly. Also required for
+        # `reasoning_effort` + function tools, which OpenAI gates to
+        # /v1/responses for gpt-5.x.
+        kwargs["use_responses_api"] = True
     reasoning_effort = request.config.getoption("--openai-reasoning-effort")
     if reasoning_effort:
         if not model_name.startswith("openai:"):

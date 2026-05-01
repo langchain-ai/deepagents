@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 class _DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
-    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer)]]
+    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 

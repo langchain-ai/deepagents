@@ -211,7 +211,7 @@ class WelcomeBanner(Static):
         """
         parts: list[str | tuple[str, str | TStyle] | Content] = []
         colors = theme.get_theme_colors(self)
-        ansi = self.app.theme == "textual-ansi"
+        ansi = self.app.theme in {"ansi-dark", "ansi-light"}
 
         banner = get_banner()
         primary_style: str | TStyle = (

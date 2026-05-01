@@ -192,7 +192,10 @@ def _load_theme_preference() -> str:
         return theme.DEFAULT_THEME
 
     name = data.get("ui", {}).get("theme")
-    if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+    # Migrate legacy `textual-ansi` preference (pre-Textual 8.2.5) to `ansi-light`.
+    if name == "textual-ansi":
+        name = "ansi-light"
+    if isinstance(name, str) and name in theme.get_registry():
         return name
     if isinstance(name, str):
         logger.warning(
@@ -211,7 +214,7 @@ def save_theme_preference(name: str) -> bool:
     Returns:
         `True` if the preference was saved, `False` if any error occurred.
     """
-    if name not in theme.ThemeEntry.REGISTRY:
+    if name not in theme.get_registry():
         logger.warning("Refusing to save unknown theme '%s'", name)
         return False
 
@@ -342,6 +345,21 @@ def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None
         msg = "--model-params must be a JSON object, got " + type(params).__name__
         raise TypeError(msg)
     return remaining, params
+
+
+def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
+    """Render `--model-params` as a stable, key-sorted JSON suffix.
+
+    Args:
+        extra_kwargs: The parsed `--model-params` payload, or `None`.
+
+    Returns:
+        ` with model params {json}` when `extra_kwargs` is non-empty;
+        otherwise an empty string so callers can unconditionally concatenate.
+    """
+    if not extra_kwargs:
+        return ""
+    return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
 InputMode = Literal["normal", "shell", "command"]
@@ -5483,7 +5501,7 @@ class DeepAgentsApp(App):
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
-        for name, entry in theme.ThemeEntry.REGISTRY.items():
+        for name, entry in theme.get_registry().items():
             if entry.custom:
                 c = entry.colors
                 try:
@@ -6700,7 +6718,19 @@ class DeepAgentsApp(App):
                 not provider or provider == settings.model_provider
             ):
                 current = f"{settings.model_provider}:{settings.model_name}"
-                await self._mount_message(AppMessage(f"Already using {current}"))
+                # Mirror the regular-switch path so `--model-params` semantics
+                # are consistent across same-model and different-model cases:
+                # passing params applies them, omitting params clears any
+                # prior per-session override.
+                self._model_override = current
+                self._model_params_override = extra_kwargs
+                params_suffix = _format_model_params(extra_kwargs)
+                await self._mount_message(
+                    AppMessage(f"Already using {current}{params_suffix}")
+                )
+                logger.info(
+                    "Model unchanged (%s); model_params=%s", current, extra_kwargs
+                )
                 return
 
             # Build the provider:model spec for the configurable middleware.
@@ -6741,8 +6771,15 @@ class DeepAgentsApp(App):
                     )
                 )
             else:
-                await self._mount_message(AppMessage(f"Switched to {display}"))
-            logger.info("Model switched to %s (via configurable middleware)", display)
+                params_suffix = _format_model_params(extra_kwargs)
+                await self._mount_message(
+                    AppMessage(f"Switched to {display}{params_suffix}")
+                )
+            logger.info(
+                "Model switched to %s (via configurable middleware); model_params=%s",
+                display,
+                extra_kwargs,
+            )
 
             # Anchor to bottom so the confirmation message is visible
             with suppress(NoMatches, ScreenStackError):

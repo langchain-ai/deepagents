@@ -41,6 +41,8 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 [dependency-groups]
 test = [
     "pytest>=7.3.0,<10.0.0",
+    "pytest-benchmark",
+    "pytest-codspeed>=4.4.0,<5.0.0",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",
@@ -102,6 +104,9 @@ markers = [
     "requires: mark tests as requiring a specific library",
     "compile: mark placeholder test used to compile integration tests without running them",
     "scheduled: mark tests to run in scheduled testing",
+    "benchmark: mark benchmark tests",
+    "memory_benchmark: mark benchmarks intended for CodSpeed memory mode",
+    "throughput_benchmark: mark throughput benchmarks",
 ]
 asyncio_mode = "auto"
 filterwarnings = []

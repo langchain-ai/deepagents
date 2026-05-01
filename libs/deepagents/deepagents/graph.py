@@ -308,6 +308,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Entries that match nothing in the assembled stack raise
             `ValueError`, as does excluding scaffolding classes
             (`FilesystemMiddleware`, `SubAgentMiddleware`).
+
+            To run without the `task` tool, set
+            `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
+            on the active harness profile and pass no synchronous
+            subagents via `subagents=`. Async subagents are unaffected.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -336,7 +341,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             If no subagent named `general-purpose` is provided, a default
             general-purpose synchronous subagent is added automatically unless
-            the active harness profile disables it.
+            the active harness profile disables it. With no synchronous
+            subagents in play — none passed and the default disabled via
+            `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
+            — the `task` tool is not exposed. Async subagents are independent.
 
         skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 

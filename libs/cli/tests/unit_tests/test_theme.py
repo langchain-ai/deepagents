@@ -13,16 +13,17 @@ if TYPE_CHECKING:
 
 from deepagents_cli import theme
 from deepagents_cli.theme import (
-    _BUILTIN_NAMES,
     DARK_COLORS,
     DEFAULT_THEME,
     LIGHT_COLORS,
     ThemeColors,
     ThemeEntry,
     _build_registry,
+    _builtin_names,
     _builtin_themes,
     _load_user_themes,
     get_css_variable_defaults,
+    get_registry,
     get_theme_colors,
 )
 
@@ -101,23 +102,23 @@ class TestColorSets:
 
 
 # ---------------------------------------------------------------------------
-# ThemeEntry.REGISTRY
+# Theme registry
 # ---------------------------------------------------------------------------
 
 
 class TestThemeEntryRegistry:
-    """ThemeEntry.REGISTRY contents and immutability."""
+    """Theme registry contents and immutability."""
 
     def test_registry_contains_builtin_keys(self) -> None:
-        assert set(ThemeEntry.REGISTRY.keys()) >= _BUILTIN_NAMES
+        assert set(get_registry().keys()) >= _builtin_names()
 
     def test_registry_is_read_only(self) -> None:
-        assert isinstance(ThemeEntry.REGISTRY, MappingProxyType)
+        assert isinstance(get_registry(), MappingProxyType)
         with pytest.raises(TypeError):
-            ThemeEntry.REGISTRY["bad"] = None  # type: ignore[index]
+            get_registry()["bad"] = None  # type: ignore[index]
 
     def test_default_theme_in_registry(self) -> None:
-        assert DEFAULT_THEME in ThemeEntry.REGISTRY
+        assert DEFAULT_THEME in get_registry()
 
     @pytest.mark.parametrize(
         ("name", "dark", "custom"),
@@ -126,7 +127,8 @@ class TestThemeEntryRegistry:
             ("langchain-light", False, True),
             ("textual-dark", True, False),
             ("textual-light", False, False),
-            ("textual-ansi", False, False),
+            ("ansi-dark", True, False),
+            ("ansi-light", False, False),
             # Community themes
             ("dracula", True, False),
             ("monokai", True, False),
@@ -142,16 +144,16 @@ class TestThemeEntryRegistry:
         ],
     )
     def test_entry_flags(self, name: str, dark: bool, custom: bool) -> None:
-        entry = ThemeEntry.REGISTRY[name]
+        entry = get_registry()[name]
         assert entry.dark is dark
         assert entry.custom is custom
 
     def test_every_entry_has_non_empty_label(self) -> None:
-        for name, entry in ThemeEntry.REGISTRY.items():
+        for name, entry in get_registry().items():
             assert entry.label.strip(), f"Entry '{name}' has empty label"
 
     def test_every_entry_has_valid_colors(self) -> None:
-        for name, entry in ThemeEntry.REGISTRY.items():
+        for name, entry in get_registry().items():
             assert isinstance(entry.colors, ThemeColors), (
                 f"Entry '{name}' has invalid colors"
             )
@@ -332,11 +334,11 @@ class TestGetThemeColors:
             surface = "ansi_default"
 
         class FakeApp:
-            theme = "textual-ansi"
+            theme = "ansi-light"
             current_theme = CurrentTheme()
 
         colors = get_theme_colors(FakeApp())
-        # Non-hex values fall back to light base (ansi theme is dark=False)
+        # Non-hex values fall back to light base (ansi-light is dark=False)
         assert colors.primary == LIGHT_COLORS.primary
         assert colors.background == LIGHT_COLORS.background
 
@@ -738,24 +740,24 @@ primary = "#ABCDEF"
         registry = _build_registry(config_path=config)
         assert isinstance(registry, MappingProxyType)
         assert "custom-dark" in registry
-        assert set(registry.keys()) >= _BUILTIN_NAMES
+        assert set(registry.keys()) >= _builtin_names()
         assert registry["custom-dark"].colors.primary == "#ABCDEF"
 
     def test_no_config_still_has_builtins(self, tmp_path: Path) -> None:
         registry = _build_registry(config_path=tmp_path / "missing.toml")
-        assert set(registry.keys()) == _BUILTIN_NAMES
+        assert set(registry.keys()) == _builtin_names()
 
 
 # ---------------------------------------------------------------------------
-# _BUILTIN_NAMES consistency
+# _builtin_names() consistency
 # ---------------------------------------------------------------------------
 
 
 class TestBuiltinNamesConsistency:
-    """_BUILTIN_NAMES stays in sync with _builtin_themes()."""
+    """_builtin_names() stays in sync with _builtin_themes()."""
 
     def test_builtin_names_matches_builtin_themes(self) -> None:
-        assert frozenset(_builtin_themes()) == _BUILTIN_NAMES
+        assert frozenset(_builtin_themes()) == _builtin_names()
 
 
 # ---------------------------------------------------------------------------
@@ -983,7 +985,7 @@ class TestThemeSelectorScreen:
             app.push_screen(screen)
             await pilot.pause()
             option_list = screen.query_one("#theme-options", OptionList)
-            assert option_list.option_count == len(theme.ThemeEntry.REGISTRY)
+            assert option_list.option_count == len(theme.get_registry())
 
     async def test_current_theme_highlighted(self) -> None:
         from textual.app import App
@@ -1045,4 +1047,4 @@ class TestThemeSelectorScreen:
             await pilot.pause()
             assert len(results) == 1
             assert results[0] is not None
-            assert results[0] in theme.ThemeEntry.REGISTRY
+            assert results[0] in theme.get_registry()

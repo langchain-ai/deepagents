@@ -1690,6 +1690,7 @@ class TestSubAgents:
         assert len(received_configs) > 0, "Lambda should have been invoked"
         assert all(t in received_configs[0].get("tags", []) for t in test_tags), f"Missing tags in config: {received_configs[0].get('tags')}"
 
+    @pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
     def test_context_passed_to_subagent_tool_runtime(self) -> None:
         """Test that context passed to main agent is available in subagent's ToolRuntime.context."""
         received_contexts: list[Any] = []

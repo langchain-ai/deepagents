@@ -414,10 +414,6 @@ jobs:
               -f package="$package" \
               -f version="$VERSION" \
               -f release-sha="$RELEASE_SHA"; then
-              # gh workflow run returns 0 once the dispatch is queued but yields
-              # no run ID. Surface a pointer so operators can find the dispatched
-              # run quickly without a manual scroll through Actions.
-              echo "Queued. Watch at: $RELEASE_WORKFLOW_URL"
               DISPATCHED+=("$package")
             else
               echo "::error::Failed to dispatch release.yml for $package"
@@ -497,5 +493,3 @@ jobs:
             echo "::error::Recover with: gh workflow run release.yml -f package=<name> -f version=$VERSION -f release-sha=$RELEASE_SHA"
             exit 1
           fi
-
-          echo "All release workflows dispatched. Watch at: $RELEASE_WORKFLOW_URL"

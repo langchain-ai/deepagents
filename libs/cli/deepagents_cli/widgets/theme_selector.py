@@ -100,7 +100,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         options: list[Option] = []
         highlight_index = 0
 
-        for i, (name, entry) in enumerate(theme.ThemeEntry.REGISTRY.items()):
+        for i, (name, entry) in enumerate(theme.get_registry().items()):
             label = entry.label
             if name == self._current_theme:
                 label = f"{label} (current)"
@@ -135,7 +135,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             event: The option highlighted event.
         """
         name = event.option.id
-        if name is not None and name in theme.ThemeEntry.REGISTRY:
+        if name is not None and name in theme.get_registry():
             try:
                 self.app.theme = name
                 # refresh_css only repaints the active (modal) screen's layout;
@@ -162,7 +162,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             event: The option selected event.
         """
         name = event.option.id
-        if name is not None and name in theme.ThemeEntry.REGISTRY:
+        if name is not None and name in theme.get_registry():
             self.dismiss(name)
         else:
             logger.warning("Selected theme '%s' is no longer available", name)

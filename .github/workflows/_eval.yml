@@ -102,6 +102,12 @@ jobs:
       OLLAMA_HOST: "https://ollama.com"
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # Group all OpenRouter calls in this per-model eval job under a stable
+      # session ID derived from GHA runner env. Picked up by ChatOpenRouter
+      # via from_env (langchain-openrouter >= 0.2.2). Re-runs get a new
+      # session via run_attempt; different models get distinct sessions via
+      # artifact_key.
+      OPENROUTER_SESSION_ID: deepagents-evals-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.artifact_key }}
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "📋 Checkout Code"

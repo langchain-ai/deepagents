@@ -37,7 +37,6 @@ def _make_runtime(tool_call_id: str = "tc_test") -> ToolRuntime:
         tool_call_id=tool_call_id,
         store=None,
         stream_writer=lambda _: None,
-        tools=[],
         config={},
     )
 
@@ -71,7 +70,6 @@ def _make_runtime_with_task(
         tool_call_id=tool_call_id,
         store=None,
         stream_writer=lambda _: None,
-        tools=[],
         config={},
     )
 
@@ -286,7 +284,6 @@ class TestCheckTool:
             tool_call_id=tool_call_id,
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
 
@@ -392,7 +389,6 @@ class TestUpdateTool:
             tool_call_id="tc_update",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = update.func(
@@ -469,7 +465,6 @@ class TestListTasksTool:
             tool_call_id="tc_list",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = list_tool.func(runtime=rt)
@@ -532,7 +527,6 @@ class TestListTasksTool:
             tool_call_id="tc_list",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = list_tool.func(runtime=rt)
@@ -580,7 +574,6 @@ class TestListTasksTool:
             tool_call_id="tc_list",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = list_tool.func(runtime=rt, status_filter="running")
@@ -659,7 +652,6 @@ class TestAsyncTools:
             tool_call_id="tc_async_check",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = await check.coroutine(
@@ -699,7 +691,6 @@ class TestAsyncTools:
             tool_call_id="tc_async_update",
             store=None,
             stream_writer=lambda _: None,
-            tools=[],
             config={},
         )
         result = await update.coroutine(

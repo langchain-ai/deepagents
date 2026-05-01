@@ -100,7 +100,6 @@ def _build_agent_with_one_subagent() -> CompiledStateGraph:
     )
     return create_deep_agent(
         model=parent,
-        tools=[],
         subagents=[
             {
                 "name": "researcher",
@@ -169,7 +168,6 @@ class TestCreateDeepAgentAstreamV2:
         model = _Scripted(responses=[AIMessage(content="no tools today")])
         agent = create_deep_agent(
             model=model,
-            tools=[],
             subagents=[
                 {
                     "name": "researcher",

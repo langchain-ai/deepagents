@@ -13,9 +13,6 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 overrides = [{ name = "langgraph", specifier = ">=1.2.0a5" }]
 
@@ -451,7 +448,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.2.17,<2.0.0" },
+    { name = "langchain", specifier = ">=1.3.0a1,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.2,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.3.2,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
@@ -813,16 +810,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.2.17"
+version = "1.3.0a1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/46/35/322d13339acb61d7a733d03a73a9ade968c64ac0eb982f497d24e22a998f/langchain-1.2.17.tar.gz", hash = "sha256:c30b578c0eebbde8bec9247dbbbae1a791128557b99b65c8be1e007040975d09", size = 577779, upload-time = "2026-04-30T20:25:34.626Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/37/4408298df7d67845729e9768a86a123a60a59ea0c0eddbfd40eb0f9d25df/langchain-1.3.0a1.tar.gz", hash = "sha256:25db3a528fc09dea24335fa0165452784221802932525c14c7f1b10fc04003de", size = 580070, upload-time = "2026-05-01T19:19:15.74Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/cf/b183dba8667f7b6d1be546fb8089a3bc3bc12b514f551f5317ae03815770/langchain-1.2.17-py3-none-any.whl", hash = "sha256:ff881cdfbe90e0b6afac42eea7999657c282cc73db059c910d803f4e9f8ff305", size = 113131, upload-time = "2026-04-30T20:25:32.895Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/be/011ee9cc738128a5811a2ed1d977159618aada247f626f2983b30de21595/langchain-1.3.0a1-py3-none-any.whl", hash = "sha256:45f5f843738403dd04e23651d2768445fdd931dc6f262c16eaad93f692794cdf", size = 113331, upload-time = "2026-05-01T19:19:14.099Z" },
 ]
 
 [[package]]

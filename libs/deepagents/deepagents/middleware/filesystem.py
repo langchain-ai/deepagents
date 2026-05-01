@@ -29,6 +29,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.channels.delta import DeltaChannel
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -231,11 +232,27 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
+def _file_data_delta_reducer(
+    left: dict[str, FileData] | None,
+    values: list[dict[str, FileData | None]],
+) -> dict[str, FileData]:
+    """Batch reducer for use with DeltaChannel.
+
+    DeltaChannel calls reducer(base, list(values)) where values is a list of
+    all writes in the current step. Apply each dict sequentially via
+    _file_data_reducer so deletions and overwrites compose correctly.
+    """
+    result = left
+    for right in values:
+        result = _file_data_reducer(result, right)
+    return result or {}
+
+
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
-    """Files in the filesystem."""
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_delta_reducer)]
+    """Files in the filesystem. Uses DeltaChannel to store per-step deltas, reducing checkpoint size from O(N²) to O(N)."""
 
 
 class LsSchema(BaseModel):
@@ -1915,3 +1932,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return tool_result
 
         return await self._aintercept_large_tool_result(tool_result, request.runtime)
+
+
+class DeltaFilesystemMiddleware(FilesystemMiddleware):
+    """FilesystemMiddleware with DeltaChannel applied to the ``files`` state channel.
+
+    Stores per-step file deltas instead of the full accumulated state on every
+    checkpoint, reducing ``files`` channel storage from O(N²) to O(N).
+
+    Args:
+        snapshot_frequency: Every Nth pregel step writes a full snapshot blob,
+            bounding the ancestor-walk depth during state reconstruction.
+            ``None`` (default) = pure delta; no intermediate snapshots.
+        **kwargs: Forwarded to :class:`FilesystemMiddleware`.
+    """
+
+    def __init__(self, *, snapshot_frequency: int | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        channel = DeltaChannel(_file_data_delta_reducer, snapshot_frequency=snapshot_frequency)
+        self.state_schema = type(
+            "_DeltaFilesystemState",
+            (FilesystemState,),
+            {"__annotations__": {"files": Annotated[NotRequired[dict[str, FileData]], channel]}},
+        )

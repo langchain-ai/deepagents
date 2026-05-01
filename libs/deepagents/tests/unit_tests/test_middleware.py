@@ -429,7 +429,7 @@ class TestFilesystemMiddleware:
                 }
             )
 
-        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""
@@ -1237,8 +1237,8 @@ class TestFilesystemMiddleware:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/app/missing.png", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert result == "Error: file_not_found"
+        assert isinstance(result, ToolMessage)
+        assert result.content == "Error: file_not_found"
 
     def test_read_file_handles_str_from_backend(self):
         """Test that read_file works when backend.read() returns a plain str."""
@@ -1262,8 +1262,8 @@ class TestFilesystemMiddleware:
         with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
             result = read_file_tool.invoke({"file_path": "/app/file.txt", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert "line one" in result
+        assert isinstance(result, ToolMessage)
+        assert "line one" in result.content
 
     def test_read_file_str_backend_line_limit_truncation(self):
         """Legacy str backend respects the line-count limit."""
@@ -1287,8 +1287,8 @@ class TestFilesystemMiddleware:
         with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
             result = read_file_tool.invoke({"file_path": "/app/big.txt", "limit": 50, "runtime": runtime})
 
-        assert isinstance(result, str)
-        output_lines = [ln for ln in result.splitlines() if ln.strip()]
+        assert isinstance(result, ToolMessage)
+        output_lines = [ln for ln in result.content.splitlines() if ln.strip()]
         assert len(output_lines) <= 50
 
     def test_read_file_str_backend_token_truncation(self):
@@ -1317,9 +1317,9 @@ class TestFilesystemMiddleware:
         with pytest.warns(DeprecationWarning, match="Returning a plain `str`"):
             result = read_file_tool.invoke({"file_path": "/app/huge.txt", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert "Output was truncated due to size limits" in result
-        assert len(result) <= NUM_CHARS_PER_TOKEN * token_limit
+        assert isinstance(result, ToolMessage)
+        assert "Output was truncated due to size limits" in result.content
+        assert len(result.content) <= NUM_CHARS_PER_TOKEN * token_limit
 
     def test_read_file_empty_file_returns_warning(self):
         """ReadResult with empty content returns the empty-content warning."""
@@ -1332,8 +1332,8 @@ class TestFilesystemMiddleware:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
         result = read_file_tool.invoke({"file_path": "/empty.txt", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert result == EMPTY_CONTENT_WARNING
+        assert isinstance(result, ToolMessage)
+        assert result.content == EMPTY_CONTENT_WARNING
 
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
@@ -1356,9 +1356,9 @@ class TestFilesystemMiddleware:
         # Execute should return error message, not raise exception
         result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert "Error: Execution not available" in result
-        assert "does not support command execution" in result
+        assert isinstance(result, ToolMessage)
+        assert "Error: Execution not available" in result.content
+        assert "does not support command execution" in result.content
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
@@ -1392,9 +1392,9 @@ class TestFilesystemMiddleware:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo test", "runtime": rt})
 
-        assert "Hello world\nLine 2" in result
-        assert "succeeded" in result
-        assert "exit code 0" in result
+        assert "Hello world\nLine 2" in result.content
+        assert "succeeded" in result.content
+        assert "exit code 0" in result.content
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -1428,9 +1428,9 @@ class TestFilesystemMiddleware:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "nonexistent", "runtime": rt})
 
-        assert "Error: command not found" in result
-        assert "failed" in result
-        assert "exit code 127" in result
+        assert "Error: command not found" in result.content
+        assert "failed" in result.content
+        assert "exit code 127" in result.content
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""
@@ -1464,8 +1464,8 @@ class TestFilesystemMiddleware:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "cat large_file", "runtime": rt})
 
-        assert "Very long output..." in result
-        assert "truncated" in result
+        assert "Very long output..." in result.content
+        assert "truncated" in result.content
 
     def testsupports_execution_helper_with_composite_backend(self):
         """Test supports_execution correctly identifies CompositeBackend capabilities."""
@@ -1957,8 +1957,8 @@ class TestBuiltinTruncationTools:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": 0, "runtime": rt})
 
-        assert isinstance(result, str)
-        assert "ok" in result
+        assert isinstance(result, ToolMessage)
+        assert "ok" in result.content
         assert captured_timeout["value"] == 0
 
     def test_execute_tool_rejects_negative_timeout(self):
@@ -1988,9 +1988,9 @@ class TestBuiltinTruncationTools:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": -5, "runtime": rt})
 
-        assert isinstance(result, str)
-        assert "error" in result.lower()
-        assert "non-negative" in result.lower()
+        assert isinstance(result, ToolMessage)
+        assert "error" in result.content.lower()
+        assert "non-negative" in result.content.lower()
 
     def test_execute_tool_forwards_valid_timeout_to_backend(self):
         """Middleware should forward a valid timeout to the backend."""
@@ -2050,10 +2050,10 @@ class TestBuiltinTruncationTools:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = execute_tool.invoke({"command": "echo hello", "timeout": 601, "runtime": rt})
 
-        assert isinstance(result, str)
-        assert "error" in result.lower()
-        assert "601" in result
-        assert "600" in result
+        assert isinstance(result, ToolMessage)
+        assert "error" in result.content.lower()
+        assert "601" in result.content
+        assert "600" in result.content
 
     def test_execute_tool_accepts_timeout_at_max(self):
         """Middleware should accept timeout exactly equal to max_execute_timeout."""

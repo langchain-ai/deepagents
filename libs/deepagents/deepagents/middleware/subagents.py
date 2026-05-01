@@ -408,7 +408,12 @@ def _build_task_tool(  # noqa: C901
                 content = json.dumps(structured)
         else:
             # Strip trailing whitespace to prevent API errors with Anthropic
-            content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+            messages = result.get("messages", [])
+            if not messages:
+                content = ""
+            else:
+                last_message = messages[-1]
+                content = last_message.text.rstrip() if getattr(last_message, "text", None) else ""
 
         return Command(
             update={

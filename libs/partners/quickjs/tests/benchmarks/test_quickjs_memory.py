@@ -17,12 +17,13 @@ import pytest
 from langchain_quickjs import REPLMiddleware
 from tests.benchmarks._common import (
     CONSOLE_LOG_CODE,
-    MULTITURN_COUNTER_CODE,
     PTC_ONLY_CODE,
+    assert_counter_turn_values,
     assert_eval_succeeded,
     echo_payload,
     invoke_payload,
     make_agent,
+    run_counter_turns,
 )
 
 if TYPE_CHECKING:
@@ -62,25 +63,14 @@ class TestQuickJSMemoryBenchmarks:
         turn_count: int,
         snapshot_between_turns: bool,
     ) -> None:
-        middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
-        try:
-            agent = make_agent(
-                code=MULTITURN_COUNTER_CODE,
-                middleware=middleware,
-                repeats=turn_count,
-            )
-            result = None
-            for _ in range(turn_count):
-                result = agent.invoke(
-                    invoke_payload(),
-                    config={
-                        "configurable": {"thread_id": "memory-bench-multiturn-thread"}
-                    },
-                )
-                assert_eval_succeeded(result)
-            assert result is not None
-        finally:
-            middleware._registry.close()
+        values = run_counter_turns(
+            turn_count=turn_count,
+            snapshot_between_turns=snapshot_between_turns,
+        )
+        assert_counter_turn_values(
+            values=values,
+            snapshot_between_turns=snapshot_between_turns,
+        )
 
     @pytest.mark.parametrize(
         "thread_count", [1, 8, 32, 64], ids=lambda n: f"{n}_threads"

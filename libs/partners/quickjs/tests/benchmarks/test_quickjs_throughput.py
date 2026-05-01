@@ -9,23 +9,20 @@ workload combines PTC tool calls with ``console.log`` output.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
-from deepagents import create_deep_agent
-from langchain_core.messages import AIMessage
 
 from langchain_quickjs import REPLMiddleware
 from tests.benchmarks._common import (
-    MULTITURN_COUNTER_CODE,
     PTC_AND_CONSOLE_CODE,
     THROUGHPUT_ITERATIONS,
-    FakeChatModel,
+    assert_counter_turn_values,
     assert_eval_succeeded,
     echo_payload,
     invoke_payload,
     make_agent,
-    tool_call_message,
+    run_counter_turns,
 )
 
 if TYPE_CHECKING:
@@ -35,21 +32,6 @@ if TYPE_CHECKING:
 @pytest.mark.benchmark
 class TestQuickJSThroughputBenchmarks:
     """Benchmarks that track eval throughput for hot single-thread loops."""
-
-    def _make_multi_turn_agent(
-        self,
-        *,
-        middleware: REPLMiddleware,
-        codes: list[str],
-    ) -> Any:
-        messages: list[AIMessage] = []
-        for index, code in enumerate(codes):
-            messages.append(tool_call_message(code, call_id=f"call_{index}"))
-            messages.append(AIMessage(content="done"))
-        return create_deep_agent(
-            model=FakeChatModel(messages=iter(messages)),
-            middleware=[middleware],
-        )
 
     def _record_turn_metrics(
         self,
@@ -108,29 +90,17 @@ class TestQuickJSThroughputBenchmarks:
         turn_count: int,
         snapshot_between_turns: bool,
     ) -> None:
-        """Measure throughput across multi-turn agent invocations."""
+        """Measure throughput across explicit multi-turn REPL lifecycle calls."""
 
         def _run_round() -> None:
-            middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
-            try:
-                agent = self._make_multi_turn_agent(
-                    middleware=middleware,
-                    codes=[MULTITURN_COUNTER_CODE] * turn_count,
-                )
-                result: dict[str, Any] | None = None
-                for _ in range(turn_count):
-                    result = agent.invoke(
-                        invoke_payload(),
-                        config={
-                            "configurable": {
-                                "thread_id": "throughput-bench-multiturn-thread"
-                            }
-                        },
-                    )
-                    assert_eval_succeeded(result)
-                assert result is not None
-            finally:
-                middleware._registry.close()
+            values = run_counter_turns(
+                turn_count=turn_count,
+                snapshot_between_turns=snapshot_between_turns,
+            )
+            assert_counter_turn_values(
+                values=values,
+                snapshot_between_turns=snapshot_between_turns,
+            )
 
         @benchmark
         def _() -> None:

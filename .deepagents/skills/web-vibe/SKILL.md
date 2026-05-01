@@ -43,7 +43,7 @@ The script is idempotent and safe to re-run. Otherwise, skip straight to step 2 
 Ground rules for the rest of the round:
 
 - The script operates inside `$VIBE_DIR`. **All of your subsequent file edits MUST go inside this directory** — always use `$VIBE_DIR/...` absolute paths (e.g., `$VIBE_DIR/index.html`), never `./index.html`, because your working directory may not be the round dir between tool calls.
-- **Never call `write_file` on a path that already exists — it will refuse.** The Vite template scaffolds these files up front: `$VIBE_DIR/index.html`, `$VIBE_DIR/src/main.js`, `$VIBE_DIR/src/style.css`, `$VIBE_DIR/src/counter.js`, `$VIBE_DIR/package.json`. To change any of them, **read first, then `edit_file`**. Use `write_file` only for genuinely new paths (e.g., a new component file you are adding). If you hit the "already exists" error, stop guessing — switch to `edit_file` on that exact path.
+- **Never `write_file` on a path that already exists — it will refuse.** The Vite template pre-scaffolds these inside `$VIBE_DIR`: `index.html`, `src/main.js`, `src/style.css`, `src/counter.js`, `package.json`. To change any, `read_file` then `edit_file`. Use `write_file` only for genuinely new paths. If you hit "already exists", switch to `edit_file` on that path.
 - **Do not invoke `vite`, `npm run dev`, `npm create`, or any other server yourself** — always go through the script so behavior stays consistent across rounds.
 - **Do not use** `create-react-app`, `next`, or heavy frameworks -- too slow to scaffold.
 
@@ -51,7 +51,7 @@ Ground rules for the rest of the round:
 
 As your very first action of the round, make **one batched `ask_user` call** with 3-4 open-ended questions to lock in the creative direction. The server is already up — don't waste a turn confirming it. Keep questions short, specific to the prompt, and in plain language. **Do not pre-fill answer options — let the player write what they actually want.**
 
-**Template — ask the player in their own words. Do NOT suggest example answers inside the question text. No `e.g.`, no "(dark/playful/minimal)", no "etc." trailing a list. If the question is unclear on its own, reword the question itself — do not patch it with a parenthetical of examples.**
+**Template — ask in the player's own words; the no-suggestions rule below applies. If a question is unclear on its own, reword the question — don't patch it with a parenthetical of examples.**
 
 ```json
 {
@@ -100,12 +100,12 @@ As your very first action of the round, make **one batched `ask_user` call** wit
 
 Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the prompt and the player's answers. This is where you spend most of your time.
 
-**First**, clean up the Vite boilerplate. These files **already exist** from the template — you MUST `read_file` then `edit_file`. Do NOT `write_file` on any of them; it will refuse and burn a turn.
+**First**, clean up the Vite boilerplate (`read_file` then `edit_file` — never `write_file` on these):
 
-- `edit_file` `$VIBE_DIR/index.html` -- swap the `<body>` content for your site's HTML
-- `edit_file` `$VIBE_DIR/src/style.css` -- swap in your site's styles
-- `edit_file` `$VIBE_DIR/src/main.js` -- drop the boilerplate, add only the JS your site needs
-- `edit_file` `$VIBE_DIR/src/counter.js` -- empty it out; it's Vite boilerplate
+- `$VIBE_DIR/index.html` -- swap `<body>` for your site's HTML
+- `$VIBE_DIR/src/style.css` -- swap in your site's styles
+- `$VIBE_DIR/src/main.js` -- drop the boilerplate, add only the JS your site needs
+- `$VIBE_DIR/src/counter.js` -- empty it out; Vite boilerplate
 
 **Then**, iterate on the design. Apply changes incrementally so Vite HMR shows progress live.
 
@@ -127,7 +127,7 @@ Now rewrite the project files inside `$VIBE_DIR` (absolute paths!) to match the 
 
 As soon as the first complete draft is live (hero + 1-2 secondary sections, all boilerplate gone), and you still have comfortable time left (roughly ≤60% of the round elapsed), call `ask_user` once with a batched set of refinement questions. Describe what you built in one sentence, then ask the player what to push on.
 
-**The no-suggestions rule from section 2 applies here too.** No `e.g.`, no parenthetical list of directions, no "etc." after the `?`. Describe the draft, then ask an open question and stop.
+**The no-suggestions rule from section 2 applies here too** — describe the draft, ask an open question, stop.
 
 **Template — rewrite the description to match what you actually shipped:**
 

@@ -8,7 +8,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
@@ -55,9 +55,6 @@ class REPLState(AgentState):
     _quickjs_snapshot_payload: NotRequired[
         Annotated[bytes | None, PrivateStateAttr]
     ]
-
-
-REPLStateUpdate = dict[Literal["_quickjs_snapshot_payload"], bytes | None]
 
 
 class EvalSchema(BaseModel):
@@ -322,7 +319,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         self,
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> REPLStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Restore REPL snapshot bytes into the current thread slot."""
         if not self._snapshot_between_turns:
             return None
@@ -346,7 +343,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         self,
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> REPLStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Async variant of ``before_agent`` snapshot restore."""
         if not self._snapshot_between_turns:
             return None
@@ -438,7 +435,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         self,
         state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> REPLStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         if not self._snapshot_between_turns:
@@ -448,7 +445,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
-        update: REPLStateUpdate
+        update: dict[str, Any]
         try:
             update = {"_quickjs_snapshot_payload": repl.create_snapshot()}
         except Exception:  # noqa: BLE001  # best-effort snapshot path
@@ -466,7 +463,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         self,
         state: REPLState,  # noqa: ARG002
         runtime: "Runtime[ContextT]",  # noqa: ARG002
-    ) -> REPLStateUpdate | None:
+    ) -> dict[str, Any] | None:
         """Async variant of ``after_agent`` snapshot+evict behavior."""
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         if not self._snapshot_between_turns:
@@ -476,7 +473,7 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
-        update: REPLStateUpdate
+        update: dict[str, Any]
         try:
             update = {"_quickjs_snapshot_payload": await repl.acreate_snapshot()}
         except Exception:  # noqa: BLE001  # best-effort snapshot path

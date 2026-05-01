@@ -26,6 +26,7 @@ dependencies = [
     "langchain-anthropic>=1.4.2,<2.0.0",
     "langchain-google-genai>=4.2.2,<5.0.0",
     "wcmatch",
+    "langgraph-prebuilt",
 ]
 
 
@@ -157,5 +158,8 @@ python-version = "3.11"
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"
+
+[tool.uv.sources]
+langgraph-prebuilt = { path = "../../../langgraph/libs/prebuilt", editable = true }
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"

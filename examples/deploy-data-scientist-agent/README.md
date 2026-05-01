@@ -2,7 +2,7 @@
 
 A data scientist agent deployed with `deepagents deploy`. It analyzes one or more data files in a LangSmith sandbox, runs Python for reproducible calculations, creates charts, and writes stakeholder-ready reports.
 
-This example reads datasets from a bundled `skills/data/` directory and from files uploaded through the bundled frontend, so it works without MCP, database credentials, or third-party integrations. It includes a synthetic SaaS metrics CSV as demo data, but the agent instructions are generalized for arbitrary files.
+This example reads datasets uploaded through the bundled frontend, so it works without MCP, database credentials, bundled data files, or third-party integrations.
 
 ## Prerequisites
 
@@ -29,51 +29,24 @@ https://<your-deployment-url>/app
 
 The frontend uses `[auth] provider = "anonymous"` so it can be tried without configuring Supabase or Clerk. Use anonymous mode only for demos or private deployments because anyone with the deployment URL can access the app.
 
-## Data Directory
+## Uploaded Data
 
-Put data files for the agent under:
-
-```text
-skills/data/
-```
-
-At runtime, deploy seeds skill files under `/memories/skills/` and syncs them into the sandbox. The agent should inspect:
-
-```text
-/memories/skills/data/
-```
-
-The example includes a synthetic SaaS metrics CSV at:
-
-```text
-skills/data/sample_saas_metrics.csv
-```
-
-and at runtime:
-
-```text
-/memories/skills/data/sample_saas_metrics.csv
-```
-
-The source generator is in `scripts/generate_sample_data.py`. It writes both the local `data/sample_saas_metrics.csv` copy and the deploy-bundled `skills/data/sample_saas_metrics.csv` copy. You can add additional files under `skills/data/`; the agent will list the directory, inspect schemas, and decide whether to analyze files separately, join them, or compare them.
-
-You can also upload text files, CSVs, JSON, markdown files, and images from the bundled frontend. Uploaded files are written directly to the thread's sandbox under:
+Upload text files, CSVs, JSON, markdown files, and images from the bundled frontend. Uploaded files are written directly to the thread's sandbox under:
 
 ```text
 /uploads/
 ```
 
-Uploads are available only when a sandbox is configured and are not persisted to Store or Context Hub in this first version.
+Uploads are the only supported data input path for this example. They are available only when a sandbox is configured and are not persisted to Store or Context Hub in this first version.
 
 ## What To Try
 
 Once deployed, open the agent in LangSmith and send prompts like:
 
-- `"Analyze the bundled SaaS metrics dataset and summarize the most important revenue trends."`
-- `"Create charts showing monthly revenue by segment and churn rate by plan."`
-- `"Is support response time related to NPS? Use Python and explain your method."`
-- `"Inspect every file in the data folder and tell me which files can be joined."`
 - Upload a CSV in the frontend, then ask: `"Analyze the uploaded file and create a chart."`
+- Upload multiple CSVs, then ask: `"Inspect the uploaded files and tell me which files can be joined."`
+- `"Create charts from the uploaded data and explain the trends."`
+- `"Use Python to validate the uploaded data and explain your method."`
 - `"Write an executive report with findings, limitations, and recommendations."`
 
 The agent follows the workflow in `AGENTS.md`: inspect data, plan, run Python, validate results, create artifacts, and report findings with caveats.
@@ -85,26 +58,12 @@ deploy-data-scientist-agent/
 ├── AGENTS.md                  # Agent instructions and analysis workflow
 ├── deepagents.toml            # Deploy config (model, sandbox)
 ├── mcp.json                   # Empty MCP config for this example
-├── data/
-│   └── sample_saas_metrics.csv
-├── scripts/
-│   └── generate_sample_data.py
 └── skills/
-    ├── data/
-    │   └── sample_saas_metrics.csv
     ├── exploratory-data-analysis/
     ├── report-writing/
     ├── sample-data/
     └── visualization/
 ```
-
-## Regenerate The Sample Data
-
-```bash
-python3 scripts/generate_sample_data.py
-```
-
-The script uses a fixed random seed so the generated CSV is deterministic.
 
 ## Resources
 

@@ -1,6 +1,6 @@
 ---
 name: sample-data
-description: Discover and select one or more files from /uploads or /memories/skills/data for analysis, including uploaded files and demo data.
+description: Discover and select one or more user-uploaded CSV or data files from /uploads.
 ---
 
 # Data Directory
@@ -11,17 +11,13 @@ Use this skill when selecting, inspecting, or explaining files in the data direc
 
 Analysis inputs should be discovered under:
 
-`/memories/skills/data/`
-
-and:
-
 `/uploads/`
 
-The directories can contain one or more data files. Do not assume a specific schema or business domain until you inspect the files. The bundled `sample_saas_metrics.csv` is only demo data.
+Users are expected to upload CSVs or other supported data files for analysis. Do not assume a specific schema or business domain until you inspect the uploaded files.
 
 ## Discovery Workflow
 
-1. List `/uploads/` and `/memories/skills/data/` before choosing files.
+1. List `/uploads/` before choosing files.
 2. Identify supported files such as `.csv`, `.tsv`, `.json`, `.jsonl`, `.xlsx`, or `.parquet` when available.
 3. For each relevant file, inspect the header/schema, row count, column names, and a small sample.
 4. If there are multiple files, decide whether they should be analyzed separately, joined by keys, concatenated, or treated as unrelated inputs.
@@ -34,10 +30,6 @@ The directories can contain one or more data files. Do not assume a specific sch
 - Do not join files solely because column names look similar; explain uncertainty when relationships are inferred.
 - Keep file-level provenance in combined outputs so findings can be traced back to input files.
 
-## Demo Dataset
+## Missing Data
 
-If the user asks for a demo and no other file is specified, use:
-
-`/memories/skills/data/sample_saas_metrics.csv`
-
-It is synthetic SaaS metrics data and should not be treated as representative of arbitrary user data.
+If there are no uploaded files, ask the user to upload a CSV or supported data file before starting the analysis.

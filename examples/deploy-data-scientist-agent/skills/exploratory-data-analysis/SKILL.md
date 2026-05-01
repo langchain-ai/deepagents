@@ -9,7 +9,7 @@ Use this skill when you need to understand one or more data files before answeri
 
 ## Workflow
 
-1. Discover candidate files in `/uploads/` and `/memories/skills/data/`, then select the files relevant to the user's question.
+1. Discover candidate files in `/uploads`, then select the files relevant to the user's question.
 2. Inspect each selected file's path, format, header/schema, row count, and sample rows.
 3. Load the data with Python and print column names, dtypes, missing counts, and basic descriptive statistics.
 4. Check for duplicate rows and obvious invalid values, such as negative counts, impossible rates, out-of-range values, or dates that fail to parse.

@@ -75,6 +75,68 @@ class TestToolsExceptionHandling:
         assert "timed out" in result["error"].lower()
 
 
+class TestLLMAuthErrorHandling:
+    """Test the LLM-provider auth-error helper.
+
+    Mirrors `TestToolsExceptionHandling` for Tavily — when the LLM
+    provider rejects credentials, the user should see a short,
+    actionable message naming the env var and the keys URL, NOT a
+    stack trace.
+    """
+
+    def test_format_openai_auth_error_mentions_env_var_and_url(self):
+        """`format_llm_auth_error` returns a user-actionable message for OpenAI."""
+        from openai import AuthenticationError as OpenAIAuthError
+
+        from deepagents_cli._llm_errors import format_llm_auth_error
+
+        # Construct a minimal AuthenticationError. The OpenAI SDK takes a
+        # response/body in real life; tests should not depend on its full
+        # constructor signature, so build the cheapest mock that still
+        # passes `isinstance(exc, OpenAIAuthError)`.
+        exc = OpenAIAuthError.__new__(OpenAIAuthError)
+        exc.message = "Incorrect API key provided: sk-***"
+        exc.body = {
+            "error": {
+                "message": "Incorrect API key provided: sk-***",
+                "type": "invalid_request_error",
+                "code": "invalid_api_key",
+            }
+        }
+
+        msg = format_llm_auth_error(exc)
+        assert "OPENAI_API_KEY" in msg
+        assert "OpenAI" in msg
+        assert "platform.openai.com" in msg
+        assert "Traceback" not in msg
+
+    def test_format_anthropic_auth_error_mentions_env_var_and_url(self):
+        """`format_llm_auth_error` returns a user-actionable message for Anthropic."""
+        from anthropic import AuthenticationError as AnthropicAuthError
+
+        from deepagents_cli._llm_errors import format_llm_auth_error
+
+        exc = AnthropicAuthError.__new__(AnthropicAuthError)
+        exc.message = "invalid x-api-key"
+        exc.body = None
+
+        msg = format_llm_auth_error(exc)
+        assert "ANTHROPIC_API_KEY" in msg
+        assert "Anthropic" in msg
+        assert "console.anthropic.com" in msg
+        assert "Traceback" not in msg
+
+    def test_llm_auth_errors_tuple_includes_known_providers(self):
+        """The catch tuple should include both OpenAI and Anthropic auth errors."""
+        from anthropic import AuthenticationError as AnthropicAuthError
+        from openai import AuthenticationError as OpenAIAuthError
+
+        from deepagents_cli._llm_errors import LLM_AUTH_ERRORS
+
+        assert OpenAIAuthError in LLM_AUTH_ERRORS
+        assert AnthropicAuthError in LLM_AUTH_ERRORS
+
+
 class TestFileOpsExceptionHandling:
     """Test exception handling in file_ops."""
 

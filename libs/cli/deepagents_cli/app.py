@@ -39,6 +39,7 @@ from deepagents_cli import (
     theme,
 )
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._llm_errors import LLM_AUTH_ERRORS, format_llm_auth_error
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -4306,6 +4307,22 @@ class DeepAgentsApp(App):
                 ),
                 turn_stats=turn_stats,
             )
+        except LLM_AUTH_ERRORS as auth_exc:
+            # LLM provider rejected the credentials (e.g. invalid OpenAI key).
+            # Surface a short, actionable message instead of a stack trace —
+            # the previous bare `except Exception` mounted the full traceback,
+            # which gave users no clear next step.
+            logger.warning("LLM provider auth error: %s", auth_exc)
+            user_msg = format_llm_auth_error(auth_exc)
+            if self._ui_adapter:
+                self._ui_adapter.finalize_pending_tools_with_error(user_msg)
+            try:
+                await self._mount_message(ErrorMessage(user_msg))
+            except Exception:
+                logger.debug(
+                    "Could not mount auth-error message (app closing?)",
+                    exc_info=True,
+                )
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             # Ensure any in-flight tool calls don't remain stuck in "Running..."

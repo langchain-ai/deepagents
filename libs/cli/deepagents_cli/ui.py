@@ -84,6 +84,7 @@ def show_help() -> None:
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
     )
+    console.print("  deepagents mcp <login>                         Manage MCP servers")
     console.print(
         "  deepagents update                              Check for and install updates"
     )
@@ -399,6 +400,40 @@ def show_update_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents update")
     console.print("  deepagents update --json")
+    console.print()
+
+
+def show_mcp_help() -> None:
+    """Show help information for the `mcp` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_login_help() -> None:
+    """Show help information for the `mcp login` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login <server> [--config PATH]")
+    console.print()
+    _print_option_section(
+        "  --config PATH           Path to an MCP config JSON file "
+        "(default: auto-discovered)",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
     console.print()
 
 

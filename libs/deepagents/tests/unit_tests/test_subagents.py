@@ -25,7 +25,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START, MessagesState, StateGraph
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
@@ -688,7 +688,9 @@ class TestSubAgents:
         # Pregel merges the runtime recursion_limit patch with the subagent's own
         # config instead of replacing it wholesale.
         assert captured_config["tags"] == ["hello"]
-        assert captured_config["metadata"]["lc_agent_name"] == "subagent-runtime-check"
+        # CompiledSubAgent.name takes precedence over the name set in create_agent()
+        # so that lc_agent_name in streamed chunks reflects the declared subagent name.
+        assert captured_config["metadata"]["lc_agent_name"] == "general-purpose"
 
     def test_subagent_inherits_interrupt_on_from_parent_agent(self) -> None:
         interrupt_payloads: list[Any] = []
@@ -1458,6 +1460,186 @@ class TestSubAgents:
         assert saw_parent_tools_update, "Should have seen the parent tools update with the subagent result"
         assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
         assert seen_agent_names == {"supervisor", "worker"}
+
+    def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
+        """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.
+
+        Regression test for #2925: when a raw StateGraph (not created via create_agent)
+        is passed as a CompiledSubAgent, streamed chunks must carry the declared name in
+        metadata, not the parent agent's name.
+        """
+        subagent_content = "RAW_GRAPH_RESPONSE"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "raw-worker"},
+                                "id": "call_raw_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            ),
+            stream_delimiter="_",
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content=subagent_content)]),
+            stream_delimiter="_",
+        )
+
+        # Raw StateGraph — NOT created via create_agent, so no lc_agent_name pre-set.
+        builder = StateGraph(MessagesState)
+        builder.add_node("model", create_agent(model=subagent_chat_model))
+        builder.add_edge(START, "model")
+        raw_graph = builder.compile()
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="supervisor",
+            subagents=[CompiledSubAgent(name="raw-worker", description="Raw graph subagent.", runnable=raw_graph)],
+        )
+
+        seen_subagent_names: set[str | None] = set()
+
+        for _ns, stream_mode, data in parent_agent.stream(
+            {"messages": [HumanMessage(content="Do something")]},
+            stream_mode=["messages"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": "test_raw_graph_lc_agent_name"}},
+        ):
+            if stream_mode == "messages":
+                message_chunk, metadata = data
+                if message_chunk.content:
+                    seen_subagent_names.add(metadata.get("lc_agent_name"))
+
+        assert "raw-worker" in seen_subagent_names, f"Expected 'raw-worker' in streamed lc_agent_name metadata, got: {seen_subagent_names}"
+
+    async def test_compiled_subagent_lc_agent_name_in_astream_metadata(self) -> None:
+        """Async variant of the #2925 streaming regression test.
+
+        The fix relies on `with_config` being symmetric across sync/async, but the
+        symptom in #2925 also shows up in `astream` — covering both paths guards
+        against an async-only regression.
+        """
+        subagent_content = "RAW_GRAPH_RESPONSE"
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "raw-worker"},
+                                "id": "call_raw_worker_async",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            ),
+            stream_delimiter="_",
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content=subagent_content)]),
+            stream_delimiter="_",
+        )
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("model", create_agent(model=subagent_chat_model))
+        builder.add_edge(START, "model")
+        raw_graph = builder.compile()
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="supervisor",
+            subagents=[CompiledSubAgent(name="raw-worker", description="Raw graph subagent.", runnable=raw_graph)],
+        )
+
+        seen_subagent_names: set[str | None] = set()
+
+        async for _ns, stream_mode, data in parent_agent.astream(
+            {"messages": [HumanMessage(content="Do something")]},
+            stream_mode=["messages"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": "test_raw_graph_lc_agent_name_async"}},
+        ):
+            if stream_mode == "messages":
+                message_chunk, metadata = data
+                if message_chunk.content:
+                    seen_subagent_names.add(metadata.get("lc_agent_name"))
+
+        assert "raw-worker" in seen_subagent_names, f"Expected 'raw-worker' in async streamed lc_agent_name metadata, got: {seen_subagent_names}"
+
+    def test_compiled_subagent_name_overrides_inner_runnable_name_in_stream(self) -> None:
+        """CompiledSubAgent.name takes precedence over the inner runnable's lc_agent_name in streamed chunks.
+
+        When the inner runnable was itself created via `create_agent(name=...)`, the
+        registered `CompiledSubAgent.name` is what the parent uses to reference the
+        subagent and what tracing consumers display. This precedence is verified at
+        the tool-runtime layer in `test_subagent_propagates_recursion_limit_to_tool_runtime`;
+        this test pins the same precedence in the streamed-chunk metadata surface
+        from #2925 so a future "fix" that swaps merge order can't silently regress it.
+        """
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Do task", "subagent_type": "outer-name"},
+                                "id": "call_named_inner",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            ),
+            stream_delimiter="_",
+        )
+        subagent_chat_model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="NAMED_INNER_RESPONSE")]),
+            stream_delimiter="_",
+        )
+
+        named_inner = create_agent(model=subagent_chat_model, name="inner-name")
+
+        parent_agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            name="supervisor",
+            subagents=[CompiledSubAgent(name="outer-name", description="Subagent with a different inner name.", runnable=named_inner)],
+        )
+
+        seen_subagent_names: set[str | None] = set()
+
+        for _ns, stream_mode, data in parent_agent.stream(
+            {"messages": [HumanMessage(content="Do something")]},
+            stream_mode=["messages"],
+            subgraphs=True,
+            config={"configurable": {"thread_id": "test_outer_name_wins"}},
+        ):
+            if stream_mode == "messages":
+                message_chunk, metadata = data
+                if message_chunk.content:
+                    seen_subagent_names.add(metadata.get("lc_agent_name"))
+
+        assert "outer-name" in seen_subagent_names, f"Expected 'outer-name' in streamed lc_agent_name metadata, got: {seen_subagent_names}"
+        assert "inner-name" not in seen_subagent_names, f"Inner runnable's lc_agent_name leaked into stream metadata: {seen_subagent_names}"
 
     def test_config_passed_to_runnable_lambda_subagent(self) -> None:
         """Test that config (including tags) is passed to a RunnableLambda subagent.

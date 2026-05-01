@@ -240,31 +240,82 @@ jobs:
         uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
 
       - name: Update lockfiles
+        id: update-lockfiles
         run: |
-          git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
-            dir=$(dirname "$lockfile")
-            echo "Updating $dir"
-            if [ "$dir" = "libs/acp" ]; then
-              uv lock --directory "$dir" --python 3.14
-            else
-              uv lock --directory "$dir" --python 3.12
-            fi
-          done
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              echo "Updating $dir"
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+          regenerate
 
       - name: Commit and push
+        # Retry on push rejection. Concurrent release-please runs (one per push to
+        # main) all update the same release branch, so a stale local checkout can
+        # lose the push race ("cannot lock ref ...: is at X but expected Y"). On
+        # rejection: fetch the new tip, reset, re-run `uv lock` against it, and
+        # retry. `uv lock` is deterministic on a given pyproject.toml, so this
+        # converges — and if the rebased state already has the right lockfiles
+        # (another run won), the diff is empty and we exit cleanly.
         env:
           RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "**/uv.lock"
-          if git diff --staged --quiet; then
-            echo "No lockfile changes to commit"
-          else
+
+          regenerate() {
+            git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
+              dir=$(dirname "$lockfile")
+              if [ "$dir" = "libs/acp" ]; then
+                uv lock --directory "$dir" --python 3.14
+              else
+                uv lock --directory "$dir" --python 3.12
+              fi
+            done
+          }
+
+          stage_and_commit() {
+            git add "**/uv.lock"
+            if git diff --staged --quiet; then
+              return 1
+            fi
             git diff --staged --stat
             git commit -m "chore: update lockfiles"
-            git push origin "HEAD:${RELEASE_BRANCH}"
+            return 0
+          }
+
+          if ! stage_and_commit; then
+            echo "No lockfile changes to commit"
+            exit 0
           fi
+
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${RELEASE_BRANCH}"; then
+              echo "Push succeeded on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::warning::Push rejected on attempt ${attempt}; rebasing onto fresh ${RELEASE_BRANCH} and retrying"
+            # Reset to FETCH_HEAD (the SHA `git fetch` just resolved) rather than
+            # `origin/${RELEASE_BRANCH}`, so we don't depend on the remote's
+            # default fetch refspec being configured to update the
+            # remote-tracking ref.
+            git fetch origin "${RELEASE_BRANCH}"
+            git reset --hard FETCH_HEAD
+            regenerate
+            if ! stage_and_commit; then
+              echo "Lockfile already up-to-date on remote after rebase; nothing to push"
+              exit 0
+            fi
+          done
+
+          echo "::error::Push still rejected after 3 attempts on '${RELEASE_BRANCH}'."
+          exit 1
 
   # Dispatch release.yml for each merged release PR.
   #
@@ -354,7 +405,11 @@ jobs:
           dispatch() {
             local package="$1"
             echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            # `--repo` is required: this job has no `actions/checkout` step, so
+            # `gh` cannot discover the target repo from a local `.git/` and
+            # would otherwise fail with `fatal: not a git repository`.
             if gh workflow run release.yml \
+              --repo "$GITHUB_REPOSITORY" \
               --ref main \
               -f package="$package" \
               -f version="$VERSION" \

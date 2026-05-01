@@ -42,6 +42,7 @@ _TIPS: list[str] = [
     "Use /auto-update to toggle automatic CLI updates",
     "Use /agents to browse and switch between your available agents",
     "Use --startup-cmd to run a shell command before the first prompt",
+    "Run `deepagents mcp login <server>` to authorize a remote MCP server",
 ]
 """Rotating tips shown in the welcome footer.
 
@@ -71,6 +72,8 @@ class WelcomeBanner(Static):
         thread_id: str | None = None,
         mcp_tool_count: int = 0,
         *,
+        mcp_unauthenticated: int = 0,
+        mcp_errored: int = 0,
         connecting: bool = False,
         resuming: bool = False,
         local_server: bool = False,
@@ -81,6 +84,8 @@ class WelcomeBanner(Static):
         Args:
             thread_id: Optional thread ID to display in the banner.
             mcp_tool_count: Number of MCP tools loaded at startup.
+            mcp_unauthenticated: Number of MCP servers awaiting login.
+            mcp_errored: Number of MCP servers that failed to load.
             connecting: When `True`, show a "Connecting..." footer instead of
                 the normal ready prompt. Call `set_connected` to transition.
             resuming: When `True`, the connecting footer says "Resuming..."
@@ -95,11 +100,12 @@ class WelcomeBanner(Static):
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id: str | None = thread_id
         self._mcp_tool_count = mcp_tool_count
+        self._mcp_unauthenticated = mcp_unauthenticated
+        self._mcp_errored = mcp_errored
         self._connecting = connecting
         self._resuming = resuming
         self._local_server = local_server
-        self._failed = False
-        self._failure_error: str = ""
+        self._idle = False
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
         self._tip: str = random.choice(_TIPS)  # noqa: S311
@@ -140,15 +146,25 @@ class WelcomeBanner(Static):
         self._cli_thread_id = thread_id
         self.update(self._build_banner(self._project_url))
 
-    def set_connected(self, mcp_tool_count: int = 0) -> None:
+    def set_connected(
+        self,
+        mcp_tool_count: int = 0,
+        *,
+        mcp_unauthenticated: int = 0,
+        mcp_errored: int = 0,
+    ) -> None:
         """Transition from "connecting" to "ready" state.
 
         Args:
             mcp_tool_count: Number of MCP tools loaded during connection.
+            mcp_unauthenticated: Number of MCP servers awaiting login.
+            mcp_errored: Number of MCP servers that failed to load.
         """
         self._connecting = False
-        self._failed = False
+        self._idle = False
         self._mcp_tool_count = mcp_tool_count
+        self._mcp_unauthenticated = mcp_unauthenticated
+        self._mcp_errored = mcp_errored
         self.update(self._build_banner(self._project_url))
 
     def set_connecting(self) -> None:
@@ -159,19 +175,21 @@ class WelcomeBanner(Static):
         currently reachable.
         """
         self._connecting = True
-        self._failed = False
+        self._idle = False
         self._resuming = False
         self.update(self._build_banner(self._project_url))
 
-    def set_failed(self, error: str) -> None:
-        """Transition from "connecting" to a persistent failure state.
+    def set_idle(self) -> None:
+        """Transition to a neutral state with no connecting spinner or footer.
 
-        Args:
-            error: Error message describing the server startup failure.
+        Used after a fatal startup failure so the banner stops claiming
+        progress (the failure is communicated via the chat surface). The
+        banner keeps its identity rows (title, version, install path,
+        LangSmith project, thread ID) but appends no footer line, leaving
+        the chat error as the sole source of failure context.
         """
         self._connecting = False
-        self._failed = True
-        self._failure_error = error
+        self._idle = True
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -271,36 +289,44 @@ class WelcomeBanner(Static):
             label = "MCP tool" if self._mcp_tool_count == 1 else "MCP tools"
             parts.append(f"Loaded {self._mcp_tool_count} {label}\n")
 
-        if self._failed:
-            parts.append(build_failure_footer(self._failure_error))
-        elif self._connecting:
+        warn_color: str = "bold yellow" if ansi else colors.warning
+        if self._mcp_unauthenticated > 0:
+            server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
+            unauth_text = (
+                f"{self._mcp_unauthenticated} MCP {server_label} need login "
+                "— run `deepagents mcp login <server>`\n"
+            )
+            parts.extend(
+                [
+                    (f"{get_glyphs().warning} ", warn_color),
+                    (unauth_text, "dim"),
+                ]
+            )
+        if self._mcp_errored > 0:
+            server_label = "server" if self._mcp_errored == 1 else "servers"
+            errored_text = (
+                f"{self._mcp_errored} MCP {server_label} failed to load "
+                "— open /mcp for details\n"
+            )
+            parts.extend(
+                [
+                    (f"{get_glyphs().warning} ", warn_color),
+                    (errored_text, "dim"),
+                ]
+            )
+
+        if self._connecting:
             parts.append(
                 build_connecting_footer(
                     resuming=self._resuming,
                     local_server=self._local_server,
                 )
             )
-        else:
+        elif not self._idle:
             ready_color = "bold" if ansi else colors.primary
             parts.append(build_welcome_footer(primary_color=ready_color, tip=self._tip))
+        # `_idle` ⇒ no footer; chat-surface owns the failure message.
         return Content.assemble(*parts)
-
-
-def build_failure_footer(error: str) -> Content:
-    """Build a footer shown when the server failed to start.
-
-    Args:
-        error: Error message describing the failure.
-
-    Returns:
-        Content with a persistent failure message.
-    """
-    colors = theme.get_theme_colors()
-    return Content.assemble(
-        ("\nServer failed to start: ", f"bold {colors.error}"),
-        (error, colors.error),
-        ("\n", colors.error),
-    )
 
 
 def build_connecting_footer(

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.44"
+version = "0.0.46"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.4",
+    "deepagents==0.5.5",
     "langchain>=1.2.15,<2.0.0",
     "langgraph>=1.1.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -239,6 +239,12 @@ ignore-var-parameters = true
     "RUF001",   # Ambiguous characters — fine in test strings
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
+]
+"tests/unit_tests/test_mcp_{auth,commands,tools}.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
 ]
 "scripts/**" = [
     "BLE001",   # Blind exception catch — resilience in standalone scripts

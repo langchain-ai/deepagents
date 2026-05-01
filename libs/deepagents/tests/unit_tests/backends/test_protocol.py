@@ -4,6 +4,7 @@ Verifies that unimplemented protocol methods raise NotImplementedError
 instead of silently returning None.
 """
 
+import errno
 import warnings
 
 import pytest
@@ -199,6 +200,20 @@ class TestLegacySubclassOverrideRouting:
             await sandbox_backend.aexecute("ls")
 
 
+def _runtime_error_from_eloop_context() -> RuntimeError:
+    """Create the Python <=3.12 `Path.resolve()` symlink-loop shape via `__context__`."""
+    exc = RuntimeError("resolver failed")
+    exc.__context__ = OSError(errno.ELOOP, "Too many levels of symbolic links")
+    return exc
+
+
+def _runtime_error_from_eloop_cause() -> RuntimeError:
+    """Same shape but using `__cause__` (explicit `raise ... from`)."""
+    exc = RuntimeError("resolver failed")
+    exc.__cause__ = OSError(errno.ELOOP, "Too many levels of symbolic links")
+    return exc
+
+
 class TestMapFileOperationError:
     """map_file_operation_error classifies exceptions into FileOperationError codes."""
 
@@ -212,6 +227,9 @@ class TestMapFileOperationError:
             (ValueError("invalid path segment"), "invalid_path"),
             (NotADirectoryError("not a dir"), "invalid_path"),
             (FileExistsError("exists"), "invalid_path"),
+            (OSError(errno.ELOOP, "Too many levels of symbolic links"), "invalid_path"),
+            (_runtime_error_from_eloop_context(), "invalid_path"),
+            (_runtime_error_from_eloop_cause(), "invalid_path"),
         ],
     )
     def test_known_exception_types(self, exc: Exception, expected: str) -> None:

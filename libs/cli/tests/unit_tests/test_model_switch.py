@@ -445,6 +445,143 @@ class TestModelSwitchSessionReadiness:
         assert app._model_switching is False
 
 
+class TestModelSwitchFailedStartupRecovery:
+    """Tests for `/model` recovery after a failed initial server startup."""
+
+    async def test_retries_startup_with_new_model(self) -> None:
+        """Failed startup + `/model` retries `_start_server_background`.
+
+        Regression: when the CLI launches without the API key for the
+        configured model, `_start_server_background` raises
+        `ModelConfigError` before the server comes up, leaving the user
+        unable to switch via `/model` (the old code path bailed with
+        "Model switching requires a server-backed session"). `/model`
+        should now rewire deferred-startup state and re-run the worker.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
+        app._server_kwargs = {
+            "assistant_id": None,
+            "model_name": "anthropic:claude-opus-4-5",
+            "model_params": None,
+            "interactive": True,
+        }
+        app._model_kwargs = {
+            "model_spec": "anthropic:claude-opus-4-5",
+            "extra_kwargs": None,
+            "profile_overrides": None,
+        }
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.model_config.has_provider_credentials",
+            return_value=True,
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        # Failure state cleared and a fresh startup worker scheduled.
+        assert app._server_startup_error is None
+        assert app._connecting is True
+        run_worker_mock.assert_called_once()
+        worker_args, worker_kwargs = run_worker_mock.call_args
+        assert worker_args[0] == app._start_server_background
+        assert worker_kwargs.get("group") == "server-startup"
+
+        # Deferred-startup kwargs rewired with the new spec.
+        assert app._model_kwargs == {
+            "model_spec": "anthropic:claude-sonnet-4-5",
+            "extra_kwargs": None,
+            "profile_overrides": None,
+        }
+        assert app._server_kwargs["model_name"] == "anthropic:claude-sonnet-4-5"
+        assert app._model_switching is False
+
+    async def test_retry_with_still_missing_credentials_errors(self) -> None:
+        """Retrying with creds still missing surfaces the credentials error.
+
+        Avoids looping right back into the same `ModelConfigError` by
+        applying the standard tri-state credentials check before
+        re-launching the startup worker.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
+        app._server_kwargs = {
+            "assistant_id": None,
+            "model_name": "anthropic:claude-opus-4-5",
+            "model_params": None,
+            "interactive": True,
+        }
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.has_provider_credentials",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.model_config.get_credential_env_var",
+                return_value="ANTHROPIC_API_KEY",
+            ),
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        # No worker scheduled, failure state preserved so the user can retry.
+        run_worker_mock.assert_not_called()
+        assert app._server_startup_error == (
+            "ModelConfigError: ANTHROPIC_API_KEY not set"
+        )
+        assert app._connecting is False
+        assert any(
+            "Missing credentials" in msg and "ANTHROPIC_API_KEY" in msg
+            for msg in captured_errors
+        )
+
+    async def test_remote_server_mode_keeps_original_error(self) -> None:
+        """In remote-server mode (no `_server_kwargs`), recovery is not possible.
+
+        The CLI doesn't own the subprocess so it can't restart it; fall back
+        to the existing "server-backed session" error rather than silently
+        no-op'ing.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "RuntimeError: connection refused"
+        app._server_kwargs = None
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        run_worker_mock.assert_not_called()
+        assert any("server-backed session" in msg for msg in captured_errors)
+
+
 class TestModelSwitchConfigProvider:
     """Tests for switching to config-file-defined providers."""
 

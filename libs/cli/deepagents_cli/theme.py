@@ -10,7 +10,7 @@ variables (`$mode-bash`, `$mode-command`, `$skill`, `$skill-hover`, `$tool`,
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
-up the `ThemeColors` instance via `ThemeEntry.REGISTRY`.
+up the `ThemeColors` instance via `get_registry()`.
 
 Users can define custom themes in `~/.deepagents/config.toml` under
 `[themes.<name>]` sections. Each new theme section must include `label` (str);
@@ -22,12 +22,13 @@ colors without replacing it. See `_load_user_themes()` for details.
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from dataclasses import dataclass, fields
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -402,12 +403,6 @@ class ThemeEntry:
     `False` for Textual built-in themes that Textual already knows about.
     """
 
-    REGISTRY: ClassVar[Mapping[str, ThemeEntry]]
-    """All registered theme entries, keyed by Textual theme name.
-
-    Read-only after module load (`MappingProxyType`).
-    """
-
     def __post_init__(self) -> None:
         """Validate that the label is a non-empty string.
 
@@ -477,13 +472,20 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
     return r
 
 
-_BUILTIN_NAMES: frozenset[str] = frozenset(_builtin_themes())
-"""Names of built-in themes.
+@functools.cache
+def _builtin_names() -> frozenset[str]:
+    """Names of built-in themes; lazily computed and cached.
 
-User `[themes.<name>]` sections matching a built-in name override its colors
-rather than creating a new theme. Derived from `_builtin_themes()` to stay in
-sync automatically.
-"""
+    User `[themes.<name>]` sections matching a built-in name override its colors
+    rather than creating a new theme. Derived from `_builtin_themes()` so the
+    set stays in sync automatically. Lazy because `_builtin_themes()` imports
+    `textual.theme.BUILTIN_THEMES`, and we don't want to pull Textual onto the
+    `deepagents --help` / `deepagents -v` cold-start path.
+
+    Returns:
+        Frozen set of built-in theme names.
+    """
+    return frozenset(_builtin_themes())
 
 
 def _load_user_themes(
@@ -590,7 +592,7 @@ def _load_user_themes(
                 )
 
         # --- Built-in override: merge color tweaks into the existing entry
-        if name in _BUILTIN_NAMES:
+        if name in _builtin_names():
             existing = builtins.get(name)
             if existing is None:
                 logger.warning(
@@ -672,20 +674,26 @@ def _build_registry(
     return MappingProxyType(r)
 
 
-ThemeEntry.REGISTRY = _build_registry()
-"""Read-only mapping of Textual theme names to `ThemeEntry` instances.
+@functools.cache
+def get_registry() -> MappingProxyType[str, ThemeEntry]:
+    """Return the read-only theme registry, building it on first access.
 
-Built via `_build_registry()` so the mutable staging dict is scoped to a
-function call and cannot be mutated after freeze. The `ClassVar` declaration on
-`ThemeEntry` provides the type; this assignment supplies the value.
-"""
+    Lazy so that `theme.py` can be imported on the `deepagents --help` cold
+    path without pulling in `textual.theme.BUILTIN_THEMES` (which transitively
+    imports Textual, ~470ms). Inside a Textual app, the build is microseconds
+    because Textual is already loaded; callers like `_register_custom_themes()`
+    iterate the result during `App.__init__`, which warms the cache before any
+    user-facing surface (e.g. the theme picker) reads it.
+    """
+    return _build_registry()
+
 
 DEFAULT_THEME = "langchain"
 """Theme name used when no preference is saved."""
 
 
 def reload_registry() -> MappingProxyType[str, ThemeEntry]:
-    """Rebuild the theme registry from disk and update `ThemeEntry.REGISTRY`.
+    """Rebuild the theme registry from disk.
 
     Re-reads `~/.deepagents/config.toml` for user-defined themes so that
     `/reload` can pick up config changes without restarting the app.
@@ -693,8 +701,9 @@ def reload_registry() -> MappingProxyType[str, ThemeEntry]:
     Returns:
         The new frozen registry.
     """
-    ThemeEntry.REGISTRY = _build_registry()
-    return ThemeEntry.REGISTRY
+    get_registry.cache_clear()
+    _builtin_names.cache_clear()
+    return get_registry()
 
 
 def get_css_variable_defaults(
@@ -829,7 +838,7 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
         except (ImportError, LookupError):
             return DARK_COLORS
     app = _resolve_app(widget_or_app)
-    entry = ThemeEntry.REGISTRY.get(app.theme)  # type: ignore[attr-defined]
+    entry = get_registry().get(app.theme)  # type: ignore[attr-defined]
     # Custom themes (LC-branded / user-defined) use pre-built colors.
     if entry is not None and entry.custom:
         return entry.colors

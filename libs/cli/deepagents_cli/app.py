@@ -195,7 +195,7 @@ def _load_theme_preference() -> str:
     # Migrate legacy `textual-ansi` preference (pre-Textual 8.2.5) to `ansi-light`.
     if name == "textual-ansi":
         name = "ansi-light"
-    if isinstance(name, str) and name in theme.ThemeEntry.REGISTRY:
+    if isinstance(name, str) and name in theme.get_registry():
         return name
     if isinstance(name, str):
         logger.warning(
@@ -214,7 +214,7 @@ def save_theme_preference(name: str) -> bool:
     Returns:
         `True` if the preference was saved, `False` if any error occurred.
     """
-    if name not in theme.ThemeEntry.REGISTRY:
+    if name not in theme.get_registry():
         logger.warning("Refusing to save unknown theme '%s'", name)
         return False
 
@@ -5370,7 +5370,7 @@ class DeepAgentsApp(App):
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
-        for name, entry in theme.ThemeEntry.REGISTRY.items():
+        for name, entry in theme.get_registry().items():
             if entry.custom:
                 c = entry.colors
                 try:

@@ -286,7 +286,7 @@ jobs:
       run:
         working-directory: libs/evals
     env:
-      PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
+      PYTEST_ADDOPTS: "--evals-report-file evals_report.json"
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
@@ -350,7 +350,7 @@ jobs:
         run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
-        run: make evals
+        run: make evals MODEL=${{ matrix.model }}
 
       - name: "🔍 Check eval report"
         if: "!cancelled()"

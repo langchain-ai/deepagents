@@ -133,6 +133,7 @@ class TestMemoriesConfig:
         cfg = MemoriesConfig()
         assert cfg.backend == "hub"
         assert cfg.identifier == ""
+        assert cfg.agent_writable is False
 
     def test_store_backend(self) -> None:
         cfg = MemoriesConfig(backend="store")
@@ -142,6 +143,10 @@ class TestMemoriesConfig:
         cfg = MemoriesConfig(backend="hub", identifier="-/my-agent")
         assert cfg.backend == "hub"
         assert cfg.identifier == "-/my-agent"
+
+    def test_agent_writable_true(self) -> None:
+        cfg = MemoriesConfig(agent_writable=True)
+        assert cfg.agent_writable is True
 
     def test_frozen(self) -> None:
         cfg = MemoriesConfig()
@@ -374,6 +379,28 @@ class TestParseConfig:
                 {
                     "agent": {"name": "x"},
                     "memories": {"backend": "hub", "identifier": "my-agent"},
+                }
+            )
+
+    def test_memories_agent_writable_parsed(self) -> None:
+        cfg = _parse_config(
+            {
+                "agent": {"name": "x"},
+                "memories": {"agent_writable": True},
+            }
+        )
+        assert cfg.memories.agent_writable is True
+
+    def test_memories_agent_writable_defaults_to_false(self) -> None:
+        cfg = _parse_config({"agent": {"name": "x"}})
+        assert cfg.memories.agent_writable is False
+
+    def test_memories_agent_writable_must_be_bool(self) -> None:
+        with pytest.raises(ValueError, match=r"must be a boolean"):
+            _parse_config(
+                {
+                    "agent": {"name": "x"},
+                    "memories": {"agent_writable": "yes"},
                 }
             )
 

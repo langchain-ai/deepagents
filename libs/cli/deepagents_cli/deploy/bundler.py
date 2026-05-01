@@ -427,6 +427,7 @@ def _render_deploy_graph(
         sync_subagents_load_call=sync_subagents_load_call,
         memories_backend=config.memories.backend,
         memories_hub_identifier=memories_hub_identifier,
+        agent_writable=config.memories.agent_writable,
     )
 
 

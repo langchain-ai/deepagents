@@ -590,7 +590,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import SandboxBackendProtocol
 from deepagents.backends.store import StoreBackend
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.permissions import FilesystemPermission
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -1051,14 +1051,26 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     if HAS_USER_MEMORIES and user_id:
         memory_sources.append(f"{{USER_PREFIX}}AGENTS.md")
 
-    # AGENTS.md and skills are read-only; user memories are writable.
-    permissions = [
-        FilesystemPermission(
-            operations=["write"],
-            paths=[f"{{MEMORIES_PREFIX}}AGENTS.md", f"{{SKILLS_PREFIX}}**"],
-            mode="deny",
-        ),
-    ]
+    # When agent_writable=False (default), all agent memory is read-only;
+    # only user memories are writable. Allow rule comes first
+    # (first-match-wins), then deny everything else under /memories/.
+    # When agent_writable=True, no permissions are needed (everything writable).
+    AGENT_WRITABLE = {agent_writable!r}
+    if AGENT_WRITABLE:
+        permissions = []
+    else:
+        permissions = [
+            FilesystemPermission(
+                operations=["write"],
+                paths=[f"{{USER_PREFIX}}**"],
+                mode="allow",
+            ),
+            FilesystemPermission(
+                operations=["write"],
+                paths=[f"{{MEMORIES_PREFIX}}**"],
+                mode="deny",
+            ),
+        ]
 
     return create_deep_agent(
         model={model!r},

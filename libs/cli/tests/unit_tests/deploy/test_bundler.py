@@ -308,6 +308,25 @@ class TestRenderDeployGraph:
         assert "AGENTS.md" in result
         assert 'mode="deny"' in result
 
+    def test_agent_writable_false_generates_deny_permissions(self) -> None:
+        config = DeployConfig(
+            agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(agent_writable=False),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "AGENT_WRITABLE = False" in result
+        assert 'mode="deny"' in result
+        assert 'paths=[f"{MEMORIES_PREFIX}**"]' in result
+
+    def test_agent_writable_true_omits_deny_permissions(self) -> None:
+        config = DeployConfig(
+            agent=AgentConfig(name="x", model="anthropic:claude-sonnet-4-6"),
+            memories=MemoriesConfig(agent_writable=True),
+        )
+        result = _render_deploy_graph(config, mcp_present=False)
+        assert "AGENT_WRITABLE = True" in result
+        assert "permissions = []" in result
+
     def test_default_memories_backend_is_hub(self) -> None:
         """`_minimal_config()` relies on `MemoriesConfig()` — default must be hub."""
         result = _render_deploy_graph(_minimal_config(), mcp_present=False)

@@ -154,10 +154,16 @@ class MemoriesConfig:
 
     `identifier` overrides the Hub agent repo. When omitted, it defaults
     to `-/{agent.name}` at bundle time.
+
+    `agent_writable` controls whether the agent can write to `/memories/`.
+    When `False` (default), agent memory is read-only and only user memories
+    under `/memories/user/` are writable. When `True`, the agent can write
+    anywhere under `/memories/`.
     """
 
     backend: MemoriesBackend = "hub"
     identifier: str = ""
+    agent_writable: bool = False
 
 
 @dataclass(frozen=True)
@@ -442,7 +448,7 @@ _ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "memories", "frontend
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 _ALLOWED_AUTH_KEYS = frozenset({"provider"})
-_ALLOWED_MEMORIES_KEYS = frozenset({"backend", "identifier"})
+_ALLOWED_MEMORIES_KEYS = frozenset({"backend", "identifier", "agent_writable"})
 _ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name", "subtitle", "prompts"})
 
 
@@ -546,7 +552,12 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
             )
             raise ValueError(msg)
 
-        memories = MemoriesConfig(backend=backend, identifier=identifier)
+        agent_writable = memories_data.get("agent_writable", False)
+        if not isinstance(agent_writable, bool):
+            msg = f"[memories].agent_writable must be a boolean, got {type(agent_writable).__name__}"
+            raise ValueError(msg)
+
+        memories = MemoriesConfig(backend=backend, identifier=identifier, agent_writable=agent_writable)
 
     frontend: FrontendConfig | None = None
     frontend_data = data.get("frontend")

@@ -19,7 +19,8 @@
 #   VIBE_DIR         Round project dir (default /tmp/vibe-round)
 #   VIBE_PORT        Port to serve on (default 5173)
 #   VIBE_LOG         Log file path (default /tmp/vite.log)
-#   VIBE_TEMPLATE    Pre-built template dir (default ~/.vibe-template)
+#   VIBE_TEMPLATE    Pre-built template dir (default ~/.vibe-template);
+#                    built by vibe-coding-olympics/setup-template.sh
 #   VIBE_NPM_TIMEOUT Seconds before npm commands are killed (default 45)
 #
 # Exits 0 with server URL on stdout; non-zero with log tail on stderr.

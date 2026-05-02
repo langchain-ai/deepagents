@@ -381,6 +381,37 @@ async def _preload_session_mcp_server_info(
                 )
 
 
+def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
+    """Print help for command groups invoked without a subcommand.
+
+    Args:
+        args: Parsed arguments namespace.
+
+    Returns:
+        `True` when a help screen was printed and no further work is needed.
+    """
+    command = getattr(args, "command", None)
+    help_specs = {
+        "help": (None, "show_help"),
+        "agents": ("agents_command", "show_agents_help"),
+        "skills": ("skills_command", "show_skills_help"),
+        "threads": ("threads_command", "show_threads_help"),
+        "mcp": ("mcp_command", "show_mcp_help"),
+    }
+    spec = help_specs.get(command)
+    if spec is None:
+        return False
+
+    command_attr, help_fn_name = spec
+    if command_attr is not None and getattr(args, command_attr, None) is not None:
+        return False
+
+    from deepagents_cli import ui
+
+    getattr(ui, help_fn_name)()
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
@@ -1444,8 +1475,11 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
-        # Import console/settings AFTER arg parsing so --help (which exits
-        # inside parse_args) never pays the settings bootstrap cost.
+        if _show_bare_command_group_help(args):
+            return
+
+        # Import console/settings AFTER arg parsing so help-only commands never
+        # pay the settings bootstrap cost.
         from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None

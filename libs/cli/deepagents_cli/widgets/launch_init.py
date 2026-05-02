@@ -1,0 +1,365 @@
+"""Onboarding screens for the interactive CLI."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from textual.binding import Binding, BindingType
+from textual.containers import Vertical
+from textual.content import Content
+from textual.screen import ModalScreen
+from textual.widgets import Input, Static
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.screen import Screen
+
+    from deepagents_cli.extras_info import ExtraDependencyStatus
+
+from deepagents_cli import theme
+from deepagents_cli.config import get_glyphs, is_ascii_mode
+
+_MODEL_PROVIDER_EXTRAS = frozenset(
+    {
+        "anthropic",
+        "baseten",
+        "bedrock",
+        "cohere",
+        "deepseek",
+        "fireworks",
+        "google-genai",
+        "groq",
+        "huggingface",
+        "ibm",
+        "litellm",
+        "mistralai",
+        "nvidia",
+        "ollama",
+        "openai",
+        "openrouter",
+        "perplexity",
+        "vertexai",
+        "xai",
+    }
+)
+"""Optional extras that add model-provider integrations."""
+
+_SANDBOX_EXTRAS = frozenset({"agentcore", "daytona", "modal", "runloop"})
+"""Optional extras that add sandbox integrations."""
+
+_EXTRA_LIST_LIMIT = 8
+"""Maximum extra names shown inline before summarizing the remainder."""
+
+
+def _normalize_name(value: str) -> str:
+    """Normalize submitted onboarding names for display.
+
+    Args:
+        value: Raw submitted name.
+
+    Returns:
+        The stripped name, title-cased when it was entered in lowercase.
+    """
+    name = value.strip()
+    if name.islower():
+        return name.title()
+    return name
+
+
+class LaunchNameScreen(ModalScreen[str | None]):
+    """First-step onboarding screen that asks for the user's name."""
+
+    AUTO_FOCUS = "#launch-name-input"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "skip", "Skip", show=False, priority=True),
+    ]
+
+    CSS = """
+    LaunchNameScreen {
+        align: center middle;
+    }
+
+    LaunchNameScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    LaunchNameScreen .launch-init-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchNameScreen .launch-init-copy {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    LaunchNameScreen #launch-name-input {
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    LaunchNameScreen #launch-name-input:focus {
+        border: solid $primary;
+    }
+
+    LaunchNameScreen .launch-init-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual override
+        """Compose the name-entry screen.
+
+        Yields:
+            Widgets for the modal content.
+        """
+        glyphs = get_glyphs()
+        with Vertical():
+            yield Static("Welcome to Deep Agents", classes="launch-init-title")
+            yield Static(
+                Content.assemble(
+                    "What should Deep Agents call you? This is optional and "
+                    "can be remembered for future sessions."
+                ),
+                classes="launch-init-copy",
+            )
+            yield Input(
+                placeholder="Your name (optional)",
+                id="launch-name-input",
+            )
+            yield Static(
+                f"Enter to continue {glyphs.bullet} Esc skip setup",
+                classes="launch-init-help",
+            )
+
+    def on_mount(self) -> None:
+        """Focus the name field and apply ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+        name_input = self.query_one("#launch-name-input", Input)
+        name_input.focus()
+        self.call_after_refresh(name_input.focus)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Dismiss with the submitted name.
+
+        Args:
+            event: The input submission event.
+        """
+        event.stop()
+        value = _normalize_name(event.value)
+        self.dismiss(value)
+
+    def action_skip(self) -> None:
+        """Skip the onboarding sequence."""
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        """Compatibility alias for app-level modal dismissal."""
+        self.action_skip()
+
+
+class LaunchDependenciesScreen(ModalScreen[bool | None]):
+    """Onboarding screen that summarizes installed optional integrations."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "continue", "Continue", show=False, priority=True),
+        Binding("escape", "skip", "Skip", show=False, priority=True),
+    ]
+
+    CSS = """
+    LaunchDependenciesScreen {
+        align: center middle;
+    }
+
+    LaunchDependenciesScreen > Vertical {
+        width: 76;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    LaunchDependenciesScreen .launch-init-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchDependenciesScreen .launch-init-copy {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    LaunchDependenciesScreen .launch-dependencies-section {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    LaunchDependenciesScreen .launch-init-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(
+        self,
+        statuses: tuple[ExtraDependencyStatus, ...] | None = None,
+        *,
+        continue_screen: Screen[Any] | None = None,
+    ) -> None:
+        """Initialize the dependency summary screen.
+
+        Args:
+            statuses: Optional dependency statuses to display. When omitted,
+                the status is read from the installed package metadata.
+            continue_screen: Optional screen to switch to when the user
+                continues, avoiding an intermediate base-screen frame.
+        """
+        super().__init__()
+        if statuses is None:
+            from deepagents_cli.extras_info import get_optional_dependency_status
+
+            statuses = get_optional_dependency_status()
+        self._statuses = statuses
+        self._continue_screen = continue_screen
+
+    def compose(self) -> ComposeResult:
+        """Compose the dependency summary screen.
+
+        Yields:
+            Widgets for the modal content.
+        """
+        glyphs = get_glyphs()
+        with Vertical():
+            yield Static("Installed Integrations", classes="launch-init-title")
+            yield Static(
+                "Deep Agents uses installed optional packages to decide which "
+                "providers and runtime integrations are ready now.",
+                classes="launch-init-copy",
+            )
+            yield Static(
+                self._format_section(title="Ready now", ready=True),
+                classes="launch-dependencies-section",
+            )
+            yield Static(
+                self._format_section(title="Available to add", ready=False),
+                classes="launch-dependencies-section",
+            )
+            yield Static(
+                f"Enter to continue {glyphs.bullet} Esc skip setup",
+                classes="launch-init-help",
+            )
+
+    def on_mount(self) -> None:
+        """Apply ASCII border when needed."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def _format_section(self, *, title: str, ready: bool) -> str:
+        """Format one status section.
+
+        Args:
+            title: Section title.
+            ready: Whether to include ready or not-yet-ready extras.
+
+        Returns:
+            Multi-line section text.
+        """
+        providers = self._extra_names(_MODEL_PROVIDER_EXTRAS, ready=ready)
+        sandboxes = self._extra_names(_SANDBOX_EXTRAS, ready=ready)
+        others = self._extra_names(
+            _MODEL_PROVIDER_EXTRAS | _SANDBOX_EXTRAS,
+            ready=ready,
+            invert=True,
+        )
+        lines = [
+            title,
+            f"  Model providers: {_format_extra_names(providers)}",
+            f"  Sandboxes: {_format_extra_names(sandboxes)}",
+        ]
+        if others:
+            lines.append(f"  Other extras: {_format_extra_names(others)}")
+        return "\n".join(lines)
+
+    def _extra_names(
+        self,
+        names: frozenset[str],
+        *,
+        ready: bool,
+        invert: bool = False,
+    ) -> list[str]:
+        """Return sorted extra names matching a category and readiness state.
+
+        Args:
+            names: Category names to include, or exclude when `invert=True`.
+            ready: Desired readiness state.
+            invert: Whether to include extras outside `names`.
+
+        Returns:
+            Sorted matching extra names.
+        """
+        result: list[str] = []
+        for status in self._statuses:
+            in_category = status.name in names
+            if invert:
+                in_category = not in_category
+            if in_category and status.ready is ready:
+                result.append(status.name)
+        return sorted(result)
+
+    def action_continue(self) -> None:
+        """Continue onboarding."""
+        if self._continue_screen is not None:
+            self.app.switch_screen(self._continue_screen)
+            return
+        self.dismiss(True)
+
+    def action_skip(self) -> None:
+        """Skip the remaining onboarding sequence."""
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        """Compatibility alias for app-level modal dismissal."""
+        self.action_skip()
+
+
+def _format_extra_names(names: list[str]) -> str:
+    """Format extra names for compact display.
+
+    Args:
+        names: Extra names to display.
+
+    Returns:
+        Comma-separated extra names, or a placeholder when empty.
+    """
+    if not names:
+        return "none detected"
+    shown = names[:_EXTRA_LIST_LIMIT]
+    rendered = ", ".join(shown)
+    remaining = len(names) - len(shown)
+    if remaining > 0:
+        rendered = f"{rendered}, +{remaining} more"
+    return rendered

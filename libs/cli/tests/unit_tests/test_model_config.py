@@ -2624,7 +2624,45 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-6"
+        assert result == "anthropic:claude-opus-4-7"
+
+    def test_vertex_project_does_not_drive_env_default(self, tmp_path):
+        """Vertex project alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", "test-project"),
+            patch.object(settings, "nvidia_api_key", None),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
+
+    def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
+        """NVIDIA key alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", None),
+            patch.object(settings, "nvidia_api_key", "test-key"),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
 
 
 class TestIsWarningSuppressed:

@@ -1832,20 +1832,15 @@ def _get_default_model_spec() -> str:
 
     s = _get_settings()
     if s.has_openai:
-        return "openai:gpt-5.2"
+        return "openai:gpt-5.5"
     if s.has_anthropic:
-        return "anthropic:claude-sonnet-4-6"
+        return "anthropic:claude-opus-4-7"
     if s.has_google:
         return "google_genai:gemini-3.1-pro-preview"
-    if s.has_vertex_ai:
-        return "google_vertexai:gemini-3.1-pro-preview"
-    if s.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
     )
     raise ModelConfigError(msg)
 

@@ -7,6 +7,7 @@ from deepagents_cli.extras_info import (
     format_extras_status,
     format_extras_status_plain,
     get_extras_status,
+    get_optional_dependency_status,
 )
 
 
@@ -61,6 +62,40 @@ def test_missing_packages_are_omitted() -> None:
         "anthropic": [("langchain-anthropic", "1.4.0")],
         "mixed": [("partially-present", "2.0.0")],
     }
+
+
+def test_optional_dependency_status_includes_missing_packages() -> None:
+    mock_dist = MagicMock()
+    mock_dist.requires = [
+        "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
+        "fake-absent-package>=1.0.0 ; extra == 'custom'",
+        "partially-present>=1.0.0 ; extra == 'mixed'",
+        "also-missing>=1.0.0 ; extra == 'mixed'",
+    ]
+
+    def fake_version(name: str) -> str:
+        if name == "langchain-anthropic":
+            return "1.4.0"
+        if name == "partially-present":
+            return "2.0.0"
+        raise PackageNotFoundError(name)
+
+    with (
+        patch("deepagents_cli.extras_info.distribution", return_value=mock_dist),
+        patch("deepagents_cli.extras_info.pkg_version", side_effect=fake_version),
+    ):
+        extras = get_optional_dependency_status()
+
+    by_name = {extra.name: extra for extra in extras}
+    assert by_name["anthropic"].ready is True
+    assert by_name["anthropic"].installed == (("langchain-anthropic", "1.4.0"),)
+    assert by_name["anthropic"].missing == ()
+    assert by_name["custom"].ready is False
+    assert by_name["custom"].installed == ()
+    assert by_name["custom"].missing == ("fake-absent-package",)
+    assert by_name["mixed"].ready is False
+    assert by_name["mixed"].installed == (("partially-present", "2.0.0"),)
+    assert by_name["mixed"].missing == ("also-missing",)
 
 
 def test_skips_entries_without_extra_marker() -> None:

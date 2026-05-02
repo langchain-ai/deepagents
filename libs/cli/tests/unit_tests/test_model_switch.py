@@ -180,6 +180,28 @@ class TestModelSwitchNoOp:
         assert "Switched to" not in captured_messages[0]
         assert app._model_switching is False
 
+    async def test_same_model_can_skip_unchanged_message(self) -> None:
+        """Onboarding can re-select the active model without adding chat noise."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        with patch(
+            "deepagents_cli.model_config.has_provider_credentials",
+            return_value=True,
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5", announce_unchanged=False
+            )
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override is None
+        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        assert app._model_switching is False
+
     async def test_same_model_with_new_params_applies_overrides(self) -> None:
         """`/model <current> --model-params {...}` should apply params per-session.
 

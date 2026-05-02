@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from importlib.metadata import (
     PackageNotFoundError,
     distribution,
@@ -35,6 +36,25 @@ ExtrasStatus = dict[str, list[tuple[str, str]]]
 Only packages that are actually installed are included. Extras whose
 declared packages are all missing are omitted entirely.
 """
+
+
+@dataclass(frozen=True)
+class ExtraDependencyStatus:
+    """Install status for one optional dependency extra."""
+
+    name: str
+    """Extra name, such as `anthropic` or `daytona`."""
+
+    installed: tuple[tuple[str, str], ...]
+    """Installed `(package, version)` pairs declared by this extra."""
+
+    missing: tuple[str, ...]
+    """Declared package names for this extra that are not installed."""
+
+    @property
+    def ready(self) -> bool:
+        """Return whether all declared packages for this extra are installed."""
+        return bool(self.installed) and not self.missing
 
 
 def _extract_extra_name(marker_str: str) -> str | None:
@@ -74,6 +94,25 @@ def get_extras_status(
             tuples for packages that are currently installed. An empty
             mapping is returned when the distribution itself is not found.
     """
+    result: ExtrasStatus = {}
+    for extra in get_optional_dependency_status(distribution_name):
+        if extra.installed:
+            result[extra.name] = list(extra.installed)
+    return result
+
+
+def get_optional_dependency_status(
+    distribution_name: str = "deepagents-cli",
+) -> tuple[ExtraDependencyStatus, ...]:
+    """Return installed and missing optional dependencies grouped by extra.
+
+    Args:
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        Sorted tuple of optional extra statuses. An empty tuple is returned
+            when the distribution itself is not found.
+    """
     try:
         dist = distribution(distribution_name)
     except PackageNotFoundError:
@@ -81,10 +120,11 @@ def get_extras_status(
             "Distribution %s not found; cannot read optional dependencies",
             distribution_name,
         )
-        return {}
+        return ()
 
     own_name = distribution_name.lower()
-    result: ExtrasStatus = {}
+    installed: dict[str, list[tuple[str, str]]] = {}
+    missing: dict[str, list[str]] = {}
     for raw in dist.requires or []:
         try:
             req = Requirement(raw)
@@ -103,12 +143,19 @@ def get_extras_status(
         try:
             version = pkg_version(req.name)
         except PackageNotFoundError:
-            continue
-        result.setdefault(extra, []).append((req.name, version))
+            missing.setdefault(extra, []).append(req.name)
+        else:
+            installed.setdefault(extra, []).append((req.name, version))
 
-    for items in result.values():
-        items.sort()
-    return dict(sorted(result.items()))
+    names = sorted(set(installed) | set(missing))
+    return tuple(
+        ExtraDependencyStatus(
+            name=name,
+            installed=tuple(sorted(installed.get(name, []))),
+            missing=tuple(sorted(missing.get(name, []))),
+        )
+        for name in names
+    )
 
 
 def format_extras_status_plain(status: ExtrasStatus) -> str:

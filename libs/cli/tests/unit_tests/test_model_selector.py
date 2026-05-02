@@ -1,6 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -677,6 +677,82 @@ class TestFilteredModelsWidgetSync:
         # navigating to widget index 1 (openai:gpt-4) would look up
         # _filtered_models[1] = anthropic:claude-opus — wrong model.
         assert screen._filtered_models[1] != grouped[1]
+
+
+class TestCuratedModelSelection:
+    """Tests for launch/init curated model selection."""
+
+    @staticmethod
+    def _entry(release_date: str, *, status: str | None = None) -> ModelProfileEntry:
+        profile: dict[str, Any] = {
+            "release_date": release_date,
+            "last_updated": release_date,
+            "max_input_tokens": 200000,
+        }
+        if status is not None:
+            profile["status"] = status
+        return ModelProfileEntry(profile=profile, overridden_keys=frozenset())
+
+    def test_curated_models_preserve_current_and_default(self) -> None:
+        """The current and default models should remain available in init mode."""
+        all_models = [
+            ("anthropic:claude-sonnet-4-5", "anthropic"),
+            ("anthropic:claude-opus-4-5", "anthropic"),
+            ("openai:gpt-4o", "openai"),
+            ("openai:gpt-5", "openai"),
+        ]
+        profiles = {
+            "anthropic:claude-sonnet-4-5": self._entry("2025-01-01"),
+            "anthropic:claude-opus-4-5": self._entry("2025-02-01"),
+            "openai:gpt-4o": self._entry("2024-05-01"),
+            "openai:gpt-5": self._entry("2025-08-01"),
+        }
+
+        curated = ModelSelectorScreen._curate_models(
+            all_models,
+            profiles,
+            current_spec="openai:gpt-4o",
+            default_spec="anthropic:claude-opus-4-5",
+        )
+
+        assert curated[:2] == [
+            ("openai:gpt-4o", "openai"),
+            ("anthropic:claude-opus-4-5", "anthropic"),
+        ]
+
+    def test_curated_models_pick_latest_per_family(self) -> None:
+        """Curated mode should avoid flooding the list with one model family."""
+        all_models = [
+            ("anthropic:claude-sonnet-old", "anthropic"),
+            ("anthropic:claude-sonnet-new", "anthropic"),
+            ("anthropic:claude-opus-new", "anthropic"),
+            ("openai:gpt-old", "openai"),
+            ("openai:gpt-new", "openai"),
+            ("openai:gpt-codex-new", "openai"),
+        ]
+        profiles = {
+            "anthropic:claude-sonnet-old": self._entry("2024-01-01"),
+            "anthropic:claude-sonnet-new": self._entry("2025-01-01"),
+            "anthropic:claude-opus-new": self._entry("2025-02-01"),
+            "openai:gpt-old": self._entry("2024-01-01"),
+            "openai:gpt-new": self._entry("2025-03-01"),
+            "openai:gpt-codex-new": self._entry("2025-04-01"),
+        }
+
+        curated = ModelSelectorScreen._curate_models(
+            all_models,
+            profiles,
+            current_spec=None,
+            default_spec=None,
+        )
+        curated_specs = [spec for spec, _ in curated]
+
+        assert "anthropic:claude-sonnet-new" in curated_specs
+        assert "anthropic:claude-sonnet-old" not in curated_specs
+        assert "anthropic:claude-opus-new" in curated_specs
+        assert "openai:gpt-new" in curated_specs
+        assert "openai:gpt-old" not in curated_specs
+        assert "openai:gpt-codex-new" in curated_specs
 
 
 class TestFormatOptionLabel:

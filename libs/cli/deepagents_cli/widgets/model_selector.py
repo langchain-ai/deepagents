@@ -36,6 +36,21 @@ from deepagents_cli.model_config import (
 
 logger = logging.getLogger(__name__)
 
+_CURATED_PROVIDER_ORDER: tuple[str, ...] = (
+    "anthropic",
+    "openai",
+    "google_genai",
+    "google_vertexai",
+    "ollama",
+)
+"""Provider order for the short launch/init model selector."""
+
+_CURATED_MAX_TOTAL = 10
+"""Maximum models shown in curated mode."""
+
+_CURATED_MAX_PER_PROVIDER = 3
+"""Maximum models shown per provider in curated mode."""
+
 
 class ModelOption(Static):
     """A clickable model option in the selector."""
@@ -218,6 +233,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current_model: str | None = None,
         current_provider: str | None = None,
         cli_profile_override: dict[str, Any] | None = None,
+        *,
+        curated: bool = False,
+        title: str | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
@@ -231,11 +249,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
                 Merged on top of upstream + config.toml profiles so that CLI
                 overrides appear with `*` markers in the detail footer.
+            curated: Whether to show a short, profile-ranked model subset.
+            title: Optional title override for the selector.
         """
         super().__init__()
         self._current_model = current_model
         self._current_provider = current_provider
         self._cli_profile_override = cli_profile_override
+        self._curated = curated
+        self._title = title
 
         # Model data — populated asynchronously in on_mount via _load_model_data
         self._all_models: list[tuple[str, str]] = []
@@ -276,7 +298,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         with Vertical():
             # Title with current model in provider:model format
-            if self._current_model and self._current_provider:
+            if self._title:
+                title = self._title
+            elif self._current_model and self._current_provider:
                 current_spec = f"{self._current_provider}:{self._current_model}"
                 title = f"Select Model (current: {current_spec})"
             elif self._current_model:
@@ -337,6 +361,160 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         profiles = get_model_profiles(cli_override=cli_override)
         return all_models, config.default_model, profiles
 
+    @staticmethod
+    def _provider_order(provider: str) -> int:
+        """Return the curated sort bucket for a provider.
+
+        Args:
+            provider: Provider name.
+
+        Returns:
+            Numeric sort bucket; lower values are preferred.
+        """
+        try:
+            return _CURATED_PROVIDER_ORDER.index(provider)
+        except ValueError:
+            return len(_CURATED_PROVIDER_ORDER)
+
+    @staticmethod
+    def _model_family(provider: str, model: str) -> str:
+        """Map a model name into a coarse family for curated de-duplication.
+
+        Args:
+            provider: Provider name.
+            model: Provider-local model identifier.
+
+        Returns:
+            Family label used to avoid showing several near-identical variants.
+        """
+        lower = model.lower()
+        if provider == "anthropic":
+            for family in ("opus", "sonnet", "haiku"):
+                if family in lower:
+                    return family
+        if provider == "openai":
+            if "codex" in lower:
+                return "codex"
+            if lower.startswith("gpt-"):
+                return "gpt"
+            if lower.startswith("o"):
+                return "o-series"
+        if provider in {"google_genai", "google_vertexai"}:
+            if "pro" in lower:
+                return "pro"
+            if "flash-lite" in lower:
+                return "flash-lite"
+            if "flash" in lower:
+                return "flash"
+        return lower.split(":", 1)[0].split("-", 1)[0] or lower
+
+    @staticmethod
+    def _curated_sort_key(
+        spec: str,
+        provider: str,
+        profiles: Mapping[str, ModelProfileEntry],
+    ) -> tuple[int, str, int, int, int]:
+        """Build a descending quality key for curated model selection.
+
+        Args:
+            spec: Full `provider:model` spec.
+            provider: Provider name.
+            profiles: Profile mapping keyed by spec.
+
+        Returns:
+            Sort key where larger tuples are preferred.
+        """
+        entry = profiles.get(spec)
+        profile = entry["profile"] if entry else {}
+        model = spec.split(":", 1)[1] if ":" in spec else spec
+        status = str(profile.get("status", "")).lower()
+        release_date = str(
+            profile.get("last_updated") or profile.get("release_date") or ""
+        )
+        max_input = profile.get("max_input_tokens") or 0
+        try:
+            max_input_value = int(max_input)
+        except (TypeError, ValueError, OverflowError):
+            max_input_value = 0
+
+        lower = model.lower()
+        stable = int("deprecated" not in status and "preview" not in lower)
+        latest_alias = int("latest" in lower)
+        provider_bias = -ModelSelectorScreen._provider_order(provider)
+        return (stable, release_date, max_input_value, latest_alias, provider_bias)
+
+    @classmethod
+    def _curate_models(
+        cls,
+        all_models: list[tuple[str, str]],
+        profiles: Mapping[str, ModelProfileEntry],
+        *,
+        current_spec: str | None,
+        default_spec: str | None,
+    ) -> list[tuple[str, str]]:
+        """Return a short, provider-ranked subset of available models.
+
+        Args:
+            all_models: Full list of `(provider:model, provider)` pairs.
+            profiles: Profile mapping keyed by spec.
+            current_spec: Active model spec, preserved when available.
+            default_spec: Configured default model spec, preserved when available.
+
+        Returns:
+            Curated model list for launch initialization.
+        """
+        available = dict(all_models)
+        selected: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def add(spec: str) -> bool:
+            provider = available.get(spec)
+            if provider is None or spec in seen:
+                return False
+            selected.append((spec, provider))
+            seen.add(spec)
+            return len(selected) >= _CURATED_MAX_TOTAL
+
+        for spec in (current_spec, default_spec):
+            if spec and add(spec):
+                return selected
+
+        providers = sorted(
+            {provider for _, provider in all_models},
+            key=lambda provider: (cls._provider_order(provider), provider),
+        )
+        for provider in providers:
+            entries = [(spec, prov) for spec, prov in all_models if prov == provider]
+            if not entries:
+                continue
+
+            by_family: dict[str, list[tuple[str, str]]] = {}
+            for spec, prov in entries:
+                model = spec.split(":", 1)[1] if ":" in spec else spec
+                family = cls._model_family(provider, model)
+                by_family.setdefault(family, []).append((spec, prov))
+
+            ranked_families = sorted(
+                by_family.values(),
+                key=lambda group: max(
+                    cls._curated_sort_key(spec, provider, profiles) for spec, _ in group
+                ),
+                reverse=True,
+            )
+            for provider_added, group in enumerate(ranked_families, start=1):
+                spec, _ = max(
+                    group,
+                    key=lambda item: cls._curated_sort_key(item[0], provider, profiles),
+                )
+                if add(spec):
+                    return selected
+                if provider_added >= _CURATED_MAX_PER_PROVIDER:
+                    break
+
+        if selected:
+            return selected
+        return all_models[:_CURATED_MAX_TOTAL]
+
     async def on_mount(self) -> None:
         """Set up the screen on mount.
 
@@ -380,6 +558,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._all_models = all_models
         self._default_spec = default_spec
         self._profiles = profiles
+        if self._curated:
+            self._all_models = self._curate_models(
+                self._all_models,
+                self._profiles,
+                current_spec=self._current_spec,
+                default_spec=self._default_spec,
+            )
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._loaded = True

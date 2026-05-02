@@ -229,6 +229,26 @@ class TestRunTextualCliAsyncMcp:
 
         assert captured_kwargs["mcp_preload_kwargs"] is None
 
+    async def test_passes_launch_init_to_textual_app(self) -> None:
+        """`--init` plumbing should reach the Textual app launch kwargs."""
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
+            await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+                model_name="openai:gpt-4o",
+                launch_init=True,
+            )
+
+        assert captured_kwargs["launch_init"] is True
+
 
 class TestServerCleanupLifecycle:
     """Verify server_proc.stop() is guaranteed after the TUI exits."""

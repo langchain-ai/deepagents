@@ -104,6 +104,22 @@ class TestStartupCmdArg:
         assert args.non_interactive_message == "do the thing"
 
 
+class TestLaunchInitArg:
+    """Tests for `--init` launch setup argument."""
+
+    def test_flag_sets_launch_init(self) -> None:
+        """Verify `--init` enables the launch setup flow."""
+        with patch.object(sys, "argv", ["deepagents", "--init"]):
+            args = parse_args()
+        assert args.launch_init is True
+
+    def test_no_flag_defaults_false(self) -> None:
+        """Verify launch setup is disabled by default."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.launch_init is False
+
+
 class TestResumeArg:
     """Tests for -r/--resume thread resume argument."""
 

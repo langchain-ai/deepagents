@@ -688,6 +688,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--init",
+        dest="launch_init",
+        action="store_true",
+        help="Show the two-step name and model setup flow on launch",
+    )
+
+    parser.add_argument(
         "-n",
         "--non-interactive",
         dest="non_interactive_message",
@@ -867,6 +874,7 @@ async def run_textual_cli_async(
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
+    launch_init: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -907,6 +915,8 @@ async def run_textual_cli_async(
 
             Output is rendered in the transcript; non-zero exits warn but
             do not abort the session.
+        launch_init: Whether to show the two-step setup flow before accepting
+            the first prompt.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
 
             Merged on top of auto-discovered configs (highest precedence).
@@ -994,6 +1004,7 @@ async def run_textual_cli_async(
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
             startup_cmd=startup_cmd,
+            launch_init=launch_init,
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -1946,6 +1957,7 @@ def cli_main() -> None:
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
                         startup_cmd=getattr(args, "startup_cmd", None),
+                        launch_init=getattr(args, "launch_init", False),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,

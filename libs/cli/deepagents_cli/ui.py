@@ -114,6 +114,7 @@ def show_help() -> None:
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
+    console.print("  --init                    Show name and model setup on launch")
     console.print(
         "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )

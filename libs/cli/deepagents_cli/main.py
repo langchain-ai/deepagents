@@ -381,24 +381,50 @@ async def _preload_session_mcp_server_info(
                 )
 
 
+_HELP_SPECS: dict[str, tuple[str | None, str]] = {
+    "help": (None, "show_help"),
+    "agents": ("agents_command", "show_agents_help"),
+    "skills": ("skills_command", "show_skills_help"),
+    "threads": ("threads_command", "show_threads_help"),
+    "mcp": ("mcp_command", "show_mcp_help"),
+}
+"""Maps top-level command names to their startup-fast-path help dispatch.
+
+Each value is `(subcommand_dest, ui_help_fn_name)`:
+
+- `subcommand_dest` is the argparse `dest=` for the group's sub-subparsers,
+    or `None` for leaf commands like `help`. When non-`None` and the parsed
+    namespace has a value at that attribute, a real subcommand was given and
+    the fast path declines.
+- `ui_help_fn_name` is the attribute on `deepagents_cli.ui` invoked to
+    render the help screen.
+
+When adding a new top-level command group with sub-subparsers, register it
+here and add a corresponding `show_<group>_help` to `ui.py`. The drift
+test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+"""
+
+
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
-    """Print help for command groups invoked without a subcommand.
+    """Render help for `help` and bare command groups before the heavy bootstrap.
+
+    Short-circuits before `console`/`settings` are imported so help-only
+    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
+    `help`, `agents`, `skills`, `threads`, and `mcp` commands when no
+    subcommand was given.
 
     Args:
-        args: Parsed arguments namespace.
+        args: Namespace from `parse_args()`. Only `command` and the per-group
+            `<group>_command` attributes are read; both may be absent.
 
     Returns:
-        `True` when a help screen was printed and no further work is needed.
+        `True` when help was rendered and the caller should exit; `False`
+            when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    help_specs = {
-        "help": (None, "show_help"),
-        "agents": ("agents_command", "show_agents_help"),
-        "skills": ("skills_command", "show_skills_help"),
-        "threads": ("threads_command", "show_threads_help"),
-        "mcp": ("mcp_command", "show_mcp_help"),
-    }
-    spec = help_specs.get(command)
+    if not isinstance(command, str):
+        return False
+    spec = _HELP_SPECS.get(command)
     if spec is None:
         return False
 
@@ -408,6 +434,9 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     from deepagents_cli import ui
 
+    # 2-arg `getattr` is intentional: a missing/renamed `show_*_help` in
+    # `ui.py` is a developer bug and should raise `AttributeError` loudly
+    # rather than fall through to a silent no-op.
     getattr(ui, help_fn_name)()
     return True
 
@@ -1478,8 +1507,9 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
-        # Import console/settings AFTER arg parsing so help-only commands never
-        # pay the settings bootstrap cost.
+        # Import console/settings AFTER arg parsing and after the bare-help
+        # fast path so neither argparse's `--help`/`-h` exit nor
+        # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None

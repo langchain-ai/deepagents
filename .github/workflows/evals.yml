@@ -1,7 +1,8 @@
-# Daily evaluation workflow for Deep Agents
+# Evaluation workflow for Deep Agents.
 #
-# Runs tests/evals on a cron schedule (once per day).
-# Single job; model/provider is selected via workflow input `model`.
+# Triggered manually via workflow_dispatch. Models are partitioned into
+# per-provider matrix jobs so each provider can serialize calls independently
+# (strategy.max-parallel: 1) while different providers run in parallel.
 #
 # Required secrets:
 #   LANGSMITH_API_KEY  — used for tracing
@@ -19,7 +20,7 @@
 
 name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}
 
 on:
   workflow_dispatch:
@@ -39,6 +40,7 @@ on:
           - mega
           - fast
           - open
+          - docs
           - anthropic
           - baseten
           - fireworks
@@ -107,6 +109,7 @@ on:
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
+          - "openrouter:deepseek/deepseek-v4-pro"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -175,6 +178,18 @@ on:
         required: false
         default: ""
         type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models (applied as the `reasoning_effort` model kwarg). Only applies to openai: models."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
 
 permissions:
   contents: write
@@ -189,6 +204,28 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      anthropic_matrix: ${{ steps.set-matrix.outputs.anthropic_matrix }}
+      anthropic_has_models: ${{ steps.set-matrix.outputs.anthropic_has_models }}
+      baseten_matrix: ${{ steps.set-matrix.outputs.baseten_matrix }}
+      baseten_has_models: ${{ steps.set-matrix.outputs.baseten_has_models }}
+      fireworks_matrix: ${{ steps.set-matrix.outputs.fireworks_matrix }}
+      fireworks_has_models: ${{ steps.set-matrix.outputs.fireworks_has_models }}
+      google_genai_matrix: ${{ steps.set-matrix.outputs.google_genai_matrix }}
+      google_genai_has_models: ${{ steps.set-matrix.outputs.google_genai_has_models }}
+      groq_matrix: ${{ steps.set-matrix.outputs.groq_matrix }}
+      groq_has_models: ${{ steps.set-matrix.outputs.groq_has_models }}
+      nvidia_matrix: ${{ steps.set-matrix.outputs.nvidia_matrix }}
+      nvidia_has_models: ${{ steps.set-matrix.outputs.nvidia_has_models }}
+      ollama_matrix: ${{ steps.set-matrix.outputs.ollama_matrix }}
+      ollama_has_models: ${{ steps.set-matrix.outputs.ollama_has_models }}
+      openai_matrix: ${{ steps.set-matrix.outputs.openai_matrix }}
+      openai_has_models: ${{ steps.set-matrix.outputs.openai_has_models }}
+      openrouter_matrix: ${{ steps.set-matrix.outputs.openrouter_matrix }}
+      openrouter_has_models: ${{ steps.set-matrix.outputs.openrouter_has_models }}
+      xai_matrix: ${{ steps.set-matrix.outputs.xai_matrix }}
+      xai_has_models: ${{ steps.set-matrix.outputs.xai_has_models }}
+      other_matrix: ${{ steps.set-matrix.outputs.other_matrix }}
+      other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -198,6 +235,7 @@ jobs:
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
@@ -250,6 +288,9 @@ jobs:
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
+            echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -267,218 +308,259 @@ jobs:
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
-  eval:
-    name: "📊 Eval (${{ matrix.model }})"
+
+  # Per-provider serialization: each provider runs as its own matrix job with
+  # max-parallel: 1 so calls to a single provider queue rather than fan out
+  # (avoids rate-limit failures). Different providers run in parallel.
+  # GHA has no built-in "queue per matrix value", so the partition is encoded
+  # as separate jobs whose matrices come from `prep`'s per-provider outputs;
+  # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/models.py for the source set.
+  eval-anthropic:
+    name: "📊 Eval Anthropic (${{ matrix.model }})"
     needs: prep
-    runs-on: ubuntu-latest
-    environment: evals
-    timeout-minutes: 360
-    # Per-provider concurrency: jobs sharing a provider queue (no cancellation),
-    # jobs on different providers run in parallel.
-    concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.provider }}
-      cancel-in-progress: false
+    if: ${{ needs.prep.outputs.anthropic_has_models == 'true' }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.anthropic_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-    defaults:
-      run:
-        working-directory: libs/evals
-    env:
-      PYTEST_ADDOPTS: "--model ${{ matrix.model }} --evals-report-file evals_report.json"
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING: "true"
-      LANGSMITH_EXPERIMENT: ${{ matrix.model }}
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OLLAMA_HOST: "https://ollama.com"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-    steps:
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+  eval-baseten:
+    name: "📊 Eval Baseten (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.baseten_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.baseten_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "🐍 Set up Python + UV"
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: "3.12"
-          cache-suffix: evals
-          working-directory: libs/evals
+  eval-fireworks:
+    name: "📊 Eval Fireworks (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.fireworks_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.fireworks_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "📦 Install Dependencies"
-        run: uv sync --group test
+  eval-google-genai:
+    name: "📊 Eval Google GenAI (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.google_genai_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.google_genai_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "🏷️ Apply category filter"
-        if: inputs.eval_categories_override != '' || inputs.eval_categories != ''
-        env:
-          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories }}
-        run: |
-          flags=""
-          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES}"
-          for cat in "${cats[@]}"; do
-            cat=$(echo "$cat" | xargs)
-            [ -z "$cat" ] && continue
-            flags="$flags --eval-category $cat"
-          done
-          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+  eval-groq:
+    name: "📊 Eval Groq (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.groq_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.groq_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "🏷️ Apply tier filter"
-        if: inputs.eval_tiers_override != '' || inputs.eval_tiers != ''
-        env:
-          EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
-        run: |
-          flags=""
-          IFS=',' read -ra tiers <<< "${EVAL_TIERS}"
-          for tier in "${tiers[@]}"; do
-            tier=$(echo "$tier" | xargs)
-            [ -z "$tier" ] && continue
-            flags="$flags --eval-tier $tier"
-          done
-          echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS}${flags}" >> "$GITHUB_ENV"
+  eval-nvidia:
+    name: "📊 Eval NVIDIA (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.nvidia_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.nvidia_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "🔒 Apply OpenRouter provider pin"
-        if: inputs.openrouter_provider != '' && matrix.provider == 'openrouter'
-        env:
-          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
-        run: echo "PYTEST_ADDOPTS=${PYTEST_ADDOPTS} --openrouter-provider ${OPENROUTER_PROVIDER}" >> "$GITHUB_ENV"
+  eval-ollama:
+    name: "📊 Eval Ollama (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.ollama_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.ollama_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "📊 Run Evals"
-        run: make evals
+  eval-openai:
+    name: "📊 Eval OpenAI (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.openai_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.openai_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "🔍 Check eval report"
-        if: "!cancelled()"
-        run: |
-          if [ ! -f evals_report.json ]; then
-            echo "::error::evals_report.json not found. pytest likely crashed before sessionfinish could write the report. Check the 'Run Evals' step logs for errors."
-            exit 1
-          fi
+  eval-openrouter:
+    name: "📊 Eval OpenRouter (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.openrouter_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.openrouter_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-      - name: "📊 Post results to summary"
-        if: "!cancelled()"
-        run: |
-          python3 << 'PYEOF'
-          import json, os, sys
-          from pathlib import Path
+  eval-xai:
+    name: "📊 Eval xAI (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.xai_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.xai_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
-          report_path = Path("evals_report.json")
-          if not report_path.exists():
-              print("evals_report.json not found, skipping summary", file=sys.stderr)
-              sys.exit(0)
-
-          try:
-              report = json.loads(report_path.read_text())
-          except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-              print(f"::error::evals_report.json is malformed: {exc}")
-              sys.exit(1)
-          model = report.get("model", "unknown")
-          if model == "unknown":
-              print("::warning::evals_report.json has no 'model' key; using 'unknown'")
-
-          # Load category labels for friendly display names.
-          labels = {}
-          try:
-              cats_json = Path("deepagents_evals/categories.json")
-              labels = json.loads(cats_json.read_text()).get("labels", {})
-          except (FileNotFoundError, json.JSONDecodeError) as exc:
-              print(f"::warning::Could not load category labels from {cats_json}: {exc}")
-
-          lines = [
-              "<details>",
-              "<summary>(click to expand)</summary>",
-              "",
-          ]
-
-          try:
-              # -- Metrics table --
-              metrics = [
-                  ("passed", None), ("failed", None), ("skipped", None),
-                  ("total", None), ("correctness", None), ("solve_rate", "n/a"),
-                  ("step_ratio", "n/a"), ("tool_call_ratio", "n/a"),
-                  ("median_duration_s", None),
-              ]
-              header = "| " + " | ".join(f"`{k}`" for k, _ in metrics) + " |"
-              sep = "|" + "|".join("---:" for _ in metrics) + "|"
-              vals = []
-              for key, default in metrics:
-                  val = report.get(key, default)
-                  if val is None:
-                      val = 0
-                  vals.append(str(val))
-              row = "| " + " | ".join(vals) + " |"
-              lines += [header, sep, row]
-
-              # -- Per-category scores (horizontal) --
-              cat_scores = report.get("category_scores")
-              if isinstance(cat_scores, dict) and cat_scores:
-                  sorted_cats = sorted(cat_scores.items())
-                  esc = lambda s: str(s).replace("|", "\\|")
-                  cat_header = "| " + " | ".join(esc(labels.get(c, c)) for c, _ in sorted_cats) + " |"
-                  cat_sep = "|" + "|".join("---:" for _ in sorted_cats) + "|"
-                  cat_row = "| " + " | ".join(esc(s) for _, s in sorted_cats) + " |"
-                  lines += ["", "### Per-category correctness", "", cat_header, cat_sep, cat_row]
-
-              # -- Experiment links --
-              exp_links = report.get("experiment_links")
-              if isinstance(exp_links, list) and exp_links:
-                  lines += ["", "### LangSmith experiments", ""]
-                  for link in exp_links:
-                      if not isinstance(link, dict):
-                          continue
-                      name = link.get("name", "")
-                      url = link.get("url", "")
-                      public_url = link.get("public_url", "")
-                      if public_url:
-                          lines.append(f"- [{name}]({public_url}) ([internal]({url}))")
-                      elif url:
-                          lines.append(f"- [{name or url}]({url})")
-          except Exception as exc:
-              lines.append(f"\n\n**Error building summary:** {exc}\n")
-              print(f"::warning::Error building summary for {model}: {exc}")
-          finally:
-              lines += ["", "</details>"]
-
-          text = "\n".join(lines) + "\n"
-          summary = os.environ.get("GITHUB_STEP_SUMMARY", "")
-          if summary:
-              with open(summary, "a") as f:
-                  f.write(text)
-          print(text)
-          PYEOF
-
-      - name: "🧠 Analyze eval failures"
-        if: "!cancelled() && inputs.analyze_failures"
-        continue-on-error: true
-        env:
-          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
-        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
-
-      - name: "📤 Upload failure analysis"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: failure-analysis-${{ strategy.job-index }}
-          path: libs/evals/failure_analysis.json
-          if-no-files-found: warn
-
-      - name: "📤 Upload eval report"
-        if: "!cancelled()"
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: evals-report-${{ strategy.job-index }}
-          path: libs/evals/evals_report.json
-          if-no-files-found: error
+  eval-other:
+    name: "📊 Eval Other (${{ matrix.model }})"
+    needs: prep
+    if: ${{ needs.prep.outputs.other_has_models == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.prep.outputs.other_matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ matrix.model }}
+      provider: ${{ matrix.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ inputs.analysis_model }}
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
 
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest
-    needs: [eval]
+    needs:
+      - eval-anthropic
+      - eval-baseten
+      - eval-fireworks
+      - eval-google-genai
+      - eval-groq
+      - eval-nvidia
+      - eval-ollama
+      - eval-openai
+      - eval-openrouter
+      - eval-xai
+      - eval-other
     if: always()
     steps:
       - name: "📋 Checkout Code"
@@ -506,11 +588,43 @@ jobs:
         run: uv sync --extra charts
 
       - name: "📊 Generate radar chart"
+        id: radar-chart
         if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
+        continue-on-error: true
         working-directory: libs/evals
         env:
-          EVAL_OUTCOME: ${{ needs.eval.result }}
+          # Inspect each per-provider job's `result` directly so the outcome
+          # cannot be perturbed by job-level outputs (current and future) that
+          # might contain the literal substring `failure` or `cancelled`.
+          EVAL_OUTCOME: >-
+            ${{ (needs.eval-anthropic.result == 'failure'
+                 || needs.eval-baseten.result == 'failure'
+                 || needs.eval-fireworks.result == 'failure'
+                 || needs.eval-google-genai.result == 'failure'
+                 || needs.eval-groq.result == 'failure'
+                 || needs.eval-nvidia.result == 'failure'
+                 || needs.eval-ollama.result == 'failure'
+                 || needs.eval-openai.result == 'failure'
+                 || needs.eval-openrouter.result == 'failure'
+                 || needs.eval-xai.result == 'failure'
+                 || needs.eval-other.result == 'failure') && 'failure'
+            || (needs.eval-anthropic.result == 'cancelled'
+                 || needs.eval-baseten.result == 'cancelled'
+                 || needs.eval-fireworks.result == 'cancelled'
+                 || needs.eval-google-genai.result == 'cancelled'
+                 || needs.eval-groq.result == 'cancelled'
+                 || needs.eval-nvidia.result == 'cancelled'
+                 || needs.eval-ollama.result == 'cancelled'
+                 || needs.eval-openai.result == 'cancelled'
+                 || needs.eval-openrouter.result == 'cancelled'
+                 || needs.eval-xai.result == 'cancelled'
+                 || needs.eval-other.result == 'cancelled') && 'cancelled'
+            || 'success' }}
         run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
+
+      - name: "⚠️ Note radar chart failure"
+        if: steps.radar-chart.outcome == 'failure'
+        run: echo "::warning::Radar chart generation failed; see the 'Generate radar chart' step logs. Subsequent chart upload/publish steps will be skipped."
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

@@ -58,6 +58,18 @@ logger = logging.getLogger(__name__)
 _HANDLE_PLACEHOLDER = "[unmarshalable value]"
 
 
+def _clear_exception_references(exc: BaseException) -> None:
+    """Drop traceback links to avoid cross-thread GC finalizing QJS handles.
+
+    quickjs_rs exceptions may keep traceback frames that hold temporary
+    ``QjsHandle`` objects. If those cycles are collected on a different
+    thread, quickjs_rs raises "unsendable ... dropped on another thread".
+    """
+    exc.__traceback__ = None
+    exc.__context__ = None
+    exc.__cause__ = None
+
+
 @dataclass
 class EvalOutcome:
     """Normalized result of a single REPL eval.
@@ -602,12 +614,14 @@ class _ThreadREPL:
             # its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
-        except MarshalError:
+        except MarshalError as e:
             outcome.result_kind = "handle"
             outcome.result = await self._describe_via_handle_async(code)
+            _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except DeadlockError as e:
             # Top-level Promise never resolved and no async host work in
             # flight. Surface as a distinct error type because the fix
@@ -616,6 +630,7 @@ class _ThreadREPL:
             # message without context would make this hard to diagnose.
             outcome.error_type = "Deadlock"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except HostCancellationError:
             # JS declined to catch a cancellation — re-raise as
             # CancelledError so asyncio unwinds the caller's task.
@@ -623,12 +638,15 @@ class _ThreadREPL:
             raise asyncio.CancelledError from None
         except JSError as e:
             self._record_js_error(outcome, e)
+            _clear_exception_references(e)
         except ConcurrentEvalError as e:
             outcome.error_type = "ConcurrentEval"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         except MemoryLimitError as e:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
@@ -652,6 +670,9 @@ class _ThreadREPL:
 
     def close(self) -> None:
         self._worker.run_sync(self._aclose())
+
+    async def aclose(self) -> None:
+        await self._worker.run_async(self._aclose())
 
     async def _aclose(self) -> None:
         if self._ctx is not None:
@@ -742,12 +763,19 @@ class _Registry:
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:
+        # Close the context on its owning worker thread before closing the
+        # runtime. This avoids unsendable handle wrappers being finalized on
+        # a non-owner thread during later GC.
+        with contextlib.suppress(Exception):
+            slot.repl.close()
         # Best-effort; never block shutdown on a misbehaving runtime.
         with contextlib.suppress(Exception):
             slot.worker.run_sync(_aclose_runtime(slot.runtime))
         slot.worker.close()
 
     async def _aclose_slot(self, slot: _Slot) -> None:
+        with contextlib.suppress(Exception):
+            await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
         slot.worker.close()

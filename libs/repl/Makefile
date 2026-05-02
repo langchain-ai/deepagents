@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark help lint_package coverage update_snapshots
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help lint_package coverage update_snapshots
 
 .DEFAULT_GOAL := help
 
@@ -34,6 +34,12 @@ test_watch: ## Run tests in watch mode
 
 benchmark: ## Run benchmark tests
 	uv run --group test pytest ./tests/benchmarks -m benchmark
+
+bench: ## Run benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m benchmark --codspeed
+
+bench-memory: ## Run memory benchmarks under CodSpeed instrumentation
+	uv run --group test pytest ./tests/benchmarks -m memory_benchmark --codspeed
 
 update_snapshots: ## Update smoke test prompt snapshots
 	uv run --group test pytest tests/unit_tests/smoke_tests/test_system_prompt.py --update-snapshots

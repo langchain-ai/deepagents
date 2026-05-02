@@ -557,9 +557,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         for spec in self._subagents:
             if "runnable" in spec:
-                # CompiledSubAgent - use as-is
+                # Use with_config (not attribute mutation) so the original runnable is
+                # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": compiled["runnable"]})
+                runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
+                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
                 continue
 
             # SubAgent - validate required fields

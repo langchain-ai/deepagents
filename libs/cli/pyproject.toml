@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.46"
+version = "0.0.48"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.5",
+    "deepagents==0.5.6",
     "langchain>=1.2.15,<2.0.0",
     "langgraph>=1.1.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.0,<4.0.0",
@@ -45,7 +45,7 @@ dependencies = [
     # Workaround for Textualize/textual#6378 lives in `_textual_patches.py`.
     # On bump, run `tests/unit_tests/test_textual_patches.py` and delete the
     # patch if the upstream issue is fixed.
-    "textual>=8.0.0,<9.0.0",
+    "textual>=8.2.5,<9.0.0",
     "textual-autocomplete>=3.0.0,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",
     "prompt-toolkit>=3.0.52,<4.0.0",
@@ -138,7 +138,7 @@ test = [
     "pytest>=8.3.4,<10.0.0",
     "pytest-asyncio>=0.25.3,<2.0.0",
     "pytest-benchmark>=5.1.0,<6.0.0",
-    "pytest-codspeed>=4.0.0,<5.0.0",
+    "pytest-codspeed>=4.4.0,<5.0.0",
     "pytest-cov>=6.0.0,<8.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "pytest-socket>=0.7.0,<1.0.0",

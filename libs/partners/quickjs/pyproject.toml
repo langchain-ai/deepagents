@@ -57,7 +57,6 @@ test = [
 
 [tool.uv.sources]
 deepagents = { path = "../../deepagents", editable = true }
-quickjs-rs = { git = "https://github.com/langchain-ai/quickjs-rs", branch = "cc/error_handling_2" }
 
 [tool.uv]
 constraint-dependencies = ["urllib3>=2.6.3"]

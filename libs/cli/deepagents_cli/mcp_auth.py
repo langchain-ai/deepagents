@@ -19,8 +19,7 @@ import os
 import re
 import stat
 from collections.abc import Awaitable, Callable
-from pathlib import Path
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider, TokenStorage
@@ -29,6 +28,9 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _DeviceCodeResponse(BaseModel):
@@ -167,11 +169,12 @@ def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
 def _tokens_dir() -> Path:
     """Return `~/.deepagents/.state/mcp-tokens/`.
 
-    Resolved at call time (not at module import) so tests that monkeypatch
-    `Path.home()` after import still redirect token storage into a temp
-    directory.
+    The deferred import lets tests redirect token storage into a temp
+    directory by patching `deepagents_cli.model_config.DEFAULT_STATE_DIR`.
     """
-    return Path.home() / ".deepagents" / ".state" / "mcp-tokens"
+    from deepagents_cli.model_config import DEFAULT_STATE_DIR
+
+    return DEFAULT_STATE_DIR / "mcp-tokens"
 
 
 def _token_file_stem(server_name: str, server_url: str | None) -> str:

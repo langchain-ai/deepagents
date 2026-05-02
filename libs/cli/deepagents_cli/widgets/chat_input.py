@@ -44,11 +44,12 @@ logger = logging.getLogger(__name__)
 def _default_history_path() -> Path:
     """Return the default history file path.
 
-    Extracted as a function so tests can monkeypatch it (or `Path.home`)
-    to a temp path, preventing test runs from polluting
-    `~/.deepagents/.state/history.jsonl`.
+    Extracted as a function so tests can monkeypatch it to a temp path,
+    preventing test runs from polluting `~/.deepagents/.state/history.jsonl`.
     """
-    return Path.home() / ".deepagents" / ".state" / "history.jsonl"
+    from deepagents_cli.model_config import DEFAULT_STATE_DIR
+
+    return DEFAULT_STATE_DIR / "history.jsonl"
 
 
 _PASTE_BURST_CHAR_GAP_SECONDS = 0.03

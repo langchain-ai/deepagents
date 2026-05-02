@@ -236,12 +236,10 @@ def get_db_path() -> Path:
     global _db_path  # noqa: PLW0603  # Module-level cache requires global statement
     if _db_path is not None:
         return _db_path
-    # Resolved at call time (rather than via the import-time-frozen
-    # `model_config.DEFAULT_STATE_DIR`) so tests that monkeypatch
-    # `Path.home` see the redirected path. Matches `mcp_auth._tokens_dir`.
-    state_dir = Path.home() / ".deepagents" / ".state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    _db_path = state_dir / "sessions.db"
+    from deepagents_cli.model_config import DEFAULT_STATE_DIR
+
+    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _db_path = DEFAULT_STATE_DIR / "sessions.db"
     return _db_path
 
 

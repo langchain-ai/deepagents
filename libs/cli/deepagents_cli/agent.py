@@ -269,12 +269,28 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+def _is_agent_dir_entry(entry: Path) -> bool:
+    """Return whether a `~/.deepagents/` entry should be listed as an agent.
+
+    Filters out symlinks (so dangling links don't masquerade as agents)
+    and dot-prefixed names — `.state/` (CLI internal state) plus any
+    other hidden directory the user may have placed there.
+
+    `OSError` from `is_dir`/`is_symlink` propagates so callers can log
+    with the failing entry's name as context.
+    """
+    if entry.name.startswith("."):
+        return False
+    return entry.is_dir() and not entry.is_symlink()
+
+
 def get_available_agent_names() -> list[str]:
     """Return a sorted list of available agent names from `~/.deepagents/`.
 
     Scans the user's `.deepagents` directory and returns each real
     subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent.
+    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) are
+    skipped so CLI internal state never appears as an agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -296,7 +312,7 @@ def get_available_agent_names() -> list[str]:
     names: list[str] = []
     for entry in entries:
         try:
-            if entry.is_dir() and not entry.is_symlink():
+            if _is_agent_dir_entry(entry):
                 names.append(entry.name)
         except OSError:
             logger.debug(
@@ -315,8 +331,9 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     agents_dir = settings.user_deepagents_dir
+    names = get_available_agent_names()
 
-    if not agents_dir.exists() or not any(agents_dir.iterdir()):
+    if not names:
         if output_format == "json":
             from deepagents_cli.output import write_json
 
@@ -334,17 +351,16 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         from deepagents_cli.output import write_json
 
         agents = []
-        for agent_path in sorted(agents_dir.iterdir()):
-            if agent_path.is_dir():
-                agent_name = agent_path.name
-                agents.append(
-                    {
-                        "name": agent_name,
-                        "path": str(agent_path),
-                        "has_agents_md": (agent_path / "AGENTS.md").exists(),
-                        "is_default": agent_name == DEFAULT_AGENT_NAME,
-                    }
-                )
+        for name in names:
+            agent_path = agents_dir / name
+            agents.append(
+                {
+                    "name": name,
+                    "path": str(agent_path),
+                    "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                    "is_default": name == DEFAULT_AGENT_NAME,
+                }
+            )
         write_json("list", agents)
         return
 
@@ -352,33 +368,28 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
     console.print("\n[bold]Available Agents:[/bold]\n", style=theme.PRIMARY)
 
-    for agent_path in sorted(agents_dir.iterdir()):
-        if agent_path.is_dir():
-            agent_name = escape_markup(agent_path.name)
-            agent_md = agent_path / "AGENTS.md"
-            is_default = agent_path.name == DEFAULT_AGENT_NAME
-            default_label = " [dim](default)[/dim]" if is_default else ""
+    bullet = get_glyphs().bullet
+    for name in names:
+        agent_path = agents_dir / name
+        agent_name = escape_markup(name)
+        is_default = name == DEFAULT_AGENT_NAME
+        default_label = " [dim](default)[/dim]" if is_default else ""
 
-            bullet = get_glyphs().bullet
-            if agent_md.exists():
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=theme.PRIMARY,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
-            else:
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
-                    " [dim](incomplete)[/dim]",
-                    style=theme.WARNING,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
+        if (agent_path / "AGENTS.md").exists():
+            console.print(
+                f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                style=theme.PRIMARY,
+            )
+        else:
+            console.print(
+                f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                " [dim](incomplete)[/dim]",
+                style=theme.WARNING,
+            )
+        console.print(
+            f"    {escape_markup(str(agent_path))}",
+            style=theme.MUTED,
+        )
 
     console.print()
 

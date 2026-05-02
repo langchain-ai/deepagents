@@ -963,6 +963,60 @@ class TestListAgentsJson:
         result = json.loads(buf.getvalue())
         assert result["data"] == []
 
+    def test_json_output_excludes_state_dir(self, tmp_path: Path) -> None:
+        """`.state/` is never surfaced as an agent in JSON output."""
+        import json
+        from io import StringIO
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME).mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME / "AGENTS.md").touch()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".state" / "sessions.db").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        buf = StringIO()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("sys.stdout", buf),
+        ):
+            list_agents(output_format="json")
+
+        result = json.loads(buf.getvalue())
+        names = [a["name"] for a in result["data"]]
+        assert names == [DEFAULT_AGENT_NAME]
+        assert ".state" not in names
+
+    def test_text_output_excludes_state_dir(self, tmp_path: Path) -> None:
+        """`.state/` is never surfaced as an agent in Rich output."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME).mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME / "AGENTS.md").touch()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".state" / "sessions.db").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert ".state" not in joined
+
 
 class TestResetAgentJson:
     """Tests for reset_agent JSON output."""
@@ -2337,6 +2391,17 @@ class TestGetAvailableAgentNames:
 
         with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["real"]
+
+    def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
+        """`.state/` and other hidden dirs are excluded from the agent list."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".cache").mkdir()
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
 
     def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
         """PermissionError on iterdir → logged + empty list, not raised."""

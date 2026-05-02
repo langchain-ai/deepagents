@@ -165,8 +165,13 @@ def _interpolate(s: str, *, header: str, server_name: str | None) -> str:
 
 
 def _tokens_dir() -> Path:
-    """Return `~/.deepagents/mcp-tokens/`."""
-    return Path.home() / ".deepagents" / "mcp-tokens"
+    """Return `~/.deepagents/.state/mcp-tokens/`.
+
+    Resolved at call time (not at module import) so tests that monkeypatch
+    `Path.home()` after import still redirect token storage into a temp
+    directory.
+    """
+    return Path.home() / ".deepagents" / ".state" / "mcp-tokens"
 
 
 def _token_file_stem(server_name: str, server_url: str | None) -> str:
@@ -183,21 +188,21 @@ def _token_file_stem(server_name: str, server_url: str | None) -> str:
 
 
 class FileTokenStorage(TokenStorage):
-    """File-backed `TokenStorage` under `~/.deepagents/mcp-tokens/`."""
+    """File-backed `TokenStorage` under `~/.deepagents/.state/mcp-tokens/`."""
 
     def __init__(self, server_name: str, *, server_url: str | None = None) -> None:
         """Bind this storage to a configured MCP server identity.
 
         Raises:
             ValueError: If `server_name` contains characters that would let
-                it escape the `~/.deepagents/mcp-tokens/` directory when
-                used as the token-file basename.
+                it escape the `~/.deepagents/.state/mcp-tokens/` directory
+                when used as the token-file basename.
         """
         if not _SAFE_SERVER_NAME_RE.fullmatch(server_name):
             msg = (
                 f"Invalid MCP server name {server_name!r}: token storage "
                 "names must match [A-Za-z0-9_-]+ to keep the on-disk path "
-                "inside ~/.deepagents/mcp-tokens/."
+                "inside ~/.deepagents/.state/mcp-tokens/."
             )
             raise ValueError(msg)
         self._server_name = server_name

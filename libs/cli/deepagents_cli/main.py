@@ -1444,6 +1444,21 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
+        # Best-effort, idempotent migration. Placed after parse_args so
+        # --help / --version exit before any I/O. Wrapped broadly so an
+        # unexpected non-OSError (e.g., RuntimeError from `Path.home()`
+        # when $HOME is unset on a CI runner) cannot crash startup —
+        # state migration has zero functional value vs. failing-soft.
+        try:
+            from deepagents_cli.state_migration import migrate_legacy_state
+
+            migrate_legacy_state()
+        except Exception:
+            logger.warning(
+                "Legacy state migration failed unexpectedly; continuing.",
+                exc_info=True,
+            )
+
         # Import console/settings AFTER arg parsing so --help (which exits
         # inside parse_args) never pays the settings bootstrap cost.
         from deepagents_cli.config import console, settings

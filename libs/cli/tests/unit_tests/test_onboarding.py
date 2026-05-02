@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from deepagents_cli._env_vars import DEBUG_ONBOARDING
 from deepagents_cli.onboarding import (
     ONBOARDING_NAME_MEMORY_END,
@@ -13,33 +15,41 @@ from deepagents_cli.onboarding import (
     write_onboarding_name_memory,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 
 class TestOnboardingState:
     """Tests for the onboarding completion marker and debug override."""
 
     def test_missing_marker_runs_onboarding(self, tmp_path) -> None:
         """Onboarding should run before the marker exists."""
-        assert should_run_onboarding(tmp_path, environ={}) is True
+        assert should_run_onboarding(tmp_path) is True
 
     def test_existing_marker_skips_onboarding(self, tmp_path) -> None:
         """Onboarding should not run after completion is marked."""
         onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
 
         assert has_completed_onboarding(tmp_path) is True
-        assert should_run_onboarding(tmp_path, environ={}) is False
+        assert should_run_onboarding(tmp_path) is False
 
-    def test_debug_override_runs_even_with_marker(self, tmp_path) -> None:
+    def test_debug_override_runs_even_with_marker(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Debug override should force onboarding every startup."""
         onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
+        monkeypatch.setenv(DEBUG_ONBOARDING, "1")
 
-        assert should_run_onboarding(tmp_path, environ={DEBUG_ONBOARDING: "1"}) is True
+        assert should_run_onboarding(tmp_path) is True
 
     def test_mark_onboarding_complete_creates_marker(self, tmp_path) -> None:
         """Completion should create the marker under the config directory."""
         assert mark_onboarding_complete(tmp_path) is True
 
         assert onboarding_marker_path(tmp_path).read_text(encoding="utf-8") == "1\n"
-        assert should_run_onboarding(tmp_path, environ={}) is False
+        assert should_run_onboarding(tmp_path) is False
 
     def test_write_onboarding_name_memory_creates_managed_block(self, tmp_path) -> None:
         """Submitted names should be written to user agent memory."""

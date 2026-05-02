@@ -761,12 +761,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-opus-4-6", "anthropic"),
         ]
 
-        curated = ModelSelectorScreen._curate_models(
-            all_models,
-            profiles={},
-            current_spec=None,
-            default_spec=None,
-        )
+        curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
             ("openai:gpt-5.5", "openai"),
@@ -784,12 +779,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
         ]
 
-        curated = ModelSelectorScreen._curate_models(
-            all_models,
-            profiles={},
-            current_spec="openai:gpt-4o",
-            default_spec="anthropic:claude-sonnet-4-5",
-        )
+        curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
             ("anthropic:claude-opus-4-6", "anthropic"),
@@ -802,12 +792,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-4o", "openai"),
         ]
 
-        curated = ModelSelectorScreen._curate_models(
-            all_models,
-            profiles={},
-            current_spec=None,
-            default_spec=None,
-        )
+        curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
             ("anthropic:claude-sonnet-4-5", "anthropic"),

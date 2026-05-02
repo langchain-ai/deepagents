@@ -18,34 +18,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
-
-_MODEL_PROVIDER_EXTRAS = frozenset(
-    {
-        "anthropic",
-        "baseten",
-        "bedrock",
-        "cohere",
-        "deepseek",
-        "fireworks",
-        "google-genai",
-        "groq",
-        "huggingface",
-        "ibm",
-        "litellm",
-        "mistralai",
-        "nvidia",
-        "ollama",
-        "openai",
-        "openrouter",
-        "perplexity",
-        "vertexai",
-        "xai",
-    }
-)
-"""Optional extras that add model-provider integrations."""
-
-_SANDBOX_EXTRAS = frozenset({"agentcore", "daytona", "modal", "runloop"})
-"""Optional extras that add sandbox integrations."""
+from deepagents_cli.extras_info import MODEL_PROVIDER_EXTRAS, SANDBOX_EXTRAS
 
 _EXTRA_LIST_LIMIT = 8
 """Maximum extra names shown inline before summarizing the remainder."""
@@ -145,14 +118,14 @@ class LaunchNameScreen(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
-        """Focus the name field and apply ASCII border when needed."""
+        """Apply ASCII border when needed.
+
+        Focus is delivered by `AUTO_FOCUS`.
+        """
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
-        name_input = self.query_one("#launch-name-input", Input)
-        name_input.focus()
-        self.call_after_refresh(name_input.focus)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Dismiss with the submitted name.
@@ -288,47 +261,31 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         Returns:
             Multi-line section text.
         """
-        providers = self._extra_names(_MODEL_PROVIDER_EXTRAS, ready=ready)
-        sandboxes = self._extra_names(_SANDBOX_EXTRAS, ready=ready)
-        others = self._extra_names(
-            _MODEL_PROVIDER_EXTRAS | _SANDBOX_EXTRAS,
-            ready=ready,
-            invert=True,
+        providers = self._extra_names(MODEL_PROVIDER_EXTRAS, ready=ready)
+        sandboxes = self._extra_names(SANDBOX_EXTRAS, ready=ready)
+        return "\n".join(
+            [
+                title,
+                f"  Model providers: {_format_extra_names(providers)}",
+                f"  Sandboxes: {_format_extra_names(sandboxes)}",
+            ]
         )
-        lines = [
-            title,
-            f"  Model providers: {_format_extra_names(providers)}",
-            f"  Sandboxes: {_format_extra_names(sandboxes)}",
-        ]
-        if others:
-            lines.append(f"  Other extras: {_format_extra_names(others)}")
-        return "\n".join(lines)
 
-    def _extra_names(
-        self,
-        names: frozenset[str],
-        *,
-        ready: bool,
-        invert: bool = False,
-    ) -> list[str]:
+    def _extra_names(self, names: frozenset[str], *, ready: bool) -> list[str]:
         """Return sorted extra names matching a category and readiness state.
 
         Args:
-            names: Category names to include, or exclude when `invert=True`.
+            names: Category names to include.
             ready: Desired readiness state.
-            invert: Whether to include extras outside `names`.
 
         Returns:
             Sorted matching extra names.
         """
-        result: list[str] = []
-        for status in self._statuses:
-            in_category = status.name in names
-            if invert:
-                in_category = not in_category
-            if in_category and status.ready is ready:
-                result.append(status.name)
-        return sorted(result)
+        return sorted(
+            status.name
+            for status in self._statuses
+            if status.name in names and status.ready is ready
+        )
 
     def action_continue(self) -> None:
         """Continue onboarding."""

@@ -709,7 +709,7 @@ class DeepAgentsApp(App):
 
                 Output is rendered in the transcript and non-zero exits warn but
                 do not abort the session.
-            launch_init: Whether to run the two-step onboarding setup flow
+            launch_init: Whether to run the onboarding setup flow
                 before accepting the first prompt.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
@@ -5760,7 +5760,7 @@ class DeepAgentsApp(App):
         """Build the model selector screen with current app model state.
 
         Args:
-            curated: Whether to use the shorter onboarding model list.
+            curated: Whether to use a shorter onboarding model list.
             result_callback: Optional direct callback for selector results.
 
         Returns:

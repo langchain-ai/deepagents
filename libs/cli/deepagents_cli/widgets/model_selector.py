@@ -379,14 +379,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         profiles = get_model_profiles(cli_override=cli_override)
         return all_models, config.default_model, profiles
 
-    @classmethod
+    @staticmethod
     def _curate_models(
-        cls,
         all_models: list[tuple[str, str]],
-        profiles: Mapping[str, ModelProfileEntry],
-        *,
-        current_spec: str | None,
-        default_spec: str | None,
     ) -> list[tuple[str, str]]:
         """Return the curated onboarding list in the model switcher's order.
 
@@ -396,14 +391,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
-            profiles: Profile mapping keyed by spec.
-            current_spec: Active model spec.
-            default_spec: Configured default model spec.
 
         Returns:
             Curated model list for onboarding setup.
         """
-        del cls, profiles, current_spec, default_spec
         frontier = [
             (spec, provider)
             for spec, provider in all_models
@@ -457,12 +448,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._default_spec = default_spec
         self._profiles = profiles
         if self._curated:
-            self._all_models = self._curate_models(
-                self._all_models,
-                self._profiles,
-                current_spec=self._current_spec,
-                default_spec=self._default_spec,
-            )
+            self._all_models = self._curate_models(self._all_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._loaded = True

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from deepagents_cli._env_vars import DEBUG_ONBOARDING, is_env_truthy
 from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -103,7 +101,10 @@ def write_onboarding_name_memory(
     block = _onboarding_name_memory_block(clean)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = ""
         path.write_text(
             _upsert_onboarding_name_memory(existing, block),
             encoding="utf-8",
@@ -160,42 +161,15 @@ def _upsert_onboarding_name_memory(existing: str, block: str) -> str:
     return f"{base}\n\n## User Preferences\n\n{block}\n"
 
 
-def should_run_onboarding(
-    config_dir: Path | None = None,
-    *,
-    environ: Mapping[str, str] | None = None,
-) -> bool:
+def should_run_onboarding(config_dir: Path | None = None) -> bool:
     """Return whether onboarding should open at interactive startup.
 
     Args:
         config_dir: Optional config directory override for tests.
-        environ: Optional environment mapping override for tests.
 
     Returns:
         `True` when the debug override is enabled or no completion marker exists.
     """
-    env = os.environ if environ is None else environ
-    debug_enabled = (
-        is_env_truthy(DEBUG_ONBOARDING)
-        if environ is None
-        else _env_truthy(DEBUG_ONBOARDING, env)
-    )
-    if debug_enabled:
+    if is_env_truthy(DEBUG_ONBOARDING):
         return True
     return not has_completed_onboarding(config_dir)
-
-
-def _env_truthy(name: str, env: Mapping[str, str]) -> bool:
-    """Parse a truthy env var from an explicit mapping.
-
-    Args:
-        name: Environment variable name.
-        env: Environment mapping to read.
-
-    Returns:
-        `True` for values accepted by `is_env_truthy`, otherwise `False`.
-    """
-    value = env.get(name)
-    if value is None:
-        return False
-    return value.strip().lower() in {"1", "true", "yes", "on"}

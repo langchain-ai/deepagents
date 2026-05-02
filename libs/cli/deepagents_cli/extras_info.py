@@ -30,6 +30,37 @@ rather than preserving the `deepagents-cli[a,b,...]` self-reference, so
 name-based filtering is the only reliable way to drop them.
 """
 
+MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "baseten",
+        "bedrock",
+        "cohere",
+        "deepseek",
+        "fireworks",
+        "google-genai",
+        "groq",
+        "huggingface",
+        "ibm",
+        "litellm",
+        "mistralai",
+        "nvidia",
+        "ollama",
+        "openai",
+        "openrouter",
+        "perplexity",
+        "vertexai",
+        "xai",
+    }
+)
+"""Optional extras that add model-provider integrations.
+
+Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
+"""
+
+SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
+"""Optional extras that add sandbox integrations."""
+
 ExtrasStatus = dict[str, list[tuple[str, str]]]
 """Mapping from extra name to `(package, installed_version)` tuples.
 

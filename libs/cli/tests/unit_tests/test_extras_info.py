@@ -1,14 +1,28 @@
 """Tests for optional-dependency status inspection."""
 
+import tomllib
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from deepagents_cli.extras_info import (
+    _COMPOSITE_EXTRAS,
+    MODEL_PROVIDER_EXTRAS,
+    SANDBOX_EXTRAS,
     format_extras_status,
     format_extras_status_plain,
     get_extras_status,
     get_optional_dependency_status,
 )
+
+_PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
+
+
+def _declared_extras() -> frozenset[str]:
+    """Return non-composite extras declared in `pyproject.toml`."""
+    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    return frozenset(extras) - _COMPOSITE_EXTRAS
 
 
 def test_returns_empty_when_distribution_missing() -> None:
@@ -179,6 +193,35 @@ def test_format_extras_status_plain_columns_are_aligned() -> None:
     # Extra column widened to the longest name (`google-genai` -> 12 chars).
     assert lines[1] == "  anthropic     langchain-anthropic     1.4.0"
     assert lines[2] == "  google-genai  langchain-google-genai  4.2.1"
+
+
+def test_extras_taxonomy_covers_pyproject() -> None:
+    """Every declared extra must be classified as provider or sandbox.
+
+    A new extra added to `pyproject.toml` without an entry in
+    `MODEL_PROVIDER_EXTRAS` or `SANDBOX_EXTRAS` would silently fall out of
+    the onboarding dependency screen. This drift test forces the contributor
+    to update one of those constants alongside the dependency.
+    """
+    declared = _declared_extras()
+    classified = MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS
+
+    uncategorized = declared - classified
+    assert not uncategorized, (
+        f"pyproject.toml declares extras not classified in extras_info: "
+        f"{sorted(uncategorized)}"
+    )
+
+    stale = classified - declared
+    assert not stale, (
+        f"extras_info classifies extras not declared in pyproject.toml: {sorted(stale)}"
+    )
+
+
+def test_extras_categories_are_disjoint() -> None:
+    """An extra cannot be both a model provider and a sandbox."""
+    overlap = MODEL_PROVIDER_EXTRAS & SANDBOX_EXTRAS
+    assert not overlap, f"Extras classified twice: {sorted(overlap)}"
 
 
 def test_format_extras_status_renders_markdown_table() -> None:

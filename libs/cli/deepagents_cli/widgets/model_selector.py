@@ -36,9 +36,6 @@ from deepagents_cli.model_config import (
 
 logger = logging.getLogger(__name__)
 
-_CURATED_MAX_TOTAL = 10
-"""Maximum models shown in curated mode."""
-
 _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
@@ -385,9 +382,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ) -> list[tuple[str, str]]:
         """Return the curated onboarding list in the model switcher's order.
 
-        The eval-backed frontier set is preferred. If none of those model
-        specs are available from the installed provider metadata, fall back to
-        the normal switcher list so onboarding still offers a usable choice.
+        Returns the eval-backed frontier subset when any of those models are
+        available. When none are, returns the full switcher list so onboarding
+        still surfaces every installed provider rather than a truncated slice.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
@@ -400,9 +397,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             for spec, provider in all_models
             if spec in _FRONTIER_RECOMMENDED_MODELS
         ]
-        if frontier:
-            return frontier[:_CURATED_MAX_TOTAL]
-        return all_models[:_CURATED_MAX_TOTAL]
+        return frontier or all_models
 
     async def on_mount(self) -> None:
         """Set up the screen on mount.

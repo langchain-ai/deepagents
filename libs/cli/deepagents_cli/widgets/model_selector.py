@@ -175,6 +175,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         margin-bottom: 1;
     }
 
+    ModelSelectorScreen .model-selector-info {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
     ModelSelectorScreen #model-filter {
         margin-bottom: 1;
         border: solid $primary-lighten-2;
@@ -335,6 +341,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 yield Static(
                     self._description,
                     classes="model-selector-description",
+                )
+
+            if not self._curated:
+                yield Static(
+                    Content.styled(
+                        "Showing models from installed providers.",
+                    ),
+                    classes="model-selector-info",
+                    id="model-selector-info",
                 )
 
             # Search input

@@ -208,6 +208,31 @@ class TestModelSelectorChrome:
             assert "Esc cancel" in str(help_text.content)
 
 
+class TestModelSelectorAvailabilityHint:
+    """Tests for the API-keys hint shown above the standard model list."""
+
+    async def test_hint_renders_in_non_curated_mode(self) -> None:
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+
+            assert info.display is True
+
+    async def test_hint_absent_in_curated_mode(self) -> None:
+        """Onboarding's curated picker shares no copy with the standard selector."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not screen.query("#model-selector-info")
+
+
 class TestModelSelectorKeyboardNavigation:
     """Tests for keyboard navigation in the modal."""
 

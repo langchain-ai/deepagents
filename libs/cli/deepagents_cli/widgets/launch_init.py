@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from textual.app import ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
@@ -45,16 +46,11 @@ def _normalize_name(value: str) -> str:
 class LaunchNameScreen(ModalScreen[str | None]):
     """First-step onboarding screen that asks for the user's name.
 
-    Dismissal contract (return value drives the launch-init state machine in
-    `DeepAgentsApp._run_launch_init_sequence` — the marker is written in
-    every case so onboarding does not reappear next launch):
+    Dismissal values:
 
-    - Returns the stripped/title-cased name string when the user submits one.
-        Continues to the dependency summary and model picker.
-    - Returns `""` when the user submits an empty input. Continues to the
-        dependency summary without writing the optional name memory.
-    - Returns `None` when the user dismisses with Escape. Skips the remaining
-        onboarding screens.
+    - Non-empty stripped/title-cased name when the user submits one.
+    - `""` when the user submits an empty input (continue, but skip name memory).
+    - `None` when the user dismisses with Escape (skip remaining onboarding).
     """
 
     AUTO_FOCUS = "#launch-name-input"
@@ -133,10 +129,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
-        """Apply ASCII border when needed.
-
-        Focus is delivered by `AUTO_FOCUS`.
-        """
+        """Apply ASCII border when needed."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
@@ -324,10 +317,19 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         if self._continue_screen is not None:
             try:
                 self.app.switch_screen(self._continue_screen)
-            except Exception:
+            except ScreenStackError:
+                # Stack was torn down (app exiting, screen popped under us).
+                # Fall back to dismissal so the launch-init task can finish
+                # rather than leaving the user staring at this modal.
                 logger.warning(
                     "Could not switch to continue screen; dismissing instead",
                     exc_info=True,
+                )
+                self.app.notify(
+                    "Could not open the model selector. Use /model to pick "
+                    "one when you're ready.",
+                    severity="warning",
+                    markup=False,
                 )
                 self.dismiss(True)
             return
@@ -338,13 +340,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Alias for `action_skip` invoked by the global Esc binding.
-
-        Textual's `Screen.action_cancel` is the conventional cancel hook used
-        by the app-level Esc handler in `DeepAgentsApp`; routing it to
-        `action_skip` keeps the screen-specific binding and the global path
-        in sync.
-        """
+        """See `LaunchNameScreen.action_cancel`."""
         self.action_skip()
 
 

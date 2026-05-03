@@ -137,6 +137,13 @@ _IS_ITERM = (
 _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
 
+_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
+"""Upper bound on waiting for server readiness during onboarding model switch.
+
+Server startup is normally seconds; this ceiling exists only so a stuck
+backend cannot trap the user inside a finished onboarding modal forever.
+"""
+
 
 def _write_iterm_escape(sequence: str) -> None:
     """Write an iTerm2 escape sequence to stderr.
@@ -3337,13 +3344,61 @@ class DeepAgentsApp(App):
 
             model_spec, _provider = result
             if self._connecting:
-                await self._connection_ready_event.wait()
+                # Bound the wait so a stuck server never traps onboarding.
+                # Server startup typically completes in seconds; a minute is
+                # a generous ceiling that still beats hanging forever.
+                try:
+                    await asyncio.wait_for(
+                        self._connection_ready_event.wait(),
+                        timeout=_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Server connection did not become ready within %ss; "
+                        "skipping onboarding model switch",
+                        _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                    self.notify(
+                        "Server still starting. Use /model to switch when ready.",
+                        severity="warning",
+                        markup=False,
+                    )
+                    await self._await_launch_name_memory(name_memory_task)
+                    await self._finish_launch_init(name=name)
+                    return
             if self._exit:
                 await self._await_launch_name_memory(name_memory_task)
                 return
-            await self._switch_model(model_spec, announce_unchanged=False)
+            try:
+                await self._switch_model(model_spec, announce_unchanged=False)
+            except Exception as exc:  # surface to user, don't crash onboarding
+                logger.warning(
+                    "Model switch during onboarding failed",
+                    exc_info=True,
+                )
+                self.notify(
+                    f"Could not switch to {model_spec}: {exc}. Use /model to "
+                    "try again.",
+                    severity="error",
+                    markup=False,
+                )
             await self._await_launch_name_memory(name_memory_task)
             await self._finish_launch_init(name=name)
+        except Exception:
+            # Last-resort guard: surface unexpected failures and best-effort
+            # mark onboarding complete so the user is not trapped re-running
+            # a broken flow on every launch.
+            logger.exception("Onboarding sequence failed unexpectedly")
+            self.notify(
+                "Setup hit an unexpected error. You can configure things "
+                "manually with /model and /memory.",
+                severity="error",
+                markup=False,
+            )
+            with suppress(Exception):
+                await self._await_launch_name_memory(name_memory_task)
+            with suppress(Exception):
+                await self._mark_onboarding_complete()
         finally:
             self._launch_init_running = False
             if self._chat_input:

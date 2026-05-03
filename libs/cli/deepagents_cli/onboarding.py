@@ -135,7 +135,8 @@ def _normalize_memory_name(name: str) -> str:
     """Normalize whitespace in a name before writing it to memory.
 
     Returns:
-        Name with runs of whitespace collapsed.
+        Name with leading/trailing whitespace stripped and internal runs
+            collapsed to single spaces.
     """
     return " ".join(name.split())
 

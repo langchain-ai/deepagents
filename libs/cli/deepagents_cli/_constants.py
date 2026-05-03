@@ -8,10 +8,7 @@ chain of expensive imports.
 
 from __future__ import annotations
 
-DEFAULT_AGENT_NAME = "agent"
-"""Single source of truth for the default agent / assistant identifier.
+from typing import Final
 
-Re-exported as `agent.DEFAULT_AGENT_NAME`, `_server_config.DEFAULT_ASSISTANT_ID`,
-and imported as `_DEFAULT_AGENT_NAME` in `main.py`. Used as the default for
-`ServerConfig.assistant_id` and as the fallback when no `-a` flag is given.
-"""
+DEFAULT_AGENT_NAME: Final[str] = "agent"
+"""Default agent / assistant identifier when no `-a` flag is given."""

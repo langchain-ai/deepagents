@@ -45,7 +45,7 @@ _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openai:gpt-5.5",
     }
 )
-"""Recommended onboarding model subset from `.github/scripts/models.py` frontier."""
+"""Curated frontier-tier models shown in the onboarding picker."""
 
 
 class ModelOption(Static):

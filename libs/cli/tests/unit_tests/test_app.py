@@ -731,6 +731,96 @@ class TestStartupSequence:
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
 
+    async def test_launch_init_sequence_surfaces_switch_model_failure(self) -> None:
+        """Failed onboarding model switch should toast and still mark complete."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+            return_value=(True, ("openai:gpt-5", "openai"))
+        )
+        switch_failure = RuntimeError("missing credentials")
+        app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
+            await app._run_launch_init_sequence()
+
+        app._switch_model.assert_awaited_once()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "error"
+        assert notify_kwargs.get("markup") is False
+        assert "missing credentials" in notify_mock.call_args.args[0]
+
+    async def test_launch_init_sequence_surfaces_marker_failure(self) -> None:
+        """A failed onboarding-complete write should surface a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock()  # type: ignore[assignment]
+        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.onboarding.mark_onboarding_complete",
+            return_value=False,
+        ):
+            await app._run_launch_init_sequence()
+
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "warning"
+        assert notify_kwargs.get("markup") is False
+
+    async def test_launch_init_sequence_times_out_waiting_for_server(self) -> None:
+        """A stuck server should not trap onboarding past the timeout."""
+        from deepagents_cli import app as app_module
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+            return_value=(True, ("openai:gpt-5", "openai"))
+        )
+        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._connecting = True
+        # Constructor pre-sets the readiness event when no server is configured;
+        # clear it so the wait_for actually has to time out.
+        app._connection_ready_event.clear()
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with (
+            patch.object(app_module, "_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS", 0.05),
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
+            await app._run_launch_init_sequence()
+
+        app._switch_model.assert_not_awaited()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "warning"
+
     def test_curated_model_selector_uses_onboarding_copy(self) -> None:
         """Onboarding model selector should use dedicated title and description."""
         from deepagents_cli.widgets.model_selector import ModelSelectorScreen

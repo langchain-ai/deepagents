@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -238,6 +238,39 @@ class TestLaunchDependenciesScreen:
 
         assert app.dismissed is True
         assert app.result is None
+
+    async def test_continue_screen_switch_failure_dismisses_with_toast(self) -> None:
+        """A `ScreenStackError` during switch should dismiss and notify the user."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(
+                self._STATUSES,
+                continue_screen=DummyNextScreen(),
+            )
+            await pilot.pause()
+
+            notified: list[tuple[str, dict[str, Any]]] = []
+
+            def fake_notify(message: str, **kwargs: Any) -> None:
+                notified.append((message, kwargs))
+
+            def fake_switch_screen(_screen: object) -> None:
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+
+            app.switch_screen = fake_switch_screen  # type: ignore[method-assign]
+            app.notify = fake_notify  # type: ignore[method-assign]
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.dismissed is True
+        assert app.result == "True"
+        assert notified, "expected a toast on screen-switch failure"
+        message, kwargs = notified[0]
+        assert "model selector" in message.lower()
+        assert kwargs.get("severity") == "warning"
+        assert kwargs.get("markup") is False
 
     async def test_empty_statuses_render_explanatory_message(self) -> None:
         """Empty statuses should explain the cause instead of "none detected" twice."""

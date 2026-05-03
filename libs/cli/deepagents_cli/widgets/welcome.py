@@ -13,6 +13,7 @@ from textual.widgets import Static
 
 if TYPE_CHECKING:
     from textual.events import Click
+    from textual.timer import Timer
 
 from deepagents_cli import theme
 from deepagents_cli._version import __version__
@@ -48,6 +49,15 @@ _TIPS: dict[str, int] = {
 """Rotating tips shown in the welcome footer, with relative selection weights.
 
 One is picked per session. Higher weights are picked more often.
+"""
+
+_CONNECTING_FOOTER_DELAY_SECONDS = 5.0
+"""Seconds the banner waits before revealing the "Connecting..." footer.
+
+Startup is usually fast enough that flashing the spinner makes the CLI feel
+slower than it is; the welcome footer renders immediately and the connecting
+footer only appears if startup is genuinely taking a while or the user
+submits a message before the agent is reachable.
 """
 
 
@@ -90,6 +100,7 @@ class WelcomeBanner(Static):
         connecting: bool = False,
         resuming: bool = False,
         local_server: bool = False,
+        defer_connecting_display: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the welcome banner.
@@ -108,6 +119,12 @@ class WelcomeBanner(Static):
                 CLI).
 
                 Ignored when `resuming` is `True`.
+            defer_connecting_display: When `True` and `connecting` is `True`,
+                suppress the connecting footer initially and render the ready
+                footer instead, so a fast startup feels instantaneous. The
+                connecting footer is revealed by `reveal_connecting_footer`
+                (called when the user submits a message during startup) or
+                automatically after `_CONNECTING_FOOTER_DELAY_SECONDS`.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
@@ -119,6 +136,8 @@ class WelcomeBanner(Static):
         self._resuming = resuming
         self._local_server = local_server
         self._idle = False
+        self._defer_connecting_display = defer_connecting_display and connecting
+        self._defer_timer: Timer | None = None
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
         self._tip: str = _pick_tip()
@@ -130,6 +149,36 @@ class WelcomeBanner(Static):
         self.watch(self.app, "theme", self._on_theme_change, init=False)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
+        if self._defer_connecting_display:
+            self._defer_timer = self.set_timer(
+                _CONNECTING_FOOTER_DELAY_SECONDS, self._on_defer_timer_fired
+            )
+
+    def _cancel_defer_timer(self) -> None:
+        """Stop and drop the deferred-display timer if it is still pending."""
+        if self._defer_timer is not None:
+            self._defer_timer.stop()
+            self._defer_timer = None
+
+    def _on_defer_timer_fired(self) -> None:
+        """Reveal the connecting footer once the deferral window expires."""
+        self._defer_timer = None
+        self.reveal_connecting_footer()
+
+    def reveal_connecting_footer(self) -> None:
+        """Stop deferring the "Connecting..." footer and render it now.
+
+        No-op when the banner is not currently deferring (already revealed,
+        already connected, or never was connecting). Called when the user
+        submits a message before startup completes so the queued state has
+        explicit feedback.
+        """
+        if not self._defer_connecting_display:
+            return
+        self._cancel_defer_timer()
+        self._defer_connecting_display = False
+        if self._connecting:
+            self.update(self._build_banner(self._project_url))
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
@@ -175,6 +224,8 @@ class WelcomeBanner(Static):
         """
         self._connecting = False
         self._idle = False
+        self._defer_connecting_display = False
+        self._cancel_defer_timer()
         self._mcp_tool_count = mcp_tool_count
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
@@ -185,11 +236,14 @@ class WelcomeBanner(Static):
 
         Used when the server is being restarted mid-session (e.g., switching
         agents via `/agents`), so the banner reflects that no agent is
-        currently reachable.
+        currently reachable. Mid-session swaps show the connecting footer
+        immediately — only the initial app launch defers it.
         """
         self._connecting = True
         self._idle = False
         self._resuming = False
+        self._defer_connecting_display = False
+        self._cancel_defer_timer()
         self.update(self._build_banner(self._project_url))
 
     def set_idle(self) -> None:
@@ -203,6 +257,8 @@ class WelcomeBanner(Static):
         """
         self._connecting = False
         self._idle = True
+        self._defer_connecting_display = False
+        self._cancel_defer_timer()
         self.update(self._build_banner(self._project_url))
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
@@ -328,7 +384,8 @@ class WelcomeBanner(Static):
                 ]
             )
 
-        if self._connecting:
+        show_connecting = self._connecting and not self._defer_connecting_display
+        if show_connecting:
             parts.append(
                 build_connecting_footer(
                     resuming=self._resuming,

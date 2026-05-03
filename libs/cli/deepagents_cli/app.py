@@ -1225,6 +1225,7 @@ class DeepAgentsApp(App):
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
+                defer_connecting_display=self._connecting,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -3603,6 +3604,11 @@ class DeepAgentsApp(App):
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
+            if self._connecting:
+                with suppress(NoMatches):
+                    self.query_one(
+                        "#welcome-banner", WelcomeBanner
+                    ).reveal_connecting_footer()
             return
 
         await self._process_message(value, mode)

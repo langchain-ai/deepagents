@@ -8,7 +8,12 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from deepagents_cli.model_config import ModelProfileEntry
+from deepagents_cli.config import get_glyphs
+from deepagents_cli.model_config import (
+    ModelProfileEntry,
+    ProviderAuthState,
+    ProviderAuthStatus,
+)
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
 
@@ -809,7 +814,10 @@ class TestFormatOptionLabel:
             "anthropic:old-model",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+            ),
             status="deprecated",
         )
         from deepagents_cli.theme import DARK_COLORS
@@ -823,7 +831,10 @@ class TestFormatOptionLabel:
             "anthropic:claude-sonnet-4-5",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+            ),
             status=None,
         )
         assert "(deprecated)" not in label.plain
@@ -834,7 +845,10 @@ class TestFormatOptionLabel:
             "anthropic:new-model",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+            ),
             status="beta",
         )
         assert "(deprecated)" not in label.plain
@@ -849,13 +863,144 @@ class TestFormatOptionLabel:
             "anthropic:old-model",
             selected=False,
             current=True,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+            ),
             is_default=True,
             status="deprecated",
         )
         assert "(current)" in label.plain
         assert "(default)" in label.plain
         assert "(deprecated)" in label.plain
+
+    def test_missing_credentials_warning_styles_model(self) -> None:
+        """Missing credentials should warn on the model row."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+        )
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning in label.markup
+
+    def test_no_auth_required_does_not_warning_style_model(self) -> None:
+        """No-auth local providers should not look like missing credentials."""
+        label = ModelSelectorScreen._format_option_label(
+            "ollama:llama3",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider="ollama",
+                detail="local provider",
+            ),
+        )
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning not in label.markup
+
+
+class TestFormatAuthIndicator:
+    """Tests for provider auth indicator labels."""
+
+    def test_configured_auth_uses_checkmark(self) -> None:
+        """Configured credentials should show an explicit credentials label."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+            ),
+            get_glyphs(),
+        )
+
+        assert "credentials set" in indicator
+
+    def test_ollama_local_auth_has_no_checkmark(self) -> None:
+        """Local Ollama should not reuse the credentials-set checkmark."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider="ollama",
+                detail="local provider",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "local provider"
+
+    def test_missing_auth_names_env_var(self) -> None:
+        """Missing credentials should show the missing env var name."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+            get_glyphs(),
+        )
+
+        assert "missing ANTHROPIC_API_KEY" in indicator
+
+    def test_missing_auth_without_env_var_uses_generic_message(self) -> None:
+        """MISSING without env_var falls back to a generic missing-creds label."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="custom",
+            ),
+            get_glyphs(),
+        )
+
+        assert "missing credentials" in indicator
+
+    def test_implicit_auth_uses_detail(self) -> None:
+        """IMPLICIT state surfaces its detail string."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.IMPLICIT,
+                provider="google_vertexai",
+                detail="implicit auth",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "implicit auth"
+
+    def test_managed_auth_uses_detail(self) -> None:
+        """MANAGED state surfaces its detail string."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MANAGED,
+                provider="custom",
+                detail="custom auth",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "custom auth"
+
+    def test_unknown_auth_uses_question_glyph(self) -> None:
+        """UNKNOWN state prefixes the detail with the question glyph."""
+        glyphs = get_glyphs()
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.UNKNOWN,
+                provider="ollama",
+                detail="remote endpoint; set OLLAMA_API_KEY if auth is required",
+            ),
+            glyphs,
+        )
+
+        assert indicator.startswith(glyphs.question)
+        assert "OLLAMA_API_KEY" in indicator
 
 
 class TestGetModelStatus:

@@ -16,14 +16,18 @@ from deepagents_cli.model_config import (
     ModelConfigError,
     ModelProfileEntry,
     ModelSpec,
+    ProviderAuthState,
+    ProviderAuthStatus,
     _get_builtin_providers,
     _get_provider_profile_modules,
+    _is_local_endpoint,
     _load_provider_profiles,
     _profile_module_from_class_path,
     clear_caches,
     clear_default_model,
     get_available_models,
     get_model_profiles,
+    get_provider_auth_status,
     has_provider_credentials,
     is_warning_suppressed,
     load_recent_agent,
@@ -1637,14 +1641,62 @@ class TestHasProviderCredentialsFallback:
     """Tests for has_provider_credentials() falling back to ModelConfig."""
 
     def test_falls_back_to_config_no_key_required(self, tmp_path):
-        """Returns None for config provider with no api_key_env (unknown)."""
+        """Returns True for local Ollama with no api_key_env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["llama3"]
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert has_provider_credentials("ollama") is None
+            assert has_provider_credentials("ollama") is True
+
+    def test_ollama_remote_without_key_is_unknown(self, tmp_path):
+        """Remote Ollama without optional auth should not claim local readiness."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert "OLLAMA_API_KEY" in (status.detail or "")
+        assert legacy is None
+
+    def test_ollama_optional_api_key_is_configured(self, tmp_path):
+        """OLLAMA_API_KEY marks Ollama as configured for cloud/hosted use."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "test-key"}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert legacy is True
+
+    def test_google_vertexai_missing_project_uses_implicit_auth(self):
+        """Vertex AI should not fail just because GOOGLE_CLOUD_PROJECT is unset."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("google_vertexai")
+            legacy = has_provider_credentials("google_vertexai")
+
+        assert status.state is ProviderAuthState.IMPLICIT
+        assert legacy is True
 
     def test_falls_back_to_config_with_key_set(self, tmp_path):
         """Returns True for config provider with api_key_env set in env."""
@@ -1711,6 +1763,148 @@ api_key_env = "CIS_API_KEY"
         auth failures at model-creation time.
         """
         assert has_provider_credentials("nonexistent_provider_xyz") is None
+
+
+class TestIsLocalEndpoint:
+    """Tests for _is_local_endpoint URL classification."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            "localhost",
+            "localhost:11434",
+            "http://localhost",
+            "http://localhost:11434",
+            "127.0.0.1:11434",
+            "http://127.0.0.1",
+            "::1",
+            "http://[::1]:11434",
+            "0.0.0.0",
+            "http://0.0.0.0:11434",
+        ],
+    )
+    def test_local_endpoints(self, url: str | None) -> None:
+        """Loopback hostnames and bare URLs resolve as local."""
+        assert _is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://ollama.example.com",
+            "http://192.168.1.5:11434",
+            "https://api.cloud.com/v1",
+            "remote-host:11434",
+        ],
+    )
+    def test_non_local_endpoints(self, url: str) -> None:
+        """Non-loopback hostnames resolve as remote."""
+        assert _is_local_endpoint(url) is False
+
+    def test_non_string_input_returns_false(self) -> None:
+        """Non-string input must not raise (defensive against TOML drift)."""
+        assert _is_local_endpoint(123) is False  # type: ignore[arg-type]
+
+
+class TestProviderAuthStatusBranches:
+    """Direct coverage of get_provider_auth_status states beyond Ollama."""
+
+    def test_managed_state_for_class_path_provider(self, tmp_path: Path) -> None:
+        """class_path without api_key_env returns MANAGED with custom-auth detail."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            status = get_provider_auth_status("cis")
+
+        assert status.state is ProviderAuthState.MANAGED
+        assert status.detail == "custom auth"
+        assert status.env_var is None
+
+    def test_missing_state_for_known_provider_without_env(self) -> None:
+        """Hardcoded provider with no env set returns MISSING with the env name."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "ANTHROPIC_API_KEY"
+        assert status.blocks_start is True
+
+    def test_missing_state_for_config_provider_with_empty_env(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Config provider with api_key_env set but unset env returns MISSING."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("fireworks")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "FIREWORKS_API_KEY"
+
+    def test_ollama_host_env_drives_locality(self, tmp_path: Path) -> None:
+        """OLLAMA_HOST env var controls local vs. remote when no base_url is set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"OLLAMA_HOST": "https://ollama.example.com"},
+                clear=True,
+            ),
+        ):
+            status = get_provider_auth_status("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+
+
+class TestProviderAuthStatusMissingDetail:
+    """Tests for ProviderAuthStatus.missing_detail() rendering."""
+
+    def test_with_env_var_uses_env_var_message(self) -> None:
+        """env_var presence yields a 'not set or is empty' message."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="anthropic",
+            env_var="ANTHROPIC_API_KEY",
+        )
+        assert status.missing_detail() == "ANTHROPIC_API_KEY is not set or is empty"
+
+    def test_with_detail_only_falls_back_to_detail(self) -> None:
+        """Without env_var but with a detail string, returns the detail."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="custom",
+            detail="bespoke auth missing",
+        )
+        assert status.missing_detail() == "bespoke auth missing"
+
+    def test_without_env_var_or_detail_returns_unknown_provider_hint(self) -> None:
+        """Bare MISSING falls back to a 'not recognized' hint."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="phantom",
+        )
+        message = status.missing_detail()
+        assert "phantom" in message
+        assert "not recognized" in message
 
 
 class TestModelConfigGetClassPath:

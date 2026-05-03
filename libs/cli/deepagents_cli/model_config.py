@@ -14,9 +14,11 @@ import tempfile
 import threading
 import tomllib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+from urllib.parse import urlparse
 
 import tomli_w
 
@@ -98,6 +100,69 @@ class MissingCredentialsError(ModelConfigError):
         super().__init__(message)
         self.provider = provider
         self.env_var = env_var
+
+
+class ProviderAuthState(StrEnum):
+    """Credential readiness state for a model provider."""
+
+    CONFIGURED = "configured"
+    """An explicit credential source is configured and non-empty."""
+
+    MISSING = "missing"
+    """An explicit credential source is required but missing."""
+
+    NOT_REQUIRED = "not_required"
+    """This provider configuration does not require API-key credentials."""
+
+    IMPLICIT = "implicit"
+    """The provider supports ambient auth outside CLI env-var checks."""
+
+    MANAGED = "managed"
+    """A custom provider class is expected to manage auth itself."""
+
+    UNKNOWN = "unknown"
+    """The CLI cannot determine whether provider auth is ready."""
+
+
+@dataclass(frozen=True)
+class ProviderAuthStatus:
+    """Credential readiness information for a provider.
+
+    Args:
+        state: Provider auth state.
+        provider: Provider name.
+        env_var: Env var name associated with the state, when applicable.
+        detail: Short user-facing context for selectors and logs.
+    """
+
+    state: ProviderAuthState
+    provider: str
+    env_var: str | None = None
+    detail: str | None = None
+
+    @property
+    def blocks_start(self) -> bool:
+        """Whether this status should block model creation or switching."""
+        return self.state is ProviderAuthState.MISSING
+
+    def as_legacy_bool(self) -> bool | None:
+        """Return the historic `has_provider_credentials` tri-state value."""
+        if self.state is ProviderAuthState.MISSING:
+            return False
+        if self.state is ProviderAuthState.UNKNOWN:
+            return None
+        return True
+
+    def missing_detail(self) -> str:
+        """Return a user-facing reason for a missing-credential status."""
+        if self.env_var:
+            return f"{self.env_var} is not set or is empty"
+        if self.detail:
+            return self.detail
+        return (
+            f"provider '{self.provider}' is not recognized. "
+            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+        )
 
 
 @dataclass(frozen=True)
@@ -304,12 +369,22 @@ registry fallback.
 """
 
 IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
-"""Providers that support implicit auth (e.g., ADC, local servers).
+"""Providers that support ambient auth outside CLI env-var checks.
 
 These providers can authenticate without the env var listed in
 `PROVIDER_API_KEY_ENV`, so a missing env var should not be treated as a hard
-credential failure. Used by `create_model` to skip the early credential check.
+credential failure. Used by `create_model` to skip the early credential check
+and by `get_provider_auth_status` for user-facing auth labels.
 """
+
+NO_AUTH_REQUIRED_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+"""Providers whose default local configuration does not require API keys."""
+
+OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
+"""Optional env vars that enable authenticated provider modes when present."""
+
+PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
+"""Provider-specific env vars that can point a local provider at a remote host."""
 
 
 # Module-level caches — cleared by `clear_caches()`.
@@ -760,57 +835,177 @@ def get_model_profiles(
     return frozen
 
 
-def has_provider_credentials(provider: str) -> bool | None:
-    """Check if credentials are available for a provider.
+_LOCAL_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",  # noqa: S104  # hostname comparison, not socket binding
+    }
+)
 
-    Combines two credential sources to decide whether a provider's API key
-    is present *before* attempting model creation:
 
-    1. **Config-file providers** (`config.toml` `[providers.<name>]`):
+def _is_local_endpoint(url: str | None) -> bool:
+    """Return whether a provider endpoint points at the local machine."""
+    if not url:
+        return True
+    if not isinstance(url, str):
+        return False
+
+    # Bare hostname literal (no scheme, no port) — short-circuit so IPv6
+    # forms like `::1` don't get misparsed by urlparse.
+    if url in _LOCAL_HOSTNAMES:
+        return True
+
+    candidate = url if "://" in url else f"http://{url}"
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return False
+    return parsed.hostname in _LOCAL_HOSTNAMES
+
+
+def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
+    """Return a provider endpoint from config or provider-specific env vars."""
+    base_url = config.get_base_url(provider)
+    if base_url:
+        return base_url
+
+    host_env = PROVIDER_HOST_ENV.get(provider)
+    if not host_env:
+        return None
+    return resolve_env_var(host_env)
+
+
+def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
+    """Return credential readiness details for a provider.
+
+    Combines config, well-known provider metadata, optional provider auth,
+    and implicit-auth provider metadata before attempting model creation:
+
+    1. **Config-file providers** (`config.toml`
+        `[models.providers.<name>]`):
         - If the section declares `api_key_env`, that env var is checked
             via `resolve_env_var()` (which honors `DEEPAGENTS_CLI_` prefixes).
-
-            Returns `True`/`False` accordingly.
         - If the section has `class_path` but no `api_key_env`, the provider is
-            assumed to manage its own auth (e.g., custom headers, JWT, mTLS) and
-            `True` is returned.
+            assumed to manage its own auth (e.g., custom headers, JWT, mTLS).
         - If neither `api_key_env` nor `class_path` is set, falls through
-            to step 2.
+            to provider-specific defaults.
     2. **Hardcoded registry** (`PROVIDER_API_KEY_ENV`): a module-level dict
-        mapping 18 well-known provider names to their canonical env var
+        mapping well-known provider names to their canonical env var
         (e.g., `"anthropic"` → `"ANTHROPIC_API_KEY"`). The env var is checked
         via `resolve_env_var()`.
-    3. **Unknown providers** not present in either source: returns `None` so
-        callers can decide whether to block or defer to the provider SDK's own
-        auth handling.
+    3. **Implicit auth providers** (e.g., Vertex AI ADC): a missing env var is
+        not treated as missing credentials.
+    4. **Optional auth env vars** (`OPTIONAL_AUTH_ENV`): when present, mark
+        the provider as configured for hosted/cloud use.
+    5. **No-auth-required providers** (`NO_AUTH_REQUIRED_PROVIDERS`): default
+        local endpoints report `NOT_REQUIRED`; non-local endpoints fall back
+        to `UNKNOWN` so the SDK can decide.
+    6. **Unknown providers** not present in any source defer auth failures to
+        the provider SDK.
+
+    Use `has_provider_credentials()` when compatibility with the historic
+    `True`/`False`/`None` contract is required.
 
     Args:
         provider: Provider name (e.g., `"anthropic"`, `"openai"`).
 
     Returns:
-        `True` if credentials are confirmed available or the provider is
-            expected to manage its own auth (e.g., `class_path` providers).
-        `False` if the required env var is known but not set.
-        `None` if credential status cannot be determined (provider not in
-            config or `PROVIDER_API_KEY_ENV`).
+        Provider auth status for selectors, startup checks, and compatibility
+            wrappers.
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     provider_config = config.providers.get(provider)
     if provider_config:
-        result = config.has_credentials(provider)
-        if result is not None:
-            return result
+        env_var = provider_config.get("api_key_env")
+        if env_var:
+            if resolve_env_var(env_var):
+                return ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider=provider,
+                    env_var=env_var,
+                    detail="credentials set",
+                )
+            return ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var=env_var,
+                detail=f"{env_var} is not set or is empty",
+            )
         # class_path providers that omit api_key_env manage their own auth
-        # (e.g., custom headers, JWT, mTLS) — treat as available.
+        # (e.g., custom headers, JWT, mTLS).
         if provider_config.get("class_path"):
-            return True
-        # No api_key_env in config — fall through to hardcoded map.
+            return ProviderAuthStatus(
+                state=ProviderAuthState.MANAGED,
+                provider=provider,
+                detail="custom auth",
+            )
+        # No api_key_env in config — fall through to provider-specific and
+        # hardcoded maps.
 
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(resolve_env_var(env_var))
+        if resolve_env_var(env_var):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                env_var=env_var,
+                detail="credentials set",
+            )
+        if provider in IMPLICIT_AUTH_PROVIDERS:
+            return ProviderAuthStatus(
+                state=ProviderAuthState.IMPLICIT,
+                provider=provider,
+                env_var=env_var,
+                detail="implicit auth",
+            )
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=provider,
+            env_var=env_var,
+            detail=f"{env_var} is not set or is empty",
+        )
+
+    if provider in IMPLICIT_AUTH_PROVIDERS:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.IMPLICIT,
+            provider=provider,
+            detail="implicit auth",
+        )
+
+    optional_env = OPTIONAL_AUTH_ENV.get(provider)
+    if optional_env and resolve_env_var(optional_env):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=optional_env,
+            detail="credentials set",
+        )
+
+    if provider in NO_AUTH_REQUIRED_PROVIDERS:
+        endpoint = _get_provider_endpoint(provider, config)
+        if _is_local_endpoint(endpoint):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider=provider,
+                detail="local provider",
+            )
+        # Remote endpoint may or may not require auth (private network vs.
+        # hosted). Don't block; surface the optional env var as a hint.
+        detail = (
+            f"remote endpoint; set {optional_env} if auth is required"
+            if optional_env
+            else "remote endpoint"
+        )
+        return ProviderAuthStatus(
+            state=ProviderAuthState.UNKNOWN,
+            provider=provider,
+            env_var=optional_env,
+            detail=detail,
+        )
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -819,7 +1014,31 @@ def has_provider_credentials(provider: str) -> bool | None:
         "No credential information for provider '%s'; deferring auth to provider",
         provider,
     )
-    return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.UNKNOWN,
+        provider=provider,
+        detail="credentials unknown",
+    )
+
+
+def has_provider_credentials(provider: str) -> bool | None:
+    """Check if credentials are available for a provider.
+
+    This compatibility wrapper preserves the historic tri-state contract while
+    `get_provider_auth_status()` carries the richer user-facing distinctions:
+    configured credentials, missing credentials, no-auth local providers,
+    implicit auth, custom provider-managed auth, and unknown providers.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
+
+    Returns:
+        `True` if auth is configured, implicit, provider-managed, or not
+            required.
+        `False` if a required env var is known but not set.
+        `None` if credential status cannot be determined.
+    """
+    return get_provider_auth_status(provider).as_legacy_bool()
 
 
 def get_credential_env_var(provider: str) -> str | None:

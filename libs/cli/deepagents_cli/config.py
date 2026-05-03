@@ -1930,7 +1930,11 @@ def _get_provider_kwargs(
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
-    from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
+    from deepagents_cli.model_config import (
+        OPTIONAL_AUTH_ENV,
+        PROVIDER_API_KEY_ENV,
+        resolve_env_var,
+    )
 
     api_key_env = config.get_api_key_env(provider)
     if not api_key_env:
@@ -1945,6 +1949,39 @@ def _get_provider_kwargs(
         api_key = resolve_env_var(api_key_env)
         if api_key:
             result["api_key"] = api_key
+
+    # `langchain-ollama` has no `api_key` kwarg; hosted Ollama (Cloud or
+    # gateway) needs the bearer token threaded through `client_kwargs.headers`.
+    if provider == "ollama":
+        optional_env = OPTIONAL_AUTH_ENV.get(provider)
+        optional_key = resolve_env_var(optional_env) if optional_env else None
+        if optional_key:
+            client_kwargs = result.get("client_kwargs")
+            if client_kwargs is not None and not isinstance(client_kwargs, dict):
+                logger.warning(
+                    "Provider 'ollama' has non-mapping client_kwargs (%s);"
+                    " skipping Authorization header injection",
+                    type(client_kwargs).__name__,
+                )
+            else:
+                client_kwargs = dict(client_kwargs) if client_kwargs else {}
+                headers = client_kwargs.get("headers")
+                if headers is not None and not isinstance(headers, dict):
+                    logger.warning(
+                        "Provider 'ollama' has non-mapping client_kwargs.headers"
+                        " (%s); skipping Authorization header injection",
+                        type(headers).__name__,
+                    )
+                else:
+                    headers = dict(headers) if headers else {}
+                    has_auth_header = any(
+                        isinstance(k, str) and k.lower() == "authorization"
+                        for k in headers
+                    )
+                    if not has_auth_header:
+                        headers["Authorization"] = f"Bearer {optional_key}"
+                        client_kwargs["headers"] = headers
+                        result["client_kwargs"] = client_kwargs
 
     return result
 

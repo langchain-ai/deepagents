@@ -20,10 +20,19 @@ from deepagents_cli.mcp_auth import (
 
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect `Path.home()` to a temp directory."""
+    """Redirect `Path.home()` and `DEFAULT_STATE_DIR` into a temp directory.
+
+    `Path.home` is patched for code that resolves it at call time;
+    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth._tokens_dir`)
+    that pulls from the import-time-frozen constant in `model_config`.
+    """
     fake = tmp_path / "home"
     fake.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake))
+    monkeypatch.setattr(
+        "deepagents_cli.model_config.DEFAULT_STATE_DIR",
+        fake / ".deepagents" / ".state",
+    )
     return fake
 
 
@@ -109,14 +118,14 @@ class TestFileTokenStorage:
         storage = FileTokenStorage("notion")
         await storage.set_tokens(_make_tokens())
 
-        token_path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+        token_path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
         assert token_path.exists()
         if hasattr(token_path, "stat"):
             assert token_path.stat().st_mode & 0o777 == 0o600
 
     async def test_corrupt_file_raises(self, fake_home: Path) -> None:
         """Corrupt files fail with a remediation hint."""
-        path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
         storage = FileTokenStorage("notion")
@@ -371,7 +380,7 @@ class TestFileTokenStorageExtras:
     async def test_version_mismatch_raises(self, fake_home: Path) -> None:
         """Token files with an unknown version fail with a remediation hint."""
         storage = FileTokenStorage("notion")
-        path = fake_home / ".deepagents" / "mcp-tokens" / "notion.json"
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps({"version": 999, "tokens": {}}))
 
@@ -383,7 +392,8 @@ class TestFileTokenStorageExtras:
         storage = FileTokenStorage("notion")
         await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
 
-        raw = (fake_home / ".deepagents" / "mcp-tokens" / "notion.json").read_text()
+        token_path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
+        raw = token_path.read_text()
         data = json.loads(raw)
         assert "tokens" in data
         assert "client_info" in data

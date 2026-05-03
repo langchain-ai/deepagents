@@ -26,17 +26,15 @@ const PORT = parseInt(getArg("port", "3000"), 10);
 const SESSION_DIR = path.resolve(getArg("session", "./session"));
 const MEDIA_DIR = path.resolve(getArg("media-dir", "./media"));
 const SELF_ONLY = hasFlag("self-only");
-
-const CHROME_PROFILE_DIR = path.join(SESSION_DIR, "chromium-profile");
+const BOT_HEADER = getArg("bot-header", "deepagents bot");
 
 // Ensure directories exist
 fs.mkdirSync(SESSION_DIR, { recursive: true });
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
-fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
 
 // Remove stale Chromium lock files left from previous runs/containers.
-// LocalAuth keeps its profile under SESSION_DIR/session/, so we recurse
-// rather than targeting a single known path.
+// LocalAuth stores its Chromium profile under SESSION_DIR/session/, so we
+// recurse into all subdirectories rather than targeting a single known path.
 function cleanStaleLocks(dir) {
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
@@ -100,8 +98,6 @@ const puppeteerOpts = {
     "--no-sandbox",
     "--disable-setuid-sandbox",
     "--disable-gpu",
-    // Persistent Chromium profile inside the session dir (stale locks cleaned above)
-    `--user-data-dir=${CHROME_PROFILE_DIR}`,
   ],
 };
 if (chromePath) {
@@ -156,11 +152,13 @@ client.on("message_create", async (msg) => {
     // Self-only mode: only process messages from our own number
     if (!msg.fromMe) return;
     // Skip bot replies by checking for the bot header prefix
-    if ((msg.body || "").startsWith("*deepagents bot*")) return;
+    if ((msg.body || "").startsWith(`*${BOT_HEADER}*`)) return;
   } else {
     // Normal mode: skip all self-sent messages
     if (msg.fromMe) return;
   }
+
+  console.log(`[bridge] Message from ${msg.from}: "${(msg.body || "").substring(0, 50)}"`);
 
   // Try the rich getters, but fall back to msg fields when WhatsApp Web's
   // Store is in a state whatsapp-web.js can't index into (the "must include
@@ -170,10 +168,10 @@ client.on("message_create", async (msg) => {
   let chat = null;
   let contact = null;
   try { chat = await msg.getChat(); } catch (e) {
-    console.error(`getChat failed for ${msg.from}: ${e.message}`);
+    console.log(`[bridge] getChat failed (non-fatal): ${e.message}`);
   }
   try { contact = await msg.getContact(); } catch (e) {
-    console.error(`getContact failed for ${msg.from}: ${e.message}`);
+    console.log(`[bridge] getContact failed (non-fatal): ${e.message}`);
   }
 
   const chatIdSerialized =
@@ -233,6 +231,7 @@ client.on("message_create", async (msg) => {
     }
   }
 
+  console.log(`[bridge] Queued message ${entry.messageId} for ${entry.chatId}`);
   messageQueue.push(entry);
 });
 

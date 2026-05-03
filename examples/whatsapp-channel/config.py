@@ -24,4 +24,5 @@ def build_adapter_config() -> dict[str, Any]:
         "mention_patterns": os.getenv("WHATSAPP_MENTION_PATTERNS"),
         "free_response_chats": os.getenv("WHATSAPP_FREE_RESPONSE_CHATS", ""),
         "self_only": os.getenv("WHATSAPP_SELF_ONLY", "true"),
+        "bot_header": os.getenv("WHATSAPP_BOT_HEADER", "deepagents bot"),
     }

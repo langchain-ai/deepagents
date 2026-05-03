@@ -3945,20 +3945,19 @@ class TestDefaultAgentNameDrift:
 
     `_constants.DEFAULT_AGENT_NAME` is the single source of truth. This test
     asserts that every consumer (`agent.DEFAULT_AGENT_NAME`,
-    `_server_config.DEFAULT_ASSISTANT_ID`, `main._DEFAULT_AGENT_NAME`,
-    `app.DEFAULT_ASSISTANT_ID`) resolves back to it — guarding against a
-    future refactor that re-introduces a hardcoded `"agent"` literal.
+    `_server_config.DEFAULT_ASSISTANT_ID`, `app.DEFAULT_ASSISTANT_ID`)
+    resolves back to it — guarding against a future refactor that
+    re-introduces a hardcoded `"agent"` literal.
     """
 
     def test_all_default_agent_constants_match(self) -> None:
         """All consumers of the default identifier must point at `_constants`."""
-        from deepagents_cli import _constants, _server_config, agent, app, main
+        from deepagents_cli import _constants, _server_config, agent, app
 
         canonical = _constants.DEFAULT_AGENT_NAME
         assert canonical == "agent"
         assert agent.DEFAULT_AGENT_NAME is canonical
         assert _server_config.DEFAULT_ASSISTANT_ID is canonical
-        assert main._DEFAULT_AGENT_NAME is canonical
         assert app.DEFAULT_ASSISTANT_ID is canonical
 
 

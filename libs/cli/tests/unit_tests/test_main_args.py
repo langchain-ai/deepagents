@@ -708,14 +708,15 @@ class TestResolveAgentArg:
 
     def test_resume_thread_forces_default(self) -> None:
         """With -r present, default lets thread-metadata inference pick the agent."""
-        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+        from deepagents_cli._constants import DEFAULT_AGENT_NAME
+        from deepagents_cli.main import _resolve_agent_arg
 
         with patch(
             "deepagents_cli.model_config.load_recent_agent",
             return_value="researcher",
         ) as load:
             result = _resolve_agent_arg(self._args(resume_thread="abc123"))
-            assert result == _DEFAULT_AGENT_NAME
+            assert result == DEFAULT_AGENT_NAME
             load.assert_not_called()
 
     def test_uses_recent_when_valid(self) -> None:
@@ -733,7 +734,8 @@ class TestResolveAgentArg:
 
     def test_falls_back_when_recent_missing_dir(self) -> None:
         """Stale `[agents].recent` pointing at a deleted dir falls through."""
-        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+        from deepagents_cli._constants import DEFAULT_AGENT_NAME
+        from deepagents_cli.main import _resolve_agent_arg
 
         with (
             patch(
@@ -742,14 +744,15 @@ class TestResolveAgentArg:
             ),
             patch("deepagents_cli.main._recent_agent_is_valid", return_value=False),
         ):
-            assert _resolve_agent_arg(self._args()) == _DEFAULT_AGENT_NAME
+            assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
 
     def test_falls_back_when_no_recent(self) -> None:
         """No saved recent agent: final fallback is the hard-coded default."""
-        from deepagents_cli.main import _DEFAULT_AGENT_NAME, _resolve_agent_arg
+        from deepagents_cli._constants import DEFAULT_AGENT_NAME
+        from deepagents_cli.main import _resolve_agent_arg
 
         with patch("deepagents_cli.model_config.load_recent_agent", return_value=None):
-            assert _resolve_agent_arg(self._args()) == _DEFAULT_AGENT_NAME
+            assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
 
 
 class TestRecentAgentIsValid:

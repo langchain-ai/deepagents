@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
-from deepagents_cli._constants import DEFAULT_AGENT_NAME as _DEFAULT_AGENT_NAME
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -42,13 +41,13 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     Precedence, highest first:
 
     1. Explicit `-a <name>` (stored as `args.agent` by argparse).
-    2. `-r <thread>` is present → use `_DEFAULT_AGENT_NAME`. The real agent is
+    2. `-r <thread>` is present → use `DEFAULT_AGENT_NAME`. The real agent is
         inferred later by `_resolve_resume_thread` via thread metadata
         (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
         it would suppress that inference.
     3. `[agents].recent` from config, if it points at an agent whose
         directory still exists.
-    4. `_DEFAULT_AGENT_NAME` as the final fallback.
+    4. `DEFAULT_AGENT_NAME` as the final fallback.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -59,17 +58,19 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     Returns:
         The agent identifier to hand downstream.
     """
+    from deepagents_cli._constants import DEFAULT_AGENT_NAME
+
     if args.agent is not None:
         return args.agent
     if getattr(args, "resume_thread", None) is not None:
-        return _DEFAULT_AGENT_NAME
+        return DEFAULT_AGENT_NAME
 
     from deepagents_cli.model_config import load_recent_agent
 
     recent = load_recent_agent()
     if recent and _recent_agent_is_valid(recent):
         return recent
-    return _DEFAULT_AGENT_NAME
+    return DEFAULT_AGENT_NAME
 
 
 def _recent_agent_is_valid(name: str) -> bool:
@@ -444,6 +445,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli._constants import DEFAULT_AGENT_NAME
     from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.mcp_commands import setup_mcp_parsers
     from deepagents_cli.output import add_json_output_arg
@@ -674,7 +676,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Agent to use (e.g., coder, researcher). "
             "If omitted, falls back to [agents].recent in config, then "
-            f"the '{_DEFAULT_AGENT_NAME}' default."
+            f"the '{DEFAULT_AGENT_NAME}' default."
         ),
     )
 

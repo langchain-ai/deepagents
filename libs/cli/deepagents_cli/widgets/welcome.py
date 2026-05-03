@@ -26,28 +26,41 @@ from deepagents_cli.config import (
 )
 from deepagents_cli.widgets._links import open_style_link
 
-_TIPS: list[str] = [
-    "Use @ to reference files and / for commands",
-    "Try /threads to resume a previous conversation",
-    "Use /offload when your conversation gets long",
-    "Use /mcp to see your loaded tools and servers",
-    "Use /remember to save learnings from this conversation",
-    "Use /model to switch models mid-conversation",
-    "Press ctrl+x to compose prompts in your external editor",
-    "Press ctrl+u to delete to the start of the line in the chat input",
-    "Use /skill:<name> to invoke a skill directly",
-    "Type /update to check for and install updates",
-    "Use /theme to customize the CLI colors and style",
-    "Use /skill-creator to build reusable agent skills",
-    "Use /auto-update to toggle automatic CLI updates",
-    "Use /agents to browse and switch between your available agents",
-    "Use --startup-cmd to run a shell command before the first prompt",
-    "Run `deepagents mcp login <server>` to authorize a remote MCP server",
-]
-"""Rotating tips shown in the welcome footer.
+_TIPS: dict[str, int] = {
+    "Use @ to reference files and / for commands": 2,
+    "Try /threads to resume a previous conversation": 2,
+    "Use /offload when your conversation gets long": 2,
+    "Use /mcp to see your loaded tools and servers": 1,
+    "Use /remember to save learnings from this conversation": 1,
+    "Use /model to switch models mid-conversation": 2,
+    "Press ctrl+x to compose prompts in your external editor": 1,
+    "Press ctrl+u to delete to the start of the line in the chat input": 1,
+    "Use /skill:<name> to invoke a skill directly": 1,
+    "Type /update to check for and install updates": 1,
+    "Use /theme to customize the CLI colors and style": 1,
+    "Use /skill-creator to build reusable agent skills": 1,
+    "Use /auto-update to toggle automatic CLI updates": 1,
+    "Use /agents to browse and switch between your available agents": 2,
+    "Use --startup-cmd to run a shell command before the first prompt": 1,
+    "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,
+    "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
+}
+"""Rotating tips shown in the welcome footer, with relative selection weights.
 
-One is picked per session.
+One is picked per session. Higher weights are picked more often.
 """
+
+
+def _pick_tip() -> str:
+    """Pick a tip from `_TIPS` weighted by its associated weight.
+
+    Returns:
+        A single tip string, selected with probability proportional to its
+        weight in `_TIPS`.
+    """
+    tips = list(_TIPS.keys())
+    weights = list(_TIPS.values())
+    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
 
 
 class WelcomeBanner(Static):
@@ -108,7 +121,7 @@ class WelcomeBanner(Static):
         self._idle = False
         self._project_name: str | None = get_langsmith_project_name()
         self._project_url: str | None = None
-        self._tip: str = random.choice(_TIPS)  # noqa: S311
+        self._tip: str = _pick_tip()
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -372,7 +385,7 @@ def build_welcome_footer(
         Content with the ready prompt and a tip.
     """
     if tip is None:
-        tip = random.choice(_TIPS)  # noqa: S311
+        tip = _pick_tip()
     return Content.assemble(
         ("\nReady to code! What would you like to build?\n", primary_color),
         (f"Tip: {tip}", "dim italic"),

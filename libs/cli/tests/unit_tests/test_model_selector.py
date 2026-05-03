@@ -18,6 +18,7 @@ class ModelSelectorTestApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.result: tuple[str, str] | None = None
+        self.callback_results: list[tuple[str, str] | None] = []
         self.dismissed = False
 
     def compose(self) -> ComposeResult:
@@ -35,6 +36,15 @@ class ModelSelectorTestApp(App):
             current_provider="anthropic",
         )
         self.push_screen(screen, handle_result)
+
+    def show_selector_with_result_callback(self) -> None:
+        """Show the model selector using its direct result callback."""
+        screen = ModelSelectorScreen(
+            current_model="claude-sonnet-4-5",
+            current_provider="anthropic",
+            result_callback=self.callback_results.append,
+        )
+        self.push_screen(screen)
 
 
 class AppWithEscapeBinding(App):
@@ -113,6 +123,18 @@ class TestModelSelectorEscapeKey:
             assert app.dismissed is True
             assert app.result is None
 
+    async def test_escape_calls_direct_result_callback(self) -> None:
+        """The direct result callback should receive dismiss results."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector_with_result_callback()
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.callback_results == [None]
+
     async def test_escape_with_conflicting_app_binding(self) -> None:
         """ESC should dismiss modal even when app has its own escape binding.
 
@@ -133,6 +155,52 @@ class TestModelSelectorEscapeKey:
             assert app.result is None
             # The interrupt action should NOT have been called because modal was open
             assert app.interrupt_called is False
+
+
+class TestModelSelectorChrome:
+    """Tests for model selector title and description chrome."""
+
+    async def test_optional_title_and_description_render(self) -> None:
+        """A custom title and description should render above the filter."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                title="Choose a Recommended Model",
+                description="Curated models backed by evals.",
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            title = screen.query_one(".model-selector-title", Static)
+            description = screen.query_one(".model-selector-description", Static)
+
+            assert "Choose a Recommended Model" in str(title.content)
+            assert "Curated models backed by evals." in str(description.content)
+
+    async def test_curated_selector_help_uses_skip_setup(self) -> None:
+        """Onboarding model selection should label Escape as setup skip."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Esc skip setup" in str(help_text.content)
+            assert "Esc cancel" not in str(help_text.content)
+
+    async def test_standard_selector_help_uses_cancel(self) -> None:
+        """The regular /model selector should keep cancel wording."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Esc cancel" in str(help_text.content)
 
 
 class TestModelSelectorKeyboardNavigation:
@@ -677,6 +745,59 @@ class TestFilteredModelsWidgetSync:
         # navigating to widget index 1 (openai:gpt-4) would look up
         # _filtered_models[1] = anthropic:claude-opus — wrong model.
         assert screen._filtered_models[1] != grouped[1]
+
+
+class TestCuratedModelSelection:
+    """Tests for onboarding curated model selection."""
+
+    def test_curated_models_filter_frontier_in_default_order(self) -> None:
+        """Onboarding curation should preserve the model switcher's order."""
+        all_models = [
+            ("openai:gpt-5.5", "openai"),
+            ("anthropic:claude-sonnet-4-5", "anthropic"),
+            ("openai:gpt-5.4", "openai"),
+            ("anthropic:claude-opus-4-7", "anthropic"),
+            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("anthropic:claude-opus-4-6", "anthropic"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(all_models)
+
+        assert curated == [
+            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.4", "openai"),
+            ("anthropic:claude-opus-4-7", "anthropic"),
+            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("anthropic:claude-opus-4-6", "anthropic"),
+        ]
+
+    def test_curated_models_limit_to_frontier_subset(self) -> None:
+        """Current/default models outside the frontier subset should stay hidden."""
+        all_models = [
+            ("openai:gpt-4o", "openai"),
+            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-sonnet-4-5", "anthropic"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(all_models)
+
+        assert curated == [
+            ("anthropic:claude-opus-4-6", "anthropic"),
+        ]
+
+    def test_curated_models_fall_back_when_frontier_unavailable(self) -> None:
+        """Onboarding should show normal switcher entries if frontier is absent."""
+        all_models = [
+            ("anthropic:claude-sonnet-4-5", "anthropic"),
+            ("openai:gpt-4o", "openai"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(all_models)
+
+        assert curated == [
+            ("anthropic:claude-sonnet-4-5", "anthropic"),
+            ("openai:gpt-4o", "openai"),
+        ]
 
 
 class TestFormatOptionLabel:

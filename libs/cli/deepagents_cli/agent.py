@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_cli import theme
+from deepagents_cli._constants import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     _ShellAllowAll,
     config,
@@ -79,9 +80,6 @@ from deepagents_cli.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_AGENT_NAME = "agent"
-"""The default agent name used when no `-a` flag is provided."""
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""

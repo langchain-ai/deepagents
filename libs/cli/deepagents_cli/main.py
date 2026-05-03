@@ -30,13 +30,10 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as _DEFAULT_AGENT_NAME
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
-
-# Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
-# module at startup. Keep in sync with agent.py. Tested.
-_DEFAULT_AGENT_NAME = "agent"
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
@@ -685,7 +682,7 @@ def parse_args() -> argparse.Namespace:
         "-M",
         "--model",
         metavar="MODEL",
-        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2). "
+        help="Model to use (e.g., claude-opus-4-7, gpt-5.5). "
         "Provider is auto-detected from model name.",
     )
 
@@ -987,6 +984,7 @@ async def run_textual_cli_async(
         settings,
     )
     from deepagents_cli.model_config import ModelConfigError, ModelSpec
+    from deepagents_cli.onboarding import should_run_onboarding
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -1054,6 +1052,7 @@ async def run_textual_cli_async(
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
             startup_cmd=startup_cmd,
+            launch_init=should_run_onboarding(),
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,

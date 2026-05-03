@@ -17,6 +17,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from deepagents_cli.model_config import DEFAULT_CONFIG_DIR, DEFAULT_STATE_DIR
+from deepagents_cli.onboarding import ONBOARDING_MARKER_FILENAME
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -33,6 +34,7 @@ _LEGACY_NAMES: tuple[str, ...] = (
     "latest_version.json",
     "update_state.json",
     "history.jsonl",
+    ONBOARDING_MARKER_FILENAME,
 )
 """Names directly under `~/.deepagents/` that now live in `.state/`.
 

@@ -18,7 +18,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
 
@@ -35,6 +35,17 @@ from deepagents_cli.model_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
+    {
+        "anthropic:claude-opus-4-6",
+        "anthropic:claude-opus-4-7",
+        "google_genai:gemini-3.1-pro-preview",
+        "openai:gpt-5.4",
+        "openai:gpt-5.5",
+    }
+)
+"""Curated frontier-tier models shown in the onboarding picker."""
 
 
 class ModelOption(Static):
@@ -144,6 +155,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         margin-bottom: 1;
     }
 
+    ModelSelectorScreen .model-selector-description {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
     ModelSelectorScreen #model-filter {
         margin-bottom: 1;
         border: solid $primary-lighten-2;
@@ -218,6 +235,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current_model: str | None = None,
         current_provider: str | None = None,
         cli_profile_override: dict[str, Any] | None = None,
+        *,
+        curated: bool = False,
+        title: str | None = None,
+        description: str | Content | None = None,
+        result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
@@ -231,11 +253,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
                 Merged on top of upstream + config.toml profiles so that CLI
                 overrides appear with `*` markers in the detail footer.
+            curated: Whether to show a short, profile-ranked model subset.
+            title: Optional title override for the selector.
+            description: Optional description shown below the title.
+            result_callback: Optional callback for selector results when the
+                screen is displayed without a `push_screen` result callback.
         """
         super().__init__()
         self._current_model = current_model
         self._current_provider = current_provider
         self._cli_profile_override = cli_profile_override
+        self._curated = curated
+        self._title = title
+        self._description = description
+        self._result_callback = result_callback
 
         # Model data — populated asynchronously in on_mount via _load_model_data
         self._all_models: list[tuple[str, str]] = []
@@ -276,7 +307,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         with Vertical():
             # Title with current model in provider:model format
-            if self._current_model and self._current_provider:
+            if self._title:
+                title = self._title
+            elif self._current_model and self._current_provider:
                 current_spec = f"{self._current_provider}:{self._current_model}"
                 title = f"Select Model (current: {current_spec})"
             elif self._current_model:
@@ -284,6 +317,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             else:
                 title = "Select Model"
             yield Static(title, classes="model-selector-title")
+            if self._description:
+                yield Static(
+                    self._description,
+                    classes="model-selector-description",
+                )
 
             # Search input
             yield Input(
@@ -300,11 +338,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             yield Static("", classes="model-detail-footer", id="model-detail-footer")
 
             # Help text
+            esc_label = "Esc skip setup" if self._curated else "Esc cancel"
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Ctrl+S set default"
-                f" {glyphs.bullet} Esc cancel"
+                f" {glyphs.bullet} {esc_label}"
             )
             yield Static(help_text, classes="model-selector-help")
 
@@ -336,6 +375,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
         return all_models, config.default_model, profiles
+
+    @staticmethod
+    def _curate_models(
+        all_models: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Return the curated onboarding list in the model switcher's order.
+
+        Returns the eval-backed frontier subset when any of those models are
+        available. When none are, returns the full switcher list so onboarding
+        still surfaces every installed provider rather than a truncated slice.
+
+        Args:
+            all_models: Full list of `(provider:model, provider)` pairs.
+
+        Returns:
+            Curated model list for onboarding setup.
+        """
+        frontier = [
+            (spec, provider)
+            for spec, provider in all_models
+            if spec in _FRONTIER_RECOMMENDED_MODELS
+        ]
+        return frontier or all_models
 
     async def on_mount(self) -> None:
         """Set up the screen on mount.
@@ -380,6 +442,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._all_models = all_models
         self._default_spec = default_spec
         self._profiles = profiles
+        if self._curated:
+            self._all_models = self._curate_models(self._all_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._loaded = True
@@ -419,7 +483,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self.dismiss((event.model_spec, event.provider))
+        self._dismiss_with_result((event.model_spec, event.provider))
 
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
@@ -927,7 +991,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # If there are filtered results, always select the highlighted model
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
-            self.dismiss((model_spec, provider))
+            self._dismiss_with_result((model_spec, provider))
             return
 
         # No matches - check if user typed a custom provider:model spec
@@ -936,9 +1000,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
-            self.dismiss((custom_input, provider))
+            self._dismiss_with_result((custom_input, provider))
         elif custom_input:
-            self.dismiss((custom_input, ""))
+            self._dismiss_with_result((custom_input, ""))
 
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.
@@ -988,15 +1052,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message."""
         glyphs = get_glyphs()
+        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Ctrl+S set default"
-            f" {glyphs.bullet} Esc cancel"
+            f" {glyphs.bullet} {esc_label}"
         )
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(help_text)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
-        self.dismiss(None)
+        self._dismiss_with_result(None)
+
+    def _dismiss_with_result(self, result: tuple[str, str] | None) -> None:
+        """Dismiss the selector and notify an optional direct result callback."""
+        if self._result_callback is not None:
+            self._result_callback(result)
+        self.dismiss(result)

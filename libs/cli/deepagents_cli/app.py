@@ -16,7 +16,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
@@ -39,6 +39,7 @@ from deepagents_cli import (
     theme,
 )
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -87,6 +88,8 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
+ScreenResultT = TypeVar("ScreenResultT")
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -133,6 +136,13 @@ _IS_ITERM = (
 # Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
 _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+
+_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
+"""Upper bound on waiting for server readiness during onboarding model switch.
+
+Server startup is normally seconds; this ceiling exists only so a stuck
+backend cannot trap the user inside a finished onboarding modal forever.
+"""
 
 
 def _write_iterm_escape(sequence: str) -> None:
@@ -667,6 +677,7 @@ class DeepAgentsApp(App):
         initial_prompt: str | None = None,
         initial_skill: str | None = None,
         startup_cmd: str | None = None,
+        launch_init: bool = False,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
         server_proc: ServerProcess | None = None,
@@ -703,6 +714,8 @@ class DeepAgentsApp(App):
 
                 Output is rendered in the transcript and non-zero exits warn but
                 do not abort the session.
+            launch_init: Whether to run the onboarding setup flow
+                before accepting the first prompt.
             mcp_server_info: MCP server metadata for the `/mcp` viewer.
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
@@ -813,6 +826,21 @@ class DeepAgentsApp(App):
 
         Cleared to `None` after it runs so later server swaps cannot re-run it.
         """
+
+        self._launch_init_requested = launch_init
+        """Whether startup should show onboarding during the initial paint."""
+
+        self._launch_init_running = False
+        """Re-entry guard for launch init modals."""
+
+        self._launch_init_task: asyncio.Task[None] | None = None
+        """Active onboarding task while the multi-screen flow is in progress."""
+
+        self._session_start_waiting_for_launch_init = False
+        """Whether session startup is scheduled to resume after onboarding."""
+
+        self._launch_user_name: str | None = None
+        """Name captured from the onboarding flow for the current session."""
 
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
@@ -941,6 +969,11 @@ class DeepAgentsApp(App):
         Gates message handling so user input is queued until the agent is
         actually reachable.
         """
+
+        self._connection_ready_event = asyncio.Event()
+        """Set once the initial server connection has either succeeded or failed."""
+        if not self._connecting:
+            self._connection_ready_event.set()
 
         self._server_startup_error: str | None = None
         """Set when the background server fails to start; persists for the
@@ -1208,9 +1241,11 @@ class DeepAgentsApp(App):
     async def on_mount(self) -> None:
         """Initialize components after mount.
 
-        Only widget queries and lightweight config go here — anything that
+        Only widget queries and lightweight config go here. Anything that
         would delay the first rendered frame (subprocess calls, heavy
         imports) is deferred to `_post_paint_init` via `call_after_refresh`.
+        The optional onboarding setup starts here so its first modal participates
+        in the initial TUI render instead of appearing after the first frame.
         """
         # Move all objects allocated during import/compose into the permanent
         # generation so the cyclic GC skips them during first-paint rendering.
@@ -1243,6 +1278,12 @@ class DeepAgentsApp(App):
 
         # Focus the input immediately so the cursor is visible on first paint
         self._chat_input.focus_input()
+
+        if self._launch_init_requested:
+            from deepagents_cli.widgets.launch_init import LaunchNameScreen
+
+            name_result = self._push_screen_result_future(LaunchNameScreen())
+            self._ensure_launch_init_task(name_result=name_result)
 
         # Pre-import `html.entities` on the main thread before the worker
         # starts. Python 3.14 replaced the global import lock with per-module
@@ -1633,7 +1674,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.skills.invocation import discover_skills_and_roots
 
-        assistant_id = self._assistant_id or "agent"
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         return discover_skills_and_roots(assistant_id)
 
     async def _resolve_resume_thread(self) -> None:
@@ -1660,11 +1701,7 @@ class DeepAgentsApp(App):
         if not resume:
             return
 
-        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
-        # the CLI entry point and pulls in argparse, rich, etc. at module level.
-        # Even a deferred import drags in the full dep tree for a single
-        # string constant.
-        default_agent = "agent"
+        default_agent = DEFAULT_ASSISTANT_ID
 
         try:
             if resume == "__MOST_RECENT__":
@@ -1815,6 +1852,7 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_ready(self, event: ServerReady) -> None:
         """Handle successful background server startup."""
         self._connecting = False
+        self._connection_ready_event.set()
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
@@ -1898,6 +1936,7 @@ class DeepAgentsApp(App):
         from deepagents_cli.model_config import MissingCredentialsError
 
         self._connecting = False
+        self._connection_ready_event.set()
         if isinstance(event.error, MCPConfigError):
             # Already carries the path + hint; showing the class name is noise.
             self._server_startup_error = str(event.error)
@@ -2043,6 +2082,7 @@ class DeepAgentsApp(App):
         # exceptions propagate.
         from deepagents_cli.widgets.approval import ApprovalMenu  # noqa: F401
         from deepagents_cli.widgets.ask_user import AskUserMenu  # noqa: F401
+        from deepagents_cli.widgets.launch_init import LaunchNameScreen  # noqa: F401
         from deepagents_cli.widgets.model_selector import (
             ModelSelectorScreen,  # noqa: F401
         )
@@ -3048,6 +3088,13 @@ class DeepAgentsApp(App):
         startup command before any user-facing agent work guarantees the
         agent never observes input until the command has completed.
         """
+        if self._launch_init_requested:
+            self._ensure_launch_init_task()
+        launch_init_task = self._launch_init_task
+        if launch_init_task is not None and not launch_init_task.done():
+            self._schedule_session_start_after_launch_init(launch_init_task)
+            return
+
         self._startup_sequence_running = True
         try:
             should_load_history = bool(self._lc_thread_id and self._agent) and (
@@ -3088,6 +3135,29 @@ class DeepAgentsApp(App):
 
         if self._pending_messages:
             await self._process_next_from_queue()
+
+    def _schedule_session_start_after_launch_init(
+        self,
+        launch_init_task: asyncio.Task[None],
+    ) -> None:
+        """Resume post-connect startup after onboarding without awaiting it.
+
+        Args:
+            launch_init_task: Active onboarding task.
+        """
+        if self._session_start_waiting_for_launch_init:
+            return
+
+        self._session_start_waiting_for_launch_init = True
+
+        def _resume_when_launch_done(_done: asyncio.Task[None]) -> None:
+            self._session_start_waiting_for_launch_init = False
+            if self._exit:
+                return
+            task = asyncio.create_task(self._run_session_start_sequence())
+            task.add_done_callback(_log_task_exception)
+
+        launch_init_task.add_done_callback(_resume_when_launch_done)
 
     async def _run_startup_command(self, command: str) -> None:
         """Execute the `--startup-cmd` and render its output in the transcript.
@@ -3157,6 +3227,310 @@ class DeepAgentsApp(App):
                         "Try running the command manually in the session."
                     )
                 )
+
+    def _push_screen_result_future(
+        self,
+        screen: ModalScreen[ScreenResultT],
+    ) -> asyncio.Future[ScreenResultT | None]:
+        """Push a modal screen and return a future for its dismissal result.
+
+        Args:
+            screen: Modal screen to display.
+
+        Returns:
+            Future completed with the result passed to `dismiss()`.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[ScreenResultT | None] = loop.create_future()
+
+        def handle_result(result: ScreenResultT | None) -> None:
+            if not result_future.done():
+                result_future.set_result(result)
+
+        self.push_screen(screen, handle_result)
+        return result_future
+
+    async def _push_screen_wait(
+        self,
+        screen: ModalScreen[ScreenResultT],
+    ) -> ScreenResultT | None:
+        """Push a modal screen and wait for its dismissal result.
+
+        Args:
+            screen: Modal screen to display.
+
+        Returns:
+            The result passed to `dismiss()`.
+        """
+        result_future = self._push_screen_result_future(screen)
+        return await result_future
+
+    def _ensure_launch_init_task(
+        self,
+        *,
+        name_result: Awaitable[str | None] | None = None,
+    ) -> asyncio.Task[None]:
+        """Start the onboarding task if needed.
+
+        Args:
+            name_result: Optional pre-pushed name-screen result. Used during
+                app mount so the modal is present before the first frame.
+
+        Returns:
+            The active onboarding task.
+        """
+        self._launch_init_requested = False
+        task = self._launch_init_task
+        if task is not None and not task.done():
+            return task
+
+        if name_result is None:
+            task = asyncio.create_task(self._run_launch_init_sequence())
+        else:
+            task = asyncio.create_task(
+                self._run_launch_init_sequence(name_result=name_result)
+            )
+        self._launch_init_task = task
+
+        def _finalize_launch_init(done: asyncio.Task[None]) -> None:
+            if self._launch_init_task is done:
+                self._launch_init_task = None
+            _log_task_exception(done)
+
+        task.add_done_callback(_finalize_launch_init)
+        return task
+
+    async def _run_launch_init_sequence(
+        self,
+        *,
+        name_result: Awaitable[str | None] | None = None,
+    ) -> None:
+        """Run the onboarding flow."""
+        if self._launch_init_running:
+            return
+
+        name_memory_task: asyncio.Task[None] | None = None
+        self._launch_init_running = True
+        try:
+            if name_result is None:
+                from deepagents_cli.widgets.launch_init import LaunchNameScreen
+
+                name = await self._push_screen_wait(LaunchNameScreen())
+            else:
+                name = await name_result
+            if name is None:
+                await self._finish_launch_init(name=None)
+                return
+
+            if name:
+                self._launch_user_name = name
+                name_memory_task = asyncio.create_task(
+                    self._write_launch_name_memory(name)
+                )
+
+            (
+                dependency_continued,
+                result,
+            ) = await self._prompt_launch_dependencies_then_model()
+            if not dependency_continued:
+                await self._await_launch_name_memory(name_memory_task)
+                await self._finish_launch_init(name=name)
+                return
+
+            if result is None:
+                await self._await_launch_name_memory(name_memory_task)
+                await self._finish_launch_init(name=name)
+                return
+
+            model_spec, _provider = result
+            if self._connecting:
+                # Bound the wait so a stuck server never traps onboarding.
+                # Server startup typically completes in seconds; a minute is
+                # a generous ceiling that still beats hanging forever.
+                try:
+                    await asyncio.wait_for(
+                        self._connection_ready_event.wait(),
+                        timeout=_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Server connection did not become ready within %ss; "
+                        "skipping onboarding model switch",
+                        _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                    self.notify(
+                        "Server still starting. Use /model to switch when ready.",
+                        severity="warning",
+                        markup=False,
+                    )
+                    await self._await_launch_name_memory(name_memory_task)
+                    await self._finish_launch_init(name=name)
+                    return
+            if self._exit:
+                await self._await_launch_name_memory(name_memory_task)
+                return
+            try:
+                await self._switch_model(model_spec, announce_unchanged=False)
+            except Exception as exc:  # surface to user, don't crash onboarding
+                logger.warning(
+                    "Model switch during onboarding failed",
+                    exc_info=True,
+                )
+                self.notify(
+                    f"Could not switch to {model_spec}: {exc}. Use /model to "
+                    "try again.",
+                    severity="error",
+                    markup=False,
+                )
+            await self._await_launch_name_memory(name_memory_task)
+            await self._finish_launch_init(name=name)
+        except Exception:
+            # Last-resort guard: surface unexpected failures and best-effort
+            # mark onboarding complete so the user is not trapped re-running
+            # a broken flow on every launch.
+            logger.exception("Onboarding sequence failed unexpectedly")
+            self.notify(
+                "Setup hit an unexpected error. You can configure things "
+                "manually with /model and /memory.",
+                severity="error",
+                markup=False,
+            )
+            with suppress(Exception):
+                await self._await_launch_name_memory(name_memory_task)
+            with suppress(Exception):
+                await self._mark_onboarding_complete()
+        finally:
+            self._launch_init_running = False
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+    async def _finish_launch_init(self, *, name: str | None) -> None:
+        """Persist onboarding completion and, when given, mount the welcome.
+
+        Args:
+            name: Submitted user name.
+
+                When `None` (skip path) or empty, the personalized
+                welcome message is not mounted.
+        """
+        await self._mark_onboarding_complete()
+        if name:
+            await self._mount_launch_welcome(name)
+
+    async def _mount_launch_welcome(self, name: str) -> None:
+        """Mount the personalized onboarding welcome message."""
+        await self._mount_message(
+            AppMessage(Content.from_markup("Welcome, $name.", name=name))
+        )
+
+    async def _mark_onboarding_complete(self) -> None:
+        """Persist that first-run onboarding should not be shown again.
+
+        Surfaces a user-visible toast when the marker write fails so the user
+        understands why onboarding may reappear on the next launch.
+        """
+        from deepagents_cli.onboarding import mark_onboarding_complete
+
+        ok = await asyncio.to_thread(mark_onboarding_complete)
+        if not ok:
+            self.notify(
+                "Could not save onboarding state. Setup may run again next "
+                "launch — check permissions on ~/.deepagents/.state/.",
+                severity="warning",
+                markup=False,
+            )
+
+    async def _write_launch_name_memory(self, name: str) -> None:
+        """Persist the optional onboarding name into agent memory.
+
+        Surfaces a user-visible toast when the memory write fails so the
+        promise made in `LaunchNameScreen` ("can be remembered for future
+        sessions") does not silently break.
+        """
+        from deepagents_cli.onboarding import write_onboarding_name_memory
+
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        ok = await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
+        if not ok:
+            self.notify(
+                "Could not save your name to agent memory. Future sessions "
+                "may not remember it.",
+                severity="warning",
+                markup=False,
+            )
+
+    @staticmethod
+    async def _await_launch_name_memory(
+        task: asyncio.Task[None] | None,
+    ) -> None:
+        """Wait for the optional name-memory write when one is in flight."""
+        if task is not None:
+            await task
+
+    @staticmethod
+    def _build_launch_dependencies_screen(
+        *,
+        continue_screen: ModalScreen[Any] | None = None,
+    ) -> ModalScreen:
+        """Build the onboarding optional-dependency summary screen.
+
+        Args:
+            continue_screen: Optional screen to switch to when continuing.
+
+        Returns:
+            Dependency summary modal.
+        """
+        from deepagents_cli.widgets.launch_init import LaunchDependenciesScreen
+
+        return LaunchDependenciesScreen(continue_screen=continue_screen)
+
+    async def _prompt_launch_dependencies(self) -> bool | None:
+        """Show the onboarding dependency summary and wait for a choice.
+
+        Returns:
+            `True` when the user continues, or `None` when setup is skipped.
+        """
+        result = await self._push_screen_wait(self._build_launch_dependencies_screen())
+        return result if result is None or isinstance(result, bool) else None
+
+    async def _prompt_launch_dependencies_then_model(
+        self,
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """Show dependencies, then replace that modal with model selection.
+
+        Returns:
+            A tuple where the first value indicates whether the user continued
+            past the dependency screen, and the second is the selected model
+            result when one was chosen.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
+            loop.create_future()
+        )
+
+        def finish(result: tuple[bool, tuple[str, str] | None]) -> None:
+            if not result_future.done():
+                result_future.set_result(result)
+
+        def handle_model(result: tuple[str, str] | None) -> None:
+            finish((True, result))
+
+        model_screen = self._build_model_selector_screen(
+            curated=True,
+            result_callback=handle_model,
+        )
+        dependency_screen = self._build_launch_dependencies_screen(
+            continue_screen=model_screen,
+        )
+
+        def handle_dependencies(result: bool | None) -> None:
+            if result is None:
+                finish((False, None))
+            elif result is True:
+                finish((True, None))
+
+        self.push_screen(dependency_screen, handle_dependencies)
+        return await result_future
 
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.
@@ -5401,6 +5775,8 @@ class DeepAgentsApp(App):
         """Route unfocused paste events to chat input for drag/drop reliability."""
         if not self._chat_input:
             return
+        if isinstance(self.screen, ModalScreen):
+            return
         if (
             self._pending_approval_widget
             or self._pending_ask_user_widget
@@ -5445,6 +5821,8 @@ class DeepAgentsApp(App):
 
         if not self._chat_input:
             return
+        if isinstance(self.screen, ModalScreen):
+            return
         # Don't steal focus from approval or ask_user widgets
         if self._pending_approval_widget or self._pending_ask_user_widget:
             return
@@ -5460,6 +5838,57 @@ class DeepAgentsApp(App):
     # Model Switching
     # =========================================================================
 
+    def _build_model_selector_screen(
+        self,
+        *,
+        curated: bool = False,
+        result_callback: Callable[[tuple[str, str] | None], None] | None = None,
+    ) -> ModalScreen:
+        """Build the model selector screen with current app model state.
+
+        Args:
+            curated: Whether to use a shorter onboarding model list.
+            result_callback: Optional direct callback for selector results.
+
+        Returns:
+            Configured model selector modal.
+        """
+        from deepagents_cli.config import settings
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        return ModelSelectorScreen(
+            current_model=settings.model_name,
+            current_provider=settings.model_provider,
+            cli_profile_override=self._profile_override,
+            curated=curated,
+            title="Choose a Recommended Model" if curated else None,
+            description=(
+                "These models have performed well in Deep Agents evals and are "
+                "a solid starting set. You can explore the full model list "
+                "later with /model."
+                if curated
+                else None
+            ),
+            result_callback=result_callback,
+        )
+
+    async def _prompt_model_selector(
+        self,
+        *,
+        curated: bool = False,
+    ) -> tuple[str, str] | None:
+        """Show the model selector and wait for a choice.
+
+        Args:
+            curated: Whether to use the shorter onboarding model list.
+
+        Returns:
+            `(model_spec, provider)` on selection, or `None` on cancel.
+        """
+        screen = self._build_model_selector_screen(curated=curated)
+        result = await self._push_screen_wait(screen)
+        return result if result is None or isinstance(result, tuple) else None
+
     async def _show_model_selector(
         self,
         *,
@@ -5471,9 +5900,6 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from functools import partial
-
-        from deepagents_cli.config import settings
-        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
@@ -5505,11 +5931,7 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
-        screen = ModelSelectorScreen(
-            current_model=settings.model_name,
-            current_provider=settings.model_provider,
-            cli_profile_override=self._profile_override,
-        )
+        screen = self._build_model_selector_screen()
         self.push_screen(screen, handle_result)
 
     def _register_custom_themes(self) -> None:
@@ -6627,6 +7049,7 @@ class DeepAgentsApp(App):
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
+        announce_unchanged: bool = True,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -6642,6 +7065,8 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
+            announce_unchanged: Whether to mount a message when the requested
+                model is already active.
         """
         from deepagents_cli.config import create_model, detect_provider, settings
         from deepagents_cli.model_config import (
@@ -6674,6 +7099,7 @@ class DeepAgentsApp(App):
                                 self._switch_model,
                                 model_spec,
                                 extra_kwargs=extra_kwargs,
+                                announce_unchanged=announce_unchanged,
                             ),
                         )
                     )
@@ -6743,9 +7169,10 @@ class DeepAgentsApp(App):
                 self._model_override = current
                 self._model_params_override = extra_kwargs
                 params_suffix = _format_model_params(extra_kwargs)
-                await self._mount_message(
-                    AppMessage(f"Already using {current}{params_suffix}")
-                )
+                if announce_unchanged:
+                    await self._mount_message(
+                        AppMessage(f"Already using {current}{params_suffix}")
+                    )
                 logger.info(
                     "Model unchanged (%s); model_params=%s", current, extra_kwargs
                 )
@@ -6989,6 +7416,7 @@ async def run_textual_app(
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
+    launch_init: bool = False,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
     server_proc: ServerProcess | None = None,
@@ -7022,6 +7450,9 @@ async def run_textual_app(
         startup_cmd: Optional shell command to run at startup before the first
             prompt is accepted. Output is rendered in the transcript and
             non-zero exits warn but do not abort the session.
+        launch_init: Whether to run the first-run onboarding setup flow
+            (name entry, dependency summary, model picker) before accepting
+            the first prompt.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
@@ -7050,6 +7481,7 @@ async def run_textual_app(
         initial_prompt=initial_prompt,
         initial_skill=initial_skill,
         startup_cmd=startup_cmd,
+        launch_init=launch_init,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
         server_proc=server_proc,

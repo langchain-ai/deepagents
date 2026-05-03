@@ -48,6 +48,11 @@ center UI can be exercised without waiting for real conditions. Does not
 auto-open the update modal (use `DEEPAGENTS_CLI_DEBUG_UPDATE` for that). Any
 non-empty value enables the flag (including `"0"` or `"false"`)."""
 
+DEBUG_ONBOARDING = "DEEPAGENTS_CLI_DEBUG_ONBOARDING"
+"""Force the onboarding flow to open on every interactive startup.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled."""
+
 DEBUG_UPDATE = "DEEPAGENTS_CLI_DEBUG_UPDATE"
 """Inject a sample update-available notification and auto-open the update modal
 at launch so the update-available flow can be exercised without waiting for a

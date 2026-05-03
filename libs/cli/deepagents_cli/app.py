@@ -744,13 +744,21 @@ class DeepAgentsApp(App):
         """
 
         self._assistant_id = assistant_id
-        """Current agent identity.
+        """Current session agent identity.
 
         Scopes per-agent memory (`~/.deepagents/<id>/`) and skill discovery,
         keys `FileOpTracker` file-op history, and is attached to LangSmith
         traces as `assistant_id` / `agent_name`. Mutated by `/agents` swaps
         and by `-r` resume when the resumed thread belongs to a different
         agent.
+        """
+
+        self._default_assistant_id = assistant_id
+        """User-intended default agent — persisted as `[agents].recent`.
+
+        Tracks only explicit user choice (`-a`, picker, recent fallback);
+        never mutated by `-r` resume. Mirrors `recent_model`'s invariant —
+        a one-off thread resume must not redefine the default.
         """
 
         self._backend = backend
@@ -1633,8 +1641,10 @@ class DeepAgentsApp(App):
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
         thread ID. Mutates `self._lc_thread_id` and optionally
-        `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
-        thread on any DB error.
+        `self._assistant_id` / `self._server_kwargs`. Does NOT touch
+        `self._default_assistant_id` — a one-off resume should not redefine
+        the user's persisted default agent. Falls back to a fresh thread on
+        any DB error.
         """
         from deepagents_cli.sessions import (
             find_similar_threads,
@@ -1736,16 +1746,19 @@ class DeepAgentsApp(App):
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
 
-        # Persist the agent in use so a later bare `deepagents` relaunch
-        # brings the user back to it (same pattern as `save_recent_model`).
-        if self._assistant_id:
+        # Persist the user-chosen default so a later bare `deepagents`
+        # relaunch brings the user back to it. See `_default_assistant_id`
+        # for why this is decoupled from `_assistant_id`.
+        if self._default_assistant_id:
             from deepagents_cli.model_config import save_recent_agent
 
-            saved = await asyncio.to_thread(save_recent_agent, self._assistant_id)
+            saved = await asyncio.to_thread(
+                save_recent_agent, self._default_assistant_id
+            )
             if not saved:
                 logger.warning(
                     "Could not persist recent agent %r to config at startup",
-                    self._assistant_id,
+                    self._default_assistant_id,
                 )
 
         from deepagents_cli.server_manager import start_server_and_get_agent
@@ -5741,6 +5754,7 @@ class DeepAgentsApp(App):
             return _RemoteAgent(url=url, graph_name="agent")
 
         previous_agent = self._assistant_id
+        previous_default_agent = self._default_assistant_id
         previous_thread_id = self._lc_thread_id
         # Only offer a resume hint if the previous thread produced agent-side
         # output. `USER` alone is not enough: local-only flows (`/update`,
@@ -5858,7 +5872,10 @@ class DeepAgentsApp(App):
             # `restart()` so the subprocess picks up the new assistant_id
             # from the staged env override; on failure, both are rolled
             # back and the old server is confirmed dead (ServerStartFailed).
+            # Picker switches are explicit user choice, so update both the
+            # session id and the persisted default.
             self._assistant_id = agent_name
+            self._default_assistant_id = agent_name
             if self._server_kwargs is not None:
                 self._server_kwargs["assistant_id"] = agent_name
 
@@ -5873,6 +5890,7 @@ class DeepAgentsApp(App):
                 self._agent = _build_agent(server_proc.url)
             except Exception as exc:
                 self._assistant_id = previous_agent
+                self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
                 self._agent = None

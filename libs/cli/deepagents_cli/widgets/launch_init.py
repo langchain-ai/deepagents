@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 from deepagents_cli.extras_info import MODEL_PROVIDER_EXTRAS, SANDBOX_EXTRAS
+
+logger = logging.getLogger(__name__)
 
 _EXTRA_LIST_LIMIT = 8
 """Maximum extra names shown inline before summarizing the remainder."""
@@ -40,7 +43,19 @@ def _normalize_name(value: str) -> str:
 
 
 class LaunchNameScreen(ModalScreen[str | None]):
-    """First-step onboarding screen that asks for the user's name."""
+    """First-step onboarding screen that asks for the user's name.
+
+    Dismissal contract (return value drives the launch-init state machine in
+    `DeepAgentsApp._run_launch_init_sequence` — the marker is written in
+    every case so onboarding does not reappear next launch):
+
+    - Returns the stripped/title-cased name string when the user submits one.
+        Continues to the dependency summary and model picker.
+    - Returns `""` when the user submits an empty input. Continues to the
+        dependency summary without writing the optional name memory.
+    - Returns `None` when the user dismisses with Escape. Skips the remaining
+        onboarding screens.
+    """
 
     AUTO_FOCUS = "#launch-name-input"
 
@@ -142,7 +157,13 @@ class LaunchNameScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Compatibility alias for app-level modal dismissal."""
+        """Alias for `action_skip` invoked by the global Esc binding.
+
+        Textual's `Screen.action_cancel` is the conventional cancel hook used
+        by the app-level Esc handler in `DeepAgentsApp`; routing it to
+        `action_skip` keeps the screen-specific binding and the global path
+        in sync.
+        """
         self.action_skip()
 
 
@@ -231,14 +252,25 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                 "providers and runtime integrations are ready now.",
                 classes="launch-init-copy",
             )
-            yield Static(
-                self._format_section(title="Ready now", ready=True),
-                classes="launch-dependencies-section",
-            )
-            yield Static(
-                self._format_section(title="Available to add", ready=False),
-                classes="launch-dependencies-section",
-            )
+            if self._statuses:
+                yield Static(
+                    self._format_section(title="Ready now", ready=True),
+                    classes="launch-dependencies-section",
+                )
+                yield Static(
+                    self._format_section(title="Available to add", ready=False),
+                    classes="launch-dependencies-section",
+                )
+            else:
+                # `get_optional_dependency_status` returns an empty tuple when
+                # `importlib.metadata` cannot find the distribution (editable
+                # install renamed, dev checkout without dist-info). Render a
+                # single explanatory line instead of "none detected" twice.
+                yield Static(
+                    "Could not read installed dependency metadata. Reinstall "
+                    "with `pip install deepagents-cli[<extra>]` to populate.",
+                    classes="launch-dependencies-section",
+                )
             yield Static(
                 f"Enter to continue {glyphs.bullet} Esc skip setup",
                 classes="launch-init-help",
@@ -290,7 +322,14 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
     def action_continue(self) -> None:
         """Continue onboarding."""
         if self._continue_screen is not None:
-            self.app.switch_screen(self._continue_screen)
+            try:
+                self.app.switch_screen(self._continue_screen)
+            except Exception:
+                logger.warning(
+                    "Could not switch to continue screen; dismissing instead",
+                    exc_info=True,
+                )
+                self.dismiss(True)
             return
         self.dismiss(True)
 
@@ -299,7 +338,13 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         self.dismiss(None)
 
     def action_cancel(self) -> None:
-        """Compatibility alias for app-level modal dismissal."""
+        """Alias for `action_skip` invoked by the global Esc binding.
+
+        Textual's `Screen.action_cancel` is the conventional cancel hook used
+        by the app-level Esc handler in `DeepAgentsApp`; routing it to
+        `action_skip` keeps the screen-specific binding and the global path
+        in sync.
+        """
         self.action_skip()
 
 

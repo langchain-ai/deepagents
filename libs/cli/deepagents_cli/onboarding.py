@@ -79,6 +79,8 @@ def write_onboarding_name_memory(
 ) -> bool:
     """Persist the optional onboarding name into user agent memory.
 
+    Empty or whitespace-only names are skipped (no file is written).
+
     Args:
         name: Submitted user name.
         assistant_id: Agent identifier whose user memory should be updated.
@@ -105,6 +107,16 @@ def write_onboarding_name_memory(
             existing = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             existing = ""
+        except UnicodeDecodeError:
+            # Existing memory file is not valid UTF-8. Overwriting would clobber
+            # whatever the user has there, so abort and let them resolve it.
+            logger.warning(
+                "Existing memory file %s is not valid UTF-8; skipping onboarding "
+                "name memory write to avoid clobbering user content",
+                path,
+                exc_info=True,
+            )
+            return False
         path.write_text(
             _upsert_onboarding_name_memory(existing, block),
             encoding="utf-8",

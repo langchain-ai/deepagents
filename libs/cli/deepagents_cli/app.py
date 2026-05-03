@@ -39,6 +39,7 @@ from deepagents_cli import (
     theme,
 )
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -88,9 +89,6 @@ logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
 ScreenResultT = TypeVar("ScreenResultT")
-
-_DEFAULT_ASSISTANT_ID = "agent"
-"""Default agent identifier used when onboarding runs without an app-level id."""
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -823,13 +821,13 @@ class DeepAgentsApp(App):
         """
 
         self._launch_init_requested = launch_init
-        """Whether startup should show onboarding after first paint."""
+        """Whether startup should show onboarding during the initial paint."""
 
         self._launch_init_running = False
         """Re-entry guard for launch init modals."""
 
         self._launch_init_task: asyncio.Task[None] | None = None
-        """Active onboarding task, if it was started before server readiness."""
+        """Active onboarding task while the multi-screen flow is in progress."""
 
         self._session_start_waiting_for_launch_init = False
         """Whether session startup is scheduled to resume after onboarding."""
@@ -1669,7 +1667,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.skills.invocation import discover_skills_and_roots
 
-        assistant_id = self._assistant_id or "agent"
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         return discover_skills_and_roots(assistant_id)
 
     async def _resolve_resume_thread(self) -> None:
@@ -1696,11 +1694,7 @@ class DeepAgentsApp(App):
         if not resume:
             return
 
-        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
-        # the CLI entry point and pulls in argparse, rich, etc. at module level.
-        # Even a deferred import drags in the full dep tree for a single
-        # string constant.
-        default_agent = "agent"
+        default_agent = DEFAULT_ASSISTANT_ID
 
         try:
             if resume == "__MOST_RECENT__":
@@ -3304,7 +3298,7 @@ class DeepAgentsApp(App):
         *,
         name_result: Awaitable[str | None] | None = None,
     ) -> None:
-        """Run the two-step onboarding flow."""
+        """Run the onboarding flow."""
         if self._launch_init_running:
             return
 
@@ -3356,10 +3350,13 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
-        """Mark onboarding complete and render final session welcome text.
+        """Persist onboarding completion and, when given, mount the welcome.
 
         Args:
-            name: Optional submitted user name.
+            name: Submitted user name.
+
+                When `None` (skip path) or empty, the personalized
+                welcome message is not mounted.
         """
         await self._mark_onboarding_complete()
         if name:
@@ -3371,19 +3368,41 @@ class DeepAgentsApp(App):
             AppMessage(Content.from_markup("Welcome, $name.", name=name))
         )
 
-    @staticmethod
-    async def _mark_onboarding_complete() -> None:
-        """Persist that first-run onboarding should not be shown again."""
+    async def _mark_onboarding_complete(self) -> None:
+        """Persist that first-run onboarding should not be shown again.
+
+        Surfaces a user-visible toast when the marker write fails so the user
+        understands why onboarding may reappear on the next launch.
+        """
         from deepagents_cli.onboarding import mark_onboarding_complete
 
-        await asyncio.to_thread(mark_onboarding_complete)
+        ok = await asyncio.to_thread(mark_onboarding_complete)
+        if not ok:
+            self.notify(
+                "Could not save onboarding state. Setup may run again next "
+                "launch — check permissions on ~/.deepagents/.state/.",
+                severity="warning",
+                markup=False,
+            )
 
     async def _write_launch_name_memory(self, name: str) -> None:
-        """Persist the optional onboarding name into agent memory."""
+        """Persist the optional onboarding name into agent memory.
+
+        Surfaces a user-visible toast when the memory write fails so the
+        promise made in `LaunchNameScreen` ("can be remembered for future
+        sessions") does not silently break.
+        """
         from deepagents_cli.onboarding import write_onboarding_name_memory
 
-        assistant_id = self._assistant_id or _DEFAULT_ASSISTANT_ID
-        await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        ok = await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
+        if not ok:
+            self.notify(
+                "Could not save your name to agent memory. Future sessions "
+                "may not remember it.",
+                severity="warning",
+                markup=False,
+            )
 
     @staticmethod
     async def _await_launch_name_memory(
@@ -7376,8 +7395,9 @@ async def run_textual_app(
         startup_cmd: Optional shell command to run at startup before the first
             prompt is accepted. Output is rendered in the transcript and
             non-zero exits warn but do not abort the session.
-        launch_init: Whether to run the two-step onboarding setup flow before
-            accepting the first prompt.
+        launch_init: Whether to run the first-run onboarding setup flow
+            (name entry, dependency summary, model picker) before accepting
+            the first prompt.
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with

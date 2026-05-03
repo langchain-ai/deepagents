@@ -147,8 +147,11 @@ def get_optional_dependency_status(
     try:
         dist = distribution(distribution_name)
     except PackageNotFoundError:
-        logger.debug(
-            "Distribution %s not found; cannot read optional dependencies",
+        # Editable installs renamed by the user, dev checkouts without metadata,
+        # or vendored copies all hit this path. The dependency screen otherwise
+        # silently renders "none detected" twice; warn so the cause is visible.
+        logger.warning(
+            "Distribution %s not found; optional-dependency status will be empty",
             distribution_name,
         )
         return ()

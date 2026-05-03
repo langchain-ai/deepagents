@@ -26,6 +26,7 @@ def _seed_legacy(config_dir: Path) -> None:
     (config_dir / "sessions.db").write_bytes(b"db")
     (config_dir / "history.jsonl").write_text("h\n")
     (config_dir / "latest_version.json").write_text(json.dumps({"v": "1"}))
+    (config_dir / "onboarding_complete").write_text("1\n")
     tokens = config_dir / "mcp-tokens"
     tokens.mkdir()
     (tokens / "notion-x.json").write_text("{}")
@@ -46,12 +47,14 @@ class TestMigrateLegacyState:
         assert (state_dir / "history.jsonl").read_text() == "h\n"
         assert json.loads((state_dir / "latest_version.json").read_text()) == {"v": "1"}
         assert (state_dir / "mcp-tokens" / "notion-x.json").exists()
+        assert (state_dir / "onboarding_complete").read_text() == "1\n"
 
         for legacy_name in (
             "sessions.db",
             "history.jsonl",
             "latest_version.json",
             "mcp-tokens",
+            "onboarding_complete",
         ):
             assert not (config_dir / legacy_name).exists(), legacy_name
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.screen import ModalScreen
@@ -13,6 +14,7 @@ from deepagents_cli.extras_info import ExtraDependencyStatus
 from deepagents_cli.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
+    _normalize_name,
 )
 
 
@@ -236,3 +238,66 @@ class TestLaunchDependenciesScreen:
 
         assert app.dismissed is True
         assert app.result is None
+
+    async def test_empty_statuses_render_explanatory_message(self) -> None:
+        """Empty statuses should explain the cause instead of "none detected" twice."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(())
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Could not read installed dependency metadata" in content
+        # The misleading double "none detected" must not appear.
+        assert content.count("none detected") == 0
+        # Section labels from the populated path must not leak through.
+        assert "Ready now" not in content
+        assert "Available to add" not in content
+
+
+class TestNormalizeName:
+    """Direct unit tests for `_normalize_name`."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("ada", "Ada"),
+            ("ada lovelace", "Ada Lovelace"),
+            ("  ada  ", "Ada"),
+            ("Ada", "Ada"),
+            ("ADA", "ADA"),
+            ("aDa", "aDa"),
+            ("Ada Lovelace", "Ada Lovelace"),
+            ("", ""),
+            ("   ", ""),
+        ],
+    )
+    def test_normalization(self, raw: str, expected: str) -> None:
+        """Title-case lowercase input; preserve user-typed casing otherwise."""
+        assert _normalize_name(raw) == expected
+
+
+class TestLaunchDependenciesScreenDefaultStatuses:
+    """Constructor branch that fetches status when none is supplied."""
+
+    async def test_default_constructor_invokes_fetch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When `statuses=None`, the screen calls `get_optional_dependency_status`."""
+        calls = 0
+
+        def fake_fetch() -> tuple[ExtraDependencyStatus, ...]:
+            nonlocal calls
+            calls += 1
+            return ()
+
+        from deepagents_cli import extras_info
+
+        monkeypatch.setattr(extras_info, "get_optional_dependency_status", fake_fetch)
+
+        screen = LaunchDependenciesScreen()
+        assert screen._statuses == ()
+        assert calls == 1

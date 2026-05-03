@@ -30,13 +30,10 @@ if TYPE_CHECKING:
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as _DEFAULT_AGENT_NAME
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
-
-# Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
-# module at startup. Keep in sync with agent.py. Tested.
-_DEFAULT_AGENT_NAME = "agent"
 
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:

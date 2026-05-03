@@ -4111,6 +4111,9 @@ class TestRestartServerForAgentSwap:
             )
             server_proc.restart.assert_awaited_once()
             assert app._assistant_id == "researcher"
+            # Picker switch is explicit user choice — both the session id
+            # and the persisted default should advance together.
+            assert app._default_assistant_id == "researcher"
             assert app._server_kwargs is not None
             assert app._server_kwargs["assistant_id"] == "researcher"
             assert app._agent is not None
@@ -4236,6 +4239,9 @@ class TestRestartServerForAgentSwap:
                 await app._restart_server_for_agent_swap("researcher")
 
         assert app._assistant_id == "coder"
+        # Both ids roll back together; a failed swap must not leave the
+        # persisted default pointing at an agent the user never reached.
+        assert app._default_assistant_id == "coder"
         assert app._server_kwargs is not None
         assert app._server_kwargs["assistant_id"] == "coder"
         assert app._agent is None
@@ -4248,6 +4254,99 @@ class TestRestartServerForAgentSwap:
         failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
         assert len(failures) == 1
         assert failures[0].error is boom
+
+
+class TestResolveResumeThread:
+    """Resume-thread inference must not pollute the persisted default agent."""
+
+    @staticmethod
+    def _make_app(assistant_id: str = "agent") -> DeepAgentsApp:
+        # `server_kwargs=None` so the auto-mounted `_start_server_background`
+        # worker doesn't fire and consume `_resume_thread_intent` before the
+        # test gets to call `_resolve_resume_thread` directly.
+        return DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id=assistant_id,
+            server_kwargs=None,
+            server_proc=None,
+        )
+
+    async def test_specific_thread_resume_leaves_default_alone(self) -> None:
+        """`-r <thread>` from a different agent updates session id only."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "thread-from-coder"
+            with (
+                patch(
+                    "deepagents_cli.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            # The default — and therefore what `[agents].recent` will be
+            # written as at startup — must reflect user choice, not whatever
+            # agent happened to own the resumed thread.
+            assert app._default_assistant_id == "agent"
+
+    async def test_explicit_a_blocks_specific_thread_override(self) -> None:
+        """`-a coder -r <thread>` keeps both ids on `coder` regardless of thread agent.
+
+        Locks the gate at `_resolve_resume_thread`'s `elif` branch
+        (`if self._assistant_id == default_agent`): explicit `-a` suppresses
+        the agent inference, so the thread's owner ("researcher" here) is
+        never queried and neither id changes.
+        """
+        app = self._make_app("coder")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "thread-from-researcher"
+            get_thread_agent_mock = AsyncMock(return_value="researcher")
+            with (
+                patch(
+                    "deepagents_cli.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    get_thread_agent_mock,
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            assert app._default_assistant_id == "coder"
+            get_thread_agent_mock.assert_not_called()
+
+    async def test_most_recent_resume_leaves_default_alone(self) -> None:
+        """`-r` (no thread id) must not redefine the default either."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with (
+                patch(
+                    "deepagents_cli.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            assert app._default_assistant_id == "agent"
 
 
 def _missing_dep_entry(
@@ -5711,3 +5810,48 @@ class TestPrewarmAwait:
         assert call_order[:2] == ["prewarm", "create_model"], (
             f"prewarm must precede create_model; got {call_order}"
         )
+
+    async def test_start_server_background_persists_default_not_session_id(
+        self,
+    ) -> None:
+        """`save_recent_agent` must receive the user-chosen default.
+
+        Locks the parity invariant: when `-r` resume has overridden the
+        session id but the user's default is unchanged, the next bare
+        relaunch must still return to the default — not the resumed
+        thread's owning agent. Without this assertion a future refactor
+        that swaps the argument back to `_assistant_id` is invisible.
+        """
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        # Simulate post-resume state: session ran in `coder`, but the user's
+        # chosen default is `agent`.
+        app._assistant_id = "coder"
+        app._default_assistant_id = "agent"
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=fake_create_model),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                return_value=True,
+            ) as save_agent_mock,
+            patch.object(app, "post_message"),
+            contextlib.suppress(Exception),
+        ):
+            await app._start_server_background()
+
+        save_agent_mock.assert_called_once_with("agent")

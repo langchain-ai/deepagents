@@ -45,7 +45,7 @@ class TestOnboardingState:
         assert should_run_onboarding(tmp_path) is True
 
     def test_mark_onboarding_complete_creates_marker(self, tmp_path) -> None:
-        """Completion should create the marker under the config directory."""
+        """Completion should create the marker under the state directory."""
         assert mark_onboarding_complete(tmp_path) is True
 
         assert onboarding_marker_path(tmp_path).read_text(encoding="utf-8") == "1\n"

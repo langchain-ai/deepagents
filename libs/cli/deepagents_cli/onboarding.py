@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from deepagents_cli._env_vars import DEBUG_ONBOARDING, is_env_truthy
-from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
+from deepagents_cli.model_config import DEFAULT_STATE_DIR
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ONBOARDING_MARKER_FILENAME = "onboarding_complete"
-"""Marker filename under `~/.deepagents` after onboarding has completed."""
+"""Marker filename under `~/.deepagents/.state` after onboarding has completed."""
 
 ONBOARDING_NAME_MEMORY_START = "<!-- deepagents:onboarding-name:start -->"
 """Start marker for the managed onboarding name memory block."""
@@ -24,44 +24,44 @@ ONBOARDING_NAME_MEMORY_END = "<!-- deepagents:onboarding-name:end -->"
 """End marker for the managed onboarding name memory block."""
 
 
-def onboarding_marker_path(config_dir: Path | None = None) -> Path:
+def onboarding_marker_path(state_dir: Path | None = None) -> Path:
     """Return the first-run onboarding marker path.
 
     Args:
-        config_dir: Optional config directory override for tests.
+        state_dir: Optional state directory override for tests.
 
     Returns:
         Path to the onboarding completion marker.
     """
-    return (config_dir or DEFAULT_CONFIG_DIR) / ONBOARDING_MARKER_FILENAME
+    return (state_dir or DEFAULT_STATE_DIR) / ONBOARDING_MARKER_FILENAME
 
 
-def has_completed_onboarding(config_dir: Path | None = None) -> bool:
+def has_completed_onboarding(state_dir: Path | None = None) -> bool:
     """Return whether the user has completed onboarding.
 
     Args:
-        config_dir: Optional config directory override for tests.
+        state_dir: Optional state directory override for tests.
 
     Returns:
         `True` when the onboarding marker exists, otherwise `False`.
     """
     try:
-        return onboarding_marker_path(config_dir).exists()
+        return onboarding_marker_path(state_dir).exists()
     except OSError:
         logger.warning("Could not inspect onboarding marker", exc_info=True)
         return False
 
 
-def mark_onboarding_complete(config_dir: Path | None = None) -> bool:
+def mark_onboarding_complete(state_dir: Path | None = None) -> bool:
     """Persist that onboarding has completed.
 
     Args:
-        config_dir: Optional config directory override for tests.
+        state_dir: Optional state directory override for tests.
 
     Returns:
         `True` when the marker was written, otherwise `False`.
     """
-    path = onboarding_marker_path(config_dir)
+    path = onboarding_marker_path(state_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("1\n", encoding="utf-8")
@@ -161,15 +161,15 @@ def _upsert_onboarding_name_memory(existing: str, block: str) -> str:
     return f"{base}\n\n## User Preferences\n\n{block}\n"
 
 
-def should_run_onboarding(config_dir: Path | None = None) -> bool:
+def should_run_onboarding(state_dir: Path | None = None) -> bool:
     """Return whether onboarding should open at interactive startup.
 
     Args:
-        config_dir: Optional config directory override for tests.
+        state_dir: Optional state directory override for tests.
 
     Returns:
         `True` when the debug override is enabled or no completion marker exists.
     """
     if is_env_truthy(DEBUG_ONBOARDING):
         return True
-    return not has_completed_onboarding(config_dir)
+    return not has_completed_onboarding(state_dir)

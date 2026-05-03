@@ -52,12 +52,14 @@ One is picked per session. Higher weights are picked more often.
 """
 
 _CONNECTING_FOOTER_DELAY_SECONDS = 5.0
-"""Seconds the banner waits before revealing the "Connecting..." footer.
+"""Upper bound on how long the banner waits before revealing "Connecting...".
 
 Startup is usually fast enough that flashing the spinner makes the CLI feel
 slower than it is; the welcome footer renders immediately and the connecting
 footer only appears if startup is genuinely taking a while or the user
-submits a message before the agent is reachable.
+submits a message before the agent is reachable. The timer is cancelled
+early when `set_connected`, `set_idle`, or `set_connecting` runs first, so
+this delay is the maximum — not a fixed wait.
 """
 
 
@@ -120,11 +122,12 @@ class WelcomeBanner(Static):
 
                 Ignored when `resuming` is `True`.
             defer_connecting_display: When `True` and `connecting` is `True`,
-                suppress the connecting footer initially and render the ready
-                footer instead, so a fast startup feels instantaneous. The
-                connecting footer is revealed by `reveal_connecting_footer`
-                (called when the user submits a message during startup) or
-                automatically after `_CONNECTING_FOOTER_DELAY_SECONDS`.
+                suppress the connecting footer initially so a fast startup
+                feels instantaneous; the welcome footer remains visible until
+                startup resolves. The connecting footer is revealed by
+                `reveal_connecting_footer` (called when the user submits a
+                message during startup) or automatically after
+                `_CONNECTING_FOOTER_DELAY_SECONDS`.
             **kwargs: Additional arguments passed to parent.
         """
         # Avoid collision with Widget._thread_id (Textual internal int)
@@ -168,10 +171,11 @@ class WelcomeBanner(Static):
     def reveal_connecting_footer(self) -> None:
         """Stop deferring the "Connecting..." footer and render it now.
 
-        No-op when the banner is not currently deferring (already revealed,
-        already connected, or never was connecting). Called when the user
-        submits a message before startup completes so the queued state has
-        explicit feedback.
+        No-op once the deferred state has been cleared (by reveal, connect,
+        idle, or because deferral was never active). Two callers reach this:
+        the deferral timer (`_on_defer_timer_fired`) when the wait window
+        elapses, and the app when the user submits a message during startup
+        so the queued state has explicit feedback.
         """
         if not self._defer_connecting_display:
             return

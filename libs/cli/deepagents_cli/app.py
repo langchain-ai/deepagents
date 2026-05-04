@@ -7215,8 +7215,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(
                         f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` to add a key, then re-issue "
-                        f"`/model {model_spec}`."
+                        f"Run `/auth` for the '{auth_status.provider}' provider, then "
+                        f"re-issue `/model {model_spec}`."
                     )
                 )
                 return

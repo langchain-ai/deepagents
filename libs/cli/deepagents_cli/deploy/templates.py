@@ -32,6 +32,7 @@ _SANDBOXES: dict = {}
 _SANDBOX_FS_CAPACITY_BYTES = 16 * 1024**3
 
 
+# Return an existing LangSmith sandbox once it is usable, starting it if needed.
 def _ensure_ready_sandbox(client, sandbox_name: str):
     """Return an existing named sandbox, waiting/starting when needed."""
     sandbox = client.get_sandbox(sandbox_name)
@@ -138,6 +139,7 @@ def _get_or_create_sandbox(
     return backend
 
 
+# Reconnect to an existing LangSmith sandbox from a validated sandbox record.
 def _reconnect_sandbox(
     cache_key,
     *,
@@ -247,6 +249,7 @@ def _get_or_create_sandbox(
     return backend
 
 
+# Reconnect to an existing Modal sandbox from a validated sandbox record.
 def _reconnect_sandbox(
     cache_key,
     *,
@@ -318,6 +321,7 @@ def _get_or_create_sandbox(
     return backend
 
 
+# Reconnect to an existing Runloop devbox from a validated sandbox record.
 def _reconnect_sandbox(
     cache_key,
     *,
@@ -1009,12 +1013,14 @@ SANDBOX_SCOPE = {sandbox_scope!r}
 _SANDBOX_RECORD_KEY = "deepagents_sandbox"
 
 
+# Build the stable sandbox identity key for the configured sandbox scope.
 def _sandbox_cache_key(*, scope: str, thread_id: str | None, assistant_id: str | None) -> str:
     if scope == "assistant":
         return f"assistant:{{assistant_id}}"
     return f"thread:{{thread_id or 'local'}}"
 
 
+# Validate that a sandbox record belongs to this generated deployment and scope.
 def _valid_sandbox_record(record: object, *, cache_key: str) -> dict | None:
     """Validate a sandbox record before reconnecting."""
     if not isinstance(record, dict):
@@ -1032,6 +1038,7 @@ def _valid_sandbox_record(record: object, *, cache_key: str) -> dict | None:
     return record
 
 
+# Convert a resolved sandbox backend into the canonical persisted record shape.
 def _sandbox_record_for_backend(cache_key: str, backend) -> dict:
     sandbox_id = getattr(backend, "id", None)
     if not isinstance(sandbox_id, str) or not sandbox_id:
@@ -1045,6 +1052,7 @@ def _sandbox_record_for_backend(cache_key: str, backend) -> dict:
     }}
 
 
+# Read the persisted sandbox record from thread or assistant metadata.
 async def _get_sandbox_record_from_metadata(
     cache_key: str,
     *,
@@ -1078,6 +1086,7 @@ async def _get_sandbox_record_from_metadata(
         return None
 
 
+# Persist the canonical sandbox record back to thread or assistant metadata.
 async def _persist_sandbox_record_if_possible(
     record: dict,
     *,
@@ -1112,6 +1121,7 @@ async def _persist_sandbox_record_if_possible(
         )
 
 
+# Resolve the scoped sandbox by checking config, metadata, then creating if needed.
 async def _resolve_sandbox_for_scope(
     *,
     scope: str,

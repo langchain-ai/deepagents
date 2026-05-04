@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.50](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.49...deepagents-cli==0.0.50) (2026-05-04)
+
+
+### Bug Fixes
+
+* **cli:** show detached HEAD commit in local context ([#3144](https://github.com/langchain-ai/deepagents/issues/3144)) ([569d4f0](https://github.com/langchain-ai/deepagents/commit/569d4f0d7d699bace7820eb171a6bd605b2a1a18))
+
 ## [0.0.49](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.48...deepagents-cli==0.0.49) (2026-05-04)
 
 ### Features

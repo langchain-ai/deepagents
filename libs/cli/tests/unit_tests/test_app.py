@@ -41,6 +41,7 @@ from deepagents_cli.app import (
     _write_iterm_escape,
 )
 from deepagents_cli.widgets.chat_input import ChatInput
+from deepagents_cli.widgets.launch_init import LaunchNameScreen
 from deepagents_cli.widgets.messages import (
     AppMessage,
     ErrorMessage,
@@ -360,6 +361,482 @@ class TestStartupSequence:
         assert observed_cmd == ["echo hi"]
         assert observed_attr_during_run == [None]
         assert app._startup_cmd is None
+
+    async def test_launch_init_runs_before_initial_submission(self) -> None:
+        """Onboarding setup should complete before the startup prompt is submitted."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello world",
+            launch_init=True,
+        )
+        order: list[str] = []
+        initial_submitted = asyncio.Event()
+
+        async def capture_init() -> None:  # noqa: RUF029
+            order.append("init")
+
+        async def capture_initial_submission() -> None:  # noqa: RUF029
+            order.append("initial")
+            initial_submitted.set()
+
+        app._run_launch_init_sequence = capture_init  # type: ignore[assignment]
+        app._submit_initial_submission = (  # type: ignore[assignment]
+            capture_initial_submission
+        )
+
+        await app._run_session_start_sequence()
+        await asyncio.wait_for(initial_submitted.wait(), timeout=2)
+
+        assert order == ["init", "initial"]
+        assert app._launch_init_requested is False
+
+    async def test_launch_init_name_screen_focuses_on_mount(self) -> None:
+        """The first launch modal should be active and typeable immediately."""
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
+        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            name_input = app.screen.query_one("#launch-name-input", Input)
+            assert name_input.has_focus
+
+            await pilot.press("a", "d", "a")
+            assert name_input.value == "ada"
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+    async def test_server_ready_keeps_launch_name_screen_typeable(self) -> None:
+        """Server-ready handling should not steal focus from the launch name field."""
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
+        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            name_input = app.screen.query_one("#launch-name-input", Input)
+            assert name_input.has_focus
+
+            app._connecting = True
+            with patch.object(
+                app, "_run_session_start_sequence", new_callable=AsyncMock
+            ) as startup_mock:
+                app.on_deep_agents_app_server_ready(
+                    app.ServerReady(
+                        agent=MagicMock(),
+                        server_proc=None,
+                        mcp_server_info=[],
+                    )
+                )
+                await pilot.pause()
+                await pilot.pause()
+
+            startup_mock.assert_awaited_once()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            assert name_input.has_focus
+
+            await pilot.press("a", "d", "a")
+            assert name_input.value == "ada"
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+    async def test_server_ready_start_sequence_keeps_launch_name_screen_typeable(
+        self,
+    ) -> None:
+        """The real post-connect startup task should not block name input."""
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # type: ignore[assignment]
+        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+        app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            name_input = app.screen.query_one("#launch-name-input", Input)
+            assert name_input.has_focus
+
+            app._connecting = True
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            await pilot.pause()
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            assert name_input.has_focus
+
+            await pilot.press("a", "d", "a")
+            assert name_input.value == "ada"
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+    async def test_launch_init_does_not_defer_server_startup(self) -> None:
+        """Onboarding setup should still let the server startup worker begin."""
+        app = DeepAgentsApp(
+            launch_init=True,
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            model_kwargs={"model_spec": None},
+        )
+        app._resolve_git_branch_and_continue = AsyncMock()  # type: ignore[assignment]
+        started_groups: list[str | None] = []
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args
+            group = kwargs.get("group")
+            started_groups.append(group if isinstance(group, str) else None)
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.update_check.is_update_check_enabled",
+            return_value=False,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._post_paint_init()
+
+                assert "server-startup" in started_groups
+
+                launch_task = app._launch_init_task
+                assert launch_task is not None
+                assert isinstance(app.screen, LaunchNameScreen)
+                app.screen.action_cancel()
+                await asyncio.wait_for(launch_task, timeout=2)
+
+    async def test_launch_init_sequence_captures_name_and_switches_model(self) -> None:
+        """Onboarding setup should store the name and apply the selected model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        prompt_flow_mock = AsyncMock(return_value=(True, ("openai:gpt-5", "openai")))
+        mount_message_mock = AsyncMock()
+        events: list[str] = []
+        switch_model_mock = AsyncMock(
+            side_effect=lambda model_spec, **_: events.append(f"switch:{model_spec}")
+        )
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
+
+        async def track_mount_message(message: AppMessage) -> None:
+            events.append("welcome")
+            await mount_message_mock(message)
+
+        def track_mark_complete() -> bool:
+            events.append("mark")
+            return True
+
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = track_mount_message  # type: ignore[assignment]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                side_effect=track_mark_complete,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        assert app._launch_user_name == "Ada"
+        prompt_flow_mock.assert_awaited_once_with()
+        write_name.assert_called_once_with("Ada", "coder")
+        switch_model_mock.assert_awaited_once_with(
+            "openai:gpt-5", announce_unchanged=False
+        )
+        mark_complete.assert_called_once_with()
+        mount_message_mock.assert_awaited_once()
+        assert events == ["switch:openai:gpt-5", "mark", "welcome"]
+
+    async def test_launch_init_sequence_allows_empty_name(self) -> None:
+        """Onboarding setup should continue to model selection without a name."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="")  # type: ignore[assignment]
+        prompt_flow_mock = AsyncMock(return_value=(True, ("openai:gpt-5", "openai")))
+        switch_model_mock = AsyncMock()
+        mount_message_mock = AsyncMock()
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        assert app._launch_user_name is None
+        mount_message_mock.assert_not_awaited()
+        prompt_flow_mock.assert_awaited_once_with()
+        write_name.assert_not_called()
+        switch_model_mock.assert_awaited_once_with(
+            "openai:gpt-5", announce_unchanged=False
+        )
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
+        """Writing the optional name should not hold the dependency/model transition."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        model_prompted = asyncio.Event()
+        release_write = asyncio.Event()
+
+        async def write_name(_name: str) -> None:
+            await release_write.wait()
+
+        def prompt_flow() -> tuple[bool, tuple[str, str] | None]:
+            model_prompted.set()
+            return (True, None)
+
+        app._write_launch_name_memory = AsyncMock(side_effect=write_name)  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(side_effect=prompt_flow)  # type: ignore[assignment]
+
+        with patch(
+            "deepagents_cli.onboarding.mark_onboarding_complete",
+            return_value=True,
+        ) as mark_complete:
+            task = asyncio.create_task(app._run_launch_init_sequence())
+            await asyncio.wait_for(model_prompted.wait(), timeout=1)
+
+            assert task.done() is False
+            release_write.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # type: ignore[attr-defined]
+        app._prompt_launch_dependencies_then_model.assert_awaited_once_with()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_skips_and_marks_complete(self) -> None:
+        """Skipping the name screen should finish onboarding without model setup."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
+        prompt_flow_mock = AsyncMock()
+        switch_model_mock = AsyncMock()
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        prompt_flow_mock.assert_not_awaited()
+        switch_model_mock.assert_not_awaited()
+        write_name.assert_not_called()
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_dependency_skip_remembers_name(self) -> None:
+        """Skipping dependency info should remember a submitted name and stop."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        prompt_flow_mock = AsyncMock(return_value=(False, None))
+        switch_model_mock = AsyncMock()
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        write_name.assert_called_once_with("Ada", "coder")
+        prompt_flow_mock.assert_awaited_once_with()
+        switch_model_mock.assert_not_awaited()
+        app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_model_skip_remembers_name(self) -> None:
+        """Skipping model selection should still remember a submitted name."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+            return_value=(True, None)
+        )
+        switch_model_mock = AsyncMock()
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        write_name.assert_called_once_with("Ada", "coder")
+        switch_model_mock.assert_not_awaited()
+        app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_surfaces_switch_model_failure(self) -> None:
+        """Failed onboarding model switch should toast and still mark complete."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+            return_value=(True, ("openai:gpt-5", "openai"))
+        )
+        switch_failure = RuntimeError("missing credentials")
+        app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
+            await app._run_launch_init_sequence()
+
+        app._switch_model.assert_awaited_once()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "error"
+        assert notify_kwargs.get("markup") is False
+        assert "missing credentials" in notify_mock.call_args.args[0]
+
+    async def test_launch_init_sequence_surfaces_marker_failure(self) -> None:
+        """A failed onboarding-complete write should surface a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock()  # type: ignore[assignment]
+        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.onboarding.mark_onboarding_complete",
+            return_value=False,
+        ):
+            await app._run_launch_init_sequence()
+
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "warning"
+        assert notify_kwargs.get("markup") is False
+
+    async def test_launch_init_sequence_times_out_waiting_for_server(self) -> None:
+        """A stuck server should not trap onboarding past the timeout."""
+        from deepagents_cli import app as app_module
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_launch_dependencies_then_model = AsyncMock(  # type: ignore[assignment]
+            return_value=(True, ("openai:gpt-5", "openai"))
+        )
+        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._connecting = True
+        # Constructor pre-sets the readiness event when no server is configured;
+        # clear it so the wait_for actually has to time out.
+        app._connection_ready_event.clear()
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with (
+            patch.object(app_module, "_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS", 0.05),
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
+            await app._run_launch_init_sequence()
+
+        app._switch_model.assert_not_awaited()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "warning"
+
+    def test_curated_model_selector_uses_onboarding_copy(self) -> None:
+        """Onboarding model selector should use dedicated title and description."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        screen = app._build_model_selector_screen(curated=True)
+
+        assert isinstance(screen, ModelSelectorScreen)
+        assert screen._title == "Choose a Recommended Model"
+        assert (
+            screen._description
+            == "These models have performed well in Deep Agents evals and are "
+            "a solid starting set. You can explore the full model list "
+            "later with /model."
+        )
 
 
 class TestAppCSSValidation:
@@ -890,6 +1367,66 @@ class TestModalScreenCtrlDHandling:
 
             exit_mock.assert_called_once()
 
+    async def test_ctrl_d_opens_delete_confirm_in_auth_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+D in the auth prompt should open the confirm modal, not quit."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.widgets.auth import (
+            AuthPromptScreen,
+            DeleteCredentialConfirmScreen,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        auth_store.set_stored_key("openai", "k")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_in_auth_confirm_arms_quit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+D inside the auth confirm modal arms the double-press quit."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.widgets.auth import AuthPromptScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        auth_store.set_stored_key("openai", "k")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                exit_mock.assert_not_called()
+                assert app._quit_pending is True
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
 
 class TestModalScreenShiftTabHandling:
     """Tests for app-level Shift+Tab behavior while modals are open."""
@@ -929,6 +1466,41 @@ class TestModalScreenShiftTabHandling:
             await pilot.pause()
 
             assert filter_input.has_focus
+            assert app._auto_approve is False
+
+    async def test_shift_tab_navigates_in_auth_manager(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shift+Tab should move the manager option-list cursor up, not toggle."""
+        from textual.widgets import OptionList
+
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = AuthManagerScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            options = screen.query_one("#auth-manager-options", OptionList)
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            after_tab = options.highlighted
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert options.highlighted is not None
+            assert after_tab is not None
+            assert options.highlighted < after_tab
             assert app._auto_approve is False
 
 
@@ -1803,6 +2375,23 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
 
+    async def test_auth_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/auth' should push the AuthManagerScreen modal."""
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/auth")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthManagerScreen)
+
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
@@ -1892,6 +2481,29 @@ class TestAppFocusRestoresChatInput:
 
             mock_focus.assert_not_called()
 
+    async def test_click_skips_when_modal_open(self) -> None:
+        """App-level click recovery should not steal focus from modal inputs."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+
+            screen = LaunchNameScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            name_input = screen.query_one("#launch-name-input", Input)
+            assert name_input.has_focus
+
+            fake_event = MagicMock()
+            fake_event.widget = name_input
+            with patch.object(app._chat_input, "focus_input") as mock_focus:
+                app.on_click(fake_event)
+                await pilot.pause()
+
+            mock_focus.assert_not_called()
+            assert name_input.has_focus
+
     async def test_app_focus_skips_when_approval_pending(self) -> None:
         """Regaining focus should not steal focus from the approval widget."""
         app = DeepAgentsApp()
@@ -1943,6 +2555,30 @@ class TestPasteRouting:
             event = events.Paste("/tmp/photo.png")
             with (
                 patch.object(app, "_is_input_focused", return_value=True),
+                patch.object(
+                    app._chat_input, "handle_external_paste", return_value=True
+                ) as mock_handle,
+                patch.object(event, "prevent_default") as mock_prevent,
+                patch.object(event, "stop") as mock_stop,
+            ):
+                app.on_paste(event)
+
+            mock_handle.assert_not_called()
+            mock_prevent.assert_not_called()
+            mock_stop.assert_not_called()
+
+    async def test_on_paste_does_not_route_when_modal_open(self) -> None:
+        """Modal inputs should keep paste handling instead of routing to chat input."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+
+            app.push_screen(LaunchNameScreen())
+            await pilot.pause()
+
+            event = events.Paste("Ada")
+            with (
                 patch.object(
                     app._chat_input, "handle_external_paste", return_value=True
                 ) as mock_handle,
@@ -3416,6 +4052,27 @@ class TestBypassFrozensetDrift:
         )
 
 
+class TestDefaultAgentNameDrift:
+    """Pin the canonical agent default and its public re-exports together.
+
+    `_constants.DEFAULT_AGENT_NAME` is the single source of truth. This test
+    asserts that every consumer (`agent.DEFAULT_AGENT_NAME`,
+    `_server_config.DEFAULT_ASSISTANT_ID`, `app.DEFAULT_ASSISTANT_ID`)
+    resolves back to it — guarding against a future refactor that
+    re-introduces a hardcoded `"agent"` literal.
+    """
+
+    def test_all_default_agent_constants_match(self) -> None:
+        """All consumers of the default identifier must point at `_constants`."""
+        from deepagents_cli import _constants, _server_config, agent, app
+
+        canonical = _constants.DEFAULT_AGENT_NAME
+        assert canonical == "agent"
+        assert agent.DEFAULT_AGENT_NAME is canonical
+        assert _server_config.DEFAULT_ASSISTANT_ID is canonical
+        assert app.DEFAULT_ASSISTANT_ID is canonical
+
+
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 
@@ -3738,6 +4395,40 @@ class TestDeferredActions:
 
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
+
+
+class TestBuildModelSwitchErrorBody:
+    """Tests for `_build_model_switch_error_body` link-aware formatting."""
+
+    def test_unknown_provider_error_returns_content_with_clickable_link(self) -> None:
+        """`UnknownProviderError` produces a `Content` body with a `link` span."""
+        from textual.content import Content
+
+        from deepagents_cli.app import _build_model_switch_error_body
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        exc = UnknownProviderError(model_spec="mystery-model")
+        body = _build_model_switch_error_body(exc)
+        assert isinstance(body, Content)
+        links = [
+            getattr(span.style, "link", None)
+            for span in body.spans
+            if getattr(span.style, "link", None)
+        ]
+        assert links == [PROVIDERS_DOCS_URL]
+        # Both the model spec and the URL appear in the rendered text.
+        assert "mystery-model" in body.plain
+        assert PROVIDERS_DOCS_URL in body.plain
+
+    def test_other_exception_returns_plain_string(self) -> None:
+        """Non-`UnknownProviderError` exceptions render as a plain string body."""
+        from deepagents_cli.app import _build_model_switch_error_body
+
+        body = _build_model_switch_error_body(ValueError("boom"))
+        assert body == "Failed to switch model: boom"
 
 
 class TestServerStartupError:
@@ -4111,6 +4802,9 @@ class TestRestartServerForAgentSwap:
             )
             server_proc.restart.assert_awaited_once()
             assert app._assistant_id == "researcher"
+            # Picker switch is explicit user choice — both the session id
+            # and the persisted default should advance together.
+            assert app._default_assistant_id == "researcher"
             assert app._server_kwargs is not None
             assert app._server_kwargs["assistant_id"] == "researcher"
             assert app._agent is not None
@@ -4222,6 +4916,75 @@ class TestRestartServerForAgentSwap:
         assert any("Switched to researcher" in s for s in plain)
         assert not any("to resume" in s for s in plain)
 
+    async def test_swap_save_failure_notifies_after_confirmation(self) -> None:
+        """A failed `save_recent_agent` after a swap must surface a toast.
+
+        Locks two invariants:
+            1. The notify is wired with `markup=False` and `severity="warning"`.
+                `markup=False` is load-bearing — the message contains a
+                semicolon and stray commas, and the Toast renderer would
+                crash if markup parsing were enabled.
+            2. The "Switched to X" confirmation lands BEFORE the warning
+                notify. Otherwise the toast hovers next to a green
+                success line, making the causality unreadable.
+        """
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app, _server_proc = self._make_app()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="hi there")
+        )
+
+        order: list[str] = []
+        mounted: list[object] = []
+
+        def record_mount(msg: object) -> None:
+            mounted.append(msg)
+            content_str = str(getattr(msg, "_content", msg))
+            if "Switched to" in content_str:
+                order.append("confirmation")
+
+        def record_notify(*args: Any, **kwargs: Any) -> None:
+            if kwargs.get("severity") == "warning" and "config" in str(args[0]).lower():
+                order.append("notify")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=False,
+                ),
+                patch.object(
+                    app, "_mount_message", AsyncMock(side_effect=record_mount)
+                ),
+                patch.object(app, "run_worker"),
+                patch.object(app, "notify", side_effect=record_notify) as notify_mock,
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        # Confirmation message reached the user.
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+
+        # The save-failure warning notify fired with the right kwargs.
+        warning_calls = [
+            notify_call
+            for notify_call in notify_mock.call_args_list
+            if notify_call.kwargs.get("severity") == "warning"
+        ]
+        assert warning_calls, (
+            f"expected a warning notify; got {notify_mock.call_args_list}"
+        )
+        for notify_call in warning_calls:
+            assert notify_call.kwargs.get("markup") is False
+            assert "agent" in str(notify_call.args[0]).lower()
+
+        # Confirmation must precede the notify in the observed sequence.
+        assert order == ["confirmation", "notify"], (
+            f"confirmation must precede notify; got {order}"
+        )
+
     async def test_failure_rolls_back_identity_and_posts_failed(
         self,
     ) -> None:
@@ -4236,6 +4999,9 @@ class TestRestartServerForAgentSwap:
                 await app._restart_server_for_agent_swap("researcher")
 
         assert app._assistant_id == "coder"
+        # Both ids roll back together; a failed swap must not leave the
+        # persisted default pointing at an agent the user never reached.
+        assert app._default_assistant_id == "coder"
         assert app._server_kwargs is not None
         assert app._server_kwargs["assistant_id"] == "coder"
         assert app._agent is None
@@ -4248,6 +5014,99 @@ class TestRestartServerForAgentSwap:
         failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
         assert len(failures) == 1
         assert failures[0].error is boom
+
+
+class TestResolveResumeThread:
+    """Resume-thread inference must not pollute the persisted default agent."""
+
+    @staticmethod
+    def _make_app(assistant_id: str = "agent") -> DeepAgentsApp:
+        # `server_kwargs=None` so the auto-mounted `_start_server_background`
+        # worker doesn't fire and consume `_resume_thread_intent` before the
+        # test gets to call `_resolve_resume_thread` directly.
+        return DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id=assistant_id,
+            server_kwargs=None,
+            server_proc=None,
+        )
+
+    async def test_specific_thread_resume_leaves_default_alone(self) -> None:
+        """`-r <thread>` from a different agent updates session id only."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "thread-from-coder"
+            with (
+                patch(
+                    "deepagents_cli.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            # The default — and therefore what `[agents].recent` will be
+            # written as at startup — must reflect user choice, not whatever
+            # agent happened to own the resumed thread.
+            assert app._default_assistant_id == "agent"
+
+    async def test_explicit_a_blocks_specific_thread_override(self) -> None:
+        """`-a coder -r <thread>` keeps both ids on `coder` regardless of thread agent.
+
+        Locks the gate at `_resolve_resume_thread`'s `elif` branch
+        (`if self._assistant_id == default_agent`): explicit `-a` suppresses
+        the agent inference, so the thread's owner ("researcher" here) is
+        never queried and neither id changes.
+        """
+        app = self._make_app("coder")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "thread-from-researcher"
+            get_thread_agent_mock = AsyncMock(return_value="researcher")
+            with (
+                patch(
+                    "deepagents_cli.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    get_thread_agent_mock,
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            assert app._default_assistant_id == "coder"
+            get_thread_agent_mock.assert_not_called()
+
+    async def test_most_recent_resume_leaves_default_alone(self) -> None:
+        """`-r` (no thread id) must not redefine the default either."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with (
+                patch(
+                    "deepagents_cli.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_cli.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._assistant_id == "coder"
+            assert app._default_assistant_id == "agent"
 
 
 def _missing_dep_entry(
@@ -5711,3 +6570,161 @@ class TestPrewarmAwait:
         assert call_order[:2] == ["prewarm", "create_model"], (
             f"prewarm must precede create_model; got {call_order}"
         )
+
+    async def test_start_server_background_persists_default_not_session_id(
+        self,
+    ) -> None:
+        """`save_recent_agent` must receive the user-chosen default.
+
+        Locks the parity invariant: when `-r` resume has overridden the
+        session id but the user's default is unchanged, the next bare
+        relaunch must still return to the default — not the resumed
+        thread's owning agent. Without this assertion a future refactor
+        that swaps the argument back to `_assistant_id` is invisible.
+        """
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        # Simulate post-resume state: session ran in `coder`, but the user's
+        # chosen default is `agent`.
+        app._assistant_id = "coder"
+        app._default_assistant_id = "agent"
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=fake_create_model),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                return_value=True,
+            ) as save_agent_mock,
+            patch.object(app, "post_message"),
+            contextlib.suppress(Exception),
+        ):
+            await app._start_server_background()
+
+        save_agent_mock.assert_called_once_with("agent")
+
+    async def test_start_server_background_persists_agent_before_create_model(
+        self,
+    ) -> None:
+        """`save_recent_agent` must run BEFORE `create_model`.
+
+        Locks the reorder that fixes the silent-persistence-loss bug:
+        if `create_model` raises a `ModelConfigError` (e.g., missing API
+        key), the user's intent to use this agent must already be
+        persisted. A regression that moves the save back below
+        `create_model` plus a credential miss silently drops the write
+        with no test signal.
+        """
+        from deepagents_cli import config as cli_config
+        from deepagents_cli.model_config import ModelConfigError
+
+        call_order: list[str] = []
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+        app._default_assistant_id = "agent"
+
+        def record_save_agent(name: str) -> bool:
+            call_order.append(f"save_recent_agent:{name}")
+            return True
+
+        def record_create_model(**_: Any) -> MagicMock:
+            call_order.append("create_model")
+            msg = "no credentials"
+            raise ModelConfigError(msg)
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=record_create_model),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                side_effect=record_save_agent,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch.object(app, "post_message"),
+            patch.object(app, "notify"),
+        ):
+            await app._start_server_background()
+
+        # Save must have happened, and must precede create_model in the
+        # call sequence — guarding the reorder fix.
+        assert "save_recent_agent:agent" in call_order
+        assert call_order.index("save_recent_agent:agent") < call_order.index(
+            "create_model"
+        ), f"save_recent_agent must precede create_model; got {call_order}"
+
+    async def test_start_server_background_notifies_on_save_failure(self) -> None:
+        """A failed startup save must surface a visible toast.
+
+        The user explicitly suspected that recent-agent writes were
+        silently dropping. Pair with the swap-path notify so both
+        codepaths produce a user-visible signal on persistence failure
+        rather than only a log line. `markup=False` is load-bearing —
+        flipping it back to default `True` re-introduces the Toast
+        `MarkupError` risk.
+        """
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+        app._default_assistant_id = "agent"
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=fake_create_model),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                return_value=False,
+            ),
+            patch.object(app, "post_message"),
+            patch.object(app, "notify") as notify_mock,
+            contextlib.suppress(Exception),
+        ):
+            await app._start_server_background()
+
+        # At least one notify call must report the save failure with
+        # markup disabled and warning severity.
+        warning_calls = [
+            notify_call
+            for notify_call in notify_mock.call_args_list
+            if notify_call.kwargs.get("severity") == "warning"
+            and "agent" in str(notify_call.args[0]).lower()
+            and "config" in str(notify_call.args[0]).lower()
+        ]
+        assert warning_calls, (
+            f"expected a warning notify about agent save failure; got "
+            f"{notify_mock.call_args_list}"
+        )
+        # markup=False is required so commas/brackets in the message
+        # don't crash the Toast renderer (see CLAUDE.md guidance).
+        for notify_call in warning_calls:
+            assert notify_call.kwargs.get("markup") is False

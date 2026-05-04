@@ -18,14 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_cli._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from deepagents_cli.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_ASSISTANT_ID = "agent"
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -114,7 +113,7 @@ class ServerConfig:
 
     model: str | None = None
     model_params: dict[str, Any] | None = None
-    assistant_id: str = _DEFAULT_ASSISTANT_ID
+    assistant_id: str = DEFAULT_ASSISTANT_ID
     system_prompt: str | None = None
     auto_approve: bool = False
     interrupt_shell_only: bool = False
@@ -206,7 +205,7 @@ class ServerConfig:
         return cls(
             model=_read_env_str("MODEL"),
             model_params=_read_env_json("MODEL_PARAMS"),
-            assistant_id=_read_env_str("ASSISTANT_ID") or _DEFAULT_ASSISTANT_ID,
+            assistant_id=_read_env_str("ASSISTANT_ID") or DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
             auto_approve=_read_env_bool("AUTO_APPROVE"),
             interrupt_shell_only=_read_env_bool("INTERRUPT_SHELL_ONLY"),

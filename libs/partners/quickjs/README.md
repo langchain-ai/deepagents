@@ -68,13 +68,16 @@ The middleware:
 
 1. registers an `eval` tool (configurable name) that runs JS in a persistent context;
 2. appends a short system-prompt snippet explaining the tool's semantics (sandbox, timeout, memory limit);
-3. gives every LangGraph `thread_id` its own QuickJS `Context`, so two conversations can't see each other's globals.
+3. gives every LangGraph `thread_id` its own QuickJS `Runtime`, so two conversations can't see each other's globals.
 
 ## What the REPL is
 
 ### Persistence
 
-The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. Assign to `globalThis.X` to keep a value around under an explicit name.
+The REPL is module-flavoured: top-level `let`/`const`/`function` persist across `eval` calls in the same thread. By default (`snapshot_between_turns=True`), state also persists across turns in the same LangGraph `thread_id` by snapshotting after each run and restoring before the next.
+
+Set `snapshot_between_turns=False` to reset REPL state after each turn.
+Snapshot payloads are capped by `max_snapshot_bytes` (defaults to `memory_limit`); oversized snapshots are dropped instead of persisted.
 
 ```js
 // call 1
@@ -180,9 +183,6 @@ REPLMiddleware(ptc=["search_web"])            # explicit allowlist
 REPLMiddleware(ptc=[search_tool])             # explicit tool object allowlist
 ```
 
-Boolean `ptc` values are not supported. Use `ptc=None` (or omit `ptc`) to disable.
-Dict `ptc` configs are not supported.
-
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
 
 ### What the model sees
@@ -192,8 +192,10 @@ When PTC is on, the system-prompt snippet grows an *API Reference — `tools` na
 ```ts
 /** Search the web for the given query. */
 async tools.searchWeb(input: {
-  /** The query string. */ query: string;
-  /** Max results. */ limit?: number;
+  /** The query string. */
+  query: string;
+  /** Max results. */
+  limit?: number;
 }): Promise<string>
 ```
 
@@ -205,10 +207,6 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
 - When the bridge invokes a tool, it forwards the `ToolRuntime` captured from the outer `eval` call — so subagent tools like `task` see graph `state`, `store`, `context`, and a synthesised child `tool_call_id`.
 - Tool return values are coerced to strings: strings pass through, `ToolMessage`s get unwrapped, a `Command` has its last-message content extracted, everything else gets `json.dumps`'d.
-
-### Why `ainvoke`, not `invoke`
-
-PTC bridges are async host functions. QuickJS refuses to run async host functions from a synchronous `ctx.eval` — doing so raises `ConcurrentEvalError` ("sync eval encountered a registered async host function"). Use `await agent.ainvoke(...)`.
 
 ## Skills: importable JS/TS modules
 
@@ -245,6 +243,8 @@ REPLMiddleware(
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
+    snapshot_between_turns=True,     # snapshot in after_agent, restore in before_agent
+    max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
     skills_backend=None,             # BackendProtocol for @/skills/<name> imports
 )
@@ -258,7 +258,6 @@ REPLMiddleware(
 | `Timeout` | Call exceeded `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
-| `HostError` | A registered host function (console bridge, tool bridge) threw on the Python side. |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 | `SkillNotAvailable` | Source referenced `@/skills/<name>` we couldn't resolve or install. |

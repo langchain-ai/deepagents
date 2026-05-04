@@ -7,9 +7,9 @@
 # Rules:
 #   0. No issue type -> close unless author is an org member
 #   1. No checkboxes at all -> close unless author is an org member or bot
-#   2. Checkboxes present but none checked -> close
-#   3. "Submission checklist" section incomplete -> close
-#   4. "Area (Required)" section has no selection -> close
+#   2. Checkboxes present but none checked -> close (skipped for org members)
+#   3. "Submission checklist" section incomplete -> close (skipped for org members)
+#   4. "Area" section missing or has no selection -> close (skipped for org members)
 #
 # Org membership check reuses the shared helper from pr-labeler.js and
 # the same GitHub App used by tag-external-issues.yml.
@@ -63,8 +63,11 @@ jobs:
             // section heading is not found in the body.
             function parseSection(heading) {
               const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              // Find the heading line
-              const headingRe = new RegExp(`^#{2,3}\\s+${escaped}\\s*$`, 'm');
+              // Match the heading with or without a trailing " (Required)"
+              // suffix — GitHub forms render the label verbatim, but
+              // maintainers sometimes edit it out when polishing the body.
+              const headingRe = new RegExp(
+                `^#{2,3}\\s+${escaped}(?:\\s+\\(Required\\))?\\s*$`, 'm');
               const headingMatch = headingRe.exec(body);
               if (!headingMatch) return null;
               // Slice from after the heading to the next heading or end
@@ -152,6 +155,20 @@ jobs:
               return;
             }
 
+            // ── Trust internal users for the remaining rules ───────────
+            // Maintainers may edit headings or skip a checkbox; earlier
+            // rules already short-circuit on membership, so mirror that
+            // here instead of auto-closing their issues.
+            try {
+              const { internal, author } = await isOrgMember();
+              if (internal) {
+                console.log(`${author} is internal — skipping remaining rules`);
+                return;
+              }
+            } catch (e) {
+              core.warning(`Org membership check failed before section rules, continuing: ${e.message}`);
+            }
+
             // ── Rule 2: checkboxes present but none checked ─────────────
             if (allChecked === 0) {
               console.log(`${allUnchecked} checkbox(es) present, none checked — closing`);
@@ -163,7 +180,7 @@ jobs:
 
             // ── Rules 3–4: parse sections for targeted feedback ─────────
             const checklist = parseSection('Submission checklist');
-            const area = parseSection('Area (Required)');
+            const area = parseSection('Area');
             console.log(`Section parse — checklist: ${JSON.stringify(checklist)}, area: ${JSON.stringify(area)}`);
 
             const problems = [];

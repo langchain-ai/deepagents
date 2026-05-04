@@ -28,13 +28,35 @@ from deepagents_cli._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __versio
 if TYPE_CHECKING:
     from pathlib import Path
 
-from deepagents_cli.model_config import DEFAULT_CONFIG_DIR, DEFAULT_CONFIG_PATH
+from deepagents_cli.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
 
 logger = logging.getLogger(__name__)
 
-CACHE_FILE: Path = DEFAULT_CONFIG_DIR / "latest_version.json"
-UPDATE_STATE_FILE: Path = DEFAULT_CONFIG_DIR / "update_state.json"
+CACHE_FILE: Path = DEFAULT_STATE_DIR / "latest_version.json"
+"""On-disk cache of the latest published CLI/SDK versions and SDK release times.
+
+Populated by `get_latest_version`; reads short-circuit on the cached payload
+when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
+`_SDK_RELEASE_TIMES_KEY`.
+"""
+
+UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
+"""Persistent flags for the update-notification UX.
+
+Tracks which version the user has been notified about (`notified_version`,
+`notified_at`) and the most recent version they've seen the splash for
+(`seen_version`, `seen_at`). Read by `should_notify_update` and friends
+to suppress repeat notifications across invocations. Auto-update opt-outs
+live in `config.toml`, not here.
+"""
+
 CACHE_TTL = 86_400  # 24 hours
+"""Maximum age in seconds before `CACHE_FILE` entries are considered stale.
+
+A cached `latest_version.json` younger than this is reused without an HTTP
+call to PyPI; older payloads trigger a fresh fetch. Set conservatively at
+24h since release cadence is on the order of days, not minutes.
+"""
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""

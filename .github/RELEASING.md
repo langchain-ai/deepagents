@@ -207,8 +207,9 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 1. Go to **Actions** > `⚠️ Manual Package Release`
 2. Click **Run workflow**
 3. Select the package to release
-4. **Provide `release-sha`**: the SHA of the release-PR merge commit. Look it up with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The workflow validates the commit's subject matches `release(<package>): <version>` and refuses to run otherwise.
-5. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main` — when set, `release-sha` may be left empty and the dispatched HEAD is used instead. Validation is skipped.)
+4. **Provide `version`**: the version being released (e.g. `0.0.35`). This is required and used for the run name and a sanity-check warning against `pyproject.toml` — it does not control the released version.
+5. **Provide `release-sha`**: the SHA of the release-PR merge commit. Look it up with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The workflow validates the commit's subject matches `release(<package>): <version>` and refuses to run otherwise.
+6. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main` — when set, `release-sha` may be left empty and the dispatched HEAD is used instead. Validation is skipped.)
 
 > [!WARNING]
 > Manual releases should be rare. Prefer the standard release-please flow for managed packages. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
@@ -250,6 +251,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Go to **Actions** > `⚠️ Manual Package Release` > **Run workflow**
    - Branch: `alpha/<PACKAGE>-<VERSION>`
    - Package: `<PACKAGE>`
+   - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
    - (CLI only): leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 

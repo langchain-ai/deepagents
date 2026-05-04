@@ -434,7 +434,7 @@ class TestFilesystemMiddlewarePermissions:
         middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
         result = read_tool.invoke({"runtime": _runtime(), "file_path": "/secrets/key.txt"})
-        assert "permission denied" not in result
+        assert "permission denied" not in result.content
 
     def test_ls_denied_on_restricted_root(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})
@@ -580,7 +580,7 @@ class TestCanonicalizationBypass:
         middleware = FilesystemMiddleware(backend=backend)
         read_tool = next(t for t in middleware.tools if t.name == "read_file")
         result = read_tool.invoke({"runtime": _runtime(), "file_path": "/workspace/../secrets/key.txt"})
-        assert "Path traversal not allowed" in result
+        assert "Path traversal not allowed" in result.content
 
     def test_redundant_separators_normalized(self):
         # /secrets//key.txt is normalized by validate_path to /secrets/key.txt

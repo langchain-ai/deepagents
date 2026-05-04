@@ -114,7 +114,7 @@ Available subagent types:
 ### Interpreter
 
 An `eval` tool is available. It runs JavaScript in a persistent REPL.
-- State (variables, functions) persists across tool calls within a single turn of conversation. They DO NOT persist across multiple turns.
+- State (variables, functions) persists across tool calls and across multiple turns for this conversation thread.
 - Top-level `await` works; Promises resolve before the call returns.
 - Sandboxed: no filesystem, no stdlib, no network, no real clock, no `fetch`, no `require`.
 - Timeout: 5.0s per call. Memory: 64 MB total.

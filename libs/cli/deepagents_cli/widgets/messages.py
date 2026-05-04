@@ -1656,14 +1656,14 @@ class ErrorMessage(_TimestampClickMixin, Static):
     """
     """Tinted background + left border to visually separate errors from output."""
 
-    def __init__(self, error: str, **kwargs: Any) -> None:
+    def __init__(self, error: str | Content, **kwargs: Any) -> None:
         """Initialize an error message.
 
         Args:
-            error: The error message
-            **kwargs: Additional arguments passed to parent
+            error: Plain string, or `Content` for pre-styled bodies
+                (e.g. with `link`-styled spans).
+            **kwargs: Additional arguments passed to parent.
         """
-        # Store raw content for serialization
         self._content = error
         super().__init__(**kwargs)
 
@@ -1671,7 +1671,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """Render with theme-aware colors.
 
         Returns:
-            Styled error content with theme-appropriate color.
+            Styled error content; spans on a `Content` body are preserved.
         """
         colors = theme.get_theme_colors(self)
         return Content.assemble(
@@ -1684,6 +1684,13 @@ class ErrorMessage(_TimestampClickMixin, Static):
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
+
+    def on_click(self, event: Click) -> None:
+        """Open clicked URLs; otherwise show the timestamp toast."""
+        if event.style.link:
+            open_style_link(event)
+            return
+        _show_timestamp_toast(self)
 
 
 class _MutedRichMarkdown:

@@ -45,6 +45,7 @@ on:
           - mega
           - fast
           - open
+          - docs
           - anthropic
           - baseten
           - fireworks
@@ -113,6 +114,7 @@ on:
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
+          - "openrouter:deepseek/deepseek-v4-pro"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"

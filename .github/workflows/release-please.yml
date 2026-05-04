@@ -143,7 +143,11 @@ jobs:
           if [ -n "$RELEASE_VERSION" ]; then
             echo "Extracted release version: $RELEASE_VERSION"
           elif echo "$COMMIT_MSG" | grep -qE "^release\("; then
-            echo "::warning::Commit looks like a release but version extraction failed: $COMMIT_MSG"
+            # release.yml requires `version` as a non-empty input. Fail loudly
+            # here rather than dispatch with an empty annotation that the
+            # downstream workflow would silently accept via the API.
+            echo "::error::Commit looks like a release but version extraction failed: $COMMIT_MSG"
+            exit 1
           fi
 
           # grep -q in an `if` conditional is safe under set -eo pipefail;
@@ -389,6 +393,15 @@ jobs:
           DISPATCHED=()
           FAILED=()
 
+          # release.yml's `version` input is required and the API silently accepts
+          # an empty string, so guard here. release-please.yml's extraction step
+          # already aborts on regex misses, but `if:` guards on this job could
+          # still let an empty `release-version` reach the dispatch.
+          if [ -z "$VERSION" ]; then
+            echo "::error::release-version is empty — refusing to dispatch release.yml without a version annotation."
+            exit 1
+          fi
+
           # Validate that an output value is exactly "true" or "false". Catches the
           # case where release-please ever emits an empty/unexpected value, which
           # would otherwise silently no-op the dispatch under the `= "true"` check.
@@ -414,10 +427,6 @@ jobs:
               -f package="$package" \
               -f version="$VERSION" \
               -f release-sha="$RELEASE_SHA"; then
-              # gh workflow run returns 0 once the dispatch is queued but yields
-              # no run ID. Surface a pointer so operators can find the dispatched
-              # run quickly without a manual scroll through Actions.
-              echo "Queued. Watch at: $RELEASE_WORKFLOW_URL"
               DISPATCHED+=("$package")
             else
               echo "::error::Failed to dispatch release.yml for $package"
@@ -497,5 +506,3 @@ jobs:
             echo "::error::Recover with: gh workflow run release.yml -f package=<name> -f version=$VERSION -f release-sha=$RELEASE_SHA"
             exit 1
           fi
-
-          echo "All release workflows dispatched. Watch at: $RELEASE_WORKFLOW_URL"

@@ -3,12 +3,14 @@
 import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
@@ -16,6 +18,7 @@ from deepagents.middleware.filesystem import (
     _check_fs_permission,
     _filter_paths_by_permission,
 )
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
@@ -916,11 +919,6 @@ class TestGeneralPurposeSubagentPermissionInheritance:
     """Regression tests: auto-added GP subagent must inherit parent permissions."""
 
     def test_auto_added_gp_subagent_inherits_parent_permissions(self):
-        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-        from langchain_core.messages import AIMessage
-
-        from deepagents.graph import create_deep_agent
-
         parent_perms = [
             FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
         ]
@@ -933,12 +931,6 @@ class TestGeneralPurposeSubagentPermissionInheritance:
         assert _filesystem_permissions_for(agent, "general-purpose") == parent_perms
 
     def test_explicit_gp_subagent_permissions_override_parent(self):
-        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-        from langchain_core.messages import AIMessage
-
-        from deepagents.graph import create_deep_agent
-        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-
         parent_perms = [
             FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
         ]

@@ -192,4 +192,36 @@ jobs:
               } catch (e) {
                 core.warning(`Could not re-run require_issue_link check for PR #${prNumber} (HTTP ${e.status ?? 'unknown'}): ${e.message}`);
               }
+
+              // Re-run CI when the original pull_request run was cancelled by
+              // the auto-close. The reopen is performed with GITHUB_TOKEN, so
+              // GitHub suppresses the normal pull_request.reopened trigger.
+              try {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner, repo, pull_number: prNumber,
+                });
+                const { data: ciRuns } = await github.rest.actions.listWorkflowRuns({
+                  owner, repo,
+                  workflow_id: 'ci.yml',
+                  head_sha: pr.head.sha,
+                  status: 'completed',
+                  per_page: 10,
+                });
+
+                const staleConclusions = new Set(['cancelled', 'failure', 'timed_out']);
+                const latestCiRun = ciRuns.workflow_runs[0];
+                if (latestCiRun && staleConclusions.has(latestCiRun.conclusion)) {
+                  await github.rest.actions.reRunWorkflow({
+                    owner, repo,
+                    run_id: latestCiRun.id,
+                  });
+                  console.log(`Re-ran CI run ${latestCiRun.id} for PR #${prNumber}`);
+                } else if (latestCiRun) {
+                  console.log(`Latest CI run ${latestCiRun.id} concluded ${latestCiRun.conclusion} — skipping re-run`);
+                } else {
+                  console.log(`No completed CI runs found for PR #${prNumber} — skipping re-run`);
+                }
+              } catch (e) {
+                core.warning(`Could not re-run CI for PR #${prNumber} (HTTP ${e.status ?? 'unknown'}): ${e.message}`);
+              }
             }

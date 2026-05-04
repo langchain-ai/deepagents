@@ -628,6 +628,40 @@ class TestResolveEnvVar:
         assert resolve_env_var("DEEPAGENTS_CLI_MY_KEY") == "direct"
 
 
+class TestUnknownProviderError:
+    """Tests for the structured `UnknownProviderError` exception."""
+
+    def test_message_mentions_spec_and_docs_url(self):
+        """Message references both `model_spec` and the docs URL."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        exc = UnknownProviderError(model_spec="mystery-model")
+        assert exc.model_spec == "mystery-model"
+        assert exc.docs_url == PROVIDERS_DOCS_URL
+        assert "mystery-model" in str(exc)
+        assert PROVIDERS_DOCS_URL in str(exc)
+
+    def test_empty_model_spec_rejected(self):
+        """Empty `model_spec` raises `ValueError` at construction time."""
+        from deepagents_cli.model_config import UnknownProviderError
+
+        with pytest.raises(ValueError, match="non-empty"):
+            UnknownProviderError(model_spec="")
+
+    def test_docs_url_is_class_attribute(self):
+        """`docs_url` lives on the class, not the instance — same for every error."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        # Class-level access works without an instance.
+        assert UnknownProviderError.docs_url == PROVIDERS_DOCS_URL
+
+
 class TestProviderApiKeyEnv:
     """Tests for PROVIDER_API_KEY_ENV constant."""
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypedDict
 from urllib.parse import urlparse
 
 import tomli_w
@@ -93,8 +93,54 @@ def resolve_env_var(name: str) -> str | None:
     return os.environ.get(name) or None
 
 
+PROVIDERS_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
+)
+"""Public CLI docs page for configuring model providers.
+
+Referenced by `UnknownProviderError` and the `/auth` manager so the same
+URL is used everywhere a user is sent to read about provider setup.
+"""
+
+
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
+
+
+class UnknownProviderError(ModelConfigError):
+    """Raised when neither the CLI nor `init_chat_model` can infer a provider.
+
+    Carries the offending model spec as an attribute and exposes
+    `PROVIDERS_DOCS_URL` as a class-level constant so callers can render
+    a clickable link without string-scanning the formatted message. This
+    mirrors how `MissingCredentialsError` exposes `provider` / `env_var`
+    for targeted recovery hints.
+    """
+
+    docs_url: ClassVar[str] = PROVIDERS_DOCS_URL
+    """Provider-reference docs URL. Class-level so callers don't pass it."""
+
+    def __init__(self, *, model_spec: str) -> None:
+        """Initialize the error.
+
+        Args:
+            model_spec: The bare model name the user supplied (e.g.
+                `'mystery-model'`). When the input had a `provider:model`
+                form, parsing succeeds and this exception does not fire.
+
+        Raises:
+            ValueError: If `model_spec` is empty.
+        """
+        if not model_spec:
+            msg = "model_spec must be non-empty"
+            raise ValueError(msg)
+        message = (
+            f"Unable to infer a model provider for {model_spec!r}. "
+            f"Specify one explicitly (e.g. 'anthropic:{model_spec}') "
+            f"or see the provider reference at {self.docs_url}."
+        )
+        super().__init__(message)
+        self.model_spec = model_spec
 
 
 class MissingCredentialsError(ModelConfigError):

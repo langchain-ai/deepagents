@@ -105,6 +105,27 @@ class TestMessageData:
         assert restored._content == "Something went wrong!"
         assert restored.id == "test-error-1"
 
+    def test_error_message_content_body_roundtrip(self):
+        """`Content` bodies serialize as plain text; link spans drop on resume."""
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        url = "https://example.com/docs"
+        body = Content.assemble("see ", (url, TStyle(link=url)))
+        original = ErrorMessage(body, id="test-error-content")
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.ERROR
+        # `data.content` must be a plain `str` (not `Content`) for storage.
+        assert isinstance(data.content, str)
+        assert data.content == f"see {url}"
+
+        restored = data.to_widget()
+        assert isinstance(restored, ErrorMessage)
+        # Restored widget renders without crashing (regression guard for the
+        # `str(widget._content)` cast in `MessageData.from_widget`).
+        assert restored.render().plain == f"Error: see {url}"
+
     def test_app_message_roundtrip(self):
         """Test AppMessage serialization and deserialization."""
         original = AppMessage("Session started", id="test-app-1")

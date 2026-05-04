@@ -2551,6 +2551,43 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("model", "dotted.provider", {})
 
 
+class TestCreateModelViaInitUnknownProvider:
+    """Tests for `UnknownProviderError` translation of langchain inference."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_value_error_with_empty_provider_becomes_unknown_provider_error(
+        self, mock_init: Mock
+    ) -> None:
+        """Raise `UnknownProviderError` carrying the model spec and docs URL."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        mock_init.side_effect = ValueError(
+            "Unable to infer model provider for model='mystery-model'."
+        )
+        with pytest.raises(UnknownProviderError) as exc_info:
+            _create_model_via_init("mystery-model", "", {})
+
+        assert exc_info.value.model_spec == "mystery-model"
+        assert exc_info.value.docs_url == PROVIDERS_DOCS_URL
+        # Plain message still mentions the URL for non-Textual surfaces.
+        assert PROVIDERS_DOCS_URL in str(exc_info.value)
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_value_error_with_provider_stays_generic(self, mock_init: Mock) -> None:
+        """Plain `ModelConfigError` when a provider was passed (not inference)."""
+        from deepagents_cli.model_config import UnknownProviderError
+
+        mock_init.side_effect = ValueError("some other configuration problem")
+        with pytest.raises(ModelConfigError) as exc_info:
+            _create_model_via_init("claude-sonnet-4-5", "anthropic", {})
+
+        assert not isinstance(exc_info.value, UnknownProviderError)
+        assert "Invalid model configuration" in str(exc_info.value)
+
+
 class TestDetectProvider:
     """Tests for detect_provider() auto-detection from model names."""
 

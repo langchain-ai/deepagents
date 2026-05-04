@@ -38,6 +38,7 @@ from deepagents_cli import auth_store, theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
+    PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     ModelConfig,
     ProviderAuthSource,
     clear_caches,
@@ -49,11 +50,6 @@ from deepagents_cli.model_config import (
 from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
-
-_PROVIDERS_DOCS_URL = (
-    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
-)
-"""Public documentation page on configuring CLI providers."""
 
 
 class AuthResult(StrEnum):

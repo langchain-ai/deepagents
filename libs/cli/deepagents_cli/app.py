@@ -474,6 +474,30 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
         logger.warning("Background task failed unexpectedly", exc_info=True)
 
 
+def _build_model_switch_error_body(exc: BaseException) -> str | Content:
+    """Format a model-switch failure for `ErrorMessage`.
+
+    Args:
+        exc: Exception raised by `create_model`.
+
+    Returns:
+        A `Content` with the docs URL as a clickable span when `exc` is
+        `UnknownProviderError`; a plain string otherwise.
+    """
+    from deepagents_cli.model_config import UnknownProviderError
+
+    if isinstance(exc, UnknownProviderError):
+        return Content.assemble(
+            "Failed to switch model: unable to infer a provider for ",
+            (exc.model_spec, TStyle(bold=True)),
+            ".\n\nSpecify one explicitly (e.g. ",
+            (f"anthropic:{exc.model_spec}", TStyle(italic=True)),
+            ") or see the provider reference: ",
+            (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
+        )
+    return f"Failed to switch model: {exc}"
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -7265,7 +7289,7 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
-                    ErrorMessage(f"Failed to switch model: {exc}")
+                    ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
 

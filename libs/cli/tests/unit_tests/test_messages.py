@@ -75,6 +75,67 @@ class TestErrorMessageMarkupSafety:
         assert isinstance(rendered, Content)
         assert rendered.plain == "Error: something broke"
 
+    def test_error_message_accepts_content_with_link_span(self) -> None:
+        """Pre-built `Content` with `link` spans passes through to render output."""
+        from textual.style import Style as TStyle
+
+        url = "https://docs.langchain.com/oss/python/deepagents/cli/providers"
+        body = Content.assemble(
+            "see ",
+            (url, TStyle(underline=True, link=url)),
+        )
+        rendered = ErrorMessage(body).render()
+        assert isinstance(rendered, Content)
+        links = [
+            getattr(span.style, "link", None)
+            for span in rendered.spans
+            if getattr(span.style, "link", None)
+        ]
+        assert links == [url]
+        assert rendered.plain == f"Error: see {url}"
+
+    def test_error_message_click_on_link_opens_url(self) -> None:
+        """Click on a `link`-styled span should route through `open_style_link`."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("see https://example.com")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link="https://example.com"),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_called_once_with(event)
+        mock_toast.assert_not_called()
+
+    def test_error_message_click_off_link_shows_timestamp(self) -> None:
+        """Click outside a link span should fall back to the timestamp toast."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("plain error, no URL")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link=None),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_not_called()
+        mock_toast.assert_called_once_with(msg)
+
 
 class TestAppMessageMarkupSafety:
     """Test AppMessage handles content with brackets safely."""

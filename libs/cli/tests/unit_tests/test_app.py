@@ -4397,6 +4397,40 @@ class TestDeferredActions:
             assert executed == ["thread", "second_model"]
 
 
+class TestBuildModelSwitchErrorBody:
+    """Tests for `_build_model_switch_error_body` link-aware formatting."""
+
+    def test_unknown_provider_error_returns_content_with_clickable_link(self) -> None:
+        """`UnknownProviderError` produces a `Content` body with a `link` span."""
+        from textual.content import Content
+
+        from deepagents_cli.app import _build_model_switch_error_body
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        exc = UnknownProviderError(model_spec="mystery-model")
+        body = _build_model_switch_error_body(exc)
+        assert isinstance(body, Content)
+        links = [
+            getattr(span.style, "link", None)
+            for span in body.spans
+            if getattr(span.style, "link", None)
+        ]
+        assert links == [PROVIDERS_DOCS_URL]
+        # Both the model spec and the URL appear in the rendered text.
+        assert "mystery-model" in body.plain
+        assert PROVIDERS_DOCS_URL in body.plain
+
+    def test_other_exception_returns_plain_string(self) -> None:
+        """Non-`UnknownProviderError` exceptions render as a plain string body."""
+        from deepagents_cli.app import _build_model_switch_error_body
+
+        body = _build_model_switch_error_body(ValueError("boom"))
+        assert body == "Failed to switch model: boom"
+
+
 class TestServerStartupError:
     """Test error messages when the server fails to start."""
 

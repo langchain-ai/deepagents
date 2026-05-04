@@ -300,7 +300,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 )
             if self._env_var:
                 yield Static(
-                    f"Equivalent to setting {self._env_var}.",
+                    f"Equivalent to setting {self._env_var} (or "
+                    f"DEEPAGENTS_CLI_{self._env_var}).",
                     classes="auth-prompt-meta",
                 )
             if self._store_warning:

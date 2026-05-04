@@ -900,18 +900,12 @@ def _filesystem_permissions_for(agent, subagent_name: str | None = None):
     if subagent_name is not None:
         task_tool = agent.nodes["tools"].bound._tools_by_name["task"]
         agents_dict = next(
-            cell.cell_contents
-            for cell in task_tool.func.__closure__
-            if isinstance(cell.cell_contents, dict) and subagent_name in cell.cell_contents
+            cell.cell_contents for cell in task_tool.func.__closure__ if isinstance(cell.cell_contents, dict) and subagent_name in cell.cell_contents
         )
         agent = agents_dict[subagent_name]
 
     read_tool = agent.nodes["tools"].bound._tools_by_name["read_file"]
-    fs = next(
-        cell.cell_contents
-        for cell in read_tool.func.__closure__
-        if isinstance(cell.cell_contents, FilesystemMiddleware)
-    )
+    fs = next(cell.cell_contents for cell in read_tool.func.__closure__ if isinstance(cell.cell_contents, FilesystemMiddleware))
     return fs._permissions
 
 

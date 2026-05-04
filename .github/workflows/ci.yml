@@ -357,7 +357,6 @@ jobs:
       - test-repl
       - benchmark-deepagents
       - benchmark-cli
-      - benchmark-quickjs
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

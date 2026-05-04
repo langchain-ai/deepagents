@@ -406,6 +406,7 @@ def _render_deploy_graph(
         model=config.agent.model,
         sandbox_snapshot=config.sandbox.template,
         sandbox_image=config.sandbox.image,
+        sandbox_provider=config.sandbox.provider,
         sandbox_scope=config.sandbox.scope,
         sandbox_block=sandbox_block,
         mcp_tools_block=mcp_tools_block,

@@ -39,9 +39,7 @@ PTC_AND_CONSOLE_CODE = (
     "})();"
 )
 COUNTER_INIT_CODE = "let counter = 0; String(counter);"
-COUNTER_NEXT_CODE = (
-    'typeof counter === "number" ? String(counter += 1) : "missing";'
-)
+COUNTER_NEXT_CODE = 'typeof counter === "number" ? String(counter += 1) : "missing";'
 THROUGHPUT_ITERATIONS = 200
 
 
@@ -137,11 +135,7 @@ def run_counter_turns(
                 state.update(before)
 
             repl = middleware._registry.get(middleware._fallback_thread_id)
-            code = (
-                COUNTER_INIT_CODE
-                if turn_index == 0
-                else COUNTER_NEXT_CODE
-            )
+            code = COUNTER_INIT_CODE if turn_index == 0 else COUNTER_NEXT_CODE
             outcome = repl.eval_sync(code)
             assert outcome.error_type is None, outcome.error_message
             assert outcome.result is not None

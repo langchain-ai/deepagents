@@ -31,6 +31,7 @@ from deepagents_cli.model_config import (
     ProviderAuthStatus,
     clear_default_model,
     get_available_models,
+    get_credential_env_var,
     get_model_profiles,
     get_provider_auth_status,
     save_default_model,
@@ -512,7 +513,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self._dismiss_with_result((event.model_spec, event.provider))
+        self._select_with_auth_check(event.model_spec, event.provider)
 
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
@@ -1049,7 +1050,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # If there are filtered results, always select the highlighted model
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
-            self._dismiss_with_result((model_spec, provider))
+            self._select_with_auth_check(model_spec, provider)
             return
 
         # No matches - check if user typed a custom provider:model spec
@@ -1058,9 +1059,47 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
-            self._dismiss_with_result((custom_input, provider))
+            self._select_with_auth_check(custom_input, provider)
         elif custom_input:
             self._dismiss_with_result((custom_input, ""))
+
+    def _select_with_auth_check(self, model_spec: str, provider: str) -> None:
+        """Either dismiss with the selection, or prompt for credentials first.
+
+        When the highlighted provider has `blocks_start` auth (typically a
+        missing API key), open the in-TUI auth prompt instead of dismissing.
+        On save, dismiss with the originally-selected model. On cancel, stay
+        on the selector and refresh the credential indicator so the user can
+        try again or pick a different provider.
+        """
+        if not provider:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        status = get_provider_auth_status(provider)
+        if not status.blocks_start:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        env_var = status.env_var or get_credential_env_var(provider)
+
+        from deepagents_cli.widgets.auth import AuthPromptScreen, AuthResult
+
+        def _on_auth_done(result: AuthResult | None) -> None:
+            if result is AuthResult.SAVED:
+                self._dismiss_with_result((model_spec, provider))
+                return
+            # On DELETED or CANCELLED the user explicitly chose not to
+            # provide a key; refresh the credential indicator and stay on
+            # the selector so they can pick a different provider.
+            self.call_after_refresh(self._update_display)
+
+        self.app.push_screen(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=f"Required to use {model_spec}",
+            ),
+            _on_auth_done,
+        )
 
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.

@@ -1367,6 +1367,66 @@ class TestModalScreenCtrlDHandling:
 
             exit_mock.assert_called_once()
 
+    async def test_ctrl_d_opens_delete_confirm_in_auth_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+D in the auth prompt should open the confirm modal, not quit."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.widgets.auth import (
+            AuthPromptScreen,
+            DeleteCredentialConfirmScreen,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        auth_store.set_stored_key("openai", "k")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+
+            assert isinstance(app.screen, DeleteCredentialConfirmScreen)
+            exit_mock.assert_not_called()
+
+    async def test_ctrl_d_in_auth_confirm_arms_quit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+D inside the auth confirm modal arms the double-press quit."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.widgets.auth import AuthPromptScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        auth_store.set_stored_key("openai", "k")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.push_screen(AuthPromptScreen("openai", "OPENAI_API_KEY"))
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                exit_mock.assert_not_called()
+                assert app._quit_pending is True
+
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                exit_mock.assert_called_once()
+
 
 class TestModalScreenShiftTabHandling:
     """Tests for app-level Shift+Tab behavior while modals are open."""
@@ -1407,6 +1467,133 @@ class TestModalScreenShiftTabHandling:
 
             assert filter_input.has_focus
             assert app._auto_approve is False
+
+    async def test_shift_tab_navigates_in_auth_manager(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shift+Tab should move the manager option-list cursor up, not toggle."""
+        from textual.widgets import OptionList
+
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = AuthManagerScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            options = screen.query_one("#auth-manager-options", OptionList)
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            after_tab = options.highlighted
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+
+            assert options.highlighted is not None
+            assert after_tab is not None
+            assert options.highlighted < after_tab
+            assert app._auto_approve is False
+
+
+class TestMissingCredentialsRecovery:
+    """Tests for the Ctrl+K + auth-prompt recovery flow."""
+
+    async def test_ctrl_k_with_no_pending_state_notifies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+K with nothing awaiting credentials shows an info notification."""
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "notify") as mock_notify:
+                app.action_enter_missing_credentials()
+                await pilot.pause()
+            mock_notify.assert_called_once()
+            (msg,), _ = mock_notify.call_args
+            assert "No provider" in msg
+
+    async def test_ctrl_k_pending_switch_saved_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SAVED on the prompt should re-issue _switch_model with the same args."""
+        from deepagents_cli.app import PendingSwitchRecovery
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")  # placate startup
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_switch_recovery = PendingSwitchRecovery(
+                provider="openai",
+                model_spec="openai:gpt-5.4",
+                extra_kwargs={"temperature": 0.2},
+            )
+            with (
+                patch.object(app, "_run_recovery_worker") as mock_run_worker,
+                patch.object(app, "_switch_model") as mock_switch,
+            ):
+                app.action_enter_missing_credentials()
+                await pilot.pause()
+                inp = app.screen.query_one("#auth-prompt-input", Input)
+                inp.value = "from-prompt"
+                await pilot.press("enter")
+                await pilot.pause()
+            mock_run_worker.assert_called_once()
+            assert app._pending_switch_recovery is None
+            mock_switch.assert_called_once_with(
+                "openai:gpt-5.4", extra_kwargs={"temperature": 0.2}
+            )
+
+    async def test_ctrl_k_pending_switch_deleted_does_not_retry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DELETED on the prompt must not retry the failing switch.
+
+        Retrying after a delete would loop straight into the same
+        missing-creds error — the failure that put us into recovery in the
+        first place.
+        """
+        from deepagents_cli import auth_store
+        from deepagents_cli.app import PendingSwitchRecovery
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        # Seed a stored key so Ctrl+D has something to delete.
+        auth_store.set_stored_key("openai", "to-be-removed")
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_switch_recovery = PendingSwitchRecovery(
+                provider="openai",
+                model_spec="openai:gpt-5.4",
+                extra_kwargs=None,
+            )
+            with patch.object(app, "_run_recovery_worker") as mock_run_worker:
+                app.action_enter_missing_credentials()
+                await pilot.pause()
+                # Open delete-confirm, confirm.
+                await pilot.press("ctrl+d")
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+            mock_run_worker.assert_not_called()
 
 
 class TestModalScreenCtrlCHandling:
@@ -2279,6 +2466,23 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             assert any("No active session" in str(w._content) for w in app_msgs)
+
+    async def test_auth_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/auth' should push the AuthManagerScreen modal."""
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/auth")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthManagerScreen)
 
 
 class TestRunAgentTaskMediaTracker:

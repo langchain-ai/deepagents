@@ -877,6 +877,65 @@ def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
     return resolve_env_var(host_env)
 
 
+def _has_stored_credential(provider: str) -> bool:
+    """Return whether `provider` has a credential persisted via `/auth`.
+
+    A corrupt `auth.json` is swallowed (logged, treated as absent) so the
+    model selector and other read-side callers can keep listing providers.
+    The user-visible signal lives in `AuthManagerScreen` — opening `/auth`
+    surfaces a corruption banner directly. Read-side resilience here means
+    you can still pick a different provider while the file is broken.
+    """
+    from deepagents_cli import auth_store
+
+    try:
+        return auth_store.get_stored_key(provider) is not None
+    except RuntimeError:
+        logger.warning(
+            "Could not read stored credentials for provider %s; treating as absent",
+            provider,
+        )
+        return False
+
+
+def resolve_provider_credential(provider: str) -> str | None:
+    """Resolve the credential value for `provider` from any configured source.
+
+    Lookup order:
+
+    1. Stored API key in `~/.deepagents/.state/auth.json` (added via `/auth`).
+    2. Canonical env var via `resolve_env_var()` (which honors the
+       `DEEPAGENTS_CLI_` prefix and dotenv files).
+
+    A user who has *both* a stored key and an env var set gets the stored
+    key — entering one in the TUI is the more deliberate, more recent
+    action, so "I just typed this in" beats whatever the shell exported.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`).
+
+    Returns:
+        The credential value, or `None` when no source has one or the
+        provider has no env-var mapping at all.
+    """
+    from deepagents_cli import auth_store
+
+    try:
+        stored = auth_store.get_stored_key(provider)
+    except RuntimeError:
+        logger.warning(
+            "Could not read stored credentials for provider %s; falling back to env",
+            provider,
+        )
+        stored = None
+    if stored:
+        return stored
+    env_var = get_credential_env_var(provider)
+    if env_var:
+        return resolve_env_var(env_var)
+    return None
+
+
 def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     """Return credential readiness details for a provider.
 
@@ -921,6 +980,13 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     if provider_config:
         env_var = provider_config.get("api_key_env")
         if env_var:
+            if _has_stored_credential(provider):
+                return ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider=provider,
+                    env_var=env_var,
+                    detail="stored credential",
+                )
             if resolve_env_var(env_var):
                 return ProviderAuthStatus(
                     state=ProviderAuthState.CONFIGURED,
@@ -948,6 +1014,13 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
+        if _has_stored_credential(provider):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                env_var=env_var,
+                detail="stored credential",
+            )
         if resolve_env_var(env_var):
             return ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
@@ -977,6 +1050,13 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         )
 
     optional_env = OPTIONAL_AUTH_ENV.get(provider)
+    if optional_env and _has_stored_credential(provider):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=optional_env,
+            detail="stored credential",
+        )
     if optional_env and resolve_env_var(optional_env):
         return ProviderAuthStatus(
             state=ProviderAuthState.CONFIGURED,
@@ -1058,6 +1138,41 @@ def get_credential_env_var(provider: str) -> str | None:
     if config_env:
         return config_env
     return PROVIDER_API_KEY_ENV.get(provider)
+
+
+def apply_stored_credentials(provider: str) -> bool:
+    """Export this provider's stored API key into `os.environ` for SDK use.
+
+    LangChain's chat-model factories read credentials from process env vars,
+    so a stored key only takes effect once it's copied onto the env var name
+    registered for that provider. This is a no-op when the provider has no
+    env-var mapping (custom auth) or no stored credential.
+
+    The env var is overwritten whether or not it was already set, matching
+    the precedence rule documented on `resolve_provider_credential`: a
+    credential the user typed in `/auth` is the most recent deliberate
+    action and should take effect.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        `True` if a stored key was applied, `False` otherwise.
+    """
+    env_var = get_credential_env_var(provider)
+    if not env_var:
+        return False
+    from deepagents_cli import auth_store
+
+    try:
+        stored = auth_store.get_stored_key(provider)
+    except RuntimeError:
+        logger.warning("Could not read stored credentials for provider %s", provider)
+        return False
+    if not stored:
+        return False
+    os.environ[env_var] = stored
+    return True
 
 
 @dataclass(frozen=True)

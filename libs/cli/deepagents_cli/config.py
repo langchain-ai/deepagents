@@ -2242,6 +2242,7 @@ def create_model(
         ModelConfig,
         ModelConfigError,
         ModelSpec,
+        apply_stored_credentials,
         get_credential_env_var,
         has_provider_credentials,
     )
@@ -2273,6 +2274,12 @@ def create_model(
         # Bare model name — auto-detect provider or let init_chat_model infer
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
+
+    # Stored API keys (added via `/auth`) take effect by being copied onto
+    # the env var name LangChain reads. Apply before the credential check so
+    # `has_provider_credentials` and the downstream SDK see the same value.
+    if provider:
+        apply_stored_credentials(provider)
 
     # Early credential check — fail fast with an actionable message instead of
     # letting the provider SDK raise an opaque auth error on first invocation.

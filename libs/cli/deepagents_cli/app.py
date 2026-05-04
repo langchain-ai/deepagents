@@ -1767,6 +1767,37 @@ class DeepAgentsApp(App):
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
+        # Persist the user-chosen default so a later bare `deepagents`
+        # relaunch brings the user back to it. See
+        # `_restart_server_for_agent_swap` for why one-off resumes don't
+        # mutate `_default_assistant_id` and why the persisted default
+        # is decoupled from the per-session `_assistant_id`.
+        # Runs BEFORE deferred model creation so a `ModelConfigError`
+        # (e.g., missing API key) doesn't prevent the recent-agent write
+        # — the user's intent to use this agent shouldn't depend on
+        # whether their credentials happened to be valid this launch.
+        if self._default_assistant_id:
+            from deepagents_cli.model_config import save_recent_agent
+
+            saved = await asyncio.to_thread(
+                save_recent_agent, self._default_assistant_id
+            )
+            if not saved:
+                logger.warning(
+                    "Could not persist recent agent %r to config at startup",
+                    self._default_assistant_id,
+                )
+                # Mirror the visibility of the picker-swap path: if the
+                # write fails here, the user has no way to know unless
+                # we surface it. Toast severity matches the swap path.
+                self.notify(
+                    "Could not save recent agent to config at startup; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+
         if self._model_kwargs is not None:
             # Block on prewarm before re-entering the import graph; see
             # `_await_prewarm_imports` for the deadlock rationale.
@@ -1783,21 +1814,6 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
-
-        # Persist the user-chosen default so a later bare `deepagents`
-        # relaunch brings the user back to it. See `_default_assistant_id`
-        # for why this is decoupled from `_assistant_id`.
-        if self._default_assistant_id:
-            from deepagents_cli.model_config import save_recent_agent
-
-            saved = await asyncio.to_thread(
-                save_recent_agent, self._default_assistant_id
-            )
-            if not saved:
-                logger.warning(
-                    "Could not persist recent agent %r to config at startup",
-                    self._default_assistant_id,
-                )
 
         from deepagents_cli.server_manager import start_server_and_get_agent
 
@@ -6029,9 +6045,13 @@ class DeepAgentsApp(App):
     async def _show_agent_selector(self) -> None:
         """Show the interactive agent selector modal."""
         from deepagents_cli.agent import get_available_agent_names
+        from deepagents_cli.model_config import load_default_agent
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 
-        agent_names = await asyncio.to_thread(get_available_agent_names)
+        agent_names, default_agent = await asyncio.gather(
+            asyncio.to_thread(get_available_agent_names),
+            asyncio.to_thread(load_default_agent),
+        )
 
         def handle_result(result: str | None) -> None:
             """Handle the agent selector result."""
@@ -6043,6 +6063,7 @@ class DeepAgentsApp(App):
         screen = AgentSelectorScreen(
             current_agent=self._assistant_id,
             agent_names=agent_names,
+            default_agent=default_agent,
         )
         self.push_screen(screen, handle_result)
 
@@ -6359,11 +6380,28 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
 
+            # Mount the "Switched to X" confirmation BEFORE surfacing any
+            # save-failure toast. Otherwise the toast hovers next to a
+            # success line that scrolls past, which makes the causality
+            # confusing — the user reads success while the toast warns.
             confirmation = Content.from_markup(
                 "Switched to $name. New thread started.",
                 name=agent_name,
             )
             await self._mount_message(AppMessage(confirmation))
+
+            if not saved:
+                # Surface the failure visibly — silent logger.warnings
+                # leave users wondering why their picker selection didn't
+                # stick across launches. See `model_config.save_recent_agent`
+                # for the underlying I/O codepath.
+                self.notify(
+                    "Could not save recent agent to config; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
 
             # Surface a resume command for the previous session so the
             # previous thread isn't stranded out of reach. `-r <thread>`

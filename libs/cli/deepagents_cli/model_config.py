@@ -1415,7 +1415,11 @@ def _save_toml_field(
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
+        # payload; `ValueError` covers things like `os.fdopen` on a
+        # closed fd. Folding them in keeps the `bool` contract intact for
+        # the UI branches that toggle on the return value.
         logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
@@ -1505,7 +1509,9 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # See `_save_toml_field` for why `TypeError` / `ValueError` are
+        # folded into the bool return contract.
         logger.exception("Could not clear default model preference")
         return False
     else:
@@ -2023,6 +2029,106 @@ def load_recent_agent(config_path: Path | None = None) -> str | None:
         The saved agent name, or `None` if the file or key is missing or
         the file is unreadable.
     """
+    return _load_agents_field("recent", config_path)
+
+
+def save_default_agent(agent_name: str, config_path: Path | None = None) -> bool:
+    """Update the default agent in config file.
+
+    Writes to `[agents].default`. This is the user's intentional sticky
+    default — set via `Ctrl+S` in the `/agents` picker — and takes
+    precedence over `[agents].recent` on bare-launch resolution.
+
+    Args:
+        agent_name: The agent directory name (e.g., `'coder'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("agents", "default", agent_name, config_path)
+
+
+def clear_default_agent(config_path: Path | None = None) -> bool:
+    """Remove the default agent from the config file.
+
+    Deletes the `[agents].default` key so that future launches fall back
+    to `[agents].recent` and then `DEFAULT_AGENT_NAME`.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed (or was already absent), False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        return True
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        agents_section = data.get("agents")
+        if not isinstance(agents_section, dict) or "default" not in agents_section:
+            return True
+
+        del agents_section["default"]
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # See `_save_toml_field` for why `TypeError` / `ValueError` are
+        # folded into the bool return contract.
+        logger.exception("Could not clear default agent preference")
+        return False
+    else:
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+        _default_config_cache = None
+        return True
+
+
+def load_default_agent(config_path: Path | None = None) -> str | None:
+    """Read `[agents].default` from the config file.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved agent name, or `None` if the file or key is missing or
+        the file is unreadable.
+    """
+    return _load_agents_field("default", config_path)
+
+
+def _load_agents_field(field: str, config_path: Path | None = None) -> str | None:
+    """Read `[agents].<field>` from the config file.
+
+    Args:
+        field: Key under the `[agents]` table (e.g., `'recent'`, `'default'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The trimmed string value, or `None` if the file, section, or key
+        is missing or the file is unreadable.
+    """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
     if not config_path.exists():
@@ -2031,10 +2137,10 @@ def load_recent_agent(config_path: Path | None = None) -> str | None:
         with config_path.open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
-        logger.warning("Could not read recent agent from config", exc_info=True)
+        logger.warning("Could not read agents.%s from config", field, exc_info=True)
         return None
     agents_section = data.get("agents", {})
-    recent = agents_section.get("recent")
-    if isinstance(recent, str) and recent.strip():
-        return recent.strip()
+    value = agents_section.get(field)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None

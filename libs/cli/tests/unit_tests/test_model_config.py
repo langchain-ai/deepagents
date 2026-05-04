@@ -24,14 +24,17 @@ from deepagents_cli.model_config import (
     _load_provider_profiles,
     _profile_module_from_class_path,
     clear_caches,
+    clear_default_agent,
     clear_default_model,
     get_available_models,
     get_model_profiles,
     get_provider_auth_status,
     has_provider_credentials,
     is_warning_suppressed,
+    load_default_agent,
     load_recent_agent,
     load_thread_columns,
+    save_default_agent,
     save_recent_agent,
     save_recent_model,
     save_thread_columns,
@@ -2710,6 +2713,146 @@ recent = "researcher"
         config_path.write_text("[agents]\nrecent = 123\n")
 
         assert load_recent_agent(config_path) is None
+
+
+class TestDefaultAgent:
+    """save_default_agent + clear_default_agent + load_default_agent round-trip."""
+
+    def test_save_creates_file_with_agents_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        assert save_default_agent("coder", config_path) is True
+
+        assert config_path.exists()
+        assert 'default = "coder"' in config_path.read_text()
+
+    def test_save_preserves_recent_and_other_sections(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+
+[agents]
+recent = "researcher"
+""")
+        save_default_agent("coder", config_path)
+
+        content = config_path.read_text()
+        assert 'default = "anthropic:claude-sonnet-4-5"' in content
+        assert 'recent = "researcher"' in content
+        assert 'default = "coder"' in content
+
+    def test_load_returns_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        save_default_agent("coder", config_path)
+
+        assert load_default_agent(config_path) == "coder"
+
+    def test_load_missing_file_returns_none(self, tmp_path):
+        assert load_default_agent(tmp_path / "missing.toml") is None
+
+    def test_load_missing_section_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "x"\n')
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_non_string_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = 123\n")
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_independent_of_recent(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+recent = "researcher"
+""")
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_removes_default_only(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+default = "coder"
+recent = "researcher"
+""")
+        assert clear_default_agent(config_path) is True
+
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_missing_file_returns_true(self, tmp_path):
+        assert clear_default_agent(tmp_path / "missing.toml") is True
+
+    def test_clear_missing_key_returns_true(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\nrecent = "researcher"\n')
+        assert clear_default_agent(config_path) is True
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_save_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during write must produce `False`, not propagate.
+
+        The picker UI branches on the boolean — an unhandled exception
+        would crash the modal mid-action.
+        """
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_save_returns_false_on_typeerror(self, tmp_path, monkeypatch):
+        """TypeError from `tomli_w.dump` falls into the bool contract."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "unsupported type"
+            raise TypeError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_clear_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during clear must produce `False`, not propagate."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "coder"\n')
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert clear_default_agent(config_path) is False
+
+    def test_load_returns_none_for_whitespace(self, tmp_path):
+        """Whitespace-only string is treated as missing, not as a valid name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "   "\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_empty_string(self, tmp_path):
+        """Empty string is treated as missing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = ""\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_list_type(self, tmp_path):
+        """A list under `[agents].default` is rejected, not coerced."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = [1, 2]\n")
+        assert load_default_agent(config_path) is None
 
 
 class TestModelConfigLoadRecent:

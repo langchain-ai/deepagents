@@ -699,36 +699,90 @@ class TestResolveAgentArg:
         return argparse.Namespace(**defaults)
 
     def test_explicit_agent_wins(self) -> None:
-        """An explicit `-a <name>` bypasses recent/default lookup entirely."""
+        """An explicit `-a <name>` bypasses default/recent lookup entirely."""
         from deepagents_cli.main import _resolve_agent_arg
 
-        with patch("deepagents_cli.model_config.load_recent_agent") as load:
+        with (
+            patch("deepagents_cli.model_config.load_default_agent") as load_default,
+            patch("deepagents_cli.model_config.load_recent_agent") as load_recent,
+        ):
             assert _resolve_agent_arg(self._args(agent="coder")) == "coder"
-            load.assert_not_called()
+            load_default.assert_not_called()
+            load_recent.assert_not_called()
 
     def test_resume_thread_forces_default(self) -> None:
         """With -r present, default lets thread-metadata inference pick the agent."""
         from deepagents_cli._constants import DEFAULT_AGENT_NAME
         from deepagents_cli.main import _resolve_agent_arg
 
-        with patch(
-            "deepagents_cli.model_config.load_recent_agent",
-            return_value="researcher",
-        ) as load:
+        with (
+            patch(
+                "deepagents_cli.model_config.load_default_agent",
+                return_value="coder",
+            ) as load_default,
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="researcher",
+            ) as load_recent,
+        ):
             result = _resolve_agent_arg(self._args(resume_thread="abc123"))
             assert result == DEFAULT_AGENT_NAME
-            load.assert_not_called()
+            load_default.assert_not_called()
+            load_recent.assert_not_called()
 
-    def test_uses_recent_when_valid(self) -> None:
-        """No -a, no -r: use `[agents].recent` when the dir still exists."""
+    def test_default_takes_precedence_over_recent(self) -> None:
+        """`[agents].default` (Ctrl+S in picker) wins over `[agents].recent`."""
         from deepagents_cli.main import _resolve_agent_arg
 
         with (
+            patch(
+                "deepagents_cli.model_config.load_default_agent",
+                return_value="researcher",
+            ),
             patch(
                 "deepagents_cli.model_config.load_recent_agent",
                 return_value="coder",
             ),
             patch("deepagents_cli.main._recent_agent_is_valid", return_value=True),
+        ):
+            assert _resolve_agent_arg(self._args()) == "researcher"
+
+    def test_uses_recent_when_valid(self) -> None:
+        """No -a, no -r, no default: use `[agents].recent` when the dir exists."""
+        from deepagents_cli.main import _resolve_agent_arg
+
+        with (
+            patch("deepagents_cli.model_config.load_default_agent", return_value=None),
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="coder",
+            ),
+            patch("deepagents_cli.main._recent_agent_is_valid", return_value=True),
+        ):
+            assert _resolve_agent_arg(self._args()) == "coder"
+
+    def test_falls_back_when_default_missing_dir(self) -> None:
+        """Stale `[agents].default` pointing at a deleted dir falls through."""
+        from deepagents_cli.main import _resolve_agent_arg
+
+        # `_recent_agent_is_valid` is called for both default and recent;
+        # return False for the default name, True for the recent name.
+        def _validate(name: str) -> bool:
+            return name == "coder"
+
+        with (
+            patch(
+                "deepagents_cli.model_config.load_default_agent",
+                return_value="ghost",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="coder",
+            ),
+            patch(
+                "deepagents_cli.main._recent_agent_is_valid",
+                side_effect=_validate,
+            ),
         ):
             assert _resolve_agent_arg(self._args()) == "coder"
 
@@ -738,6 +792,7 @@ class TestResolveAgentArg:
         from deepagents_cli.main import _resolve_agent_arg
 
         with (
+            patch("deepagents_cli.model_config.load_default_agent", return_value=None),
             patch(
                 "deepagents_cli.model_config.load_recent_agent",
                 return_value="ghost",
@@ -751,7 +806,34 @@ class TestResolveAgentArg:
         from deepagents_cli._constants import DEFAULT_AGENT_NAME
         from deepagents_cli.main import _resolve_agent_arg
 
-        with patch("deepagents_cli.model_config.load_recent_agent", return_value=None):
+        with (
+            patch("deepagents_cli.model_config.load_default_agent", return_value=None),
+            patch("deepagents_cli.model_config.load_recent_agent", return_value=None),
+        ):
+            assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
+
+    def test_falls_back_when_both_default_and_recent_stale(self) -> None:
+        """Both keys point at deleted dirs → final fallback to DEFAULT_AGENT_NAME.
+
+        Locks the chained validity check: a stale `default` does not
+        suppress the `recent` lookup, but if `recent` is also stale we
+        must reach `DEFAULT_AGENT_NAME` rather than returning a name
+        whose directory no longer exists.
+        """
+        from deepagents_cli._constants import DEFAULT_AGENT_NAME
+        from deepagents_cli.main import _resolve_agent_arg
+
+        with (
+            patch(
+                "deepagents_cli.model_config.load_default_agent",
+                return_value="ghost-default",
+            ),
+            patch(
+                "deepagents_cli.model_config.load_recent_agent",
+                return_value="ghost-recent",
+            ),
+            patch("deepagents_cli.main._recent_agent_is_valid", return_value=False),
+        ):
             assert _resolve_agent_arg(self._args()) == DEFAULT_AGENT_NAME
 
 

@@ -4770,6 +4770,75 @@ class TestRestartServerForAgentSwap:
         assert any("Switched to researcher" in s for s in plain)
         assert not any("to resume" in s for s in plain)
 
+    async def test_swap_save_failure_notifies_after_confirmation(self) -> None:
+        """A failed `save_recent_agent` after a swap must surface a toast.
+
+        Locks two invariants:
+            1. The notify is wired with `markup=False` and `severity="warning"`.
+                `markup=False` is load-bearing — the message contains a
+                semicolon and stray commas, and the Toast renderer would
+                crash if markup parsing were enabled.
+            2. The "Switched to X" confirmation lands BEFORE the warning
+                notify. Otherwise the toast hovers next to a green
+                success line, making the causality unreadable.
+        """
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app, _server_proc = self._make_app()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="hi there")
+        )
+
+        order: list[str] = []
+        mounted: list[object] = []
+
+        def record_mount(msg: object) -> None:
+            mounted.append(msg)
+            content_str = str(getattr(msg, "_content", msg))
+            if "Switched to" in content_str:
+                order.append("confirmation")
+
+        def record_notify(*args: Any, **kwargs: Any) -> None:
+            if kwargs.get("severity") == "warning" and "config" in str(args[0]).lower():
+                order.append("notify")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_cli.model_config.save_recent_agent",
+                    return_value=False,
+                ),
+                patch.object(
+                    app, "_mount_message", AsyncMock(side_effect=record_mount)
+                ),
+                patch.object(app, "run_worker"),
+                patch.object(app, "notify", side_effect=record_notify) as notify_mock,
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        # Confirmation message reached the user.
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Switched to researcher" in s for s in plain)
+
+        # The save-failure warning notify fired with the right kwargs.
+        warning_calls = [
+            notify_call
+            for notify_call in notify_mock.call_args_list
+            if notify_call.kwargs.get("severity") == "warning"
+        ]
+        assert warning_calls, (
+            f"expected a warning notify; got {notify_mock.call_args_list}"
+        )
+        for notify_call in warning_calls:
+            assert notify_call.kwargs.get("markup") is False
+            assert "agent" in str(notify_call.args[0]).lower()
+
+        # Confirmation must precede the notify in the observed sequence.
+        assert order == ["confirmation", "notify"], (
+            f"confirmation must precede notify; got {order}"
+        )
+
     async def test_failure_rolls_back_identity_and_posts_failed(
         self,
     ) -> None:
@@ -6400,3 +6469,116 @@ class TestPrewarmAwait:
             await app._start_server_background()
 
         save_agent_mock.assert_called_once_with("agent")
+
+    async def test_start_server_background_persists_agent_before_create_model(
+        self,
+    ) -> None:
+        """`save_recent_agent` must run BEFORE `create_model`.
+
+        Locks the reorder that fixes the silent-persistence-loss bug:
+        if `create_model` raises a `ModelConfigError` (e.g., missing API
+        key), the user's intent to use this agent must already be
+        persisted. A regression that moves the save back below
+        `create_model` plus a credential miss silently drops the write
+        with no test signal.
+        """
+        from deepagents_cli import config as cli_config
+        from deepagents_cli.model_config import ModelConfigError
+
+        call_order: list[str] = []
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+        app._default_assistant_id = "agent"
+
+        def record_save_agent(name: str) -> bool:
+            call_order.append(f"save_recent_agent:{name}")
+            return True
+
+        def record_create_model(**_: Any) -> MagicMock:
+            call_order.append("create_model")
+            msg = "no credentials"
+            raise ModelConfigError(msg)
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=record_create_model),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                side_effect=record_save_agent,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch.object(app, "post_message"),
+            patch.object(app, "notify"),
+        ):
+            await app._start_server_background()
+
+        # Save must have happened, and must precede create_model in the
+        # call sequence — guarding the reorder fix.
+        assert "save_recent_agent:agent" in call_order
+        assert call_order.index("save_recent_agent:agent") < call_order.index(
+            "create_model"
+        ), f"save_recent_agent must precede create_model; got {call_order}"
+
+    async def test_start_server_background_notifies_on_save_failure(self) -> None:
+        """A failed startup save must surface a visible toast.
+
+        The user explicitly suspected that recent-agent writes were
+        silently dropping. Pair with the swap-path notify so both
+        codepaths produce a user-visible signal on persistence failure
+        rather than only a log line. `markup=False` is load-bearing —
+        flipping it back to default `True` re-introduces the Toast
+        `MarkupError` risk.
+        """
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+        app._default_assistant_id = "agent"
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(cli_config, "create_model", side_effect=fake_create_model),
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch(
+                "deepagents_cli.model_config.save_recent_agent",
+                return_value=False,
+            ),
+            patch.object(app, "post_message"),
+            patch.object(app, "notify") as notify_mock,
+            contextlib.suppress(Exception),
+        ):
+            await app._start_server_background()
+
+        # At least one notify call must report the save failure with
+        # markup disabled and warning severity.
+        warning_calls = [
+            notify_call
+            for notify_call in notify_mock.call_args_list
+            if notify_call.kwargs.get("severity") == "warning"
+            and "agent" in str(notify_call.args[0]).lower()
+            and "config" in str(notify_call.args[0]).lower()
+        ]
+        assert warning_calls, (
+            f"expected a warning notify about agent save failure; got "
+            f"{notify_mock.call_args_list}"
+        )
+        # markup=False is required so commas/brackets in the message
+        # don't crash the Toast renderer (see CLAUDE.md guidance).
+        for notify_call in warning_calls:
+            assert notify_call.kwargs.get("markup") is False

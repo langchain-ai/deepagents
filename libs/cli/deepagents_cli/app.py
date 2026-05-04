@@ -429,25 +429,6 @@ class _ThreadHistoryPayload:
     """Persisted `_context_tokens` from the checkpoint (0 if absent)."""
 
 
-@dataclass(frozen=True, slots=True)
-class PendingSwitchRecovery:
-    """A `/model` switch that failed on missing credentials.
-
-    Stashed by `_switch_model` and consumed by `action_enter_missing_credentials`
-    so the Ctrl+K flow can retry the original failing switch with the same
-    arguments. Frozen so callers cannot accidentally mutate fields.
-    """
-
-    provider: str
-    """The provider whose API key is missing."""
-
-    model_spec: str
-    """The user-typed model spec (`provider:model` or bare model name)."""
-
-    extra_kwargs: dict[str, Any] | None
-    """`--model-params` overrides from the original switch attempt, if any."""
-
-
 def _new_thread_id() -> str:
     """Deferred-import wrapper around `sessions.generate_thread_id`.
 
@@ -643,13 +624,6 @@ class DeepAgentsApp(App):
             "ctrl+n",
             "open_notifications",
             "Notifications",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+k",
-            "enter_missing_credentials",
-            "Enter API Key",
             show=False,
             priority=True,
         ),
@@ -1012,17 +986,6 @@ class DeepAgentsApp(App):
         """Set to the offending provider name when startup failed with
         `MissingCredentialsError`; `None` otherwise. Gates the `/model`
         recovery hint without string-matching on the formatted error.
-        """
-
-        self._pending_switch_recovery: PendingSwitchRecovery | None = None
-        """Most recent `/model` switch that failed with missing credentials.
-
-        Stores the `(provider, model_spec, extra_kwargs)` tuple as a
-        `PendingSwitchRecovery` so the Ctrl+K action can re-issue the same
-        switch after the user enters a key. Cleared at the start of every
-        new `/model` switch attempt and after the recovery callback fires;
-        a switch that succeeds without missing credentials never visits
-        this slot.
         """
 
         self._retry_status_widget: AppMessage | None = None
@@ -2012,9 +1975,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: press Ctrl+K to enter a key for this provider, "
-                "or run `/model <provider>:<model>` to retry startup with "
-                "a different one."
+                "\n\nHint: run `/auth` to add a key for this provider, then "
+                "`/model <provider>:<model>` to retry startup. Or pick a "
+                "different provider directly with `/model`."
             )
 
         async def _mount_failure() -> None:
@@ -6579,105 +6542,6 @@ class DeepAgentsApp(App):
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()
 
-    def action_enter_missing_credentials(self) -> None:
-        """Open the auth prompt for the most recent missing-credentials error.
-
-        Triggered by the global `Ctrl+K` binding. Prefers a pending switch
-        recovery (transient `/model` failure) over a startup recovery; on
-        `AuthResult.SAVED`, retries the same operation that originally failed.
-        On `AuthResult.DELETED` or `AuthResult.CANCELLED`, leaves recovery
-        state alone — re-running the failing switch after a *delete* would
-        loop straight back into the same missing-credentials error.
-        """
-        from deepagents_cli.model_config import get_credential_env_var
-        from deepagents_cli.widgets.auth import AuthPromptScreen, AuthResult
-
-        if isinstance(self.screen, ModalScreen):
-            self.notify(
-                "Close the current dialog before entering an API key.",
-                severity="information",
-                timeout=3,
-                markup=False,
-            )
-            return
-
-        if self._pending_switch_recovery is not None:
-            recovery = self._pending_switch_recovery
-            env_var = get_credential_env_var(recovery.provider)
-
-            def _on_switch_done(result: AuthResult | None) -> None:
-                if result is not AuthResult.SAVED:
-                    return
-                self._pending_switch_recovery = None
-                self._run_recovery_worker(
-                    self._switch_model(
-                        recovery.model_spec, extra_kwargs=recovery.extra_kwargs
-                    ),
-                    label=f"switch to {recovery.model_spec}",
-                )
-
-            self.push_screen(
-                AuthPromptScreen(
-                    recovery.provider,
-                    env_var,
-                    reason=f"Required to switch to {recovery.model_spec}",
-                ),
-                _on_switch_done,
-            )
-            return
-
-        provider = self._server_startup_missing_credentials_provider
-        if provider is not None and self._server_kwargs is not None:
-            env_var = get_credential_env_var(provider)
-            model_name = self._server_kwargs.get("model_name") or ""
-            params = self._server_kwargs.get("model_params")
-
-            def _on_startup_done(result: AuthResult | None) -> None:
-                if result is not AuthResult.SAVED:
-                    return
-                self._run_recovery_worker(
-                    self._retry_startup_with_model(model_name, extra_kwargs=params),
-                    label=f"startup with {model_name or provider}",
-                )
-
-            self.push_screen(
-                AuthPromptScreen(
-                    provider,
-                    env_var,
-                    reason=f"Required to start {model_name or provider}",
-                ),
-                _on_startup_done,
-            )
-            return
-
-        self.notify(
-            "No provider is awaiting credentials.",
-            severity="information",
-            timeout=3,
-            markup=False,
-        )
-
-    def _run_recovery_worker(self, coro: Awaitable[None], *, label: str) -> None:
-        """Schedule a recovery coroutine and surface failures via toast.
-
-        `run_worker(...)` is fire-and-forget; if the coroutine raises, the
-        user pressed Ctrl+K and saw nothing happen. Wrap in a guard that
-        notifies on failure so silent worker crashes are visible.
-        """
-
-        async def _runner() -> None:
-            try:
-                await coro
-            except Exception as exc:
-                logger.exception("Recovery worker for %s failed", label)
-                self.notify(
-                    f"Recovery failed: {exc}",
-                    severity="error",
-                    markup=False,
-                )
-
-        self.run_worker(_runner(), exclusive=False)
-
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""
         from deepagents_cli.widgets.notification_center import (
@@ -7257,9 +7121,6 @@ class DeepAgentsApp(App):
             return
 
         self._model_switching = True
-        # A fresh switch attempt invalidates any prior missing-cred recovery
-        # slot; the new attempt sets it again only if it also fails.
-        self._pending_switch_recovery = None
         try:
             # Defensively strip leading colon in case of empty provider,
             # treat ":claude-opus-4-6" as "claude-opus-4-6"
@@ -7323,17 +7184,11 @@ class DeepAgentsApp(App):
                         "api_key_env field"
                     )
                 )
-                # Stash so Ctrl+K knows what to recover.
-                self._pending_switch_recovery = PendingSwitchRecovery(
-                    provider=provider,
-                    model_spec=model_spec,
-                    extra_kwargs=extra_kwargs,
-                )
                 await self._mount_message(
                     ErrorMessage(
                         f"Missing credentials: {detail}\n\n"
-                        "Press Ctrl+K to enter a key now, or `/auth` to "
-                        "manage stored keys."
+                        f"Run `/auth` to add a key, then re-issue "
+                        f"`/model {model_spec}`."
                     )
                 )
                 return

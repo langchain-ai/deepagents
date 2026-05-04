@@ -3486,7 +3486,7 @@ class DeepAgentsApp(App):
         """Persist the optional onboarding name into agent memory.
 
         Surfaces a user-visible toast when the memory write fails so the
-        promise made in `LaunchNameScreen` ("can be remembered for future
+        promise made in `LaunchNameScreen` ("will be remembered for future
         sessions") does not silently break.
         """
         from deepagents_cli.onboarding import write_onboarding_name_memory

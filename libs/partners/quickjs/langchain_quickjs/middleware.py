@@ -154,6 +154,10 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
             across agent turns by creating a snapshot in ``after_agent`` and
             restoring it in ``before_agent``. If ``False``, preserve the
             previous behavior where state resets each turn.
+        max_snapshot_bytes: Maximum serialized snapshot payload size allowed
+            in middleware state. If a snapshot exceeds this size, it is
+            dropped (``_quickjs_snapshot_payload=None``). Defaults to
+            ``memory_limit``.
 
     Example:
         ```python
@@ -181,11 +185,15 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         ptc: PTCOption | None = None,
         skills_backend: "BackendProtocol | None" = None,
         snapshot_between_turns: bool = True,
+        max_snapshot_bytes: int | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
+            raise ValueError(msg)
+        if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
+            msg = "`max_snapshot_bytes` must be >= 1 or None"
             raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
@@ -196,6 +204,9 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         self._ptc = ptc
         self._skills_backend = skills_backend
         self._snapshot_between_turns = snapshot_between_turns
+        self._max_snapshot_bytes = (
+            memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
+        )
         self._registry = _Registry(
             memory_limit=memory_limit,
             timeout=timeout,
@@ -429,6 +440,24 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     ) -> SystemMessage:
         return append_to_system_message(system_message, prompt)
 
+    def _snapshot_update(
+        self, *, payload: bytes, thread_id: str
+    ) -> dict[str, bytes | None]:
+        """Build state update for a serialized snapshot payload."""
+        size = len(payload)
+        if size > self._max_snapshot_bytes:
+            logger.warning(
+                (
+                    "Dropping QuickJS snapshot for thread_id=%s "
+                    "(size=%d bytes exceeds max_snapshot_bytes=%d)"
+                ),
+                thread_id,
+                size,
+                self._max_snapshot_bytes,
+            )
+            return {"_quickjs_snapshot_payload": None}
+        return {"_quickjs_snapshot_payload": payload}
+
     def after_agent(
         self,
         state: REPLState,  # noqa: ARG002
@@ -445,7 +474,10 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
             return None
         update: dict[str, Any]
         try:
-            update = {"_quickjs_snapshot_payload": repl.create_snapshot()}
+            update = self._snapshot_update(
+                payload=repl.create_snapshot(),
+                thread_id=thread_id,
+            )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
                 "Failed to create QuickJS snapshot for thread_id=%s",
@@ -473,7 +505,10 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
             return None
         update: dict[str, Any]
         try:
-            update = {"_quickjs_snapshot_payload": await repl.acreate_snapshot()}
+            update = self._snapshot_update(
+                payload=await repl.acreate_snapshot(),
+                thread_id=thread_id,
+            )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
                 "Failed to create QuickJS snapshot for thread_id=%s",

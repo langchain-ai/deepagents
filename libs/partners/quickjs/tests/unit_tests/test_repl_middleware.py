@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -122,6 +122,11 @@ def test_legacy_system_prompt_alias_removed() -> None:
 def test_rejects_invalid_max_ptc_calls() -> None:
     with pytest.raises(ValueError, match="must be >= 1 or None"):
         REPLMiddleware(max_ptc_calls=0)
+
+
+def test_rejects_invalid_max_snapshot_bytes() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        REPLMiddleware(max_snapshot_bytes=0)
 
 
 def test_system_prompt_injected_once() -> None:
@@ -624,6 +629,34 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
             update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update == {"_quickjs_snapshot_payload": None}
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
+    mw = REPLMiddleware(max_snapshot_bytes=4)
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        with patch.object(repl, "create_snapshot", return_value=b"12345"):
+            update = mw.after_agent(state={}, runtime=MagicMock())
+        assert update == {"_quickjs_snapshot_payload": None}
+        assert mw._fallback_thread_id not in mw._registry._slots
+    finally:
+        mw._registry.close()
+
+
+async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
+    mw = REPLMiddleware(max_snapshot_bytes=4)
+    try:
+        repl = mw._registry.get(mw._fallback_thread_id)
+        with patch.object(
+            repl,
+            "acreate_snapshot",
+            new=AsyncMock(return_value=b"12345"),
+        ):
+            update = await mw.aafter_agent(state={}, runtime=MagicMock())
         assert update == {"_quickjs_snapshot_payload": None}
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:

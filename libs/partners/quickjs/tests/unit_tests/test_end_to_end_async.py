@@ -11,36 +11,18 @@ import asyncio
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import Field
 
 from langchain_quickjs import REPLMiddleware
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-
-
-class _FakeChatModel(GenericFakeChatModel):
-    """GenericFakeChatModel whose bind_tools returns self.
-
-    Without the override, ``create_deep_agent``'s bind_tools call replaces
-    the model with a RunnableBinding whose ``_generate`` no longer reads
-    from the pre-scripted iterator.
-    """
-
-    messages: Iterator[AIMessage | str] = Field(exclude=True)
-
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _FakeChatModel:
-        return self
+from tests._common import FakeChatModel
 
 
 @tool
@@ -102,7 +84,7 @@ def _make_agent(
     final_message: str = "done",
 ) -> Any:
     return create_deep_agent(
-        model=_FakeChatModel(messages=_script(code, final_message=final_message)),
+        model=FakeChatModel(messages=_script(code, final_message=final_message)),
         middleware=[middleware],
     )
 

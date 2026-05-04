@@ -4,17 +4,15 @@ from __future__ import annotations
 
 from collections.abc import (
     Iterator,  # noqa: TC003  # pydantic resolves this annotation at runtime
-    Sequence,  # noqa: TC003  # used in runtime-accessed annotations
 )
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import Field
 
 from langchain_quickjs import REPLMiddleware
+from tests._common import FakeChatModel
 
 if TYPE_CHECKING:
     from langchain_quickjs.middleware import REPLState
@@ -41,15 +39,6 @@ PTC_AND_CONSOLE_CODE = (
 COUNTER_INIT_CODE = "let counter = 0; String(counter);"
 COUNTER_NEXT_CODE = 'typeof counter === "number" ? String(counter += 1) : "missing";'
 THROUGHPUT_ITERATIONS = 200
-
-
-class FakeChatModel(GenericFakeChatModel):
-    """Generic fake chat model whose ``bind_tools`` keeps scripted messages."""
-
-    messages: Iterator[AIMessage | str] = Field(exclude=True)
-
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> FakeChatModel:
-        return self
 
 
 @tool("echo_payload")

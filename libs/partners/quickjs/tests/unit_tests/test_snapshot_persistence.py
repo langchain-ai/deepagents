@@ -8,24 +8,13 @@ from typing import Any, Literal
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends.state import StateBackend
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import Field
 
 from langchain_quickjs import REPLMiddleware
+from tests._common import FakeChatModel
 
 InvokeMode = Literal["invoke", "ainvoke"]
-
-
-class _FakeChatModel(GenericFakeChatModel):
-    """GenericFakeChatModel whose ``bind_tools`` returns self."""
-
-    messages: Any = Field(exclude=True)
-
-    def bind_tools(self, tools, **_: Any) -> _FakeChatModel:
-        del tools
-        return self
 
 
 def _script_two_turns() -> list[AIMessage]:
@@ -148,7 +137,7 @@ async def test_repl_snapshot_persists_state_between_turns(
 ) -> None:
     """REPL state survives across turns on the same thread_id."""
     agent = create_deep_agent(
-        model=_FakeChatModel(messages=iter(_script_two_turns())),
+        model=FakeChatModel(messages=iter(_script_two_turns())),
         middleware=[REPLMiddleware()],
         checkpointer=InMemorySaver(),
     )
@@ -184,7 +173,7 @@ async def test_repl_without_snapshots_resets_state_between_turns(
 ) -> None:
     """When snapshots are disabled, turn-2 eval starts with a fresh context."""
     agent = create_deep_agent(
-        model=_FakeChatModel(messages=iter(_script_two_turns_without_snapshots())),
+        model=FakeChatModel(messages=iter(_script_two_turns_without_snapshots())),
         middleware=[REPLMiddleware(snapshot_between_turns=False)],
         checkpointer=InMemorySaver(),
     )
@@ -243,7 +232,7 @@ async def test_repl_snapshot_persists_skill_usage_between_turns(
     }
 
     agent = create_deep_agent(
-        model=_FakeChatModel(messages=iter(_script_two_turns_with_skill())),
+        model=FakeChatModel(messages=iter(_script_two_turns_with_skill())),
         backend=backend,
         skills=["/skills"],
         middleware=[REPLMiddleware(skills_backend=backend)],

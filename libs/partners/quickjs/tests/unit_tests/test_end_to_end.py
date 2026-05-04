@@ -20,39 +20,21 @@ from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import Field
 
 from langchain_quickjs import REPLMiddleware
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+from tests._common import FakeChatModel
 
 # The exact snippet a model produced in production when this regressed.
 _EVAL_CODE = "var result = tools.listUserIds({}); result;"
-
-
-class _FakeChatModel(GenericFakeChatModel):
-    """GenericFakeChatModel whose bind_tools returns self.
-
-    Without the override, ``create_deep_agent``'s bind_tools call replaces
-    the model with a RunnableBinding whose ``_generate`` no longer reads
-    from our pre-scripted iterator.
-    """
-
-    messages: Iterator[AIMessage | str] = Field(exclude=True)
-
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> _FakeChatModel:
-        return self
 
 
 @tool
@@ -120,7 +102,7 @@ def _make_agent(
     final_message: str = "Done.",
 ) -> Any:
     return create_deep_agent(
-        model=_FakeChatModel(messages=_script(code, final_message=final_message)),
+        model=FakeChatModel(messages=_script(code, final_message=final_message)),
         middleware=[middleware],
     )
 
@@ -325,7 +307,7 @@ async def test_async_ptc_eval_through_repl() -> None:
 def test_wrong_arg_name_surfaces_to_model() -> None:
     """Document what the model sees when JS calls a tool with a misspelled arg."""
     agent = create_deep_agent(
-        model=_FakeChatModel(
+        model=FakeChatModel(
             messages=iter(
                 [
                     AIMessage(

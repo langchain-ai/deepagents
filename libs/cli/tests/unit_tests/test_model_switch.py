@@ -15,12 +15,21 @@ from deepagents_cli.app import (
 from deepagents_cli.config import settings
 from deepagents_cli.model_config import (
     ModelSpec,
+    ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
     clear_caches,
 )
 from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
+
+_CONFIGURED_AUTH_STATUS = ProviderAuthStatus(
+    state=ProviderAuthState.CONFIGURED,
+    provider="anthropic",
+    env_var="ANTHROPIC_API_KEY",
+    source=ProviderAuthSource.ENV,
+)
+"""Generic non-blocking auth status for tests that bypass the credential check."""
 
 
 def _make_remote_agent() -> RemoteAgent:
@@ -169,8 +178,8 @@ class TestModelSwitchNoOp:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -195,8 +204,8 @@ class TestModelSwitchNoOp:
         settings.model_provider = "anthropic"
 
         with patch(
-            "deepagents_cli.model_config.has_provider_credentials",
-            return_value=True,
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
         ):
             await app._switch_model(
                 "anthropic:claude-opus-4-5", announce_unchanged=False
@@ -230,8 +239,8 @@ class TestModelSwitchNoOp:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -270,8 +279,8 @@ class TestModelSwitchNoOp:
         app._model_params_override = {"num_ctx": 16384}
 
         with patch(
-            "deepagents_cli.model_config.has_provider_credentials",
-            return_value=True,
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
         ):
             await app._switch_model("anthropic:claude-opus-4-5")
 
@@ -343,8 +352,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=False),
             patch.object(ErrorMessage, "__init__", capture_err),
@@ -379,8 +388,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch(
                 "deepagents_cli.model_config.save_recent_model", return_value=True
@@ -411,8 +420,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -441,8 +450,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -475,8 +484,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
             patch.object(AppMessage, "__init__", capture_init),
@@ -527,8 +536,8 @@ class TestModelSwitchConcurrencyGuard:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -596,8 +605,8 @@ class TestModelSwitchSessionReadiness:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -650,8 +659,8 @@ class TestModelSwitchFailedStartupRecovery:
         app.run_worker = run_worker_mock  # type: ignore[method-assign]
 
         with patch(
-            "deepagents_cli.model_config.has_provider_credentials",
-            return_value=True,
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
@@ -900,8 +909,8 @@ class TestModelSwitchBareModelName:
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch(
                 "deepagents_cli.model_config.save_recent_model", return_value=True
@@ -970,8 +979,8 @@ class TestModelSwitchBareModelName:
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):

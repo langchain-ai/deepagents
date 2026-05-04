@@ -43,11 +43,15 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     1. Explicit `-a <name>` (stored as `args.agent` by argparse).
     2. `-r <thread>` is present → use `DEFAULT_AGENT_NAME`. The real agent is
         inferred later by `_resolve_resume_thread` via thread metadata
-        (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
+        (`get_thread_agent`), so we must NOT pre-seed a stored agent here or
         it would suppress that inference.
-    3. `[agents].recent` from config, if it points at an agent whose
-        directory still exists.
-    4. `DEFAULT_AGENT_NAME` as the final fallback.
+    3. `[agents].default` from config — the user's intentional sticky
+        default (set via Ctrl+S in the `/agents` picker).
+    4. `[agents].recent` from config — the most recently switched-to agent.
+    5. `DEFAULT_AGENT_NAME` as the final fallback.
+
+    Both `default` and `recent` are gated by `_recent_agent_is_valid` so a
+    stale entry pointing at a deleted agent directory is ignored.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -65,7 +69,11 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     if getattr(args, "resume_thread", None) is not None:
         return DEFAULT_AGENT_NAME
 
-    from deepagents_cli.model_config import load_recent_agent
+    from deepagents_cli.model_config import load_default_agent, load_recent_agent
+
+    default = load_default_agent()
+    if default and _recent_agent_is_valid(default):
+        return default
 
     recent = load_recent_agent()
     if recent and _recent_agent_is_valid(recent):
@@ -675,8 +683,9 @@ def parse_args() -> argparse.Namespace:
         metavar="NAME",
         help=(
             "Agent to use (e.g., coder, researcher). "
-            "If omitted, falls back to [agents].recent in config, then "
-            f"the '{DEFAULT_AGENT_NAME}' default."
+            "If omitted, falls back to [agents].default, then "
+            "[agents].recent, then "
+            f"the '{DEFAULT_AGENT_NAME}' built-in default."
         ),
     )
 

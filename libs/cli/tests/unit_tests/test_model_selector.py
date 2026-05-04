@@ -1,15 +1,43 @@
 """Tests for ModelSelectorScreen."""
 
+from pathlib import Path
 from typing import Any, ClassVar
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from deepagents_cli.model_config import ModelProfileEntry
+from deepagents_cli.config import get_glyphs
+from deepagents_cli.model_config import (
+    ModelProfileEntry,
+    ProviderAuthSource,
+    ProviderAuthState,
+    ProviderAuthStatus,
+)
 from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+
+
+@pytest.fixture(autouse=True)
+def _seed_provider_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Seed credentials so dismissal tests aren't blocked by missing keys.
+
+    The selector now opens an auth prompt when the highlighted provider
+    has no key. Most tests in this file just want to assert dismissal
+    behavior, so we seed env vars for the providers their fixtures use
+    and redirect the credential store into a clean temp dir.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # Strip dotenv-loaded prefixed variants so monkeypatched canonical vars
+    # win in `resolve_env_var`'s lookup order.
+    for var in ("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", "DEEPAGENTS_CLI_OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+    )
 
 
 class ModelSelectorTestApp(App):
@@ -133,6 +161,72 @@ class TestModelSelectorEscapeKey:
             assert app.result is None
             # The interrupt action should NOT have been called because modal was open
             assert app.interrupt_called is False
+
+
+class TestModelSelectorChrome:
+    """Tests for model selector title chrome."""
+
+    async def test_optional_title_renders(self) -> None:
+        """A custom title should render above the filter."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(title="Choose a Model")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            title = screen.query_one(".model-selector-title", Static)
+
+            assert "Choose a Model" in str(title.content)
+
+    async def test_curated_selector_help_uses_skip_setup(self) -> None:
+        """Curated launch-init selection should label Escape as setup skip."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Esc skip setup" in str(help_text.content)
+            assert "Esc cancel" not in str(help_text.content)
+
+    async def test_standard_selector_help_uses_cancel(self) -> None:
+        """The regular /model selector should keep cancel wording."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Esc cancel" in str(help_text.content)
+
+
+class TestModelSelectorAvailabilityHint:
+    """Tests for the API-keys hint shown above the standard model list."""
+
+    async def test_hint_renders_in_non_curated_mode(self) -> None:
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+
+            assert info.display is True
+
+    async def test_hint_absent_in_curated_mode(self) -> None:
+        """Onboarding's curated picker shares no copy with the standard selector."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not screen.query("#model-selector-info")
 
 
 class TestModelSelectorKeyboardNavigation:
@@ -764,7 +858,11 @@ class TestFormatOptionLabel:
             "anthropic:old-model",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
             status="deprecated",
         )
         from deepagents_cli.theme import DARK_COLORS
@@ -778,7 +876,11 @@ class TestFormatOptionLabel:
             "anthropic:claude-sonnet-4-5",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
             status=None,
         )
         assert "(deprecated)" not in label.plain
@@ -789,7 +891,11 @@ class TestFormatOptionLabel:
             "anthropic:new-model",
             selected=False,
             current=False,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
             status="beta",
         )
         assert "(deprecated)" not in label.plain
@@ -804,13 +910,146 @@ class TestFormatOptionLabel:
             "anthropic:old-model",
             selected=False,
             current=True,
-            has_creds=True,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
             is_default=True,
             status="deprecated",
         )
         assert "(current)" in label.plain
         assert "(default)" in label.plain
         assert "(deprecated)" in label.plain
+
+    def test_missing_credentials_warning_styles_model(self) -> None:
+        """Missing credentials should warn on the model row."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+        )
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning in label.markup
+
+    def test_no_auth_required_does_not_warning_style_model(self) -> None:
+        """No-auth local providers should not look like missing credentials."""
+        label = ModelSelectorScreen._format_option_label(
+            "ollama:llama3",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider="ollama",
+                detail="local provider",
+            ),
+        )
+        from deepagents_cli.theme import DARK_COLORS
+
+        assert DARK_COLORS.warning not in label.markup
+
+
+class TestFormatAuthIndicator:
+    """Tests for provider auth indicator labels."""
+
+    def test_configured_auth_renders_no_indicator(self) -> None:
+        """Configured credentials hide the indicator to keep headers clean."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == ""
+
+    def test_ollama_local_auth_has_no_checkmark(self) -> None:
+        """Local Ollama uses its own detail, not the CONFIGURED empty indicator."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider="ollama",
+                detail="local provider",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "local provider"
+
+    def test_missing_auth_names_env_var(self) -> None:
+        """Missing credentials should show the missing env var name."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+            get_glyphs(),
+        )
+
+        assert "missing ANTHROPIC_API_KEY" in indicator
+
+    def test_missing_auth_without_env_var_uses_generic_message(self) -> None:
+        """MISSING without env_var falls back to a generic missing-creds label."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider="custom",
+            ),
+            get_glyphs(),
+        )
+
+        assert "missing credentials" in indicator
+
+    def test_implicit_auth_uses_detail(self) -> None:
+        """IMPLICIT state surfaces its detail string."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.IMPLICIT,
+                provider="google_vertexai",
+                detail="implicit auth",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "implicit auth"
+
+    def test_managed_auth_uses_detail(self) -> None:
+        """MANAGED state surfaces its detail string."""
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.MANAGED,
+                provider="custom",
+                detail="custom auth",
+            ),
+            get_glyphs(),
+        )
+
+        assert indicator == "custom auth"
+
+    def test_unknown_auth_uses_question_glyph(self) -> None:
+        """UNKNOWN state prefixes the detail with the question glyph."""
+        glyphs = get_glyphs()
+        indicator = ModelSelectorScreen._format_auth_indicator(
+            ProviderAuthStatus(
+                state=ProviderAuthState.UNKNOWN,
+                provider="ollama",
+                detail="remote endpoint; set OLLAMA_API_KEY if auth is required",
+            ),
+            glyphs,
+        )
+
+        assert indicator.startswith(glyphs.question)
+        assert "OLLAMA_API_KEY" in indicator
 
 
 class TestGetModelStatus:
@@ -1022,3 +1261,50 @@ class TestModelDetailFooter:
             assert len(screen._filtered_models) == 0
             footer = screen.query_one("#model-detail-footer", Static)
             assert "No model selected" in str(footer.content)
+
+
+class TestModelSelectorAuthGate:
+    """Selecting a provider with missing creds opens the auth prompt."""
+
+    async def test_blocked_provider_opens_auth_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enter on a model whose provider has no key opens the prompt."""
+        from deepagents_cli.widgets.auth import AuthPromptScreen
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthPromptScreen)
+        # Selector did not dismiss; the prompt is in the foreground instead.
+        assert app.dismissed is False
+
+    async def test_save_key_in_prompt_dismisses_selector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving a key in the prompt dismisses the selector with the model."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_ANTHROPIC_API_KEY", raising=False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            # Type a key into the auth prompt input and submit
+            from textual.widgets import Input as _Input
+
+            inp = app.screen.query_one("#auth-prompt-input", _Input)
+            inp.value = "stored-from-prompt"
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.dismissed is True
+        assert app.result is not None
+        assert app.result[1] == "anthropic"

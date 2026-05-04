@@ -39,6 +39,7 @@ from deepagents_cli import (
     theme,
 )
 from deepagents_cli._cli_context import CLIContext
+from deepagents_cli._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -135,6 +136,13 @@ _IS_ITERM = (
 # Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
 _ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
 _ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+
+_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
+"""Upper bound on waiting for server readiness during launch-init model switch.
+
+Server startup is normally seconds; this ceiling exists only so a stuck
+backend cannot trap the user inside a finished launch-init modal forever.
+"""
 
 
 def _write_iterm_escape(sequence: str) -> None:
@@ -466,6 +474,30 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
         logger.warning("Background task failed unexpectedly", exc_info=True)
 
 
+def _build_model_switch_error_body(exc: BaseException) -> str | Content:
+    """Format a model-switch failure for `ErrorMessage`.
+
+    Args:
+        exc: Exception raised by `create_model`.
+
+    Returns:
+        A `Content` with the docs URL as a clickable span when `exc` is
+        `UnknownProviderError`; a plain string otherwise.
+    """
+    from deepagents_cli.model_config import UnknownProviderError
+
+    if isinstance(exc, UnknownProviderError):
+        return Content.assemble(
+            "Failed to switch model: unable to infer a provider for ",
+            (exc.model_spec, TStyle(bold=True)),
+            ".\n\nSpecify one explicitly (e.g. ",
+            (f"anthropic:{exc.model_spec}", TStyle(italic=True)),
+            ") or see the provider reference: ",
+            (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
+        )
+    return f"Failed to switch model: {exc}"
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -749,13 +781,21 @@ class DeepAgentsApp(App):
         """
 
         self._assistant_id = assistant_id
-        """Current agent identity.
+        """Current session agent identity.
 
         Scopes per-agent memory (`~/.deepagents/<id>/`) and skill discovery,
         keys `FileOpTracker` file-op history, and is attached to LangSmith
         traces as `assistant_id` / `agent_name`. Mutated by `/agents` swaps
         and by `-r` resume when the resumed thread belongs to a different
         agent.
+        """
+
+        self._default_assistant_id = assistant_id
+        """User-intended default agent — persisted as `[agents].recent`.
+
+        Tracks only explicit user choice (`-a`, picker, recent fallback);
+        never mutated by `-r` resume. Mirrors `recent_model`'s invariant —
+        a one-off thread resume must not redefine the default.
         """
 
         self._backend = backend
@@ -1209,6 +1249,7 @@ class DeepAgentsApp(App):
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
+                defer_connecting_display=self._connecting,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -1658,7 +1699,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.skills.invocation import discover_skills_and_roots
 
-        assistant_id = self._assistant_id or "agent"
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         return discover_skills_and_roots(assistant_id)
 
     async def _resolve_resume_thread(self) -> None:
@@ -1666,8 +1707,10 @@ class DeepAgentsApp(App):
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
         thread ID. Mutates `self._lc_thread_id` and optionally
-        `self._assistant_id` / `self._server_kwargs`. Falls back to a fresh
-        thread on any DB error.
+        `self._assistant_id` / `self._server_kwargs`. Does NOT touch
+        `self._default_assistant_id` — a one-off resume should not redefine
+        the user's persisted default agent. Falls back to a fresh thread on
+        any DB error.
         """
         from deepagents_cli.sessions import (
             find_similar_threads,
@@ -1683,11 +1726,7 @@ class DeepAgentsApp(App):
         if not resume:
             return
 
-        # Matches _DEFAULT_AGENT_NAME in main.py. Do NOT import it — main.py is
-        # the CLI entry point and pulls in argparse, rich, etc. at module level.
-        # Even a deferred import drags in the full dep tree for a single
-        # string constant.
-        default_agent = "agent"
+        default_agent = DEFAULT_ASSISTANT_ID
 
         try:
             if resume == "__MOST_RECENT__":
@@ -1752,6 +1791,37 @@ class DeepAgentsApp(App):
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
+        # Persist the user-chosen default so a later bare `deepagents`
+        # relaunch brings the user back to it. See
+        # `_restart_server_for_agent_swap` for why one-off resumes don't
+        # mutate `_default_assistant_id` and why the persisted default
+        # is decoupled from the per-session `_assistant_id`.
+        # Runs BEFORE deferred model creation so a `ModelConfigError`
+        # (e.g., missing API key) doesn't prevent the recent-agent write
+        # — the user's intent to use this agent shouldn't depend on
+        # whether their credentials happened to be valid this launch.
+        if self._default_assistant_id:
+            from deepagents_cli.model_config import save_recent_agent
+
+            saved = await asyncio.to_thread(
+                save_recent_agent, self._default_assistant_id
+            )
+            if not saved:
+                logger.warning(
+                    "Could not persist recent agent %r to config at startup",
+                    self._default_assistant_id,
+                )
+                # Mirror the visibility of the picker-swap path: if the
+                # write fails here, the user has no way to know unless
+                # we surface it. Toast severity matches the swap path.
+                self.notify(
+                    "Could not save recent agent to config at startup; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+
         if self._model_kwargs is not None:
             # Block on prewarm before re-entering the import graph; see
             # `_await_prewarm_imports` for the deadlock rationale.
@@ -1768,18 +1838,6 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
-
-        # Persist the agent in use so a later bare `deepagents` relaunch
-        # brings the user back to it (same pattern as `save_recent_model`).
-        if self._assistant_id:
-            from deepagents_cli.model_config import save_recent_agent
-
-            saved = await asyncio.to_thread(save_recent_agent, self._assistant_id)
-            if not saved:
-                logger.warning(
-                    "Could not persist recent agent %r to config at startup",
-                    self._assistant_id,
-                )
 
         from deepagents_cli.server_manager import start_server_and_get_agent
 
@@ -1957,8 +2015,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: run `/model <provider>:<model>` to retry "
-                "startup with a provider you have credentials for."
+                "\n\nHint: run `/auth` to add a key for this provider, then "
+                "`/model <provider>:<model>` to retry startup. Or pick a "
+                "different provider directly with `/model`."
             )
 
         async def _mount_failure() -> None:
@@ -3304,9 +3363,6 @@ class DeepAgentsApp(App):
                 return
 
             self._launch_user_name = name
-            await self._mount_message(
-                AppMessage(Content.from_markup("Welcome, $name.", name=name))
-            )
 
             result = await self._prompt_model_selector(curated=True)
             if result is None:
@@ -3314,10 +3370,51 @@ class DeepAgentsApp(App):
 
             model_spec, _provider = result
             if self._connecting:
-                await self._connection_ready_event.wait()
+                # Bound the wait so a stuck server never traps the user inside
+                # the launch-init flow.
+                try:
+                    await asyncio.wait_for(
+                        self._connection_ready_event.wait(),
+                        timeout=_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "Server connection did not become ready within %ss; "
+                        "skipping launch-init model switch",
+                        _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
+                    )
+                    self.notify(
+                        "Server still starting. Use /model to switch when ready.",
+                        severity="warning",
+                        markup=False,
+                    )
+                    return
             if self._exit:
                 return
-            await self._switch_model(model_spec)
+            try:
+                await self._switch_model(model_spec, announce_unchanged=False)
+            except Exception as exc:  # surface to user, don't crash launch init
+                logger.warning(
+                    "Model switch during launch init failed",
+                    exc_info=True,
+                )
+                self.notify(
+                    f"Could not switch to {model_spec}: {exc}. Use /model to "
+                    "try again.",
+                    severity="error",
+                    markup=False,
+                )
+            await self._mount_message(
+                AppMessage(Content.from_markup("Welcome, $name.", name=name))
+            )
+        except Exception:
+            logger.exception("Launch init sequence failed unexpectedly")
+            self.notify(
+                "Setup hit an unexpected error. You can configure things "
+                "manually with /model.",
+                severity="error",
+                markup=False,
+            )
         finally:
             self._launch_init_running = False
             if self._chat_input:
@@ -3394,6 +3491,11 @@ class DeepAgentsApp(App):
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
+            if self._connecting:
+                with suppress(NoMatches):
+                    self.query_one(
+                        "#welcome-banner", WelcomeBanner
+                    ).reveal_connecting_footer()
             return
 
         await self._process_message(value, mode)
@@ -3772,10 +3874,10 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /clear, /offload, /editor, /mcp, "
-                "/model [--model-params JSON] [--default], /notifications, "
-                "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
-                "/tokens, /threads, /trace, "
+                "Commands: /quit, /agents, /auth, /clear, /offload, /editor, "
+                "/mcp, /model [--model-params JSON] [--default], "
+                "/notifications, /reload, /skill:<name>, /remember, "
+                "/skill-creator, /theme, /tokens, /threads, /trace, "
                 "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -3905,6 +4007,8 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd == "/auth":
+            await self._show_auth_manager()
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
@@ -5333,6 +5437,10 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.auth import (
+            AuthPromptScreen,
+            DeleteCredentialConfirmScreen,
+        )
         from deepagents_cli.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
@@ -5341,7 +5449,13 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
-        if isinstance(self.screen, DeleteThreadConfirmScreen):
+        if isinstance(self.screen, AuthPromptScreen):
+            self.screen.action_delete_stored()
+            return
+        if isinstance(
+            self.screen,
+            (DeleteThreadConfirmScreen, DeleteCredentialConfirmScreen),
+        ):
             if self._quit_pending:
                 self.exit()
                 return
@@ -5417,6 +5531,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.auth import AuthManagerScreen
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_cli.widgets.notification_center import (
             NotificationCenterScreen,
@@ -5432,7 +5547,10 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
-        if isinstance(self.screen, (ThemeSelectorScreen, AgentSelectorScreen)):
+        if isinstance(
+            self.screen,
+            (ThemeSelectorScreen, AgentSelectorScreen, AuthManagerScreen),
+        ):
             self.screen.action_cursor_up()
             return
         if isinstance(self.screen, NotificationSettingsScreen):
@@ -5801,9 +5919,13 @@ class DeepAgentsApp(App):
     async def _show_agent_selector(self) -> None:
         """Show the interactive agent selector modal."""
         from deepagents_cli.agent import get_available_agent_names
+        from deepagents_cli.model_config import load_default_agent
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 
-        agent_names = await asyncio.to_thread(get_available_agent_names)
+        agent_names, default_agent = await asyncio.gather(
+            asyncio.to_thread(get_available_agent_names),
+            asyncio.to_thread(load_default_agent),
+        )
 
         def handle_result(result: str | None) -> None:
             """Handle the agent selector result."""
@@ -5815,8 +5937,24 @@ class DeepAgentsApp(App):
         screen = AgentSelectorScreen(
             current_agent=self._assistant_id,
             agent_names=agent_names,
+            default_agent=default_agent,
         )
         self.push_screen(screen, handle_result)
+
+    async def _show_auth_manager(self) -> None:
+        """Show the `/auth` credential manager modal.
+
+        State changes persist via `auth_store`; the manager refreshes its
+        own option labels after each save/delete, so this caller only needs
+        to refocus the chat input on close.
+        """
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        def handle_result(_result: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(AuthManagerScreen(), handle_result)
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -5954,6 +6092,7 @@ class DeepAgentsApp(App):
             return _RemoteAgent(url=url, graph_name="agent")
 
         previous_agent = self._assistant_id
+        previous_default_agent = self._default_assistant_id
         previous_thread_id = self._lc_thread_id
         # Only offer a resume hint if the previous thread produced agent-side
         # output. `USER` alone is not enough: local-only flows (`/update`,
@@ -6071,7 +6210,10 @@ class DeepAgentsApp(App):
             # `restart()` so the subprocess picks up the new assistant_id
             # from the staged env override; on failure, both are rolled
             # back and the old server is confirmed dead (ServerStartFailed).
+            # Picker switches are explicit user choice, so update both the
+            # session id and the persisted default.
             self._assistant_id = agent_name
+            self._default_assistant_id = agent_name
             if self._server_kwargs is not None:
                 self._server_kwargs["assistant_id"] = agent_name
 
@@ -6086,6 +6228,7 @@ class DeepAgentsApp(App):
                 self._agent = _build_agent(server_proc.url)
             except Exception as exc:
                 self._assistant_id = previous_agent
+                self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
                 self._agent = None
@@ -6126,11 +6269,28 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
 
+            # Mount the "Switched to X" confirmation BEFORE surfacing any
+            # save-failure toast. Otherwise the toast hovers next to a
+            # success line that scrolls past, which makes the causality
+            # confusing — the user reads success while the toast warns.
             confirmation = Content.from_markup(
                 "Switched to $name. New thread started.",
                 name=agent_name,
             )
             await self._mount_message(AppMessage(confirmation))
+
+            if not saved:
+                # Surface the failure visibly — silent logger.warnings
+                # leave users wondering why their picker selection didn't
+                # stick across launches. See `model_config.save_recent_agent`
+                # for the underlying I/O codepath.
+                self.notify(
+                    "Could not save recent agent to config; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
 
             # Surface a resume command for the previous session so the
             # previous thread isn't stranded out of reach. `-r <thread>`
@@ -6822,6 +6982,7 @@ class DeepAgentsApp(App):
         model_spec: str,
         *,
         extra_kwargs: dict[str, Any] | None = None,
+        announce_unchanged: bool = True,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -6837,12 +6998,14 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
+            announce_unchanged: Whether to mount a message when the requested
+                model is already active.
         """
         from deepagents_cli.config import create_model, detect_provider, settings
         from deepagents_cli.model_config import (
             ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
+            ProviderAuthState,
+            get_provider_auth_status,
             save_recent_model,
         )
 
@@ -6869,6 +7032,7 @@ class DeepAgentsApp(App):
                                 self._switch_model,
                                 model_spec,
                                 extra_kwargs=extra_kwargs,
+                                announce_unchanged=announce_unchanged,
                             ),
                         )
                     )
@@ -6903,23 +7067,20 @@ class DeepAgentsApp(App):
                 provider = detect_provider(model_spec)
 
             # Check credentials
-            has_creds = has_provider_credentials(provider) if provider else None
-            if has_creds is False and provider is not None:
-                env_var = get_credential_env_var(provider)
-                detail = (
-                    f"{env_var} is not set or is empty"
-                    if env_var
-                    else (
-                        f"provider '{provider}' is not recognized. "
-                        "Add it to ~/.deepagents/config.toml with an "
-                        "api_key_env field"
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                        f"Run `/auth` for the '{auth_status.provider}' provider, then "
+                        f"re-issue `/model {model_spec}`."
                     )
                 )
-                await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {detail}")
-                )
                 return
-            if has_creds is None and provider:
+            if (
+                auth_status is not None
+                and auth_status.state is ProviderAuthState.UNKNOWN
+            ):
                 logger.debug(
                     "Credentials for provider '%s' cannot be verified;"
                     " proceeding anyway",
@@ -6938,9 +7099,10 @@ class DeepAgentsApp(App):
                 self._model_override = current
                 self._model_params_override = extra_kwargs
                 params_suffix = _format_model_params(extra_kwargs)
-                await self._mount_message(
-                    AppMessage(f"Already using {current}{params_suffix}")
-                )
+                if announce_unchanged:
+                    await self._mount_message(
+                        AppMessage(f"Already using {current}{params_suffix}")
+                    )
                 logger.info(
                     "Model unchanged (%s); model_params=%s", current, extra_kwargs
                 )
@@ -6960,7 +7122,7 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
-                    ErrorMessage(f"Failed to switch model: {exc}")
+                    ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
 
@@ -7018,11 +7180,7 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from deepagents_cli.config import detect_provider
-        from deepagents_cli.model_config import (
-            ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
-        )
+        from deepagents_cli.model_config import ModelSpec, get_provider_auth_status
 
         if self._server_kwargs is None:
             await self._mount_message(
@@ -7038,22 +7196,14 @@ class DeepAgentsApp(App):
             model_name = model_spec
             provider = detect_provider(model_spec)
 
-        # Tri-state credentials check (`None` = unknown provider, treated as
-        # proceed); bail early so retrying with still-missing creds doesn't
+        # Tri-state credentials check (`UNKNOWN` = unknown provider, treated
+        # as proceed); bail early so retrying with still-missing creds doesn't
         # loop right back into the same `MissingCredentialsError`.
-        has_creds = has_provider_credentials(provider) if provider else None
-        if has_creds is False and provider is not None:
-            env_var = get_credential_env_var(provider)
-            detail = (
-                f"{env_var} is not set or is empty"
-                if env_var
-                else (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an "
-                    "api_key_env field"
-                )
+        auth_status = get_provider_auth_status(provider) if provider else None
+        if auth_status is not None and auth_status.blocks_start:
+            await self._mount_message(
+                ErrorMessage(f"Missing credentials: {auth_status.missing_detail()}")
             )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
             return
 
         display = model_spec

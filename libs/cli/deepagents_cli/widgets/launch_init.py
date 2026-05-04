@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
-from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
 from textual.screen import ModalScreen
@@ -14,7 +13,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_cli import theme
-from deepagents_cli.config import get_glyphs, is_ascii_mode
+from deepagents_cli.config import is_ascii_mode
 
 
 def _normalize_name(value: str) -> str:
@@ -33,18 +32,19 @@ def _normalize_name(value: str) -> str:
 
 
 class LaunchNameScreen(ModalScreen[str | None]):
-    """First-step launch initialization screen that asks for the user's name."""
+    """First-step launch initialization screen that asks for the user's name.
+
+    The name is required from the user's perspective: empty submissions and
+    Escape/global-interrupt both surface a reminder rather than dismissing,
+    so the launch flow always has a name to greet the user with. Programmatic
+    `dismiss(None)` still works for tests that need to bail the flow.
+    """
 
     AUTO_FOCUS = "#launch-name-input"
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("escape", "cancel", "Cancel", show=False, priority=True),
-    ]
 
     CSS = """
     LaunchNameScreen {
         align: center middle;
-        background: transparent;
     }
 
     LaunchNameScreen > Vertical {
@@ -92,7 +92,6 @@ class LaunchNameScreen(ModalScreen[str | None]):
         Yields:
             Widgets for the modal content.
         """
-        glyphs = get_glyphs()
         with Vertical():
             yield Static("Welcome to Deep Agents", classes="launch-init-title")
             yield Static(
@@ -106,7 +105,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
                 id="launch-name-input",
             )
             yield Static(
-                f"Enter to continue {glyphs.bullet} Esc cancel",
+                "Enter to continue",
                 classes="launch-init-help",
             )
 
@@ -129,15 +128,19 @@ class LaunchNameScreen(ModalScreen[str | None]):
         event.stop()
         value = _normalize_name(event.value)
         if not value:
-            self.notify(
-                "Enter a name, or press Esc to cancel setup.",
-                severity="warning",
-                timeout=3,
-                markup=False,
-            )
+            self._warn_name_required()
             return
         self.dismiss(value)
 
     def action_cancel(self) -> None:
-        """Cancel the launch initialization sequence."""
-        self.dismiss(None)
+        """Block dismissal so the user has to enter a name."""
+        self._warn_name_required()
+
+    def _warn_name_required(self) -> None:
+        """Surface a toast explaining the field cannot be skipped."""
+        self.notify(
+            "A name is required to start.",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )

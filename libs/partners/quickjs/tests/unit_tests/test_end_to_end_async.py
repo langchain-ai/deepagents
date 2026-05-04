@@ -13,6 +13,7 @@ from collections.abc import (
 )
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
@@ -199,24 +200,24 @@ async def test_quickjs_async_timeout_error() -> None:
     assert result["messages"][-1].content == "timeout hit"
 
 
-async def test_quickjs_async_tool_exception() -> None:
-    """Verify async tool exceptions surface as eval errors."""
-    result = await _make_agent(
+async def test_quickjs_async_tool_exception_propagates() -> None:
+    """Tool exceptions propagate as the original Python exception so
+    ToolNode's default handler reraises and the agent crashes — same
+    semantics as a non-quickjs tool that raises."""
+    agent = _make_agent(
         "await tools.alwaysFails({value: 'x'})",
         REPLMiddleware(ptc=[always_fails]),
-    ).ainvoke(
-        {
-            "messages": [
-                HumanMessage(
-                    content="Use the eval tool to call the async tool that raises"
-                )
-            ]
-        }
     )
-
-    tool_message = _eval_tool_message(result)
-    assert '<error type="HostError">' in tool_message.content
-    assert "Host function failed" in tool_message.content
+    with pytest.raises(RuntimeError, match="boom:x"):
+        await agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content="Use the eval tool to call the async tool that raises"
+                    )
+                ]
+            }
+        )
 
 
 async def test_quickjs_async_host_call_budget_exceeded() -> None:

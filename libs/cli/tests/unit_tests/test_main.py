@@ -249,6 +249,29 @@ class TestRunTextualCliAsyncMcp:
 
         assert captured_kwargs["launch_init"] is True
 
+    async def test_debug_onboarding_env_var_forces_launch_init(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CLI_DEBUG_ONBOARDING=1` should force the launch-init flow."""
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        monkeypatch.setenv("DEEPAGENTS_CLI_DEBUG_ONBOARDING", "1")
+
+        with patch("deepagents_cli.app.run_textual_app", new=_run_textual_app_stub):
+            await run_textual_cli_async(
+                "agent",
+                thread_id="thread-123",
+                model_name="openai:gpt-4o",
+            )
+
+        assert captured_kwargs["launch_init"] is True
+
 
 class TestServerCleanupLifecycle:
     """Verify server_proc.stop() is guaranteed after the TUI exits."""

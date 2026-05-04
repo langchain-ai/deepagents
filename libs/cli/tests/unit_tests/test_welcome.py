@@ -456,3 +456,73 @@ class TestBannerConnectingFooterVariants:
         plain = widget._build_banner().plain
         assert "Resuming..." in plain
         assert "local server" not in plain
+
+
+class TestDeferredConnectingDisplay:
+    """Tests for deferred display of the connecting footer at startup."""
+
+    def test_deferred_shows_ready_footer(self) -> None:
+        """When deferring, the welcome footer renders despite `connecting=True`."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." not in plain
+        assert "Ready to code" in plain
+
+    def test_defer_flag_ignored_when_not_connecting(self) -> None:
+        """`defer_connecting_display` is a no-op when `connecting` is `False`."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=False, defer_connecting_display=True)
+        assert widget._defer_connecting_display is False
+        assert "Ready to code" in widget._build_banner().plain
+
+    def test_reveal_shows_connecting_footer(self) -> None:
+        """`reveal_connecting_footer` flips the banner to the connecting state."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        with patch.object(widget, "update"):
+            widget.reveal_connecting_footer()
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." in plain
+        assert "Ready to code" not in plain
+
+    def test_reveal_is_noop_when_not_deferring(self) -> None:
+        """Calling `reveal_connecting_footer` without deferral does nothing."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        with patch.object(widget, "update") as mock_update:
+            widget.reveal_connecting_footer()
+        mock_update.assert_not_called()
+
+    def test_set_connected_clears_deferred_state(self) -> None:
+        """`set_connected` resets the deferral flag and stops the timer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        timer = MagicMock()
+        widget._defer_timer = timer
+        with patch.object(widget, "update"):
+            widget.set_connected()
+        assert widget._defer_connecting_display is False
+        assert widget._defer_timer is None
+        timer.stop.assert_called_once()
+
+    def test_set_idle_clears_deferred_state(self) -> None:
+        """`set_idle` resets the deferral flag and stops the timer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        timer = MagicMock()
+        widget._defer_timer = timer
+        with patch.object(widget, "update"):
+            widget.set_idle()
+        assert widget._defer_connecting_display is False
+        assert widget._defer_timer is None
+        timer.stop.assert_called_once()
+
+    def test_set_connecting_does_not_defer(self) -> None:
+        """Mid-session `set_connecting` shows the connecting footer immediately."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner()
+        with patch.object(widget, "update"):
+            widget.set_connecting()
+        assert widget._defer_connecting_display is False
+        assert "Connecting to server..." in widget._build_banner().plain

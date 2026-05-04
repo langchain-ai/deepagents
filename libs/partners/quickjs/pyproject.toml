@@ -40,6 +40,8 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 
 [dependency-groups]
 test = [
+    "langgraph-checkpoint-postgres>=3.0.0,<4.0.0",
+    "psycopg[binary]>=3.0.0,<4.0.0",
     "pytest>=7.3.0,<10.0.0",
     "pytest-benchmark",
     "pytest-codspeed>=4.4.0,<5.0.0",
@@ -50,6 +52,7 @@ test = [
     "pytest-asyncio>=1.3.0",
     "pytest-watcher>=0.3.4,<1.0.0",
     "ruff>=0.13.1,<0.16.0",
+    "testcontainers[postgres]>=4.13.2,<5.0.0",
     "ty>=0.0.1,<1.0.0",
     "twine",
     "build",

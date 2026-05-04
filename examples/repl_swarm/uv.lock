@@ -643,6 +643,8 @@ requires-dist = [
 [package.metadata.requires-dev]
 test = [
     { name = "build" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.0.0,<4.0.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.0.0,<4.0.0" },
     { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-benchmark" },
@@ -653,6 +655,7 @@ test = [
     { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
     { name = "pytest-xdist" },
     { name = "ruff", specifier = ">=0.13.1,<0.16.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.13.2,<5.0.0" },
     { name = "twine" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]

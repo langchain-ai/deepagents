@@ -7147,8 +7147,8 @@ class DeepAgentsApp(App):
         from deepagents_cli.config import create_model, detect_provider, settings
         from deepagents_cli.model_config import (
             ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
+            ProviderAuthState,
+            get_provider_auth_status,
             save_recent_model,
         )
 
@@ -7210,27 +7210,20 @@ class DeepAgentsApp(App):
                 provider = detect_provider(model_spec)
 
             # Check credentials
-            has_creds = has_provider_credentials(provider) if provider else None
-            if has_creds is False and provider is not None:
-                env_var = get_credential_env_var(provider)
-                detail = (
-                    f"{env_var} is not set or is empty"
-                    if env_var
-                    else (
-                        f"provider '{provider}' is not recognized. "
-                        "Add it to ~/.deepagents/config.toml with an "
-                        "api_key_env field"
-                    )
-                )
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
                 await self._mount_message(
                     ErrorMessage(
-                        f"Missing credentials: {detail}\n\n"
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
                         f"Run `/auth` to add a key, then re-issue "
                         f"`/model {model_spec}`."
                     )
                 )
                 return
-            if has_creds is None and provider:
+            if (
+                auth_status is not None
+                and auth_status.state is ProviderAuthState.UNKNOWN
+            ):
                 logger.debug(
                     "Credentials for provider '%s' cannot be verified;"
                     " proceeding anyway",
@@ -7330,11 +7323,7 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from deepagents_cli.config import detect_provider
-        from deepagents_cli.model_config import (
-            ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
-        )
+        from deepagents_cli.model_config import ModelSpec, get_provider_auth_status
 
         if self._server_kwargs is None:
             await self._mount_message(
@@ -7350,22 +7339,14 @@ class DeepAgentsApp(App):
             model_name = model_spec
             provider = detect_provider(model_spec)
 
-        # Tri-state credentials check (`None` = unknown provider, treated as
-        # proceed); bail early so retrying with still-missing creds doesn't
+        # Tri-state credentials check (`UNKNOWN` = unknown provider, treated
+        # as proceed); bail early so retrying with still-missing creds doesn't
         # loop right back into the same `MissingCredentialsError`.
-        has_creds = has_provider_credentials(provider) if provider else None
-        if has_creds is False and provider is not None:
-            env_var = get_credential_env_var(provider)
-            detail = (
-                f"{env_var} is not set or is empty"
-                if env_var
-                else (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an "
-                    "api_key_env field"
-                )
+        auth_status = get_provider_auth_status(provider) if provider else None
+        if auth_status is not None and auth_status.blocks_start:
+            await self._mount_message(
+                ErrorMessage(f"Missing credentials: {auth_status.missing_detail()}")
             )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
             return
 
         display = model_spec

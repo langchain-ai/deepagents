@@ -13,6 +13,7 @@ from textual.widgets import Input, Static
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.model_config import (
     ModelProfileEntry,
+    ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
 )
@@ -864,6 +865,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status="deprecated",
         )
@@ -881,6 +883,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status=None,
         )
@@ -895,6 +898,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             status="beta",
         )
@@ -913,6 +917,7 @@ class TestFormatOptionLabel:
             auth_status=ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
                 provider="anthropic",
+                source=ProviderAuthSource.ENV,
             ),
             is_default=True,
             status="deprecated",
@@ -964,6 +969,7 @@ class TestFormatAuthIndicator:
                 state=ProviderAuthState.CONFIGURED,
                 provider="openai",
                 env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
             ),
             get_glyphs(),
         )

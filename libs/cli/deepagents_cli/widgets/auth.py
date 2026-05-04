@@ -18,7 +18,6 @@ Security notes:
 from __future__ import annotations
 
 import logging
-import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -40,16 +39,16 @@ from deepagents_cli.config import get_glyphs, is_ascii_mode
 from deepagents_cli.model_config import (
     PROVIDER_API_KEY_ENV,
     ModelConfig,
+    ProviderAuthSource,
     clear_caches,
     get_available_models,
     get_credential_env_var,
     get_provider_auth_status,
+    resolved_env_var_name,
 )
 from deepagents_cli.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
-
-_ENV_PREFIX = "DEEPAGENTS_CLI_"
 
 _PROVIDERS_DOCS_URL = (
     "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
@@ -74,20 +73,6 @@ class AuthResult(StrEnum):
 
     CANCELLED = "cancelled"
     """User dismissed the prompt without saving."""
-
-
-def _resolving_env_var(canonical: str) -> str:
-    """Return whichever env var name actually carries the resolved value.
-
-    Mirrors `resolve_env_var`'s precedence (the prefixed variant wins when
-    present, even empty) so the manager label reflects what the CLI is
-    actually reading rather than the canonical name we'd default to.
-    """
-    if not canonical.startswith(_ENV_PREFIX):
-        prefixed = f"{_ENV_PREFIX}{canonical}"
-        if prefixed in os.environ:
-            return prefixed
-    return canonical
 
 
 class DeleteCredentialConfirmScreen(ModalScreen[bool]):
@@ -632,13 +617,13 @@ class AuthManagerScreen(ModalScreen[None]):
         """
         status = get_provider_auth_status(provider)
         env_var = status.env_var or get_credential_env_var(provider) or ""
-        if status.detail == "stored credential":
+        if status.source is ProviderAuthSource.STORED:
             badge = Content.styled("[stored]", "bold $success")
-        elif status.detail == "credentials set":
+        elif status.source is ProviderAuthSource.ENV:
             if env_var:
                 badge = Content.assemble(
                     ("[env: ", "$text-muted"),
-                    Content.styled(_resolving_env_var(env_var), "$text-muted"),
+                    Content.styled(resolved_env_var_name(env_var), "$text-muted"),
                     ("]", "$text-muted"),
                 )
             else:

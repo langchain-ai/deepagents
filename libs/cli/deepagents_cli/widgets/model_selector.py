@@ -86,13 +86,17 @@ class ModelOption(Static):
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
-        self.provider = provider
         self.index = index
         self.auth_status = auth_status or ProviderAuthStatus(
             state=ProviderAuthState.UNKNOWN,
             provider=provider,
             detail="credentials unknown",
         )
+
+    @property
+    def provider(self) -> str:
+        """Provider name, derived from the embedded auth status."""
+        return self.auth_status.provider
 
     class Clicked(Message):
         """Message sent when a model option is clicked."""

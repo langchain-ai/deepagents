@@ -13,7 +13,12 @@ from deepagents_cli.app import (
     _format_model_params,
 )
 from deepagents_cli.config import settings
-from deepagents_cli.model_config import ModelSpec, clear_caches
+from deepagents_cli.model_config import (
+    ModelSpec,
+    ProviderAuthState,
+    ProviderAuthStatus,
+    clear_caches,
+)
 from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
@@ -296,12 +301,12 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_cli.model_config.get_credential_env_var",
-                return_value="ANTHROPIC_API_KEY",
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                    env_var="ANTHROPIC_API_KEY",
+                ),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -697,12 +702,12 @@ class TestModelSwitchFailedStartupRecovery:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_cli.model_config.get_credential_env_var",
-                return_value="ANTHROPIC_API_KEY",
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                    env_var="ANTHROPIC_API_KEY",
+                ),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -930,12 +935,12 @@ class TestModelSwitchBareModelName:
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_cli.model_config.get_credential_env_var",
-                return_value="OPENAI_API_KEY",
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="openai",
+                    env_var="OPENAI_API_KEY",
+                ),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):

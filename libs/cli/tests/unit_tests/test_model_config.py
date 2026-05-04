@@ -16,6 +16,7 @@ from deepagents_cli.model_config import (
     ModelConfigError,
     ModelProfileEntry,
     ModelSpec,
+    ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
     _get_builtin_providers,
@@ -217,7 +218,7 @@ class TestStoredCredentials:
 
         status = get_provider_auth_status("anthropic")
         assert status.state is ProviderAuthState.CONFIGURED
-        assert status.detail == "stored credential"
+        assert status.source is ProviderAuthSource.STORED
         assert status.env_var == "ANTHROPIC_API_KEY"
 
     def test_apply_stored_credentials_sets_env_var(
@@ -282,7 +283,7 @@ class TestStoredCredentials:
         # Status should still resolve via env var without raising.
         status = get_provider_auth_status("anthropic")
         assert status.state is ProviderAuthState.CONFIGURED
-        assert status.detail == "credentials set"
+        assert status.source is ProviderAuthSource.ENV
 
 
 class TestThreadColumnPersistence:

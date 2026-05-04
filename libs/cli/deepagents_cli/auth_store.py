@@ -113,14 +113,20 @@ def _read_raw() -> dict | None:
             unsupported schema version.
     """
     path = _auth_path()
-    if not path.exists():
-        return None
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
-    except (OSError, json.JSONDecodeError) as exc:
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
         msg = (
             f"Failed to read credential file {path}: {exc}. "
+            "Check the file permissions on the parent directory."
+        )
+        raise RuntimeError(msg) from exc
+    except json.JSONDecodeError as exc:
+        msg = (
+            f"Failed to parse credential file {path}: {exc}. "
             "Delete the file and re-add credentials via /auth if it is corrupt."
         )
         raise RuntimeError(msg) from exc

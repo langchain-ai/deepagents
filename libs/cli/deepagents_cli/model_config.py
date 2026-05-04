@@ -22,12 +22,35 @@ from urllib.parse import urlparse
 
 import tomli_w
 
+from deepagents_cli import auth_store
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CLI_"
+
+
+def resolved_env_var_name(canonical: str) -> str:
+    """Return whichever env var name actually carries the resolved value.
+
+    Mirrors `resolve_env_var`'s precedence: when the prefixed variant is
+    present in `os.environ` (even empty), it wins; otherwise the canonical
+    name is returned. Useful for UI labels that need to reflect what the
+    CLI is actually reading rather than the canonical name.
+
+    Args:
+        canonical: The canonical environment variable name.
+
+    Returns:
+        The resolving env var name (prefixed or canonical).
+    """
+    if not canonical.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{canonical}"
+        if prefixed in os.environ:
+            return prefixed
+    return canonical
 
 
 def resolve_env_var(name: str) -> str | None:
@@ -124,6 +147,16 @@ class ProviderAuthState(StrEnum):
     """The CLI cannot determine whether provider auth is ready."""
 
 
+class ProviderAuthSource(StrEnum):
+    """Origin of a `CONFIGURED` credential, used to discriminate display."""
+
+    STORED = "stored"
+    """Persisted via `/auth` in `~/.deepagents/.state/auth.json`."""
+
+    ENV = "env"
+    """Resolved from an environment variable."""
+
+
 @dataclass(frozen=True)
 class ProviderAuthStatus:
     """Credential readiness information for a provider.
@@ -132,13 +165,35 @@ class ProviderAuthStatus:
         state: Provider auth state.
         provider: Provider name.
         env_var: Env var name associated with the state, when applicable.
+        source: For `CONFIGURED` states, where the credential value came
+            from. `None` for non-configured states or when the source is
+            not meaningful (e.g., implicit/managed auth).
         detail: Short user-facing context for selectors and logs.
     """
 
     state: ProviderAuthState
     provider: str
     env_var: str | None = None
+    source: ProviderAuthSource | None = None
     detail: str | None = None
+
+    def __post_init__(self) -> None:
+        """Enforce the source-vs-state invariant.
+
+        Raises:
+            ValueError: If `source` is set but `state` is not `CONFIGURED`,
+                or if `state` is `CONFIGURED` but no `source` is recorded.
+        """
+        is_configured = self.state is ProviderAuthState.CONFIGURED
+        has_source = self.source is not None
+        if is_configured != has_source:
+            msg = (
+                f"ProviderAuthStatus invariant violated: "
+                f"state={self.state!r} requires "
+                f"{'a source' if is_configured else 'source=None'}, "
+                f"got source={self.source!r}"
+            )
+            raise ValueError(msg)
 
     @property
     def blocks_start(self) -> bool:
@@ -886,8 +941,6 @@ def _has_stored_credential(provider: str) -> bool:
     surfaces a corruption banner directly. Read-side resilience here means
     you can still pick a different provider while the file is broken.
     """
-    from deepagents_cli import auth_store
-
     try:
         return auth_store.get_stored_key(provider) is not None
     except RuntimeError:
@@ -918,8 +971,6 @@ def resolve_provider_credential(provider: str) -> str | None:
         The credential value, or `None` when no source has one or the
         provider has no env-var mapping at all.
     """
-    from deepagents_cli import auth_store
-
     try:
         stored = auth_store.get_stored_key(provider)
     except RuntimeError:
@@ -933,6 +984,38 @@ def resolve_provider_credential(provider: str) -> str | None:
     env_var = get_credential_env_var(provider)
     if env_var:
         return resolve_env_var(env_var)
+    return None
+
+
+def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
+    """Return a `CONFIGURED` status if a stored or env credential is set.
+
+    Stored credentials beat env vars (matches `resolve_provider_credential`).
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`).
+        env_var: Canonical env var name to check when no stored credential
+            exists. Recorded on the returned status either way.
+
+    Returns:
+        A `CONFIGURED` status, or `None` when neither source is set.
+    """
+    if _has_stored_credential(provider):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=env_var,
+            source=ProviderAuthSource.STORED,
+            detail="stored credential",
+        )
+    if resolve_env_var(env_var):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=env_var,
+            source=ProviderAuthSource.ENV,
+            detail="credentials set",
+        )
     return None
 
 
@@ -980,20 +1063,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     if provider_config:
         env_var = provider_config.get("api_key_env")
         if env_var:
-            if _has_stored_credential(provider):
-                return ProviderAuthStatus(
-                    state=ProviderAuthState.CONFIGURED,
-                    provider=provider,
-                    env_var=env_var,
-                    detail="stored credential",
-                )
-            if resolve_env_var(env_var):
-                return ProviderAuthStatus(
-                    state=ProviderAuthState.CONFIGURED,
-                    provider=provider,
-                    env_var=env_var,
-                    detail="credentials set",
-                )
+            configured = _resolve_configured(provider, env_var)
+            if configured:
+                return configured
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,
@@ -1014,20 +1086,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        if _has_stored_credential(provider):
-            return ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider=provider,
-                env_var=env_var,
-                detail="stored credential",
-            )
-        if resolve_env_var(env_var):
-            return ProviderAuthStatus(
-                state=ProviderAuthState.CONFIGURED,
-                provider=provider,
-                env_var=env_var,
-                detail="credentials set",
-            )
+        configured = _resolve_configured(provider, env_var)
+        if configured:
+            return configured
         if provider in IMPLICIT_AUTH_PROVIDERS:
             return ProviderAuthStatus(
                 state=ProviderAuthState.IMPLICIT,
@@ -1050,20 +1111,10 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         )
 
     optional_env = OPTIONAL_AUTH_ENV.get(provider)
-    if optional_env and _has_stored_credential(provider):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=provider,
-            env_var=optional_env,
-            detail="stored credential",
-        )
-    if optional_env and resolve_env_var(optional_env):
-        return ProviderAuthStatus(
-            state=ProviderAuthState.CONFIGURED,
-            provider=provider,
-            env_var=optional_env,
-            detail="credentials set",
-        )
+    if optional_env:
+        configured = _resolve_configured(provider, optional_env)
+        if configured:
+            return configured
 
     if provider in NO_AUTH_REQUIRED_PROVIDERS:
         endpoint = _get_provider_endpoint(provider, config)
@@ -1162,8 +1213,6 @@ def apply_stored_credentials(provider: str) -> bool:
     env_var = get_credential_env_var(provider)
     if not env_var:
         return False
-    from deepagents_cli import auth_store
-
     try:
         stored = auth_store.get_stored_key(provider)
     except RuntimeError:
@@ -1171,6 +1220,8 @@ def apply_stored_credentials(provider: str) -> bool:
         return False
     if not stored:
         return False
+    if os.environ.get(env_var) == stored:
+        return True
     os.environ[env_var] = stored
     return True
 

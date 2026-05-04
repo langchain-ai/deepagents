@@ -84,7 +84,12 @@ env:
 
 jobs:
   eval:
-    name: "Run"
+    # Carries the per-run detail (model · categories · tiers) so it appears in
+    # the matrix-job breadcrumb when the job actually runs. The outer caller
+    # in `evals.yml` is intentionally static — GHA does not evaluate `name:`
+    # expressions for jobs skipped via `if:`, so referencing `${{ matrix.* }}`
+    # there would render as raw template text in the UI.
+    name: "📊 ${{ inputs.model }} · ${{ inputs.eval_categories || 'all categories' }} · ${{ inputs.eval_tiers || 'all tiers' }}"
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 360

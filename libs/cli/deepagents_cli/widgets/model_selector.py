@@ -631,19 +631,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         all_widgets: list[Static] = []
 
         for provider, model_entries in by_provider.items():
-            # Provider header with auth/readiness indicator.
+            # Provider header; auth/readiness indicator appended only when non-empty.
             auth_status = auth_statuses[provider]
             auth_indicator = self._format_auth_indicator(auth_status, glyphs)
-            all_widgets.append(
-                Static(
-                    Content.from_markup(
-                        "[bold]$provider[/bold] [dim]$auth[/dim]",
-                        provider=provider,
-                        auth=auth_indicator,
-                    ),
-                    classes="model-provider-header",
+            if auth_indicator:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold] [dim]$auth[/dim]",
+                    provider=provider,
+                    auth=auth_indicator,
                 )
-            )
+            else:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold]",
+                    provider=provider,
+                )
+            all_widgets.append(Static(header_content, classes="model-provider-header"))
 
             for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
@@ -705,12 +707,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             glyphs: Glyph table for the active terminal mode.
 
         Returns:
-            Text shown next to the provider name.
+            Text shown next to the provider name, or an empty string when no
+                indicator should be rendered (e.g., `CONFIGURED`).
         """
         state = auth_status.state
         match state:
             case ProviderAuthState.CONFIGURED:
-                return f"{glyphs.checkmark} credentials set"
+                return ""
             case ProviderAuthState.MISSING:
                 if auth_status.env_var:
                     return f"{glyphs.warning} missing {auth_status.env_var}"

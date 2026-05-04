@@ -935,8 +935,8 @@ class TestFormatOptionLabel:
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""
 
-    def test_configured_auth_uses_checkmark(self) -> None:
-        """Configured credentials should show an explicit credentials label."""
+    def test_configured_auth_renders_no_indicator(self) -> None:
+        """Configured credentials hide the indicator to keep headers clean."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
@@ -946,10 +946,10 @@ class TestFormatAuthIndicator:
             get_glyphs(),
         )
 
-        assert "credentials set" in indicator
+        assert indicator == ""
 
     def test_ollama_local_auth_has_no_checkmark(self) -> None:
-        """Local Ollama should not reuse the credentials-set checkmark."""
+        """Local Ollama uses its own detail, not the CONFIGURED empty indicator."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.NOT_REQUIRED,

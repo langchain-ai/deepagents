@@ -905,7 +905,7 @@ def resolve_provider_credential(provider: str) -> str | None:
 
     1. Stored API key in `~/.deepagents/.state/auth.json` (added via `/auth`).
     2. Canonical env var via `resolve_env_var()` (which honors the
-       `DEEPAGENTS_CLI_` prefix and dotenv files).
+        `DEEPAGENTS_CLI_` prefix and dotenv files).
 
     A user who has *both* a stored key and an env var set gets the stored
     key — entering one in the TUI is the more deliberate, more recent

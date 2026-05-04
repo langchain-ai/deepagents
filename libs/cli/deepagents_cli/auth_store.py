@@ -8,16 +8,16 @@ variables before launch.
 Security notes:
 
 - The stored value (`ApiKeyCredential.key`) must never be logged, formatted
-  via `%r`/`!r`, or interpolated into exception messages — every helper here
-  reports only structural facts ("set credential for provider X").
+    via `%r`/`!r`, or interpolated into exception messages — every helper here
+    reports only structural facts ("set credential for provider X").
 - The file is written via `O_EXCL | 0o600` to a temp path, then atomically
-  replaced. A second `chmod 0600` runs on the final path so filesystems that
-  ignore the create-mode argument still end up with private perms. Permission
-  failures are reported back to the caller in `WriteOutcome.warnings` so the
-  UI can surface them to the user — `logger.warning` alone is invisible
-  inside a Textual TUI session.
+    replaced. A second `chmod 0600` runs on the final path so filesystems that
+    ignore the create-mode argument still end up with private perms. Permission
+    failures are reported back to the caller in `WriteOutcome.warnings` so the
+    UI can surface them to the user — `logger.warning` alone is invisible
+    inside a Textual TUI session.
 - On Windows, POSIX mode bits don't apply; the chmod calls are best-effort
-  and skipped silently.
+    and skipped silently.
 """
 
 from __future__ import annotations

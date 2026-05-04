@@ -4,6 +4,7 @@ State persists across tool calls within a LangGraph thread (each thread
 gets its own QuickJS context).
 """
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -254,21 +255,16 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
-            # The sync path doesn't support PTC (host-fn bridges are
-            # async); set_outer_runtime is a no-op here.
-            repl.set_outer_runtime(runtime)
-            try:
-                return _run(
-                    lambda c: repl.eval_sync(
-                        c,
-                        skills=skills,
-                        skills_backend=middleware._skills_backend,
-                    ),
-                    code,
-                    runtime.tool_call_id,
-                )
-            finally:
-                repl.set_outer_runtime(None)
+            return _run(
+                lambda c: repl.eval_sync(
+                    c,
+                    skills=skills,
+                    skills_backend=middleware._skills_backend,
+                    outer_runtime=runtime,
+                ),
+                code,
+                runtime.tool_call_id,
+            )
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
@@ -276,20 +272,13 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
-            # Capture the outer runtime so PTC bridges can forward
-            # state/store/context into tool calls during this eval. Clear
-            # after so a stale runtime can't bleed into a later call on
-            # the same thread — the lock serialises, but the closure
-            # would otherwise retain a reference past the call.
-            repl.set_outer_runtime(runtime)
-            try:
-                outcome = await repl.eval_async(
-                    code,
-                    skills=skills,
-                    skills_backend=middleware._skills_backend,
-                )
-            finally:
-                repl.set_outer_runtime(None)
+            outcome = await repl.eval_async(
+                code,
+                skills=skills,
+                skills_backend=middleware._skills_backend,
+                outer_runtime=runtime,
+                outer_loop=asyncio.get_running_loop(),
+            )
             return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=runtime.tool_call_id,

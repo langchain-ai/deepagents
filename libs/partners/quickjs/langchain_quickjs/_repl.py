@@ -115,6 +115,8 @@ class _PTCState:
     """Per-eval PTC state (reset on each eval call)."""
 
     remaining_calls: int | None
+    outer_runtime: ToolRuntime | None = None
+    outer_loop: asyncio.AbstractEventLoop | None = None
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -331,13 +333,10 @@ class _ThreadREPL:
         # ``typeof tools.X`` throws ReferenceError instead of returning
         # ``"undefined"``).
         self._tools_installed: bool = False
-        # Outer ToolRuntime captured for the current eval. PTC bridges
-        # forward it into their tool calls so `task`/subagent tools see
-        # graph state, store, context, etc. Set via ``set_outer_runtime``
-        # from the middleware's tool handler immediately before eval.
-        self._outer_runtime: ToolRuntime | None = None
-        # Mutable per-eval PTC state. Allocated at eval start and cleared
-        # in finally so bridge calls can't run outside the current eval.
+        # Mutable per-eval PTC state. Tracks call budget plus outer
+        # runtime/loop dispatch context for bridge invocations. Allocated
+        # at eval start and cleared in finally so bridge calls can't run
+        # outside the current eval.
         self._ptc_state: _PTCState | None = None
         # Slot-local skill install cache. Kept on the REPL (not registry)
         # so thread-scoped backends can resolve same-named skills
@@ -443,16 +442,25 @@ class _ThreadREPL:
         self._active_tool_names = target_names
         self._tools_installed = True
 
-    def set_outer_runtime(self, runtime: ToolRuntime | None) -> None:
-        """Record the outer ``ToolRuntime`` for the current eval.
-
-        PTC bridges forward this into their ``tool.ainvoke`` calls so
-        tools that depend on ``state`` / ``store`` / ``tool_call_id``
-        (notably subagent ``task`` tools) see the orchestrator's graph
-        context. The middleware calls this immediately before each eval
-        and again with ``None`` after.
-        """
-        self._outer_runtime = runtime
+    async def _ainvoke_tool_on_outer_loop(
+        self,
+        tool: BaseTool,
+        tool_call: dict[str, Any],
+        *,
+        outer_loop: asyncio.AbstractEventLoop | None,
+    ) -> Any:
+        """Run ``tool.ainvoke`` on the outer runtime's loop when available."""
+        if outer_loop is None:
+            return await tool.ainvoke(tool_call)
+        current_loop = asyncio.get_running_loop()
+        if current_loop is outer_loop:
+            return await tool.ainvoke(tool_call)
+        future = asyncio.run_coroutine_threadsafe(tool.ainvoke(tool_call), outer_loop)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            future.cancel()
+            raise
 
     def _register_tool_bridge(self, camel: str) -> str:
         """Install a host-function bridge for one camel-cased tool name.
@@ -477,19 +485,22 @@ class _ThreadREPL:
             if self._ptc_state is None:
                 msg = "PTC bridge called outside active eval"
                 raise ConcurrentEvalError(msg)
-            self._ptc_state = self._ptc_state.consume_call_budget(
+            state = self._ptc_state.consume_call_budget(
                 function_name=f"tools.{camel}",
                 max_ptc_calls=self._max_ptc_calls,
             )
+            self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
             call_id = _synth_tool_call_id(tool.name)
             # Build a ToolCall-shaped input so InjectedToolCallId and the
             # runtime-arg injection in _inject_tool_args_for_ptc fire.
             args = _inject_tool_args_for_ptc(
-                tool, payload, self._outer_runtime, call_id
+                tool, payload, state.outer_runtime, call_id
             )
-            result = await tool.ainvoke(
+            result = await self._ainvoke_tool_on_outer_loop(
+                tool,
                 {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+                outer_loop=state.outer_loop,
             )
             return coerce_tool_output(result)
 
@@ -503,6 +514,7 @@ class _ThreadREPL:
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -513,6 +525,7 @@ class _ThreadREPL:
                 code,
                 skills=skills,
                 skills_backend=skills_backend,
+                outer_runtime=outer_runtime,
             )
         )
 
@@ -522,12 +535,16 @@ class _ThreadREPL:
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
                 skills=skills,
                 skills_backend=skills_backend,
+                outer_runtime=outer_runtime,
+                outer_loop=outer_loop,
             )
         )
 
@@ -618,6 +635,8 @@ class _ThreadREPL:
         *,
         skills: dict[str, SkillMetadata] | None = None,
         skills_backend: BackendProtocol | None = None,
+        outer_runtime: ToolRuntime | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         """Uses ``ctx.eval_async`` directly.
 
@@ -647,7 +666,11 @@ class _ThreadREPL:
         # ConcurrentEvalError would otherwise null out the in-flight
         # eval's state and orphan its bridge calls.
         prev_ptc_state = self._ptc_state
-        self._ptc_state = _PTCState(remaining_calls=self._max_ptc_calls)
+        self._ptc_state = _PTCState(
+            remaining_calls=self._max_ptc_calls,
+            outer_runtime=outer_runtime,
+            outer_loop=outer_loop,
+        )
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)

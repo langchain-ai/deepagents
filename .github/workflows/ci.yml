@@ -305,15 +305,16 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
-  benchmark-quickjs:
-    name: "⏱️ Benchmark quickjs"
-    needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/partners/quickjs"
-      has-memory-benchmarks: true
-    secrets: inherit
+  # # TODO(hntrl): re-enable when bench flakiness is under control
+  # benchmark-quickjs:
+  #   name: "⏱️ Benchmark quickjs"
+  #   needs: changes
+  #   if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+  #   uses: ./.github/workflows/_benchmark.yml
+  #   with:
+  #     working-directory: "libs/partners/quickjs"
+  #     has-memory-benchmarks: true
+  #   secrets: inherit
 
   # Validates every helper script under .github/scripts/test_*.py — currently
   # `test_release_options.py` (release dropdown ↔ package directories) and

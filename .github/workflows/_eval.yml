@@ -84,7 +84,7 @@ env:
 
 jobs:
   eval:
-    name: "📊 Eval (${{ inputs.model }})"
+    name: "Run"
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 360

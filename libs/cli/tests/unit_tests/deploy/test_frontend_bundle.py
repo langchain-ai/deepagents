@@ -118,7 +118,7 @@ def test_bundle_rewrites_placeholder_supabase(
     assert '"supabaseUrl":"https://xyz.supabase.co"' in html
     assert '"supabaseAnonKey":"anon-xyz"' in html
     assert '"appName":"My App"' in html
-    assert '"uploads":{"enabled":false}' in html
+    assert '"uploads":{"enabled":false,"scope":"thread"}' in html
 
 
 @pytest.mark.usefixtures("shipped_frontend_dist")
@@ -139,7 +139,7 @@ def test_bundle_enables_uploads_when_sandbox_configured(
 
     html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")
     app_py = (build_dir / "app.py").read_text(encoding="utf-8")
-    assert '"uploads":{"enabled":true}' in html
+    assert '"uploads":{"enabled":true,"scope":"thread"}' in html
     assert "_UPLOADS_ENABLED = True" in app_py
 
 
@@ -413,7 +413,7 @@ def test_build_runtime_config_json_anonymous_provider():
         "auth": "anonymous",
         "appName": "My App",
         "assistantId": "agent",
-        "uploads": {"enabled": False},
+        "uploads": {"enabled": False, "scope": "thread"},
     }
 
 

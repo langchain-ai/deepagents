@@ -5,6 +5,7 @@ interface RuntimeConfigBase {
   prompts?: string[];
   uploads?: {
     enabled?: boolean;
+    scope?: "thread" | "assistant";
   };
 }
 

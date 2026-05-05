@@ -4,7 +4,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 
 import { useAuthAdapter } from "./auth/loader";
 import type { AuthAdapter } from "./auth/types";
-import { ASSISTANT_ID, UPLOADS_ENABLED } from "./constants";
+import { ASSISTANT_ID, SANDBOX_SCOPE, UPLOADS_ENABLED } from "./constants";
 import AppHeader from "./components/AppHeader";
 import ThreadPicker from "./components/ThreadPicker";
 import MessageList from "./components/MessageList";
@@ -77,8 +77,34 @@ function AuthenticatedApp({
 
 type UploadResponse = {
   path?: string;
+  sandbox?: SandboxRecord;
   error?: string;
 };
+
+type SandboxRecord = {
+  provider: string;
+  sandbox_id: string;
+  cache_key: string;
+  image: string;
+  scope: "thread" | "assistant";
+};
+
+type EnsureSandboxResponse = {
+  sandbox?: SandboxRecord;
+  error?: string;
+};
+
+function isSandboxRecord(value: unknown): value is SandboxRecord {
+  if (typeof value !== "object" || value == null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.provider === "string" &&
+    typeof record.sandbox_id === "string" &&
+    typeof record.cache_key === "string" &&
+    typeof record.image === "string" &&
+    (record.scope === "thread" || record.scope === "assistant")
+  );
+}
 
 function isSupportedUpload(file: File) {
   if (file.type.startsWith("text/") || file.type.startsWith("image/")) {
@@ -120,6 +146,7 @@ function NewChatApp({
   const mainRef = useRef<HTMLDivElement | null>(null);
   const isNearBottom = useRef(true);
   const rafId = useRef(0);
+  const sandboxRecordRef = useRef<SandboxRecord | null>(null);
   // When the user submits to a not-yet-created thread, stash the first
   // message's text here. The SDK assigns a thread_id asynchronously via
   // onThreadId — once we have it, we write the title as thread metadata so
@@ -168,6 +195,75 @@ function NewChatApp({
     handleThreadId(id);
     return id;
   }, [client, handleThreadId, threadId]);
+
+  const rememberSandboxRecord = useCallback(
+    async (id: string | null, record: SandboxRecord) => {
+      sandboxRecordRef.current = record;
+      try {
+        if (SANDBOX_SCOPE === "assistant") {
+          const assistant = await client.assistants.get(ASSISTANT_ID);
+          await client.assistants.update(ASSISTANT_ID, {
+            metadata: { ...(assistant.metadata ?? {}), deepagents_sandbox: record },
+          });
+        } else if (id) {
+          const thread = await client.threads.get(id);
+          await client.threads.update(id, {
+            metadata: { ...(thread.metadata ?? {}), deepagents_sandbox: record },
+          });
+        }
+      } catch (err) {
+        console.warn("Failed to write sandbox metadata", err);
+      }
+    },
+    [client],
+  );
+
+  const ensureSandbox = useCallback(
+    async (id: string | null) => {
+      if (sandboxRecordRef.current) return sandboxRecordRef.current;
+
+      let existingRecord: SandboxRecord | null = null;
+      try {
+        const target =
+          SANDBOX_SCOPE === "assistant"
+            ? await client.assistants.get(ASSISTANT_ID)
+            : id
+              ? await client.threads.get(id)
+              : null;
+        const metadataRecord = target?.metadata?.deepagents_sandbox;
+        if (isSandboxRecord(metadataRecord)) {
+          existingRecord = metadataRecord;
+          sandboxRecordRef.current = metadataRecord;
+        }
+      } catch (err) {
+        console.warn("Failed to read sandbox metadata", err);
+      }
+
+      const params = new URLSearchParams({ assistant_id: ASSISTANT_ID });
+      if (SANDBOX_SCOPE === "thread" && id) {
+        params.set("thread_id", id);
+      }
+      if (existingRecord) {
+        params.set("sandbox_id", existingRecord.sandbox_id);
+        params.set("provider", existingRecord.provider);
+        params.set("scope", existingRecord.scope);
+        params.set("image", existingRecord.image);
+      }
+
+      const response = await fetch(
+        `/deepagents/sandbox/ensure?${params.toString()}`,
+        { method: "POST", headers: defaultHeaders },
+      );
+      const payload = (await response.json().catch(() => ({}))) as EnsureSandboxResponse;
+      if (!response.ok || !payload.sandbox) {
+        throw new Error(payload.error || "Failed to prepare sandbox");
+      }
+
+      await rememberSandboxRecord(id, payload.sandbox);
+      return payload.sandbox;
+    },
+    [client, defaultHeaders, rememberSandboxRecord],
+  );
 
   const stream = useAgentStream({
     apiUrl: window.location.origin,
@@ -222,15 +318,22 @@ function NewChatApp({
       setUploadingFiles(true);
       setUploadError(null);
       try {
-        const id = await ensureThreadId();
+        const id = SANDBOX_SCOPE === "thread" ? await ensureThreadId() : threadId;
+        const record = await ensureSandbox(id);
         const uploadedPaths: string[] = [];
 
         for (const file of filesToUpload) {
           const params = new URLSearchParams({
             filename: file.name,
-            thread_id: id,
             assistant_id: ASSISTANT_ID,
+            sandbox_id: record.sandbox_id,
+            provider: record.provider,
+            scope: record.scope,
+            image: record.image,
           });
+          if (id) {
+            params.set("thread_id", id);
+          }
           const response = await fetch(
             `/deepagents/files/upload?${params.toString()}`,
             {
@@ -246,6 +349,9 @@ function NewChatApp({
           if (!response.ok || !payload.path) {
             throw new Error(payload.error || `Failed to upload ${file.name}`);
           }
+          if (payload.sandbox) {
+            await rememberSandboxRecord(id, payload.sandbox);
+          }
           uploadedPaths.push(payload.path);
         }
 
@@ -260,7 +366,7 @@ function NewChatApp({
         setUploadingFiles(false);
       }
     },
-    [defaultHeaders, ensureThreadId, uploadingFiles],
+    [defaultHeaders, ensureSandbox, ensureThreadId, rememberSandboxRecord, threadId, uploadingFiles],
   );
 
   const submitInput = useCallback(async () => {
@@ -274,6 +380,14 @@ function NewChatApp({
       pendingTitleRef.current = text.slice(0, 60);
     }
 
+    const record =
+      UPLOADS_ENABLED
+        ? sandboxRecordRef.current ??
+          (SANDBOX_SCOPE === "assistant" || threadId != null
+            ? await ensureSandbox(threadId)
+            : null)
+        : null;
+
     setInput("");
     // The wire protocol expects {type, content} dicts, not langchain-serialized
     // class instances; cast through BaseMessage so AgentState.messages typing
@@ -284,9 +398,14 @@ function NewChatApp({
           { type: "human", content: text } as unknown as BaseMessage,
         ],
       },
-      { streamSubgraphs: true },
+      {
+        streamSubgraphs: true,
+        config: record
+          ? { configurable: { deepagents_sandbox: record } }
+          : undefined,
+      },
     );
-  }, [input, isLoading, stream, threadId, uploadingFiles]);
+  }, [ensureSandbox, input, isLoading, stream, threadId, uploadingFiles]);
 
   const threadPicker = (
     <ThreadPicker

@@ -100,7 +100,10 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
     payload: dict[str, Any] = {
         "appName": app_name,
         "assistantId": "agent",
-        "uploads": {"enabled": config.sandbox.provider != "none"},
+        "uploads": {
+            "enabled": config.sandbox.provider != "none",
+            "scope": config.sandbox.scope,
+        },
     }
     # Optional UI-customization fields — only injected when the user
     # set them, so the default-bundle case stays small.

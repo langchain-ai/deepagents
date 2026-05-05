@@ -1196,7 +1196,7 @@ requires-dist = [
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.2.2,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.0a7,<2.0.0" },
-    { name = "langgraph-checkpoint-sqlite", git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fcheckpoint-sqlite&branch=sr%2Fsqlite-delta-channel-history" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0a1,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.15,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.3.11,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.7.32" },
@@ -2721,20 +2721,28 @@ wheels = [
 [[package]]
 name = "langgraph-checkpoint"
 version = "4.1.0a4"
-source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fcheckpoint&branch=sr%2Fsqlite-delta-channel-history#163dca0778ebc5f8052f9a5278296254ad64fccf" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "ormsgpack" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/dc/53f2eb893a268e61f225b20be0e021152fb955b076a1366857ba1c3f46d3/langgraph_checkpoint-4.1.0a4.tar.gz", hash = "sha256:be3d0c702fa6e31f3820c47dbfa272c98c17aec2cdf050b8c488f3522d3ec8fa", size = 179885, upload-time = "2026-05-04T19:32:18.611Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/c7/78dbe4bc02bb30c8a2520269bf146ecd2b17903586894b74eb95caef674c/langgraph_checkpoint-4.1.0a4-py3-none-any.whl", hash = "sha256:70e405bef16a51fcc831f78bda1e85cccc812ca5754685b44af03f84935917f1", size = 54664, upload-time = "2026-05-04T19:32:17.389Z" },
+]
 
 [[package]]
 name = "langgraph-checkpoint-sqlite"
-version = "3.0.3"
-source = { git = "https://github.com/langchain-ai/langgraph.git?subdirectory=libs%2Fcheckpoint-sqlite&branch=sr%2Fsqlite-delta-channel-history#163dca0778ebc5f8052f9a5278296254ad64fccf" }
+version = "3.1.0a1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "langgraph-checkpoint" },
     { name = "sqlite-vec" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f7/5a/fe93459d60b15af1df028cd9c8401eac75e9458846224c9729802373bfac/langgraph_checkpoint_sqlite-3.1.0a1.tar.gz", hash = "sha256:4c788836de6ceb2516707e3d62fc63f7478a4f7a8d02e32d9a87c7b91ab00bd6", size = 147374, upload-time = "2026-05-05T19:35:13.113Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c6/33/ea7e36a6d931ac597ad8a658cf58bb4f6d77aa346eeb6a6cd87b310a925a/langgraph_checkpoint_sqlite-3.1.0a1-py3-none-any.whl", hash = "sha256:e7f0ced8eaf2d04a32c29a2c70bd49fd1273dfd90602f2b0c509acd7813d46f5", size = 38609, upload-time = "2026-05-05T19:35:12.072Z" },
 ]
 
 [[package]]

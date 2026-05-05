@@ -182,11 +182,32 @@ if _IS_ITERM:
 
 
 def _load_theme_preference() -> str:
-    """Load the saved theme name from config, or return the default.
+    """Load the forced or saved theme name, or return the default.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
+    from deepagents_cli._env_vars import THEME
+
+    env_name = os.environ.get(THEME)
+    if env_name is not None:
+        name = env_name.strip()
+        registry = theme.get_registry()
+        if name in registry:
+            return name
+        for registered, entry in registry.items():
+            if (
+                registered.casefold() == name.casefold()
+                or entry.label.casefold() == name.casefold()
+            ):
+                return registered
+        logger.warning(
+            "Unknown theme '%s' in %s; falling back to default",
+            env_name,
+            THEME,
+        )
+        return theme.DEFAULT_THEME
+
     import tomllib
 
     try:
@@ -828,6 +849,11 @@ class DeepAgentsApp(App):
         Resolved into a concrete `_lc_thread_id` by `_resolve_resume_thread`
         during background startup.
         """
+
+        self._resume_thread_resolved_event = asyncio.Event()
+        """Set once `-r` resume resolution has completed or is unnecessary."""
+        if resume_thread is None:
+            self._resume_thread_resolved_event.set()
 
         self._initial_prompt = initial_prompt
         """Prompt to auto-submit after first paint (from `-m`)."""
@@ -1728,15 +1754,15 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resume = self._resume_thread_intent
-        self._resume_thread_intent = None  # consumed
-
-        if not resume:
-            return
-
-        default_agent = DEFAULT_ASSISTANT_ID
-
         try:
+            resume = self._resume_thread_intent
+            self._resume_thread_intent = None  # consumed
+
+            if not resume:
+                return
+
+            default_agent = DEFAULT_ASSISTANT_ID
+
             if resume == "__MOST_RECENT__":
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
@@ -1779,6 +1805,8 @@ class DeepAgentsApp(App):
                 "Could not look up thread history. Starting new session.",
                 severity="warning",
             )
+        finally:
+            self._resume_thread_resolved_event.set()
 
         # Update session state if ready (may still be initializing in a
         # concurrent worker)
@@ -3355,10 +3383,11 @@ class DeepAgentsApp(App):
         *,
         name_result: Awaitable[str | None] | None = None,
     ) -> None:
-        """Run the two-step launch/reset initialization flow."""
+        """Run the onboarding flow."""
         if self._launch_init_running:
             return
 
+        name_memory_task: asyncio.Task[None] | None = None
         self._launch_init_running = True
         try:
             if name_result is None:
@@ -3368,18 +3397,26 @@ class DeepAgentsApp(App):
             else:
                 name = await name_result
             if name is None:
+                await self._finish_launch_init(name=None)
                 return
 
-            self._launch_user_name = name
+            if name:
+                self._launch_user_name = name
+                name_memory_task = asyncio.create_task(
+                    self._write_launch_name_memory(name)
+                )
 
             result = await self._prompt_model_selector(curated=True)
             if result is None:
+                await self._await_launch_name_memory(name_memory_task)
+                await self._finish_launch_init(name=None)
                 return
 
             model_spec, _provider = result
             if self._connecting:
-                # Bound the wait so a stuck server never traps the user inside
-                # the launch-init flow.
+                # Bound the wait so a stuck server never traps onboarding.
+                # Server startup typically completes in seconds; a minute is
+                # a generous ceiling that still beats hanging forever.
                 try:
                     await asyncio.wait_for(
                         self._connection_ready_event.wait(),
@@ -3388,7 +3425,7 @@ class DeepAgentsApp(App):
                 except TimeoutError:
                     logger.warning(
                         "Server connection did not become ready within %ss; "
-                        "skipping launch-init model switch",
+                        "skipping onboarding model switch",
                         _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS,
                     )
                     self.notify(
@@ -3396,14 +3433,17 @@ class DeepAgentsApp(App):
                         severity="warning",
                         markup=False,
                     )
+                    await self._await_launch_name_memory(name_memory_task)
+                    await self._finish_launch_init(name=None)
                     return
             if self._exit:
+                await self._await_launch_name_memory(name_memory_task)
                 return
             try:
                 await self._switch_model(model_spec, announce_unchanged=False)
-            except Exception as exc:  # surface to user, don't crash launch init
+            except Exception as exc:  # surface to user, don't crash onboarding
                 logger.warning(
-                    "Model switch during launch init failed",
+                    "Model switch during onboarding failed",
                     exc_info=True,
                 )
                 self.notify(
@@ -3412,21 +3452,110 @@ class DeepAgentsApp(App):
                     severity="error",
                     markup=False,
                 )
-            await self._mount_message(
-                AppMessage(Content.from_markup("Welcome, $name.", name=name))
-            )
+            await self._await_launch_name_memory(name_memory_task)
+            await self._finish_launch_init(name=name)
         except Exception:
-            logger.exception("Launch init sequence failed unexpectedly")
+            # Last-resort guard: surface unexpected failures and best-effort
+            # mark onboarding complete so the user is not trapped re-running
+            # a broken flow on every launch.
+            logger.exception("Onboarding sequence failed unexpectedly")
             self.notify(
                 "Setup hit an unexpected error. You can configure things "
-                "manually with /model.",
+                "manually with /model and /memory.",
                 severity="error",
                 markup=False,
             )
+            with suppress(Exception):
+                await self._await_launch_name_memory(name_memory_task)
+            with suppress(Exception):
+                await self._mark_onboarding_complete()
         finally:
             self._launch_init_running = False
             if self._chat_input:
                 self._chat_input.focus_input()
+
+    async def _finish_launch_init(self, *, name: str | None) -> None:
+        """Persist onboarding completion and, when given, mount the welcome.
+
+        Args:
+            name: Submitted user name.
+
+                When `None` (skip path) or empty, the personalized
+                welcome message is not mounted.
+        """
+        await self._mark_onboarding_complete()
+        if name:
+            await self._mount_launch_welcome(name)
+
+    async def _mount_launch_welcome(self, name: str) -> None:
+        """Mount the personalized onboarding welcome message."""
+        await self._mount_message(
+            AppMessage(Content.from_markup("Welcome, $name.", name=name))
+        )
+
+    @staticmethod
+    def _dispatch_launch_name_hook(name: str, assistant_id: str) -> None:
+        """Fire the onboarding name hook for external integrations.
+
+        Args:
+            name: Submitted user name.
+            assistant_id: Agent identifier associated with the submitted name.
+        """
+        from deepagents_cli.hooks import dispatch_hook_fire_and_forget
+
+        dispatch_hook_fire_and_forget(
+            "user.name.set",
+            {
+                "name": name,
+                "assistant_id": assistant_id,
+            },
+        )
+
+    async def _mark_onboarding_complete(self) -> None:
+        """Persist that first-run onboarding should not be shown again.
+
+        Surfaces a user-visible toast when the marker write fails so the user
+        understands why onboarding may reappear on the next launch.
+        """
+        from deepagents_cli.onboarding import mark_onboarding_complete
+
+        ok = await asyncio.to_thread(mark_onboarding_complete)
+        if not ok:
+            self.notify(
+                "Could not save onboarding state. Setup may run again next "
+                "launch — check permissions on ~/.deepagents/.state/.",
+                severity="warning",
+                markup=False,
+            )
+
+    async def _write_launch_name_memory(self, name: str) -> None:
+        """Persist the optional onboarding name into agent memory.
+
+        Surfaces a user-visible toast when the memory write fails so the
+        promise made in `LaunchNameScreen` ("will be remembered for future
+        sessions") does not silently break.
+        """
+        from deepagents_cli.onboarding import write_onboarding_name_memory
+
+        await self._resume_thread_resolved_event.wait()
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        self._dispatch_launch_name_hook(name, assistant_id)
+        ok = await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
+        if not ok:
+            self.notify(
+                "Could not save your name to agent memory. Future sessions "
+                "may not remember it.",
+                severity="warning",
+                markup=False,
+            )
+
+    @staticmethod
+    async def _await_launch_name_memory(
+        task: asyncio.Task[None] | None,
+    ) -> None:
+        """Wait for the optional name-memory write when one is in flight."""
+        if task is not None:
+            await task
 
     def _can_bypass_queue(self, value: str) -> bool:
         """Check if a slash command can skip the message queue.

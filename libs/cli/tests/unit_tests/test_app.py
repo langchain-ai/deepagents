@@ -526,49 +526,125 @@ class TestStartupSequence:
                 app.screen.dismiss(None)
                 await asyncio.wait_for(launch_task, timeout=2)
 
-        """Launch setup should store the name and apply the selected model."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+    async def test_launch_init_sequence_captures_name_and_switches_model(self) -> None:
+        """Onboarding setup should store the name and apply the selected model."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
         app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
         prompt_model_selector_mock = AsyncMock(return_value=("openai:gpt-5", "openai"))
+        mount_message_mock = AsyncMock()
         events: list[str] = []
         switch_model_mock = AsyncMock(
             side_effect=lambda model_spec, **_: events.append(f"switch:{model_spec}")
         )
-        mount_message_mock = AsyncMock(side_effect=lambda _: events.append("welcome"))
+        app._prompt_model_selector = prompt_model_selector_mock  # type: ignore[assignment]
+
+        async def track_mount_message(message: AppMessage) -> None:
+            events.append("welcome")
+            await mount_message_mock(message)
+
+        def track_mark_complete() -> bool:
+            events.append("mark")
+            return True
+
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = track_mount_message  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                side_effect=track_mark_complete,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        assert app._launch_user_name == "Ada"
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
+        prompt_model_selector_mock.assert_awaited_once_with(curated=True)
+        write_name.assert_called_once_with("Ada", "coder")
+        switch_model_mock.assert_awaited_once_with(
+            "openai:gpt-5", announce_unchanged=False
+        )
+        mark_complete.assert_called_once_with()
+        mount_message_mock.assert_awaited_once()
+        assert events == ["switch:openai:gpt-5", "mark", "welcome"]
+
+    async def test_launch_init_sequence_allows_empty_name(self) -> None:
+        """Onboarding setup should continue to model selection without a name."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="")  # type: ignore[assignment]
+        prompt_model_selector_mock = AsyncMock(return_value=("openai:gpt-5", "openai"))
+        switch_model_mock = AsyncMock()
+        mount_message_mock = AsyncMock()
         app._prompt_model_selector = prompt_model_selector_mock  # type: ignore[assignment]
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = mount_message_mock  # type: ignore[assignment]
 
-        await app._run_launch_init_sequence()
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
 
-        assert app._launch_user_name == "Ada"
+        assert app._launch_user_name is None
+        mount_message_mock.assert_not_awaited()
         prompt_model_selector_mock.assert_awaited_once_with(curated=True)
+        write_name.assert_not_called()
         switch_model_mock.assert_awaited_once_with(
             "openai:gpt-5", announce_unchanged=False
         )
-        # Welcome must paint after the model switch so users do not see
-        # a stale "Welcome, X" message lingering during model selection.
-        assert events == ["switch:openai:gpt-5", "welcome"]
+        mark_complete.assert_called_once_with()
 
-    async def test_launch_init_sequence_skips_welcome_when_model_cancelled(
-        self,
-    ) -> None:
-        """Cancelling the model selector should suppress the welcome message."""
+    async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
+        """Writing the optional name should not hold model selection."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
-        app._prompt_model_selector = AsyncMock(return_value=None)  # type: ignore[assignment]
-        switch_model_mock = AsyncMock()
-        mount_message_mock = AsyncMock()
-        app._switch_model = switch_model_mock  # type: ignore[assignment]
-        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._mount_message = AsyncMock()  # type: ignore[assignment]
 
-        await app._run_launch_init_sequence()
+        model_prompted = asyncio.Event()
+        release_write = asyncio.Event()
 
-        switch_model_mock.assert_not_awaited()
-        mount_message_mock.assert_not_awaited()
+        async def write_name(_name: str) -> None:
+            await release_write.wait()
 
-    async def test_launch_init_sequence_skips_when_name_cancelled(self) -> None:
-        """Cancelling the name screen should stop the launch-init flow."""
+        def prompt_model_selector(*, curated: bool = False) -> None:
+            assert curated is True
+            model_prompted.set()
+
+        app._write_launch_name_memory = AsyncMock(side_effect=write_name)  # type: ignore[assignment]
+        app._prompt_model_selector = AsyncMock(side_effect=prompt_model_selector)  # type: ignore[assignment]
+
+        with patch(
+            "deepagents_cli.onboarding.mark_onboarding_complete",
+            return_value=True,
+        ) as mark_complete:
+            task = asyncio.create_task(app._run_launch_init_sequence())
+            await asyncio.wait_for(model_prompted.wait(), timeout=1)
+
+            assert task.done() is False
+            release_write.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # type: ignore[attr-defined]
+        app._prompt_model_selector.assert_awaited_once_with(curated=True)  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_skips_and_marks_complete(self) -> None:
+        """Skipping the name screen should finish onboarding without model setup."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
         prompt_model_selector_mock = AsyncMock()
@@ -576,14 +652,60 @@ class TestStartupSequence:
         app._prompt_model_selector = prompt_model_selector_mock  # type: ignore[assignment]
         app._switch_model = switch_model_mock  # type: ignore[assignment]
 
-        await app._run_launch_init_sequence()
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
 
         prompt_model_selector_mock.assert_not_awaited()
         switch_model_mock.assert_not_awaited()
+        write_name.assert_not_called()
+        mark_complete.assert_called_once_with()
         assert app._launch_user_name is None
 
+    async def test_launch_init_sequence_model_skip_suppresses_welcome(self) -> None:
+        """Skipping model selection should remember the name without welcoming."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+        app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
+        app._prompt_model_selector = AsyncMock(return_value=None)  # type: ignore[assignment]
+        switch_model_mock = AsyncMock()
+        mount_message_mock = AsyncMock()
+        app._switch_model = switch_model_mock  # type: ignore[assignment]
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+        ):
+            await app._run_launch_init_sequence()
+
+        write_name.assert_called_once_with("Ada", "coder")
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
+        app._prompt_model_selector.assert_awaited_once_with(curated=True)  # type: ignore[attr-defined]
+        switch_model_mock.assert_not_awaited()
+        mount_message_mock.assert_not_awaited()
+        mark_complete.assert_called_once_with()
+
     async def test_launch_init_sequence_surfaces_switch_model_failure(self) -> None:
-        """A failed launch-init model switch should toast without crashing."""
+        """Failed onboarding model switch should toast and still mark complete."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
         app._prompt_model_selector = AsyncMock(  # type: ignore[assignment]
@@ -592,20 +714,110 @@ class TestStartupSequence:
         switch_failure = RuntimeError("missing credentials")
         app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         notify_mock = MagicMock()
         app.notify = notify_mock  # type: ignore[method-assign]
 
-        await app._run_launch_init_sequence()
+        with (
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ) as mark_complete,
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
+            await app._run_launch_init_sequence()
 
         app._switch_model.assert_awaited_once()  # type: ignore[attr-defined]
+        mark_complete.assert_called_once_with()
         notify_mock.assert_called_once()
         notify_kwargs = notify_mock.call_args.kwargs
         assert notify_kwargs.get("severity") == "error"
         assert notify_kwargs.get("markup") is False
         assert "missing credentials" in notify_mock.call_args.args[0]
 
+    async def test_launch_init_sequence_surfaces_marker_failure(self) -> None:
+        """A failed onboarding-complete write should surface a warning toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=None)  # type: ignore[assignment]
+        app._prompt_model_selector = AsyncMock()  # type: ignore[assignment]
+        app._switch_model = AsyncMock()  # type: ignore[assignment]
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.onboarding.mark_onboarding_complete",
+            return_value=False,
+        ):
+            await app._run_launch_init_sequence()
+
+        notify_mock.assert_called_once()
+        notify_kwargs = notify_mock.call_args.kwargs
+        assert notify_kwargs.get("severity") == "warning"
+        assert notify_kwargs.get("markup") is False
+
+    def test_dispatch_launch_name_hook_sends_name_payload(self) -> None:
+        """The onboarding name hook should include the submitted name."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+
+        with patch(
+            "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+        ) as dispatch_hook:
+            app._dispatch_launch_name_hook("Ada", "coder")
+
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
+    async def test_write_launch_name_waits_for_resume_agent_resolution(self) -> None:
+        """The name hook should use the agent resolved from a resumed thread."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id=None,
+            resume_thread="thread-from-coder",
+            thread_id="thread-123",
+        )
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+            patch(
+                "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
+            task = asyncio.create_task(app._write_launch_name_memory("Ada"))
+            await asyncio.sleep(0)
+
+            write_name.assert_not_called()
+            dispatch_hook.assert_not_called()
+
+            app._assistant_id = "coder"
+            app._resume_thread_resolved_event.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        write_name.assert_called_once_with("Ada", "coder")
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
     async def test_launch_init_sequence_times_out_waiting_for_server(self) -> None:
-        """A stuck server should not trap launch init past the timeout."""
+        """A stuck server should not trap onboarding past the timeout."""
         from deepagents_cli import app as app_module
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -616,16 +828,28 @@ class TestStartupSequence:
         app._switch_model = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app._connecting = True
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()
         notify_mock = MagicMock()
         app.notify = notify_mock  # type: ignore[method-assign]
 
-        with patch.object(app_module, "_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS", 0.05):
+        with (
+            patch.object(app_module, "_LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS", 0.05),
+            patch(
+                "deepagents_cli.onboarding.mark_onboarding_complete",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ),
+        ):
             await app._run_launch_init_sequence()
 
         app._switch_model.assert_not_awaited()  # type: ignore[attr-defined]
+        app._mount_message.assert_not_awaited()  # type: ignore[attr-defined]
         notify_mock.assert_called_once()
         notify_kwargs = notify_mock.call_args.kwargs
         assert notify_kwargs.get("severity") == "warning"

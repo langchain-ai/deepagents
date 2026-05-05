@@ -94,6 +94,9 @@ SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
 
+THEME = "DEEPAGENTS_CLI_THEME"
+"""Force the CLI to launch with this theme name when set."""
+
 USER_ID = "DEEPAGENTS_CLI_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 

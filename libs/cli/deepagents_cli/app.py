@@ -182,11 +182,32 @@ if _IS_ITERM:
 
 
 def _load_theme_preference() -> str:
-    """Load the saved theme name from config, or return the default.
+    """Load the forced or saved theme name, or return the default.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
+    from deepagents_cli._env_vars import THEME
+
+    env_name = os.environ.get(THEME)
+    if env_name is not None:
+        name = env_name.strip()
+        registry = theme.get_registry()
+        if name in registry:
+            return name
+        for registered, entry in registry.items():
+            if (
+                registered.casefold() == name.casefold()
+                or entry.label.casefold() == name.casefold()
+            ):
+                return registered
+        logger.warning(
+            "Unknown theme '%s' in %s; falling back to default",
+            env_name,
+            THEME,
+        )
+        return theme.DEFAULT_THEME
+
     import tomllib
 
     try:

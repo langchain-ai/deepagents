@@ -154,9 +154,11 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set0",
+                "eval:open",
                 "eval:docs",
                 "eval:baseten",
                 "harbor:set0",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:baseten",
             }
@@ -281,7 +283,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
+        frozenset({"eval:nvidia", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(
@@ -322,10 +324,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set0",
-                "eval:open",
                 "eval:ollama",
                 "harbor:set0",
-                "harbor:open",
                 "harbor:ollama",
             }
         ),
@@ -501,8 +501,10 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:minimax/minimax-m2.7",
         frozenset(
             {
+                "eval:open",
                 "eval:docs",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:openrouter",
             }
@@ -543,7 +545,9 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:nvidia/nemotron-3-super-120b-a12b",
         frozenset(
             {
+                "eval:open",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:openrouter",
             }
         ),
@@ -552,8 +556,10 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:deepseek/deepseek-v4-pro",
         frozenset(
             {
+                "eval:open",
                 "eval:docs",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:openrouter",
             }

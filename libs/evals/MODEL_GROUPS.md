@@ -102,12 +102,14 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `google_genai:gemini-3-flash-preview`
 - `openai:gpt-5.4-mini`
 
-### `open` (4 models)
+### `open` (6 models)
 
 - `baseten:zai-org/GLM-5`
-- `nvidia:nvidia/nemotron-3-super-120b-a12b`
-- `ollama:minimax-m2.7:cloud`
+- `baseten:moonshotai/Kimi-K2.6`
+- `openrouter:minimax/minimax-m2.7`
 - `openrouter:z-ai/glm-5.1`
+- `openrouter:nvidia/nemotron-3-super-120b-a12b`
+- `openrouter:deepseek/deepseek-v4-pro`
 
 ### `docs` (7 models)
 

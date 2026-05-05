@@ -1423,7 +1423,7 @@ def _sandbox_cache_key(thread_id: str | None, assistant_id: str) -> str:
     return f"thread:{thread_id}"
 
 
-def _sandbox_record_from_request(request: Request, cache_key: str) -> dict | None:
+def _sandbox_info_from_request(request: Request, cache_key: str) -> dict | None:
     sandbox_id = request.query_params.get("sandbox_id")
     if not sandbox_id:
         return None
@@ -1448,29 +1448,35 @@ async def app_root_redirect(_request):
 
 async def ensure_sandbox(request: Request):
     if not _UPLOADS_ENABLED:
-        return JSONResponse({"error": "file uploads require a sandbox"}, status_code=404)
+        return JSONResponse(
+            {"error": "file uploads require a sandbox"},
+            status_code=404,
+        )
 
     assistant_id = request.query_params.get("assistant_id") or DEFAULT_ASSISTANT_ID
     thread_id = request.query_params.get("thread_id")
     try:
         cache_key = _sandbox_cache_key(thread_id, assistant_id)
-        _, sandbox_record = await _resolve_sandbox_for_scope(
+        _, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,
             assistant_id=assistant_id,
-            sandbox_record=_sandbox_record_from_request(request, cache_key),
+            sandbox_info=_sandbox_info_from_request(request, cache_key),
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
-    return JSONResponse({"sandbox": sandbox_record})
+    return JSONResponse({"sandbox": sandbox_info})
 
 
 async def upload_file(request: Request):
     if not _UPLOADS_ENABLED:
-        return JSONResponse({"error": "file uploads require a sandbox"}, status_code=404)
+        return JSONResponse(
+            {"error": "file uploads require a sandbox"},
+            status_code=404,
+        )
 
     filename = _sanitize_filename(request.query_params.get("filename"))
     content_type = request.headers.get("content-type", "")
@@ -1499,11 +1505,11 @@ async def upload_file(request: Request):
     thread_id = request.query_params.get("thread_id")
     try:
         cache_key = _sandbox_cache_key(thread_id, assistant_id)
-        sandbox, sandbox_record = await _resolve_sandbox_for_scope(
+        sandbox, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,
             assistant_id=assistant_id,
-            sandbox_record=_sandbox_record_from_request(request, cache_key),
+            sandbox_info=_sandbox_info_from_request(request, cache_key),
         )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
@@ -1521,7 +1527,7 @@ async def upload_file(request: Request):
     return JSONResponse({
         "path": result.path,
         "mime_type": content_type,
-        "sandbox": sandbox_record,
+        "sandbox": sandbox_info,
     })
 
 

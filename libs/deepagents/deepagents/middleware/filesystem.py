@@ -318,10 +318,10 @@ Assume this tool is able to read all files. If the User provides a path to a fil
 Usage:
 - By default, it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
-  - First scan: read_file(path, limit=100) to see file structure
-  - Read more sections: read_file(path, offset=100, limit=200) for next 200 lines
+  - First scan: read_file(file_path=..., limit=100) to see file structure
+  - Read more sections: read_file(file_path=..., offset=100, limit=200) for next 200 lines
   - Only omit limit (read full file) when necessary for editing
-- Specify offset and limit: read_file(path, offset=0, limit=100) reads first 100 lines
+- Specify offset and limit: read_file(file_path=..., offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). When you specify a limit, these continuation lines count towards the limit.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.

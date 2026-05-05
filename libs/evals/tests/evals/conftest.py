@@ -12,9 +12,20 @@ if TYPE_CHECKING:
 
 from deepagents import __version__ as deepagents_version
 
-from deepagents_harbor.deepagents_wrapper import _parse_openrouter_providers
-
 pytest_plugins = ["tests.evals.pytest_reporter"]
+
+
+def _parse_openrouter_providers(value: str) -> list[str]:
+    """Split a comma-separated provider spec into OpenRouter's `only` list."""
+    # Keep this local instead of importing from `deepagents_harbor.deepagents_wrapper`.
+    # Pytest imports conftest during collection, and the wrapper import path pulls
+    # in Harbor/LangSmith integration modules that are not needed for model setup.
+    parts = [part.strip() for part in value.split(",")]
+    providers = [part for part in parts if part]
+    if not providers:
+        msg = "openrouter_provider must contain at least one non-empty provider name"
+        raise ValueError(msg)
+    return providers
 
 
 def pytest_configure(config: pytest.Config) -> None:

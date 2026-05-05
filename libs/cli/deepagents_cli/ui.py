@@ -403,6 +403,35 @@ def show_update_help() -> None:
     console.print()
 
 
+def _print_mcp_discovery_paths() -> None:
+    """Print the auto-discovered MCP config paths in precedence order."""
+    from deepagents_cli.mcp_tools import MCP_CONFIG_DISCOVERY_PATHS
+
+    console.print(
+        "[bold]Auto-discovered config paths (precedence order):[/bold]",
+        style=theme.PRIMARY,
+    )
+    width = max(len(path) for path, _ in MCP_CONFIG_DISCOVERY_PATHS)
+    for path, label in MCP_CONFIG_DISCOVERY_PATHS:
+        console.print(f"  {path:<{width}}  ({label})")
+    console.print(
+        "  <project-root> = nearest ancestor with a `.git` entry, else CWD.",
+        style=theme.MUTED,
+    )
+
+
+_MCP_CONFIG_FORMAT_EXAMPLE = """\
+  {
+    "mcpServers": {
+      "notion": {
+        "transport": "http",
+        "url": "https://mcp.notion.com/mcp",
+        "auth": "oauth"
+      }
+    }
+  }"""
+
+
 def show_mcp_help() -> None:
     """Show help information for the `mcp` subcommand."""
     console.print()
@@ -413,6 +442,13 @@ def show_mcp_help() -> None:
     console.print("  login <server>    Run the OAuth login flow for an MCP server")
     console.print()
     _print_option_section()
+    console.print()
+    _print_mcp_discovery_paths()
+    console.print()
+    console.print(
+        "  Pass --config <path> to any subcommand to bypass discovery.",
+        style=theme.MUTED,
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents mcp login notion")
@@ -430,6 +466,11 @@ def show_mcp_login_help() -> None:
         "  --config PATH           Path to an MCP config JSON file "
         "(default: auto-discovered)",
     )
+    console.print()
+    _print_mcp_discovery_paths()
+    console.print()
+    console.print("[bold]Config format:[/bold]", style=theme.PRIMARY)
+    console.print(_MCP_CONFIG_FORMAT_EXAMPLE, style=theme.MUTED)
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  deepagents mcp login notion")

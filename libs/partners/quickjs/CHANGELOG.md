@@ -3,7 +3,7 @@
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.0.1...langchain-quickjs==0.1.0) (2026-05-05)
 
 
-his release introduces a new QuickJS runtime implementation backed by
+This release introduces a new QuickJS runtime implementation backed by
 `quickjs-rs`, replacing the previous interpreter path.
 
 ### Features

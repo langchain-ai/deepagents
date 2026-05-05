@@ -1375,6 +1375,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
@@ -1385,8 +1386,45 @@ from deploy_graph import DEFAULT_ASSISTANT_ID, SANDBOX_SCOPE, _resolve_sandbox_f
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 _UPLOADS_ENABLED = __DEEPAGENTS_UPLOADS_ENABLED__
+_AUTH_PROVIDER = "__DEEPAGENTS_AUTH_PROVIDER__"
 _UPLOADS_DIR = "/uploads"
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+class SandboxRequest(BaseModel):
+    assistant_id: str = DEFAULT_ASSISTANT_ID
+    thread_id: str | None = None
+    provider: str | None = None
+    sandbox_id: str | None = None
+    image: str | None = None
+    scope: str | None = None
+
+
+class UploadRequest(SandboxRequest):
+    filename: str | None = None
+
+
+class AuthHeaders(BaseModel):
+    authorization: str | None = None
+
+
+_SANDBOX_REQUEST_ADAPTER = TypeAdapter(SandboxRequest)
+_UPLOAD_REQUEST_ADAPTER = TypeAdapter(UploadRequest)
+_AUTH_HEADERS_ADAPTER = TypeAdapter(AuthHeaders)
+
+
+def _require_authenticated_api_request(request: Request) -> JSONResponse | None:
+    if _AUTH_PROVIDER in {"anonymous", "none"}:
+        return None
+    headers = _AUTH_HEADERS_ADAPTER.validate_python(
+        {"authorization": request.headers.get("authorization")}
+    )
+    if not headers.authorization or not headers.authorization.startswith("Bearer "):
+        return JSONResponse(
+            {"error": "missing or invalid authorization header"},
+            status_code=401,
+        )
+    return None
 
 
 def _sanitize_filename(raw_name: str | None) -> str:
@@ -1423,16 +1461,27 @@ def _sandbox_cache_key(thread_id: str | None, assistant_id: str) -> str:
     return f"thread:{thread_id}"
 
 
-def _sandbox_info_from_request(request: Request, cache_key: str) -> dict | None:
-    sandbox_id = request.query_params.get("sandbox_id")
+def _request_payload(request: Request, *, sandbox_id: str | None = None) -> dict:
+    payload = dict(request.query_params)
+    if sandbox_id is None:
+        return payload
+    query_sandbox_id = payload.get("sandbox_id")
+    if query_sandbox_id and query_sandbox_id != sandbox_id:
+        raise ValueError("sandbox_id path and query parameters must match")
+    payload["sandbox_id"] = sandbox_id
+    return payload
+
+
+def _sandbox_info_from_payload(payload: SandboxRequest, cache_key: str) -> dict | None:
+    sandbox_id = payload.sandbox_id
     if not sandbox_id:
         return None
     return {
-        "provider": request.query_params.get("provider"),
+        "provider": payload.provider,
         "sandbox_id": sandbox_id,
         "cache_key": cache_key,
-        "image": request.query_params.get("image"),
-        "scope": request.query_params.get("scope"),
+        "image": payload.image,
+        "scope": payload.scope,
     }
 
 
@@ -1452,17 +1501,23 @@ async def ensure_sandbox(request: Request):
             {"error": "file uploads require a sandbox"},
             status_code=404,
         )
+    auth_error = _require_authenticated_api_request(request)
+    if auth_error is not None:
+        return auth_error
 
-    assistant_id = request.query_params.get("assistant_id") or DEFAULT_ASSISTANT_ID
-    thread_id = request.query_params.get("thread_id")
     try:
-        cache_key = _sandbox_cache_key(thread_id, assistant_id)
+        payload = _SANDBOX_REQUEST_ADAPTER.validate_python(
+            _request_payload(request)
+        )
+        cache_key = _sandbox_cache_key(payload.thread_id, payload.assistant_id)
         _, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
-            thread_id=thread_id,
-            assistant_id=assistant_id,
-            sandbox_info=_sandbox_info_from_request(request, cache_key),
+            thread_id=payload.thread_id,
+            assistant_id=payload.assistant_id,
+            sandbox_info=_sandbox_info_from_payload(payload, cache_key),
         )
+    except ValidationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
@@ -1477,14 +1532,9 @@ async def upload_file(request: Request):
             {"error": "file uploads require a sandbox"},
             status_code=404,
         )
-
-    filename = _sanitize_filename(request.query_params.get("filename"))
-    content_type = request.headers.get("content-type", "")
-    if not _is_allowed_upload(filename, content_type):
-        return JSONResponse(
-            {"error": "only text and image uploads are supported"},
-            status_code=415,
-        )
+    auth_error = _require_authenticated_api_request(request)
+    if auth_error is not None:
+        return auth_error
 
     content_length = request.headers.get("content-length")
     if content_length is not None:
@@ -1501,16 +1551,29 @@ async def upload_file(request: Request):
     if len(body) > _MAX_UPLOAD_BYTES:
         return JSONResponse({"error": "file is too large"}, status_code=413)
 
-    assistant_id = request.query_params.get("assistant_id") or DEFAULT_ASSISTANT_ID
-    thread_id = request.query_params.get("thread_id")
     try:
-        cache_key = _sandbox_cache_key(thread_id, assistant_id)
+        payload = _UPLOAD_REQUEST_ADAPTER.validate_python(
+            _request_payload(
+                request,
+                sandbox_id=request.path_params.get("sandbox_id"),
+            )
+        )
+        filename = _sanitize_filename(payload.filename)
+        content_type = request.headers.get("content-type", "")
+        if not _is_allowed_upload(filename, content_type):
+            return JSONResponse(
+                {"error": "only text and image uploads are supported"},
+                status_code=415,
+            )
+        cache_key = _sandbox_cache_key(payload.thread_id, payload.assistant_id)
         sandbox, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
-            thread_id=thread_id,
-            assistant_id=assistant_id,
-            sandbox_info=_sandbox_info_from_request(request, cache_key),
+            thread_id=payload.thread_id,
+            assistant_id=payload.assistant_id,
+            sandbox_info=_sandbox_info_from_payload(payload, cache_key),
         )
+    except ValidationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
@@ -1534,8 +1597,8 @@ async def upload_file(request: Request):
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
-        Route("/deepagents/sandbox/ensure", ensure_sandbox, methods=["POST"]),
-        Route("/deepagents/files/upload", upload_file, methods=["POST"]),
+        Route("/sandboxes", ensure_sandbox, methods=["POST"]),
+        Route("/sandboxes/{sandbox_id}/files", upload_file, methods=["POST"]),
         Route("/app", app_root_redirect),
         Mount(
             "/app",

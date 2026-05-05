@@ -251,7 +251,7 @@ function NewChatApp({
       }
 
       const response = await fetch(
-        `/deepagents/sandbox/ensure?${params.toString()}`,
+        `/sandboxes?${params.toString()}`,
         { method: "POST", headers: defaultHeaders },
       );
       const payload = (await response.json().catch(() => ({}))) as EnsureSandboxResponse;
@@ -335,7 +335,7 @@ function NewChatApp({
             params.set("thread_id", id);
           }
           const response = await fetch(
-            `/deepagents/files/upload?${params.toString()}`,
+            `/sandboxes/${encodeURIComponent(record.sandbox_id)}/files?${params.toString()}`,
             {
               method: "POST",
               headers: {

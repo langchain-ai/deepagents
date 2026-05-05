@@ -250,6 +250,9 @@ def bundle(
         app_py = APP_PY_TEMPLATE.replace(
             "__DEEPAGENTS_UPLOADS_ENABLED__",
             "True" if config.sandbox.provider != "none" else "False",
+        ).replace(
+            "__DEEPAGENTS_AUTH_PROVIDER__",
+            auth_provider or "none",
         )
         (build_dir / "app.py").write_text(app_py, encoding="utf-8")
         logger.info("Copied frontend bundle and wrote app.py (%s)", auth_provider)

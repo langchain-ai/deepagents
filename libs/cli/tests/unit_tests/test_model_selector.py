@@ -776,77 +776,43 @@ class TestFilteredModelsWidgetSync:
 class TestCuratedModelSelection:
     """Tests for launch/init curated model selection."""
 
-    @staticmethod
-    def _entry(release_date: str, *, status: str | None = None) -> ModelProfileEntry:
-        profile: dict[str, Any] = {
-            "release_date": release_date,
-            "last_updated": release_date,
-            "max_input_tokens": 200000,
-        }
-        if status is not None:
-            profile["status"] = status
-        return ModelProfileEntry(profile=profile, overridden_keys=frozenset())
-
-    def test_curated_models_preserve_current_and_default(self) -> None:
-        """The current and default models should remain available in init mode."""
+    def test_curated_models_use_frontier_allowlist(self) -> None:
+        """Curated mode should show only recommended frontier models."""
         all_models = [
-            ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("anthropic:claude-opus-4-5", "anthropic"),
-            ("openai:gpt-4o", "openai"),
-            ("openai:gpt-5", "openai"),
+            ("google_genai:gemma-4-26b-it", "google_genai"),
+            ("anthropic:claude-opus-4-7", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
         ]
-        profiles = {
-            "anthropic:claude-sonnet-4-5": self._entry("2025-01-01"),
-            "anthropic:claude-opus-4-5": self._entry("2025-02-01"),
-            "openai:gpt-4o": self._entry("2024-05-01"),
-            "openai:gpt-5": self._entry("2025-08-01"),
-        }
 
         curated = ModelSelectorScreen._curate_models(
             all_models,
-            profiles,
-            current_spec="openai:gpt-4o",
-            default_spec="anthropic:claude-opus-4-5",
-        )
-
-        assert curated[:2] == [
-            ("openai:gpt-4o", "openai"),
-            ("anthropic:claude-opus-4-5", "anthropic"),
-        ]
-
-    def test_curated_models_pick_latest_per_family(self) -> None:
-        """Curated mode should avoid flooding the list with one model family."""
-        all_models = [
-            ("anthropic:claude-sonnet-old", "anthropic"),
-            ("anthropic:claude-sonnet-new", "anthropic"),
-            ("anthropic:claude-opus-new", "anthropic"),
-            ("openai:gpt-old", "openai"),
-            ("openai:gpt-new", "openai"),
-            ("openai:gpt-codex-new", "openai"),
-        ]
-        profiles = {
-            "anthropic:claude-sonnet-old": self._entry("2024-01-01"),
-            "anthropic:claude-sonnet-new": self._entry("2025-01-01"),
-            "anthropic:claude-opus-new": self._entry("2025-02-01"),
-            "openai:gpt-old": self._entry("2024-01-01"),
-            "openai:gpt-new": self._entry("2025-03-01"),
-            "openai:gpt-codex-new": self._entry("2025-04-01"),
-        }
-
-        curated = ModelSelectorScreen._curate_models(
-            all_models,
-            profiles,
+            {},
             current_spec=None,
             default_spec=None,
         )
-        curated_specs = [spec for spec, _ in curated]
 
-        assert "anthropic:claude-sonnet-new" in curated_specs
-        assert "anthropic:claude-sonnet-old" not in curated_specs
-        assert "anthropic:claude-opus-new" in curated_specs
-        assert "openai:gpt-new" in curated_specs
-        assert "openai:gpt-old" not in curated_specs
-        assert "openai:gpt-codex-new" in curated_specs
+        assert curated == [
+            ("anthropic:claude-opus-4-7", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+        ]
+
+    def test_curated_models_fall_back_to_full_list_without_allowlist(self) -> None:
+        """Curated mode should not hide all models if no recommendations exist."""
+        all_models = [
+            ("google_genai:gemma-4-26b-it", "google_genai"),
+            ("openai:gpt-4o", "openai"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(
+            all_models,
+            {},
+            current_spec=None,
+            default_spec=None,
+        )
+
+        assert curated == all_models
 
 
 class TestFormatOptionLabel:

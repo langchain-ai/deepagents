@@ -867,6 +867,42 @@ class TestStartupSequence:
 
         ensure_launch_init_mock.assert_called_once_with()
 
+    async def test_clear_announces_new_thread_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/clear` should announce the new thread id by default."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._session_state = TextualSessionState(thread_id="thread-123")
+        app._ensure_launch_init_task = MagicMock()  # type: ignore[assignment]
+        app._clear_messages = AsyncMock()  # type: ignore[method-assign]
+        app.query_one = MagicMock(side_effect=NoMatches())  # type: ignore[method-assign]
+        mount_message_mock = AsyncMock()
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+
+        await app._handle_command("/clear")
+
+        mount_message_mock.assert_awaited_once()
+        message = mount_message_mock.await_args.args[0]
+        assert str(message._content).startswith("Started new thread: ")
+
+    async def test_clear_can_hide_new_thread_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/clear` should hide the new thread message when configured."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE", "1")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._session_state = TextualSessionState(thread_id="thread-123")
+        app._ensure_launch_init_task = MagicMock()  # type: ignore[assignment]
+        app._clear_messages = AsyncMock()  # type: ignore[method-assign]
+        app.query_one = MagicMock(side_effect=NoMatches())  # type: ignore[method-assign]
+        mount_message_mock = AsyncMock()
+        app._mount_message = mount_message_mock  # type: ignore[assignment]
+
+        await app._handle_command("/clear")
+
+        mount_message_mock.assert_not_awaited()
+
     async def test_clear_launch_name_screen_is_typeable_from_submitted_command(
         self,
     ) -> None:

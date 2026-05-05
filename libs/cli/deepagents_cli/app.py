@@ -4057,9 +4057,15 @@ class DeepAgentsApp(App):
                     banner.update_thread_id(new_thread_id)
                 except NoMatches:
                     pass
-                await self._mount_message(
-                    AppMessage(f"Started new thread: {new_thread_id}")
+                from deepagents_cli._env_vars import (
+                    HIDE_NEW_THREAD_MESSAGE,
+                    is_env_truthy,
                 )
+
+                if not is_env_truthy(HIDE_NEW_THREAD_MESSAGE):
+                    await self._mount_message(
+                        AppMessage(f"Started new thread: {new_thread_id}")
+                    )
             self._ensure_launch_init_task()
         elif cmd == "/editor":
             await self.action_open_editor()

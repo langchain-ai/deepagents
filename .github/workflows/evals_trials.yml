@@ -15,7 +15,7 @@
 
 name: "📊 Eval trials - GHA"
 run-name: >-
-  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
 
 on:
   workflow_dispatch:
@@ -61,6 +61,15 @@ on:
           - medium
           - high
           - xhigh
+      repl:
+        description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools directly."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - quickjs
+          - langchain
 
 permissions:
   contents: read
@@ -88,6 +97,7 @@ jobs:
           EVAL_CATEGORIES: ${{ inputs.eval_categories }}
           EVAL_TIERS: ${{ inputs.eval_tiers }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          REPL: ${{ inputs.repl }}
         run: |
           python3 << 'PYEOF'
           import json, os, re, sys
@@ -126,6 +136,7 @@ jobs:
               ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
               ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _SLUG_RE),
+              ("repl", os.environ.get("REPL", ""), _SLUG_RE),
           ):
               if not pattern.match(value):
                   print(f"::error::Unsafe `{name}` value: {value!r}")
@@ -176,6 +187,7 @@ jobs:
       analyze_failures: false
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   aggregate-trials:
@@ -229,6 +241,7 @@ jobs:
           N: ${{ inputs.trials }}
           PARALLEL: ${{ inputs.parallel }}
           REASONING: ${{ inputs.openai_reasoning_effort }}
+          REPL: ${{ inputs.repl }}
         run: |
           python3 << 'PYEOF'
           import json, os, sys
@@ -272,6 +285,8 @@ jobs:
               lines.append(missing_banner)
           if os.environ.get("REASONING"):
               lines.append(f"- reasoning_effort: `{os.environ['REASONING']}`")
+          if os.environ.get("REPL"):
+              lines.append(f"- repl: `{os.environ['REPL']}`")
 
           lines += [
               "",

@@ -20,7 +20,7 @@
 
 name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
 
 on:
   workflow_dispatch:
@@ -190,6 +190,15 @@ on:
           - medium
           - high
           - xhigh
+      repl:
+        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty = bind tools directly (native tool calling)."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - quickjs
+          - langchain
 
 permissions:
   contents: write
@@ -236,6 +245,7 @@ jobs:
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
+          REPL: ${{ inputs.repl }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
@@ -291,6 +301,9 @@ jobs:
           if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
             echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -n "${REPL}" ]; then
+            echo "| \`repl\` | \`${REPL}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -341,6 +354,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-baseten:
@@ -362,6 +376,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-fireworks:
@@ -383,6 +398,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-google-genai:
@@ -404,6 +420,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-groq:
@@ -425,6 +442,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-nvidia:
@@ -446,6 +464,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-ollama:
@@ -467,6 +486,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-openai:
@@ -488,6 +508,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-openrouter:
@@ -509,6 +530,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-xai:
@@ -530,6 +552,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-other:
@@ -551,6 +574,7 @@ jobs:
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   aggregate:

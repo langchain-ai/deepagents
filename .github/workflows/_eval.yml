@@ -51,6 +51,11 @@ on:
         required: false
         default: ""
         type: string
+      repl:
+        description: "REPL middleware to use for `@pytest.mark.repl` tests (`quickjs` | `langchain`). Empty = bind tools directly."
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -176,6 +181,25 @@ jobs:
         run: |
           effort=$(echo "$OPENAI_REASONING_EFFORT" | xargs)
           printf 'PYTEST_ADDOPTS=%s --openai-reasoning-effort %s\n' "${PYTEST_ADDOPTS}" "${effort}" >> "$GITHUB_ENV"
+
+      - name: "🧪 Apply REPL middleware"
+        # `repl` is `type: string` so a `workflow_call` caller could pass any
+        # value; the case below is the source of truth for accepted values.
+        # Keep the `repl` choice enums in `evals.yml` and `evals_trials.yml`
+        # in sync with this list.
+        if: inputs.repl != ''
+        env:
+          REPL: ${{ inputs.repl }}
+        run: |
+          repl=$(echo "$REPL" | xargs)
+          case "$repl" in
+            quickjs|langchain) ;;
+            *)
+              echo "::error::Unsupported repl value: ${repl}. Allowed: quickjs, langchain."
+              exit 1
+              ;;
+          esac
+          printf 'PYTEST_ADDOPTS=%s --repl %s\n' "${PYTEST_ADDOPTS}" "${repl}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

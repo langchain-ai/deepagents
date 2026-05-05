@@ -21,6 +21,7 @@ from deepagents_cli._env_vars import (
     DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
     is_env_truthy,
 )
@@ -151,11 +152,12 @@ class WelcomeBanner(Static):
         self._defer_connecting_display = defer_connecting_display and connecting
         self._defer_timer: Timer | None = None
         self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
+        self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
         self._project_url: str | None = None
-        self._tip: str = _pick_tip()
+        self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -412,7 +414,13 @@ class WelcomeBanner(Static):
             )
         elif not self._idle:
             ready_color = "bold" if ansi else colors.primary
-            parts.append(build_welcome_footer(primary_color=ready_color, tip=self._tip))
+            parts.append(
+                build_welcome_footer(
+                    primary_color=ready_color,
+                    tip=self._tip,
+                    show_tip=not self._hide_splash_tips,
+                )
+            )
         # `_idle` ⇒ no footer; chat-surface owns the failure message.
         return Content.assemble(*parts)
 
@@ -441,11 +449,14 @@ def build_connecting_footer(
 
 
 def build_welcome_footer(
-    *, primary_color: str = theme.PRIMARY, tip: str | None = None
+    *,
+    primary_color: str = theme.PRIMARY,
+    tip: str | None = None,
+    show_tip: bool | None = None,
 ) -> Content:
     """Build the footer shown at the bottom of the welcome banner.
 
-    Includes a tip to help users discover features.
+    Includes a tip to help users discover features unless tips are disabled.
 
     Args:
         primary_color: Color string for the ready prompt.
@@ -455,17 +466,21 @@ def build_welcome_footer(
         tip: Tip text to display. When `None`, a random tip is selected.
 
             Pass an explicit value to keep the tip stable across re-renders.
+        show_tip: Whether to show the tip. When `None`, the startup splash tips
+            env var controls visibility.
 
     Returns:
-        Content with the ready prompt and a tip.
+        Content with the ready prompt and, when enabled, a tip.
     """
-    if tip is None:
+    if show_tip is None:
+        show_tip = not is_env_truthy(HIDE_SPLASH_TIPS)
+    if show_tip and tip is None:
         tip = _pick_tip()
     subheader = (
         os.environ.get(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER)
         or "Ready to code! What would you like to build?"
     )
-    return Content.assemble(
-        (f"\n{subheader}\n", primary_color),
-        (f"Tip: {tip}", "dim italic"),
-    )
+    parts: list[tuple[str, str]] = [(f"\n{subheader}", primary_color)]
+    if show_tip and tip is not None:
+        parts.append((f"\nTip: {tip}", "dim italic"))
+    return Content.assemble(*parts)

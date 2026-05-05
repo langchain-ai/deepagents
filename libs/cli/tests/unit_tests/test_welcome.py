@@ -11,6 +11,7 @@ from deepagents_cli._env_vars import (
     DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
     HIDE_CWD,
     HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
 )
 from deepagents_cli._version import __version__
@@ -23,9 +24,10 @@ from deepagents_cli.widgets.welcome import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_startup_subheader_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent local startup subheader overrides from affecting tests."""
+def _clear_startup_splash_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local startup splash overrides from affecting tests."""
     monkeypatch.delenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, raising=False)
+    monkeypatch.delenv(HIDE_SPLASH_TIPS, raising=False)
 
 
 def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
@@ -393,6 +395,33 @@ class TestBuildWelcomeFooter:
         assert "Tip: " in plain
         assert any(tip in plain for tip in _TIPS)
 
+    def test_hide_splash_tips_env_var_hides_tip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Splash tips should hide when the env var is enabled."""
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+
+        plain = build_welcome_footer(tip="Use /help").plain
+
+        assert "Ready to code! What would you like to build?" in plain
+        assert "Tip: " not in plain
+        assert "Use /help" not in plain
+        assert plain.split("\n") == [
+            "",
+            "Ready to code! What would you like to build?",
+        ]
+
+    def test_hide_splash_tips_env_var_skips_random_tip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Disabling splash tips should avoid selecting a random tip."""
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+
+        with patch("deepagents_cli.widgets.welcome._pick_tip") as pick_tip:
+            build_welcome_footer()
+
+        pick_tip.assert_not_called()
+
     def test_startup_cmd_tip_registered(self) -> None:
         """New `--startup-cmd` flag must have a discoverability tip."""
         assert any("--startup-cmd" in tip for tip in _TIPS)
@@ -436,6 +465,15 @@ class TestBannerFooterPosition:
         lines = widget._build_banner().plain.strip().splitlines()
         assert "Ready to code" in lines[-2]
         assert lines[-1].strip().startswith("Tip: ")
+
+    def test_hide_splash_tips_env_var_hides_tip_in_banner(self) -> None:
+        """Full startup banner should omit tips when the env var is enabled."""
+        with patch.dict("os.environ", {HIDE_SPLASH_TIPS: "1"}, clear=True):
+            widget = WelcomeBanner()
+        plain = widget._build_banner().plain
+        lines = plain.strip().splitlines()
+        assert "Ready to code" in lines[-1]
+        assert "Tip: " not in plain
 
     def test_footer_is_last_with_thread_id(self) -> None:
         """Footer remains last when a thread ID is displayed."""

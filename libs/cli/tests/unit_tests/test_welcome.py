@@ -2,11 +2,17 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.style import Style
 from textual.content import Content
 from textual.style import Style as TStyle
 
-from deepagents_cli._env_vars import HIDE_SPLASH_VERSION
+from deepagents_cli._env_vars import (
+    DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
+    HIDE_CWD,
+    HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_VERSION,
+)
 from deepagents_cli._version import __version__
 from deepagents_cli.widgets.welcome import (
     _TIPS,
@@ -14,6 +20,12 @@ from deepagents_cli.widgets.welcome import (
     build_connecting_footer,
     build_welcome_footer,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_startup_subheader_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local startup subheader overrides from affecting tests."""
+    monkeypatch.delenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, raising=False)
 
 
 def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
@@ -43,12 +55,15 @@ def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]
 def _make_banner(
     thread_id: str | None = None,
     project_name: str | None = None,
+    *,
+    hide_langsmith_tracing: bool = False,
 ) -> WelcomeBanner:
     """Create a `WelcomeBanner` with all env vars cleared.
 
     Args:
         thread_id: Optional thread ID to display.
         project_name: If set, simulates LangSmith being configured.
+        hide_langsmith_tracing: Whether to hide tracing info from the splash.
 
     Returns:
         A `WelcomeBanner` instance ready for testing.
@@ -61,6 +76,8 @@ def _make_banner(
         env["LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_PROJECT"] = project_name
         env["DEEPAGENTS_CLI_LANGSMITH_PROJECT"] = project_name
+    if hide_langsmith_tracing:
+        env[HIDE_LANGSMITH_TRACING] = "1"
 
     # Temporarily clear the cached settings singleton so _get_settings()
     # re-creates it from the patched env vars inside the context manager.
@@ -151,6 +168,22 @@ class TestBuildBannerThreadLink:
         links = _extract_links(banner, thread_id_start, thread_id_end)
         assert links
         assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
+
+    def test_hide_langsmith_tracing_env_var_hides_project_and_thread(self) -> None:
+        """Tracing splash frontmatter should hide when the env var is enabled."""
+        widget = _make_banner(
+            thread_id="77777",
+            project_name="my-project",
+            hide_langsmith_tracing=True,
+        )
+        banner = widget._build_banner(
+            project_url="https://smith.langchain.com/o/org/projects/p/abc123"
+        )
+
+        assert "LangSmith tracing:" not in banner.plain
+        assert "my-project" not in banner.plain
+        assert "Thread:" not in banner.plain
+        assert "77777" not in banner.plain
 
 
 class TestUpdateThreadId:
@@ -247,6 +280,26 @@ class TestBuildBannerEditableInstall:
         assert "(local)" not in banner.plain
         assert "Installed from:" not in banner.plain
 
+    def test_hide_cwd_env_var_hides_editable_install_path(self) -> None:
+        """Cwd privacy override should hide the local editable install path."""
+        with (
+            patch.dict("os.environ", {HIDE_CWD: "1"}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/oss/deepagents/libs/cli",
+            ) as editable_path,
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        editable_path.assert_not_called()
+        assert f"v{__version__}" in banner.plain
+        assert "Installed from:" not in banner.plain
+        assert "~/oss/deepagents/libs/cli" not in banner.plain
+
 
 class TestBuildBannerReturnType:
     """Tests for `_build_banner` return value."""
@@ -321,6 +374,18 @@ class TestBuildWelcomeFooter:
             "Ready to code! What would you like to build?"
             in build_welcome_footer().plain
         )
+
+    def test_startup_subheader_env_var_overrides_ready_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Startup subheader override should replace the default ready prompt."""
+        monkeypatch.setenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, "Ship it.")
+
+        plain = build_welcome_footer(tip="Use /help").plain
+
+        assert "Ship it." in plain
+        assert "Ready to code! What would you like to build?" not in plain
+        assert "Tip: Use /help" in plain
 
     def test_contains_tip(self) -> None:
         """Footer should include a tip from the rotating tips list."""

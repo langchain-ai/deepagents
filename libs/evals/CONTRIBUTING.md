@@ -206,6 +206,104 @@ A drift test (`tests/unit_tests/test_eval_catalog.py`) fails CI if the file is s
 3. Add the category to `EXPECTED_CATEGORY_MODULES` in `tests/unit_tests/test_category_tagging.py`
 4. Run `make test` — drift tests will catch any mismatch
 
+## Multi-trial runs
+
+When you need to tell signal from noise — "did this prompt change actually move correctness, or am I looking at run-to-run variance?" — run the suite N times under the same config and look at the spread.
+
+### Why two eval workflows
+
+| Workflow | Question it answers | Shape |
+|---|---|---|
+| `evals.yml` | How do *these models* compare on this dataset? | trials = 1, models = many (presets, fan-out across providers) |
+| `evals_trials.yml` | Is *this model's* number stable under the same config? | trials = N, models = exactly one |
+
+They are kept separate because folding trials into `evals.yml` would produce a *trials × models × providers* fan-out (rarely useful) and would require a second aggregate shape (per-trial stats vs. per-model comparison) in one workflow. The trials workflow also needs a per-trial GHA job so each trial gets its own 6h budget — a 5-trial sequential run on a slow model can take 10–15h wall time and cannot fit in a single job.
+
+### Running locally
+
+```bash
+make evals-trials MODEL=openai:gpt-5.5 TRIALS=5
+```
+
+Forward extra flags through `TRIAL_ARGS`:
+
+```bash
+make evals-trials MODEL=openai:gpt-5.5 TRIALS=3 \
+    TRIAL_ARGS="--openai-reasoning-effort medium --eval-category memory"
+```
+
+Trials run sequentially. Outputs land under `libs/evals/trial_runs/`:
+
+- `evals_report_trial_NNN.json` — one per trial, same schema as the single-run report described in [Report output](#report-output)
+- `trials_summary.json` — aggregate across trials (schema below)
+
+Each trial creates its own LangSmith experiment.
+
+### Running in CI
+
+Dispatch the **📊 Eval trials - GHA** workflow (`evals_trials.yml`).
+
+| Input | Notes |
+|---|---|
+| `model` | Single spec, e.g. `openai:gpt-5.5`. No presets — trials are single-model only |
+| `trials` | 1–20 (the local CLI accepts up to 50; the workflow caps lower since a runaway runner pool is harder to recover than a stuck terminal) |
+| `parallel` | Off (default): trials run sequentially. On: all trials run concurrently |
+| `eval_categories`, `eval_tiers`, `openai_reasoning_effort`, `openrouter_provider` | Same semantics as `evals.yml` |
+
+The `parallel` toggle exists to trade time for API burst pressure. Sequential mode keeps the per-second call rate equivalent to a single eval run, so it is safe for any provider; parallel mode finishes ~N× faster but bursts every trial's traffic at once and should only be used when the provider can absorb the load.
+
+**Job structure:**
+
+1. `prep` — validates inputs and emits the trial matrix (`include` array of `{trial_index, artifact_key}`) plus a `max_parallel` value (1 for sequential, N for parallel).
+2. `eval-trial` — matrix job that calls the existing `_eval.yml` reusable workflow once per trial. Each trial runs on its own GHA runner with its own 6h budget; `strategy.max-parallel` controls sequential vs. parallel. Each trial uploads its report under a unique `evals-report-trial-NNN-<slug>` artifact name.
+3. `aggregate-trials` — runs even when individual trials fail. Downloads every trial's report artifact, runs `scripts/run_trials.py --aggregate-only`, uploads `trials-summary` as an artifact, and posts a markdown table to the workflow summary (overall metrics, per-category breakdown, per-trial rows). If fewer reports than the requested trial count made it through, the summary banners the gap loudly and the job exits non-zero — a green check on a partial sample size is a trap.
+
+### `trials_summary.json` schema
+
+```jsonc
+{
+  "n_trials": 5,
+  "model": "openai:gpt-5.5",
+  "sdk_version": "0.5.6",
+  "metrics": {
+    // One block per scalar metric
+    "correctness":       {"n": 5, "mean": 0.49, "median": 0.49, "stdev": 0.012, "min": 0.47, "max": 0.51},
+    "solve_rate":        {"n": 5, "mean": ..., ...},
+    "step_ratio":        {"n": 5, "mean": ..., ...},
+    "tool_call_ratio":   {"n": 5, "mean": ..., ...},
+    "median_duration_s": {"n": 5, "mean": ..., ...}
+  },
+  "counts": {
+    // Pass/fail/skip/total stats across trials
+    "passed":  {"n": 5, "mean": 81.6, ...},
+    "failed":  {...},
+    "skipped": {...},
+    "total":   {...}
+  },
+  "category_scores": {
+    // Per-category correctness across trials
+    "memory":   {"n": 5, "mean": 0.62, "stdev": 0.018, ...},
+    "tool_use": {"n": 5, ...}
+  },
+  "trials": [
+    // Per-trial records preserved in dispatch order
+    {"trial_index": 0, "passed": 81, "correctness": 0.47, "category_scores": {...}, "experiment_urls": [...]},
+    ...
+  ]
+}
+```
+
+`stdev` is `null` for n < 2 (sample stdev needs n ≥ 2). Metrics some trials reported as `null` (e.g. `solve_rate` when nothing passed) are silently dropped from that metric's stats — `n` reflects how many trials actually contributed, not the trial count. Non-`null` values that aren't numeric (a sign the upstream reporter shape changed) are excluded *with* a warning so the regression surfaces.
+
+### Interpreting the spread
+
+Trial stdev tells you what change sizes are real:
+
+- **stdev ≪ candidate delta** → the change is signal; ship the conclusion.
+- **stdev ≈ candidate delta** → run more trials, or treat the result as noise.
+
+For context: a 2-task pass-count swing on a 170-test suite is Δcorrectness ≈ 0.012, which is comparable to typical single-trial stdev on this benchmark. Single-run deltas in that range should not be reported as model differences without trial backing.
+
 ## Harbor / Terminal Bench 2.0
 
 ### What is Harbor?

@@ -1,0 +1,326 @@
+# N-trial eval workflow.
+#
+# Runs the eval suite N times for the same model/config (each trial as its
+# own GHA job, getting its own 6h budget) and aggregates per-trial reports
+# into a single trials_summary.json.
+#
+# By default trials run sequentially (max-parallel: 1), which is rate-limit
+# safe for any provider. Setting `parallel: true` runs all trials at once —
+# only flip it on when the provider can comfortably absorb the burst.
+#
+# Reuses `_eval.yml` for the actual eval run (same checkout, install, pytest
+# invocation, summary, and artifact upload). Each trial uploads under a
+# unique `evals-report-trial-NNN-<slug>` artifact name; the aggregate job
+# downloads them all and runs `scripts/run_trials.py --aggregate-only`.
+
+name: "📊 Eval trials - GHA"
+run-name: >-
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to evaluate, e.g. `openai:gpt-5.5` (single spec, no presets)."
+        required: true
+        type: string
+      trials:
+        description: "Number of trials to run (1..20)."
+        required: true
+        default: "5"
+        type: string
+      parallel:
+        description: "Run trials in parallel (faster, but bursts API calls). Off → sequential."
+        required: false
+        default: false
+        type: boolean
+      eval_categories:
+        description: "Comma-separated eval categories. Empty = all."
+        required: false
+        default: ""
+        type: string
+      eval_tiers:
+        description: "Comma-separated eval tiers (baseline | hillclimb). Empty = all."
+        required: false
+        default: ""
+        type: string
+      openrouter_provider:
+        description: "Pin OpenRouter to a specific provider (e.g. `MiniMax`)."
+        required: false
+        default: ""
+        type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+  UV_FROZEN: "true"
+
+jobs:
+  prep:
+    name: "🔧 Prepare trial matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      max_parallel: ${{ steps.build.outputs.max_parallel }}
+      provider: ${{ steps.build.outputs.provider }}
+      slug: ${{ steps.build.outputs.slug }}
+    steps:
+      - name: "🐍 Build trial matrix"
+        id: build
+        env:
+          MODEL: ${{ inputs.model }}
+          TRIALS: ${{ inputs.trials }}
+          PARALLEL: ${{ inputs.parallel }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+          EVAL_TIERS: ${{ inputs.eval_tiers }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, re, sys
+
+          # Per-CI cap: stricter than run_trials.py's `_MAX_TRIALS = 50` so a
+          # typo in the dispatch form can't burn a whole runner pool. If you
+          # raise this, leave the script's higher cap alone — local runs are
+          # cheaper to abort.
+          MAX_TRIALS = 20
+          model = os.environ["MODEL"].strip()
+          trials_raw = os.environ["TRIALS"].strip()
+          parallel = os.environ["PARALLEL"].strip().lower() == "true"
+
+          # Require non-empty provider AND non-empty model name; allow `/`
+          # and `.` only on the model side (provider names don't use them).
+          if not re.match(r"^[a-zA-Z0-9_\-.]+:[a-zA-Z0-9_\-./]+$", model):
+              print(f"::error::Model must be `provider:name` with non-empty parts, got {model!r}")
+              sys.exit(1)
+          provider = model.split(":", 1)[0]
+
+          try:
+              n = int(trials_raw)
+          except ValueError:
+              print(f"::error::trials must be an integer, got {trials_raw!r}")
+              sys.exit(1)
+          if not 1 <= n <= MAX_TRIALS:
+              print(f"::error::trials must be in 1..{MAX_TRIALS}, got {n}")
+              sys.exit(1)
+
+          # Defense in depth: these flow through to `_eval.yml` as shell
+          # arguments. Reject anything outside a comma-separated identifier
+          # list before we hand them off.
+          _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
+          _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
+          for name, value, pattern in (
+              ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
+              ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _SLUG_RE),
+          ):
+              if not pattern.match(value):
+                  print(f"::error::Unsafe `{name}` value: {value!r}")
+                  sys.exit(1)
+
+          slug = re.sub(r"[^a-zA-Z0-9_\-]", "-", model).strip("-")
+
+          entries = [
+              {
+                  "trial_index": i,
+                  "artifact_key": f"trial-{i:03d}-{slug}",
+              }
+              for i in range(n)
+          ]
+          matrix = {"include": entries}
+          max_parallel = n if parallel else 1
+
+          out = os.environ["GITHUB_OUTPUT"]
+          with open(out, "a") as f:
+              f.write(f"matrix={json.dumps(matrix)}\n")
+              f.write(f"max_parallel={max_parallel}\n")
+              f.write(f"provider={provider}\n")
+              f.write(f"slug={slug}\n")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a") as f:
+                  f.write("### Trial dispatch\n\n")
+                  f.write(f"- model: `{model}`\n")
+                  f.write(f"- trials: {n}\n")
+                  f.write(f"- parallelism: {'parallel' if parallel else 'sequential'} (max-parallel={max_parallel})\n")
+          PYEOF
+
+  eval-trial:
+    name: "📊 Trial ${{ matrix.trial_index }}"
+    needs: prep
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.prep.outputs.max_parallel) }}
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    uses: ./.github/workflows/_eval.yml
+    with:
+      model: ${{ inputs.model }}
+      provider: ${{ needs.prep.outputs.provider }}
+      artifact_key: ${{ matrix.artifact_key }}
+      eval_categories: ${{ inputs.eval_categories }}
+      eval_tiers: ${{ inputs.eval_tiers }}
+      analyze_failures: false
+      openrouter_provider: ${{ inputs.openrouter_provider }}
+      openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+    secrets: inherit
+
+  aggregate-trials:
+    name: "📋 Aggregate trials"
+    runs-on: ubuntu-latest
+    needs:
+      - prep
+      - eval-trial
+    if: always() && needs.prep.result == 'success'
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: "📥 Download trial artifacts"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: trial_artifacts
+          pattern: evals-report-trial-*
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: evals-trials
+          working-directory: libs/evals
+
+      - name: "📦 Install evals package"
+        working-directory: libs/evals
+        run: uv sync --group test
+
+      - name: "📊 Aggregate trial reports"
+        working-directory: libs/evals
+        env:
+          ARTIFACTS_DIR: ${{ github.workspace }}/trial_artifacts
+        run: |
+          uv run python scripts/run_trials.py \
+            --aggregate-only "$ARTIFACTS_DIR" \
+            --summary-out "$GITHUB_WORKSPACE/trials_summary.json"
+
+      - name: "📤 Upload trials summary"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: trials-summary
+          path: trials_summary.json
+          if-no-files-found: error
+
+      - name: "📊 Post summary"
+        if: always()
+        env:
+          MODEL: ${{ inputs.model }}
+          N: ${{ inputs.trials }}
+          PARALLEL: ${{ inputs.parallel }}
+          REASONING: ${{ inputs.openai_reasoning_effort }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, sys
+          from pathlib import Path
+
+          summary_path = Path(os.environ["GITHUB_WORKSPACE"]) / "trials_summary.json"
+          if not summary_path.exists():
+              # The previous aggregate step succeeded iff this file exists;
+              # missing it here means something earlier broke in a way that
+              # wasn't already fatal (race, disk error, wrong path). Don't
+              # mask it with a green checkmark.
+              print(
+                  "::error::trials_summary.json missing; aggregation step did not produce output",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          summary = json.loads(summary_path.read_text())
+          metrics = summary["metrics"]
+
+          # Loud signal when fewer trials made it to aggregation than were
+          # dispatched — a green check on a half-empty sample size is a trap.
+          requested = int(os.environ["N"])
+          actual = int(summary.get("n_trials", 0))
+          missing = requested - actual
+          missing_banner = ""
+          if missing > 0:
+              msg = f"{missing} of {requested} trial(s) failed to produce a usable report"
+              print(f"::error::{msg}")
+              missing_banner = f"\n> :warning: **{msg}** — stats below cover only the {actual} surviving trial(s).\n"
+
+          def fmt(v, places=4):
+              return "n/a" if v is None else f"{v:.{places}f}"
+
+          lines = [
+              "## Trial summary",
+              "",
+              f"- model: `{summary.get('model') or os.environ['MODEL']}`",
+              f"- trials: {actual}/{requested} ({'parallel' if os.environ['PARALLEL']=='true' else 'sequential'})",
+          ]
+          if missing_banner:
+              lines.append(missing_banner)
+          if os.environ.get("REASONING"):
+              lines.append(f"- reasoning_effort: `{os.environ['REASONING']}`")
+
+          lines += [
+              "",
+              "| metric | mean | median | stdev | min | max | n |",
+              "|---|---:|---:|---:|---:|---:|---:|",
+          ]
+          for key in ("correctness","solve_rate","step_ratio","tool_call_ratio","median_duration_s"):
+              s = metrics.get(key, {})
+              lines.append(
+                  f"| `{key}` | {fmt(s.get('mean'))} | {fmt(s.get('median'))} | {fmt(s.get('stdev'))} | {fmt(s.get('min'))} | {fmt(s.get('max'))} | {s.get('n', 0)} |"
+              )
+
+          cats = summary.get("category_scores") or {}
+          if cats:
+              lines += ["", "### Per-category correctness (across trials)", "", "| category | mean | stdev | n |", "|---|---:|---:|---:|"]
+              for cat, s in sorted(cats.items()):
+                  lines.append(f"| `{cat}` | {fmt(s.get('mean'), 3)} | {fmt(s.get('stdev'), 3)} | {s.get('n', 0)} |")
+
+          trials = summary.get("trials") or []
+          if trials:
+              lines += [
+                  "",
+                  "### Per-trial",
+                  "",
+                  "| # | passed | failed | total | correctness | solve_rate | step_ratio | tool_call_ratio | median_duration_s |",
+                  "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+              ]
+              for t in trials:
+                  lines.append(
+                      "| {idx} | {p} | {f} | {tot} | {c} | {sr} | {step} | {tc} | {md} |".format(
+                          idx=t.get("trial_index"),
+                          p=t.get("passed"),
+                          f=t.get("failed"),
+                          tot=t.get("total"),
+                          c=fmt(t.get("correctness"), 3),
+                          sr=fmt(t.get("solve_rate")),
+                          step=fmt(t.get("step_ratio")),
+                          tc=fmt(t.get("tool_call_ratio")),
+                          md=fmt(t.get("median_duration_s")),
+                      )
+                  )
+
+          out = os.environ.get("GITHUB_STEP_SUMMARY")
+          if out:
+              with open(out, "a") as fh:
+                  fh.write("\n".join(lines) + "\n")
+          print("\n".join(lines))
+          # Render the markdown summary first, then exit non-zero so the
+          # job is marked failed when trials are missing.
+          if missing > 0:
+              sys.exit(1)
+          PYEOF

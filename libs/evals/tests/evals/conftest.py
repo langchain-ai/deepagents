@@ -99,7 +99,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store",
         choices=("quickjs", "langchain"),
         default=None,
-        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests run without a REPL.",
+        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests bind their tools directly instead of routing through a REPL.",
     )
 
 

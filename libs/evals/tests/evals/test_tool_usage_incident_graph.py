@@ -769,14 +769,17 @@ async def _incident_graph_tool_error_middleware(
 def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create an agent implementation."""
     middleware = [_incident_graph_tool_error_middleware]
+    tools = None
     if repl_name == "langchain":
         middleware.append(ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
     elif repl_name == "quickjs":
         middleware.append(REPLMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
-    elif repl_name is not None:
+    elif repl_name is None:
+        tools = INCIDENT_GRAPH_TOOLS
+    else:
         msg = f'Unknown repl_name "{repl_name}"'
         raise ValueError(msg)
-    return create_deep_agent(model=model, middleware=middleware)
+    return create_deep_agent(model=model, tools=tools, middleware=middleware)
 
 
 @pytest.fixture

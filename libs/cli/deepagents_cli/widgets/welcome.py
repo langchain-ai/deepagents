@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from typing import TYPE_CHECKING, Any
 
@@ -16,7 +17,13 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 from deepagents_cli import theme
-from deepagents_cli._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
+from deepagents_cli._env_vars import (
+    DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
+    HIDE_CWD,
+    HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_VERSION,
+    is_env_truthy,
+)
 from deepagents_cli._version import __version__
 from deepagents_cli.config import (
     _get_editable_install_path,
@@ -143,7 +150,10 @@ class WelcomeBanner(Static):
         self._idle = False
         self._defer_connecting_display = defer_connecting_display and connecting
         self._defer_timer: Timer | None = None
-        self._project_name: str | None = get_langsmith_project_name()
+        self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
+        self._project_name: str | None = (
+            None if self._hide_langsmith_tracing else get_langsmith_project_name()
+        )
         self._project_url: str | None = None
         self._tip: str = _pick_tip()
 
@@ -318,7 +328,8 @@ class WelcomeBanner(Static):
         accent: str | TStyle = "bold" if ansi else colors.primary
         success_color: str = "bold green" if ansi else colors.success
 
-        editable_path = None if hide_version else _get_editable_install_path()
+        hide_editable_path = hide_version or is_env_truthy(HIDE_CWD)
+        editable_path = None if hide_editable_path else _get_editable_install_path()
         if editable_path:
             parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 
@@ -344,7 +355,7 @@ class WelcomeBanner(Static):
                 parts.append((f"'{self._project_name}'", accent))
             parts.append("\n")
 
-        if self._cli_thread_id:
+        if self._cli_thread_id and not self._hide_langsmith_tracing:
             if project_url:
                 thread_url = (
                     f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
@@ -450,7 +461,11 @@ def build_welcome_footer(
     """
     if tip is None:
         tip = _pick_tip()
+    subheader = (
+        os.environ.get(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER)
+        or "Ready to code! What would you like to build?"
+    )
     return Content.assemble(
-        ("\nReady to code! What would you like to build?\n", primary_color),
+        (f"\n{subheader}\n", primary_color),
         (f"Tip: {tip}", "dim italic"),
     )

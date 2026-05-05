@@ -33,6 +33,11 @@ import os
 AUTO_UPDATE = "DEEPAGENTS_CLI_AUTO_UPDATE"
 """Enable automatic CLI updates ('1', 'true', or 'yes')."""
 
+DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
+    "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
+)
+"""Override the startup splash subheader text when set."""
+
 DEBUG = "DEEPAGENTS_CLI_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -63,10 +68,13 @@ EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
 HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
-"""Hide the current working directory in the TUI footer when enabled."""
+"""Hide local path displays in the TUI footer and startup splash when enabled."""
 
 HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
 """Hide the current git branch in the TUI footer when enabled."""
+
+HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING"
+"""Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""

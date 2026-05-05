@@ -10,6 +10,7 @@ import pytest
 
 from deepagents_cli.command_registry import SLASH_COMMANDS
 from deepagents_cli.config import Settings
+from deepagents_cli.skills.load import ExtendedSkillMetadata
 
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
@@ -497,3 +498,135 @@ class TestReloadInAutocomplete:
     def test_reload_in_slash_commands(self) -> None:
         """`/reload` should be registered in slash command completions."""
         assert any(entry.name == "/reload" for entry in SLASH_COMMANDS)
+
+
+class TestReloadSkillReport:
+    """`/reload` should surface skill add/remove diff in its report."""
+
+    @staticmethod
+    def _fake_skill(name: str) -> ExtendedSkillMetadata:
+        return ExtendedSkillMetadata(
+            name=name,
+            description=f"{name} desc",
+            path=f"/skills/{name}/SKILL.md",
+            license=None,
+            compatibility=None,
+            metadata={},
+            allowed_tools=[],
+            source="user",
+        )
+
+    async def _run_reload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        before: list[str],
+        after: list[str] | None,
+        *,
+        discovery_ok: bool = True,
+    ) -> str:
+        """Drive `/reload` once and return the mounted `AppMessage` text.
+
+        Args:
+            monkeypatch: pytest fixture for restorable patching.
+            before: skill names cached before reload.
+            after: skill names produced by discovery, or ignored when
+                `discovery_ok=False`.
+            discovery_ok: when `False`, simulate discovery failure
+                (preserves cache and returns `False`).
+        """
+        from deepagents_cli.app import DeepAgentsApp
+        from deepagents_cli.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._discovered_skills = [self._fake_skill(n) for n in before]
+
+            async def _fake_discover() -> bool:  # noqa: RUF029  # awaited as coroutine by `_handle_command`
+                if not discovery_ok:
+                    return False
+                assert after is not None
+                app._discovered_skills = [self._fake_skill(n) for n in after]
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+
+            await app._handle_command("/reload")
+            await pilot.pause()
+
+            return "\n".join(str(w._content) for w in app.query(AppMessage))
+
+    async def test_reports_added_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        text = await self._run_reload(
+            monkeypatch, before=["alpha"], after=["alpha", "beta"]
+        )
+        assert "Skills updated" in text
+        assert "  - Added: beta" in text
+        assert "Removed:" not in text
+
+    async def test_reports_removed_skills(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        text = await self._run_reload(
+            monkeypatch, before=["alpha", "beta"], after=["alpha"]
+        )
+        assert "Skills updated" in text
+        assert "  - Removed: beta" in text
+        assert "Added:" not in text
+
+    async def test_reports_added_and_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        text = await self._run_reload(
+            monkeypatch, before=["alpha", "beta"], after=["alpha", "gamma"]
+        )
+        assert "Skills updated" in text
+        assert "  - Added: gamma" in text
+        assert "  - Removed: beta" in text
+
+    async def test_reports_no_changes_stays_silent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the skill set is unchanged, the report should not mention skills."""
+        text = await self._run_reload(monkeypatch, before=["alpha"], after=["alpha"])
+        assert "Skills updated" not in text
+        assert "Added:" not in text
+        assert "Removed:" not in text
+        assert "Skill re-discovery failed" not in text
+
+    async def test_first_skill_added_from_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """User installs first skill, then `/reload` — empty -> non-empty."""
+        text = await self._run_reload(monkeypatch, before=[], after=["alpha"])
+        assert "  - Added: alpha" in text
+        assert "Removed:" not in text
+
+    async def test_all_skills_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """All known skills removed — non-empty -> empty."""
+        text = await self._run_reload(monkeypatch, before=["alpha", "beta"], after=[])
+        assert "  - Removed: alpha, beta" in text
+        assert "Added:" not in text
+
+    async def test_added_skills_sorted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Added skill names should be sorted (deterministic output)."""
+        text = await self._run_reload(
+            monkeypatch, before=["alpha"], after=["alpha", "zeta", "beta"]
+        )
+        assert "  - Added: beta, zeta" in text
+
+    async def test_discovery_failure_preserves_cache_and_warns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovery failure must not produce a misleading 'Removed: X' diff."""
+        text = await self._run_reload(
+            monkeypatch,
+            before=["alpha", "beta"],
+            after=None,
+            discovery_ok=False,
+        )
+        assert "Skill re-discovery failed" in text
+        # Critical: must not claim every prior skill was removed.
+        assert "Removed:" not in text
+        assert "Skills updated" not in text

@@ -1631,7 +1631,7 @@ class DeepAgentsApp(App):
                     timeout=15,
                 )
 
-    async def _discover_skills(self) -> None:
+    async def _discover_skills(self) -> bool:
         """Discover skills, cache metadata, and update autocomplete.
 
         Caches the full `ExtendedSkillMetadata` list and pre-resolved
@@ -1639,29 +1639,22 @@ class DeepAgentsApp(App):
         re-walking every skill directory.
 
         Runs filesystem I/O in a thread to avoid blocking the event loop.
+
+        On failure, prior cache is preserved so a transient error (e.g.,
+        a single unreadable subdir) doesn't wipe a known-good skill list.
+        Callers that need to distinguish "no skills" from "discovery
+        failed" can check the return value.
+
+        Returns:
+            `True` on success, `False` if discovery raised. Callers that
+            don't care (fire-and-forget startup/agent-switch workers)
+            simply ignore the result.
         """
         from deepagents_cli.command_registry import SLASH_COMMANDS, build_skill_commands
 
         try:
             skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
-            self._discovered_skills = skills
-            self._skill_allowed_roots = roots
-            if skills:
-                skill_commands = build_skill_commands(skills)
-                if self._chat_input:
-                    merged = list(SLASH_COMMANDS) + skill_commands
-                    self._chat_input.update_slash_commands(merged)
-                else:
-                    logger.debug(
-                        "Skill discovery completed (%d skills) but chat input "
-                        "not yet mounted; autocomplete deferred",
-                        len(skills),
-                    )
         except OSError:
-            # Clear stale cache so /reload failures don't silently
-            # leave old data in place.
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
             logger.warning(
                 "Filesystem error during skill discovery",
                 exc_info=True,
@@ -1673,9 +1666,8 @@ class DeepAgentsApp(App):
                 timeout=6,
                 markup=False,
             )
+            return False
         except Exception:
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
             logger.exception("Unexpected error during skill discovery")
             self.notify(
                 "Skill discovery failed unexpectedly. "
@@ -1684,6 +1676,22 @@ class DeepAgentsApp(App):
                 timeout=8,
                 markup=False,
             )
+            return False
+
+        self._discovered_skills = skills
+        self._skill_allowed_roots = roots
+        if skills:
+            skill_commands = build_skill_commands(skills)
+            if self._chat_input:
+                merged = list(SLASH_COMMANDS) + skill_commands
+                self._chat_input.update_slash_commands(merged)
+            else:
+                logger.debug(
+                    "Skill discovery completed (%d skills) but chat input "
+                    "not yet mounted; autocomplete deferred",
+                    len(skills),
+                )
+        return True
 
     def _discover_skills_and_roots(
         self,
@@ -4213,6 +4221,10 @@ class DeepAgentsApp(App):
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
+
+            # Snapshot pre-reload skill names so the report can show diff.
+            old_skill_names = {s["name"] for s in self._discovered_skills}
+
             try:
                 changes = settings.reload_from_environment()
 
@@ -4239,6 +4251,22 @@ class DeepAgentsApp(App):
                 theme_reload_ok = False
                 logger.warning("Failed to reload user themes", exc_info=True)
 
+            # Re-discover skills so autocomplete reflects any new/removed
+            # skills. Run via the same exclusive-group worker used at
+            # startup so any in-flight startup discovery is cancelled
+            # rather than racing this one, then await its completion so
+            # the report can include the diff.
+            skill_worker = self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="startup-skill-discovery",
+            )
+            await skill_worker.wait()
+            discovery_ok = skill_worker.result is True
+            new_skill_names = {s["name"] for s in self._discovered_skills}
+            added_skills = sorted(new_skill_names - old_skill_names)
+            removed_skills = sorted(old_skill_names - new_skill_names)
+
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
                     f"  - {change}" for change in changes
@@ -4252,14 +4280,21 @@ class DeepAgentsApp(App):
                 report += (
                     "\nTheme registry reload failed. Check config.toml for errors."
                 )
+            if not discovery_ok:
+                # Diff is meaningless when discovery failed: prior cache
+                # was preserved, so old vs. new is identical and
+                # `Skills reloaded. No changes detected.` would be a lie.
+                report += (
+                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                )
+            elif added_skills or removed_skills:
+                skill_lines = []
+                if added_skills:
+                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
+                if removed_skills:
+                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
+                report += "\nSkills updated:\n" + "\n".join(skill_lines)
             await self._mount_message(AppMessage(report))
-
-            # Re-discover skills so autocomplete reflects any new/removed skills
-            self.run_worker(
-                self._discover_skills(),
-                exclusive=True,
-                group="startup-skill-discovery",
-            )
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------

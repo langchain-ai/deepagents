@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.0...langchain-quickjs==0.1.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **quickjs:** run quickjs tests in CI and restore host exception propagation ([#3162](https://github.com/langchain-ai/deepagents/issues/3162)) ([78cb42c](https://github.com/langchain-ai/deepagents/commit/78cb42c1f57f83b90c4e2d91002967b1bfc047e6))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.0.1...langchain-quickjs==0.1.0) (2026-05-05)
 
 This release introduces a new QuickJS runtime implementation backed by

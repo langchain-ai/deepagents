@@ -6,6 +6,8 @@ from rich.style import Style
 from textual.content import Content
 from textual.style import Style as TStyle
 
+from deepagents_cli._env_vars import HIDE_SPLASH_VERSION
+from deepagents_cli._version import __version__
 from deepagents_cli.widgets.welcome import (
     _TIPS,
     WelcomeBanner,
@@ -222,6 +224,27 @@ class TestBuildBannerEditableInstall:
         ):
             widget = WelcomeBanner()
             banner = widget._build_banner()
+        assert "Installed from:" not in banner.plain
+
+    def test_hide_splash_version_env_var_hides_local_install_details(self) -> None:
+        """Splash version override should hide version and local install details."""
+        with (
+            patch.dict("os.environ", {HIDE_SPLASH_VERSION: "1"}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ) as editable,
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/dev/deepagents",
+            ) as editable_path,
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        editable.assert_not_called()
+        editable_path.assert_not_called()
+        assert f"v{__version__}" not in banner.plain
+        assert "(local)" not in banner.plain
         assert "Installed from:" not in banner.plain
 
 

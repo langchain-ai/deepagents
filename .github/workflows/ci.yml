@@ -156,7 +156,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
-      python-version: "3.14"
+      python-version: "3.13"
 
   lint-daytona:
     name: "🧹 Lint daytona"
@@ -242,7 +242,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.12", "3.13"]'
       coverage-python-version: "3.12"
 
   test-daytona:

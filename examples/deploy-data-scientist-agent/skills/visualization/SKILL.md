@@ -20,9 +20,12 @@ Use this skill when creating plots or explaining visual trends.
 - Always include a clear title, axis labels, and units when known.
 - Sort categorical bars by value unless chronology or business order matters.
 - Avoid overcrowded charts; aggregate or facet when there are many categories.
-- Save charts as `.png` files with descriptive names.
-- Mention the chart file path in the final response.
+- Save each chart as its own `.png` file with a descriptive name.
+- Save the Python script that generated each chart as its own `.py` file with a matching descriptive name.
+- Display each generated chart separately after saving it; do not rely only on mentioning the path.
+- Mention both the chart file path and the script file path in the final response.
 - Include the source file name or combined dataset name in chart titles, captions, or report text when multiple files are involved.
+- Do not overwrite earlier visuals or scripts during the same analysis; create a new descriptive filename if the chart changes.
 
 ## Validation
 

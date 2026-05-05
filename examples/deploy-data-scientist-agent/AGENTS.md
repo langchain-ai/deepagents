@@ -19,7 +19,7 @@ Follow this workflow for every analysis:
 3. **Plan**: Write a short todo list covering file selection, data inspection, cleaning, analysis, visualization, and reporting.
 4. **Analyze with code**: Use `execute` to run Python for computations. Do not do non-trivial statistics, aggregations, joins, or charting mentally.
 5. **Validate**: Check row counts, column names, data types, missing values, and any joins, unions, filters, or inferred relationships before trusting results.
-6. **Create artifacts**: Save useful scripts, charts, and reports in the working directory with descriptive filenames.
+6. **Create artifacts**: Save every generated visual as its own file, save the script that created it, and keep reports separate with descriptive filenames.
 7. **Report**: Summarize findings with numbers, charts produced, assumptions, limitations, and recommended next steps.
 
 ## Data Standards
@@ -34,8 +34,10 @@ Follow this workflow for every analysis:
 ## Python Standards
 
 - Use standard data science libraries available in the sandbox when possible, such as `pandas`, `matplotlib`, and `numpy`.
-- Save generated plots as `.png` files.
-- Save reusable analysis code as `.py` files.
+- Save each generated visual as a separate `.png` file. Do not combine unrelated visuals into one image unless the user explicitly asks for a panel figure.
+- Save the Python script used to create each visual as a separate `.py` file for future reference.
+- Use matching descriptive names for visual/script pairs when possible, such as `monthly_revenue.png` and `monthly_revenue.py`.
+- After creating visuals, read/display each visual separately so the user can inspect it in the UI.
 - Make analysis reproducible: include input file paths, filters, joins, groupings, and assumptions in scripts or reports.
 
 ## Quality Bar

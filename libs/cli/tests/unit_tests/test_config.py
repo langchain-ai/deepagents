@@ -1956,6 +1956,22 @@ app_categories = ["cloud-agent"]
         assert "app_url" not in call_kwargs
         assert "app_title" not in call_kwargs
         assert "app_categories" not in call_kwargs
+        assert "openrouter_provider" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sdk_provider_routing_flows_through_cli_profile(
+        self, mock_init: Mock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SDK's Azure-ignore default survives CLI profile chaining."""
+        from deepagents.profiles.provider._openrouter import _OPENROUTER_ALLOW_AZURE_ENV
+
+        monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openrouter:deepseek/deepseek-chat")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["openrouter_provider"] == {"ignore": ["azure"]}
 
 
 class TestCreateModelForwardsProviderProfile:

@@ -31,6 +31,7 @@ from deepagents.profiles.harness.harness_profiles import (
     _merge_profiles,
 )
 from deepagents.profiles.provider._openrouter import (
+    _OPENROUTER_ALLOW_AZURE_ENV,
     _OPENROUTER_APP_TITLE,
     _OPENROUTER_APP_URL,
     OPENROUTER_MIN_VERSION,
@@ -43,6 +44,20 @@ from deepagents.profiles.provider.provider_profiles import (
     apply_provider_profile,
     get_provider_profile,
 )
+
+_OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
+"""Expected default value of `openrouter_provider` injected by the SDK profile."""
+
+
+@pytest.fixture(autouse=True)
+def _scrub_openrouter_allow_azure_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pop `DEEPAGENTS_OPENROUTER_ALLOW_AZURE` before each test.
+
+    Otherwise an ambient `DEEPAGENTS_OPENROUTER_ALLOW_AZURE=1` in the
+    developer's shell or CI environment would suppress the `openrouter_provider`
+    kwarg the SDK profile injects, silently breaking assertions that expect it.
+    """
+    monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -103,6 +118,7 @@ class TestResolveModel:
             "openrouter:anthropic/claude-sonnet-4-6",
             app_url=_OPENROUTER_APP_URL,
             app_title=_OPENROUTER_APP_TITLE,
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
         )
         assert result is mock.return_value
 
@@ -118,6 +134,7 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert "app_url" not in kwargs
         assert kwargs["app_title"] == _OPENROUTER_APP_TITLE
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_var_overrides_app_title(self) -> None:
         env = {"OPENROUTER_APP_TITLE": "My Custom App"}
@@ -131,11 +148,30 @@ class TestResolveModel:
         _, kwargs = mock.call_args
         assert kwargs["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in kwargs
+        assert kwargs["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_openrouter_env_vars_override_both(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://custom.app",
             "OPENROUTER_APP_TITLE": "My Custom App",
+        }
+        with (
+            patch("deepagents._models.init_chat_model") as mock,
+            patch.dict("os.environ", env),
+        ):
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            resolve_model("openrouter:anthropic/claude-sonnet-4-6")
+
+        mock.assert_called_once_with(
+            "openrouter:anthropic/claude-sonnet-4-6",
+            openrouter_provider=_OPENROUTER_AZURE_IGNORE,
+        )
+
+    def test_openrouter_allow_azure_env_drops_provider_kwarg(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://custom.app",
+            "OPENROUTER_APP_TITLE": "My Custom App",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
         }
         with (
             patch("deepagents._models.init_chat_model") as mock,
@@ -292,6 +328,7 @@ class TestOpenRouterAttributionKwargs:
         assert result == {
             "app_url": _OPENROUTER_APP_URL,
             "app_title": _OPENROUTER_APP_TITLE,
+            "openrouter_provider": _OPENROUTER_AZURE_IGNORE,
         }
 
     def test_omits_app_url_when_env_set(self) -> None:
@@ -300,6 +337,7 @@ class TestOpenRouterAttributionKwargs:
 
         assert "app_url" not in result
         assert result["app_title"] == _OPENROUTER_APP_TITLE
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
     def test_omits_app_title_when_env_set(self) -> None:
         with patch.dict("os.environ", {"OPENROUTER_APP_TITLE": "Custom"}):
@@ -307,8 +345,9 @@ class TestOpenRouterAttributionKwargs:
 
         assert result["app_url"] == _OPENROUTER_APP_URL
         assert "app_title" not in result
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
 
-    def test_empty_when_both_env_set(self) -> None:
+    def test_only_provider_kwarg_when_both_attribution_env_set(self) -> None:
         env = {
             "OPENROUTER_APP_URL": "https://example.com",
             "OPENROUTER_APP_TITLE": "Custom",
@@ -316,7 +355,39 @@ class TestOpenRouterAttributionKwargs:
         with patch.dict("os.environ", env):
             result = _openrouter_attribution_kwargs()
 
+        assert result == {"openrouter_provider": _OPENROUTER_AZURE_IGNORE}
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "YES", "on", "ON", " yes "])
+    def test_allow_azure_env_truthy_drops_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert "openrouter_provider" not in result
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "anything-else"])
+    def test_allow_azure_env_non_truthy_keeps_provider_kwarg(self, value: str) -> None:
+        with patch.dict("os.environ", {_OPENROUTER_ALLOW_AZURE_ENV: value}):
+            result = _openrouter_attribution_kwargs()
+
+        assert result["openrouter_provider"] == _OPENROUTER_AZURE_IGNORE
+
+    def test_empty_when_all_env_set_and_azure_allowed(self) -> None:
+        env = {
+            "OPENROUTER_APP_URL": "https://example.com",
+            "OPENROUTER_APP_TITLE": "Custom",
+            _OPENROUTER_ALLOW_AZURE_ENV: "1",
+        }
+        with patch.dict("os.environ", env):
+            result = _openrouter_attribution_kwargs()
+
         assert result == {}
+
+    def test_caller_openrouter_provider_wins_over_default(self) -> None:
+        """User-supplied `openrouter_provider` overrides the SDK Azure-ignore default."""
+        caller = {"openrouter_provider": {"order": ["fireworks"]}}
+        result = apply_provider_profile("openrouter:openai/gpt-5", caller, run_pre_init=False)
+
+        assert result["openrouter_provider"] == {"order": ["fireworks"]}
 
 
 class TestProviderProfile:

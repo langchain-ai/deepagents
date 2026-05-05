@@ -24,7 +24,7 @@ from typing import Any
 import aiohttp
 import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
-from harbor.registry.client import RegistryClientFactory
+from harbor.registry.client import RegistryClient
 from langsmith import Client
 from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
@@ -218,7 +218,7 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Using temporary directory: {output_dir}")
 
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-    registry_client = RegistryClientFactory.create()
+    registry_client = RegistryClient()
     downloaded_tasks = registry_client.download_dataset(
         name=dataset_name,
         version=version,

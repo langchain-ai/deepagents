@@ -32,6 +32,7 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_quickjs"]
+artifacts = ["langchain_quickjs/_just_bash_bridge.mjs"]
 
 [project.urls]
 Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/quickjs"

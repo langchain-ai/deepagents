@@ -16,10 +16,7 @@ from pathlib import Path
 
 SEED = 42
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_PATHS = [
-    EXAMPLE_ROOT / "data" / "sample_saas_metrics.csv",
-    EXAMPLE_ROOT / "skills" / "data" / "sample_saas_metrics.csv",
-]
+OUTPUT_PATH = EXAMPLE_ROOT / "data" / "sample_saas_metrics.csv"
 
 
 @dataclass(frozen=True)
@@ -203,17 +200,16 @@ def build_rows() -> list[dict[str, str | int | float]]:
 
 
 def write_csv(rows: list[dict[str, str | int | float]]) -> None:
-    """Write generated rows to the local and deploy-bundled data paths."""
+    """Write generated rows to the example data directory."""
 
     if not rows:
         raise ValueError("No rows generated")
 
-    for output_path in OUTPUT_PATHS:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            writer.writeheader()
-            writer.writerows(rows)
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with OUTPUT_PATH.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def main() -> None:
@@ -221,8 +217,7 @@ def main() -> None:
 
     rows = build_rows()
     write_csv(rows)
-    for output_path in OUTPUT_PATHS:
-        print(f"Wrote {len(rows)} rows to {output_path}")
+    print(f"Wrote {len(rows)} rows to {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":

@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [tool.uv]
-# Required while we depend on alpha langgraph 1.2.0a5, which has transitive
-# prerelease deps (e.g. langgraph-checkpoint>=4.1.0a3) that uv's default
+# Required while we depend on alpha langgraph 1.2.0a7, which has transitive
+# prerelease deps (e.g. langgraph-checkpoint>=4.1.0a4) that uv's default
 # `if-necessary-or-explicit` mode rejects. Drop once the upstream stable
 # replacements ship.
 prerelease = "allow"

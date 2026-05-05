@@ -675,6 +675,10 @@ class _ThreadREPL:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)
         except _PTCCallBudgetExceededError as e:
+            # Raised from inside the PTC bridge; quickjs-rs propagates the
+            # original exception out of eval_async. Surface it as a
+            # distinct, model-recoverable error so the agent can shorten
+            # its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
             _clear_exception_references(e)

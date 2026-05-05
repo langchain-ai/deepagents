@@ -6580,6 +6580,25 @@ class TestPrewarmAwait:
 
         worker.wait.assert_awaited_once()
 
+    async def test_await_prewarm_imports_swallows_worker_cancelled(self) -> None:
+        """`WorkerCancelled` is non-fatal; prewarm is a cache optimization.
+
+        Distinct from `asyncio.CancelledError`: Textual's `Worker.wait()`
+        raises `WorkerCancelled` (a plain `Exception`) when the awaited
+        worker was cancelled. The caller — typically `_start_server_background`
+        — must not propagate that and crash startup.
+        """
+        from textual.worker import WorkerCancelled
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        worker = MagicMock()
+        worker.wait = AsyncMock(side_effect=WorkerCancelled("cancelled"))
+        app._prewarm_worker = worker
+
+        await app._await_prewarm_imports()  # must not raise
+
+        worker.wait.assert_awaited_once()
+
     async def test_await_prewarm_imports_propagates_cancellation(self) -> None:
         """`CancelledError` MUST propagate so app shutdown isn't absorbed."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

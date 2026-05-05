@@ -1381,7 +1381,7 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from deploy_graph import DEFAULT_ASSISTANT_ID, SANDBOX_SCOPE, _get_or_create_sandbox
+from deploy_graph import DEFAULT_ASSISTANT_ID, SANDBOX_SCOPE, _resolve_sandbox_for_scope
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 _UPLOADS_ENABLED = __DEEPAGENTS_UPLOADS_ENABLED__
@@ -1423,6 +1423,19 @@ def _sandbox_cache_key(thread_id: str | None, assistant_id: str) -> str:
     return f"thread:{thread_id}"
 
 
+def _sandbox_record_from_request(request: Request, cache_key: str) -> dict | None:
+    sandbox_id = request.query_params.get("sandbox_id")
+    if not sandbox_id:
+        return None
+    return {
+        "provider": request.query_params.get("provider"),
+        "sandbox_id": sandbox_id,
+        "cache_key": cache_key,
+        "image": request.query_params.get("image"),
+        "scope": request.query_params.get("scope"),
+    }
+
+
 async def healthz(_request):
     return JSONResponse({"ok": True})
 
@@ -1431,6 +1444,28 @@ async def app_root_redirect(_request):
     # Starlette's Mount at "/app" matches "/app/*" — a bare "/app" 404s
     # otherwise. Redirect so users typing the clean URL land correctly.
     return RedirectResponse(url="/app/", status_code=308)
+
+
+async def ensure_sandbox(request: Request):
+    if not _UPLOADS_ENABLED:
+        return JSONResponse({"error": "file uploads require a sandbox"}, status_code=404)
+
+    assistant_id = request.query_params.get("assistant_id") or DEFAULT_ASSISTANT_ID
+    thread_id = request.query_params.get("thread_id")
+    try:
+        cache_key = _sandbox_cache_key(thread_id, assistant_id)
+        _, sandbox_record = await _resolve_sandbox_for_scope(
+            scope=SANDBOX_SCOPE,
+            thread_id=thread_id,
+            assistant_id=assistant_id,
+            sandbox_record=_sandbox_record_from_request(request, cache_key),
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({"sandbox": sandbox_record})
 
 
 async def upload_file(request: Request):
@@ -1464,11 +1499,18 @@ async def upload_file(request: Request):
     thread_id = request.query_params.get("thread_id")
     try:
         cache_key = _sandbox_cache_key(thread_id, assistant_id)
+        sandbox, sandbox_record = await _resolve_sandbox_for_scope(
+            scope=SANDBOX_SCOPE,
+            thread_id=thread_id,
+            assistant_id=assistant_id,
+            sandbox_record=_sandbox_record_from_request(request, cache_key),
+        )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
     path = f"{_UPLOADS_DIR}/{filename}"
-    sandbox = _get_or_create_sandbox(cache_key)
     results = await sandbox.aupload_files([(path, body)])
     result = results[0] if results else None
     if result is None or result.error is not None:
@@ -1476,12 +1518,17 @@ async def upload_file(request: Request):
             {"error": getattr(result, "error", "upload failed")},
             status_code=500,
         )
-    return JSONResponse({"path": result.path, "mime_type": content_type})
+    return JSONResponse({
+        "path": result.path,
+        "mime_type": content_type,
+        "sandbox": sandbox_record,
+    })
 
 
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+        Route("/deepagents/sandbox/ensure", ensure_sandbox, methods=["POST"]),
         Route("/deepagents/files/upload", upload_file, methods=["POST"]),
         Route("/app", app_root_redirect),
         Mount(

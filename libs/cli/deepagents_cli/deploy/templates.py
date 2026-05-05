@@ -167,7 +167,11 @@ def _reconnect_sandbox(
     try:
         client = SandboxClient(api_key=api_key)
         sandbox = _ensure_ready_sandbox(client, sandbox_id)
-        logger.info("Reconnected LangSmith sandbox %s for key %s", sandbox_id, cache_key)
+        logger.info(
+            "Reconnected LangSmith sandbox %s for key %s",
+            sandbox_id,
+            cache_key,
+        )
         return LangSmithSandbox(sandbox)
     except Exception:
         logger.warning(
@@ -1014,7 +1018,9 @@ _SANDBOX_RECORD_KEY = "deepagents_sandbox"
 
 
 # Build the stable sandbox identity key for the configured sandbox scope.
-def _sandbox_cache_key(*, scope: str, thread_id: str | None, assistant_id: str | None) -> str:
+def _sandbox_cache_key(
+    *, scope: str, thread_id: str | None, assistant_id: str | None
+) -> str:
     if scope == "assistant":
         return f"assistant:{{assistant_id}}"
     return f"thread:{{thread_id or 'local'}}"
@@ -1076,7 +1082,10 @@ async def _get_sandbox_record_from_metadata(
         else:
             return None
         metadata = target.get("metadata") or {{}}
-        return _valid_sandbox_record(metadata.get(_SANDBOX_RECORD_KEY), cache_key=cache_key)
+        return _valid_sandbox_record(
+            metadata.get(_SANDBOX_RECORD_KEY),
+            cache_key=cache_key,
+        )
     except Exception:
         logger.warning(
             "Failed to read sandbox metadata for key %s",
@@ -1162,7 +1171,10 @@ async def _resolve_sandbox_for_scope(
     return sandbox_backend, canonical_record
 
 
-def _build_backend_factory(assistant_id: str, initial_sandbox_record: dict | None = None):
+def _build_backend_factory(
+    assistant_id: str,
+    initial_sandbox_record: dict | None = None,
+):
     """Return a backend factory that builds the composite per invocation."""
     def _factory(ctx):  # noqa: ARG001
         from langgraph.config import get_config

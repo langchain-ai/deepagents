@@ -22,13 +22,13 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
-- `fireworks:fireworks/deepseek-v3p2`
-- `fireworks:fireworks/deepseek-v3-0324`
-- `fireworks:fireworks/qwen3-vl-235b-a22b-thinking`
-- `fireworks:fireworks/minimax-m2p1`
-- `fireworks:fireworks/kimi-k2p5`
-- `fireworks:fireworks/glm-5`
-- `fireworks:fireworks/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/deepseek-v3p2`
+- `fireworks:accounts/fireworks/models/deepseek-v3-0324`
+- `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
+- `fireworks:accounts/fireworks/models/minimax-m2p1`
+- `fireworks:accounts/fireworks/models/kimi-k2p5`
+- `fireworks:accounts/fireworks/models/glm-5`
+- `fireworks:accounts/fireworks/models/minimax-m2p5`
 - `google_genai:gemini-2.5-flash`
 - `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3-flash-preview`
@@ -54,7 +54,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `anthropic:claude-opus-4-7`
 - `baseten:zai-org/GLM-5`
 - `baseten:MiniMaxAI/MiniMax-M2.5`
-- `fireworks:fireworks/qwen3-vl-235b-a22b-thinking`
+- `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
 - `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3.1-pro-preview`
 - `ollama:qwen3.5:397b-cloud`
@@ -111,6 +111,14 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `openrouter:nvidia/nemotron-3-super-120b-a12b`
 - `openrouter:deepseek/deepseek-v4-pro`
 
+### `open-fireworks` (5 models)
+
+- `fireworks:accounts/fireworks/models/deepseek-v4-pro`
+- `fireworks:accounts/fireworks/models/kimi-k2p6`
+- `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
+- `fireworks:accounts/fireworks/models/glm-5p1`
+
 ### `docs` (7 models)
 
 - `anthropic:claude-opus-4-7`
@@ -143,15 +151,20 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
 
-### `fireworks` (7 models)
+### `fireworks` (12 models)
 
-- `fireworks:fireworks/deepseek-v3p2`
-- `fireworks:fireworks/deepseek-v3-0324`
-- `fireworks:fireworks/qwen3-vl-235b-a22b-thinking`
-- `fireworks:fireworks/minimax-m2p1`
-- `fireworks:fireworks/kimi-k2p5`
-- `fireworks:fireworks/glm-5`
-- `fireworks:fireworks/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/deepseek-v3p2`
+- `fireworks:accounts/fireworks/models/deepseek-v3-0324`
+- `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
+- `fireworks:accounts/fireworks/models/minimax-m2p1`
+- `fireworks:accounts/fireworks/models/kimi-k2p5`
+- `fireworks:accounts/fireworks/models/glm-5`
+- `fireworks:accounts/fireworks/models/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/deepseek-v4-pro`
+- `fireworks:accounts/fireworks/models/kimi-k2p6`
+- `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
+- `fireworks:accounts/fireworks/models/glm-5p1`
 
 ### `google_genai` (4 models)
 
@@ -214,7 +227,7 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `xai:grok-4`
 - `xai:grok-3-mini-fast`
 
-## `all` (62 models)
+## `all` (67 models)
 
 - `anthropic:claude-haiku-4-5-20251001`
 - `anthropic:claude-haiku-4-5`
@@ -230,13 +243,18 @@ Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
 - `baseten:moonshotai/Kimi-K2.6`
 - `baseten:nvidia/Nemotron-120B-A12B`
 - `baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct`
-- `fireworks:fireworks/deepseek-v3p2`
-- `fireworks:fireworks/deepseek-v3-0324`
-- `fireworks:fireworks/qwen3-vl-235b-a22b-thinking`
-- `fireworks:fireworks/minimax-m2p1`
-- `fireworks:fireworks/kimi-k2p5`
-- `fireworks:fireworks/glm-5`
-- `fireworks:fireworks/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/deepseek-v3p2`
+- `fireworks:accounts/fireworks/models/deepseek-v3-0324`
+- `fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking`
+- `fireworks:accounts/fireworks/models/minimax-m2p1`
+- `fireworks:accounts/fireworks/models/kimi-k2p5`
+- `fireworks:accounts/fireworks/models/glm-5`
+- `fireworks:accounts/fireworks/models/minimax-m2p5`
+- `fireworks:accounts/fireworks/models/deepseek-v4-pro`
+- `fireworks:accounts/fireworks/models/kimi-k2p6`
+- `fireworks:accounts/fireworks/models/minimax-m2p7`
+- `fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8`
+- `fireworks:accounts/fireworks/models/glm-5p1`
 - `google_genai:gemini-2.5-flash`
 - `google_genai:gemini-2.5-pro`
 - `google_genai:gemini-3-flash-preview`

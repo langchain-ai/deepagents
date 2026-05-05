@@ -23,6 +23,13 @@ if TYPE_CHECKING:
 
 
 _DEFAULT_EXEC_TIMEOUT_SEC = 30 * 60
+
+
+def _list_files_recursive(source: Path) -> list[Path]:
+    """Materialize every regular file under `source` (sync; for use inside `asyncio.to_thread`)."""
+    return [p for p in source.rglob("*") if p.is_file()]
+
+
 _BYTES_PER_MB = 1024 * 1024
 _MAX_NAME_LEN = 63
 
@@ -420,7 +427,7 @@ class LangSmithEnvironment(BaseEnvironment):
             raise RuntimeError(msg)
         return self._sandbox
 
-    async def exec(
+    async def exec(  # ty: ignore[invalid-method-override]  # harbor API drift, tracked separately
         self,
         command: str,
         cwd: str | None = None,
@@ -487,11 +494,11 @@ class LangSmithEnvironment(BaseEnvironment):
         """
         self._require_sandbox()
         source = Path(source_dir)
-        for file_path in source.rglob("*"):
-            if file_path.is_file():
-                relative = file_path.relative_to(source)
-                target = str(Path(target_dir) / relative)
-                await self.upload_file(file_path, target)
+        files = await asyncio.to_thread(_list_files_recursive, source)
+        for file_path in files:
+            relative = file_path.relative_to(source)
+            target = str(Path(target_dir) / relative)
+            await self.upload_file(file_path, target)
 
     async def download_file(self, source_path: str, target_path: Path | str) -> None:
         """Download a file from the sandbox to the local machine.
@@ -514,7 +521,7 @@ class LangSmithEnvironment(BaseEnvironment):
             target_dir: Local destination directory.
         """
         local_dir = Path(target_dir)
-        local_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local_dir.mkdir, parents=True, exist_ok=True)
 
         result = await self.exec(
             f"find {shlex.quote(source_dir)} -type f",

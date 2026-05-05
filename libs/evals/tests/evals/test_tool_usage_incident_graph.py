@@ -7,7 +7,7 @@ questions efficiently.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
 
 import pytest
 from deepagents import create_deep_agent
@@ -126,11 +126,6 @@ class EngineerSearchResult(TypedDict):
 class TeamSearchResult(TypedDict):
     id: int
     name: str
-
-
-DataItemT = TypeVar(
-    "DataItemT", Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy
-)
 
 
 ENGINEER_DATA: list[Engineer] = [
@@ -343,7 +338,9 @@ def _similarity_search(
     return [{"id": item["id"], key: item[key]} for item in ranked]
 
 
-def _get_by_id(data: list[DataItemT], item_id: int, label: str) -> DataItemT:
+def _get_by_id[
+    DataItemT: (Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy)
+](data: list[DataItemT], item_id: int, label: str) -> DataItemT:
     for item in data:
         if item["id"] == item_id:
             return item

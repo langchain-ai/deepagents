@@ -6,6 +6,7 @@ import os
 import statistics
 import sys
 from datetime import UTC, datetime
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -111,8 +112,6 @@ def pytest_configure(config: pytest.Config) -> None:
 def _langsmith_version() -> str:
     """Return the installed langsmith version, or "unknown" on failure."""
     try:
-        from importlib.metadata import version as pkg_version
-
         return pkg_version("langsmith")
     except Exception:  # noqa: BLE001
         return "unknown"
@@ -134,8 +133,9 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         return
 
     try:
-        from langsmith import client as ls_client  # noqa: I001
-        from langsmith.testing._internal import (
+        # langsmith is an optional dep; localized so missing-package skips.
+        from langsmith import client as ls_client  # noqa: I001, PLC0415
+        from langsmith.testing._internal import (  # noqa: PLC0415
             _LangSmithTestSuite,
             _get_test_suite,
             _start_experiment,
@@ -297,7 +297,8 @@ def _collect_experiment_links() -> list[dict[str, str]]:
     any failure.
     """
     try:
-        from langsmith.testing._internal import _LangSmithTestSuite
+        # langsmith is an optional dep; localized so missing-package skips.
+        from langsmith.testing._internal import _LangSmithTestSuite  # noqa: PLC0415
     except ImportError:
         return []
 
@@ -330,12 +331,7 @@ def _collect_experiment_links() -> list[dict[str, str]]:
             msg = f"warning: found {len(instances)} LangSmith test suite(s) but could not extract any experiment URLs"
             print(msg, file=sys.stderr)  # noqa: T201
     except Exception as exc:  # noqa: BLE001  # private API; best-effort
-        try:
-            from importlib.metadata import version as pkg_version
-
-            ls_ver = pkg_version("langsmith")
-        except Exception:  # noqa: BLE001
-            ls_ver = "unknown"
+        ls_ver = _langsmith_version()
         msg = f"warning: failed to collect experiment links (langsmith=={ls_ver}): {exc!r}"
         print(msg, file=sys.stderr)  # noqa: T201
         return []

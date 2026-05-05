@@ -230,11 +230,13 @@ class TestFilterByMarker:
         deselected: list[object] = []
         return SimpleNamespace(
             getoption=lambda _option: values,
-            hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)),
+            # Lambda adapts the kwarg-only `pytest_deselected(items=...)` call to list.extend.
+            hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)),  # noqa: PLW0108
         )
 
     def test_unknown_value_exits_with_code_1(self):
-        from tests.evals.conftest import _filter_by_marker
+        # Deferred: tests.evals.conftest pulls deepagents_harbor at module load.
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat")]
         config = self._make_config(["unknown_cat"])
@@ -253,7 +255,8 @@ class TestFilterByMarker:
         assert "valid_cat" in msg
 
     def test_known_value_does_not_exit(self):
-        from tests.evals.conftest import _filter_by_marker
+        # Deferred: tests.evals.conftest pulls deepagents_harbor at module load.
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
         config = self._make_config(["valid_cat"])
@@ -270,7 +273,8 @@ class TestFilterByMarker:
         assert mark.args == ("valid_cat",)
 
     def test_empty_option_is_noop(self):
-        from tests.evals.conftest import _filter_by_marker
+        # Deferred: tests.evals.conftest pulls deepagents_harbor at module load.
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
 
         items = [_FakeItem("valid_cat")]
         config = self._make_config([])

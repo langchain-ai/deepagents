@@ -1226,7 +1226,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.0.0,<3.0.0" },
-    { name = "rich", specifier = ">=15.0.0,<16.0.0" },
+    { name = "rich", specifier = ">=14.2.0,<16.0.0" },
     { name = "tavily-python", specifier = ">=0.7.24,<1.0.0" },
     { name = "textual", specifier = ">=8.2.5,<9.0.0" },
     { name = "textual-autocomplete", specifier = ">=4.0.6,<5.0.0" },

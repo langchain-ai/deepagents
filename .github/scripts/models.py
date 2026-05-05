@@ -181,15 +181,15 @@ REGISTRY: tuple[Model, ...] = (
     ),
     # -- Fireworks --
     Model(
-        "fireworks:fireworks/deepseek-v3p2",
+        "fireworks:accounts/fireworks/models/deepseek-v3p2",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/deepseek-v3-0324",
+        "fireworks:accounts/fireworks/models/deepseek-v3-0324",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
+        "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
         frozenset(
             {
                 "eval:set0",
@@ -202,20 +202,75 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "fireworks:fireworks/minimax-m2p1",
+        "fireworks:accounts/fireworks/models/minimax-m2p1",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/kimi-k2p5",
+        "fireworks:accounts/fireworks/models/kimi-k2p5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/glm-5",
+        "fireworks:accounts/fireworks/models/glm-5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/minimax-m2p5",
+        "fireworks:accounts/fireworks/models/minimax-m2p5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/kimi-k2p6",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/minimax-m2p7",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/glm-5p1",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
     ),
     # -- Google --
     Model(
@@ -597,6 +652,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
+            ("open-fireworks", "open-fireworks"),
             ("docs", "docs"),
         ],
     ),

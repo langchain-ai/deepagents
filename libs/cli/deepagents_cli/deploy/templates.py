@@ -53,7 +53,7 @@ def _get_or_create_sandbox(
     scope=None,
     thread_id=None,
     assistant_id=None,
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
     """Get or create a LangSmith sandbox cached by `cache_key`.
 
@@ -69,7 +69,7 @@ def _get_or_create_sandbox(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
-        sandbox_record=sandbox_record,
+        sandbox_info=sandbox_info,
     )
     if backend is not None:
         _SANDBOXES[cache_key] = backend
@@ -136,24 +136,30 @@ def _get_or_create_sandbox(
         ) from e
     backend = LangSmithSandbox(sandbox)
     _SANDBOXES[cache_key] = backend
+    logger.info(
+        "Created LangSmith sandbox %s for key %s",
+        sandbox.name,
+        cache_key,
+    )
     return backend
 
 
-# Reconnect to an existing LangSmith sandbox from a validated sandbox record.
+# Reconnect to an existing LangSmith sandbox from validated sandbox info.
 def _reconnect_sandbox(
     cache_key,
     *,
     scope=None,  # noqa: ARG001
     thread_id=None,  # noqa: ARG001
     assistant_id=None,  # noqa: ARG001
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
-    record = sandbox_record
-    if not record:
+    if not sandbox_info:
         return None
-    sandbox_id = record.get("sandbox_id")
-    if record.get("provider") != "langsmith" or not isinstance(sandbox_id, str):
-        return None
+    sandbox_id = sandbox_info.get("sandbox_id")
+    if sandbox_info.get("provider") != "langsmith":
+        raise RuntimeError("Expected LangSmith sandbox info.")
+    if not isinstance(sandbox_id, str):
+        raise RuntimeError("LangSmith sandbox info is missing sandbox_id.")
 
     from langsmith.sandbox import SandboxClient
 
@@ -196,7 +202,7 @@ def _get_or_create_sandbox(
     scope=None,
     thread_id=None,
     assistant_id=None,
-    sandbox_record=None,  # noqa: ARG001
+    sandbox_info: SandboxInfo | None = None,  # noqa: ARG001
 ):
     """Get or create a Daytona sandbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
@@ -226,7 +232,7 @@ def _get_or_create_sandbox(
     scope=None,
     thread_id=None,
     assistant_id=None,
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
     """Get or create a Modal sandbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
@@ -237,7 +243,7 @@ def _get_or_create_sandbox(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
-        sandbox_record=sandbox_record,
+        sandbox_info=sandbox_info,
     )
     if backend is not None:
         _SANDBOXES[cache_key] = backend
@@ -253,28 +259,27 @@ def _get_or_create_sandbox(
     return backend
 
 
-# Reconnect to an existing Modal sandbox from a validated sandbox record.
+# Reconnect to an existing Modal sandbox from validated sandbox info.
 def _reconnect_sandbox(
     cache_key,
     *,
     scope=None,  # noqa: ARG001
     thread_id=None,  # noqa: ARG001
     assistant_id=None,  # noqa: ARG001
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
-    record = sandbox_record
-    if not record:
+    if not sandbox_info:
         return None
-    sandbox_id = record.get("sandbox_id")
-    if record.get("provider") != "modal" or not isinstance(sandbox_id, str):
-        return None
+    sandbox_id = sandbox_info.get("sandbox_id")
+    if sandbox_info.get("provider") != "modal":
+        raise RuntimeError("Expected Modal sandbox info.")
+    if not isinstance(sandbox_id, str):
+        raise RuntimeError("Modal sandbox info is missing sandbox_id.")
 
     try:
         import modal
 
         sb = modal.Sandbox.from_id(sandbox_id)
-        logger.info("Reconnected Modal sandbox %s for key %s", sandbox_id, cache_key)
-        return ModalSandbox(sandbox=sb)
     except Exception:
         logger.warning(
             "Failed to reconnect Modal sandbox %s for key %s",
@@ -283,6 +288,8 @@ def _reconnect_sandbox(
             exc_info=True,
         )
         return None
+    logger.info("Reconnected Modal sandbox %s for key %s", sandbox_id, cache_key)
+    return ModalSandbox(sandbox=sb)
 '''
 """Sandbox creation block for the Modal provider."""
 
@@ -298,7 +305,7 @@ def _get_or_create_sandbox(
     scope=None,
     thread_id=None,
     assistant_id=None,
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
     """Get or create a Runloop devbox cached by `cache_key`."""
     if cache_key in _SANDBOXES:
@@ -309,7 +316,7 @@ def _get_or_create_sandbox(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
-        sandbox_record=sandbox_record,
+        sandbox_info=sandbox_info,
     )
     if backend is not None:
         _SANDBOXES[cache_key] = backend
@@ -325,21 +332,22 @@ def _get_or_create_sandbox(
     return backend
 
 
-# Reconnect to an existing Runloop devbox from a validated sandbox record.
+# Reconnect to an existing Runloop devbox from validated sandbox info.
 def _reconnect_sandbox(
     cache_key,
     *,
     scope=None,  # noqa: ARG001
     thread_id=None,  # noqa: ARG001
     assistant_id=None,  # noqa: ARG001
-    sandbox_record=None,
+    sandbox_info: SandboxInfo | None = None,
 ):
-    record = sandbox_record
-    if not record:
+    if not sandbox_info:
         return None
-    sandbox_id = record.get("sandbox_id")
-    if record.get("provider") != "runloop" or not isinstance(sandbox_id, str):
-        return None
+    sandbox_id = sandbox_info.get("sandbox_id")
+    if sandbox_info.get("provider") != "runloop":
+        raise RuntimeError("Expected Runloop sandbox info.")
+    if not isinstance(sandbox_id, str):
+        raise RuntimeError("Runloop sandbox info is missing sandbox_id.")
 
     try:
         from runloop_api_client import Runloop
@@ -373,7 +381,7 @@ def _get_or_create_sandbox(
     scope=None,  # noqa: ARG001
     thread_id=None,  # noqa: ARG001
     assistant_id=None,  # noqa: ARG001
-    sandbox_record=None,  # noqa: ARG001
+    sandbox_info: SandboxInfo | None = None,  # noqa: ARG001
 ):
     """No sandbox configured — fall back to a process-wide StateBackend."""
     global _STATE_BACKEND
@@ -770,11 +778,13 @@ Created by `deepagents deploy`. Do not edit manually — changes will be
 overwritten on the next deploy.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
@@ -790,6 +800,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import ToolRuntime
+from langgraph_sdk import get_client
+from pydantic import TypeAdapter, ValidationError
+from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
@@ -799,6 +812,23 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_SNAPSHOT = {sandbox_snapshot!r}
 SANDBOX_IMAGE = {sandbox_image!r}
+DEFAULT_ASSISTANT_ID = {default_assistant_id!r}
+SANDBOX_PROVIDER = {sandbox_provider!r}
+SANDBOX_SCOPE = {sandbox_scope!r}
+_SANDBOX_INFO_KEY = "deepagents_sandbox"
+
+
+class SandboxInfo(TypedDict):
+    """Persisted sandbox identity used to reconnect deploy runs."""
+
+    provider: str
+    sandbox_id: str
+    cache_key: str
+    image: str
+    scope: str
+
+
+_SANDBOX_INFO_ADAPTER = TypeAdapter(SandboxInfo)
 
 # Mount points inside the composite backend.
 # Everything lives under /memories/ — longest-prefix-first routing
@@ -1011,12 +1041,6 @@ def _make_user_namespace_factory(assistant_id: str):
     return _factory
 
 
-DEFAULT_ASSISTANT_ID = {default_assistant_id!r}
-SANDBOX_PROVIDER = {sandbox_provider!r}
-SANDBOX_SCOPE = {sandbox_scope!r}
-_SANDBOX_RECORD_KEY = "deepagents_sandbox"
-
-
 # Build the stable sandbox identity key for the configured sandbox scope.
 def _sandbox_cache_key(
     *, scope: str, thread_id: str | None, assistant_id: str | None
@@ -1026,27 +1050,30 @@ def _sandbox_cache_key(
     return f"thread:{{thread_id or 'local'}}"
 
 
-# Validate that a sandbox record belongs to this generated deployment and scope.
-def _valid_sandbox_record(record: object, *, cache_key: str) -> dict | None:
-    """Validate a sandbox record before reconnecting."""
-    if not isinstance(record, dict):
+# Validate that sandbox info belongs to this generated deployment and scope.
+def _validate_sandbox_info(value: Any, *, cache_key: str) -> SandboxInfo | None:
+    """Validate sandbox info before reconnecting."""
+    try:
+        sandbox_info = _SANDBOX_INFO_ADAPTER.validate_python(value)
+    except ValidationError:
         return None
-    if record.get("provider") != SANDBOX_PROVIDER:
+    if sandbox_info["provider"] != SANDBOX_PROVIDER:
         return None
-    if record.get("scope") != SANDBOX_SCOPE:
+    if sandbox_info["scope"] != SANDBOX_SCOPE:
         return None
-    if record.get("cache_key") != cache_key:
+    if sandbox_info["cache_key"] != cache_key:
         return None
-    if record.get("image") != SANDBOX_IMAGE:
+    if sandbox_info["image"] != SANDBOX_IMAGE:
         return None
-    if not isinstance(record.get("sandbox_id"), str):
-        return None
-    return record
+    return sandbox_info
 
 
-# Convert a resolved sandbox backend into the canonical persisted record shape.
-def _sandbox_record_for_backend(cache_key: str, backend) -> dict:
-    sandbox_id = getattr(backend, "id", None)
+# Convert a resolved sandbox backend into the canonical persisted info shape.
+def _sandbox_info_for_backend(
+    cache_key: str,
+    backend: SandboxBackendProtocol,
+) -> SandboxInfo:
+    sandbox_id = backend.id
     if not isinstance(sandbox_id, str) or not sandbox_id:
         raise RuntimeError("Sandbox backend did not expose a provider sandbox id")
     return {{
@@ -1058,18 +1085,16 @@ def _sandbox_record_for_backend(cache_key: str, backend) -> dict:
     }}
 
 
-# Read the persisted sandbox record from thread or assistant metadata.
-async def _get_sandbox_record_from_metadata(
+# Read the persisted sandbox info from thread or assistant metadata.
+async def _get_sandbox_info_from_metadata(
     cache_key: str,
     *,
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
-) -> dict | None:
-    """Read the durable sandbox record for this thread/assistant scope."""
+) -> SandboxInfo | None:
+    """Read the durable sandbox info for this thread/assistant scope."""
     try:
-        from langgraph_sdk import get_client
-
         client = get_client()
         if scope == "thread":
             if not thread_id:
@@ -1080,54 +1105,50 @@ async def _get_sandbox_record_from_metadata(
                 return None
             target = await client.assistants.get(assistant_id)
         else:
-            return None
+            raise RuntimeError(f"Unsupported sandbox scope {{scope!r}}.")
         metadata = target.get("metadata") or {{}}
-        return _valid_sandbox_record(
-            metadata.get(_SANDBOX_RECORD_KEY),
+        return _validate_sandbox_info(
+            metadata.get(_SANDBOX_INFO_KEY),
             cache_key=cache_key,
         )
-    except Exception:
-        logger.warning(
-            "Failed to read sandbox metadata for key %s",
-            cache_key,
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to read sandbox metadata for key {{cache_key!r}}."
+        ) from exc
 
 
-# Persist the canonical sandbox record back to thread or assistant metadata.
-async def _persist_sandbox_record_if_possible(
-    record: dict,
+# Persist the canonical sandbox info back to thread or assistant metadata.
+async def _persist_sandbox_info_if_possible(
+    sandbox_info: SandboxInfo,
     *,
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
 ) -> None:
-    """Persist the canonical sandbox record to thread/assistant metadata."""
+    """Persist the canonical sandbox info to thread/assistant metadata."""
     try:
-        from langgraph_sdk import get_client
-
         client = get_client()
         if scope == "thread":
             if not thread_id:
                 return
             target = await client.threads.get(thread_id)
             metadata = dict(target.get("metadata") or {{}})
-            metadata[_SANDBOX_RECORD_KEY] = record
+            metadata[_SANDBOX_INFO_KEY] = sandbox_info
             await client.threads.update(thread_id, metadata=metadata)
         elif scope == "assistant":
             if not assistant_id:
                 return
             target = await client.assistants.get(assistant_id)
             metadata = dict(target.get("metadata") or {{}})
-            metadata[_SANDBOX_RECORD_KEY] = record
+            metadata[_SANDBOX_INFO_KEY] = sandbox_info
             await client.assistants.update(assistant_id, metadata=metadata)
-    except Exception:
-        logger.warning(
-            "Failed to persist sandbox metadata for key %s",
-            record.get("cache_key"),
-            exc_info=True,
-        )
+        else:
+            raise RuntimeError(f"Unsupported sandbox scope {{scope!r}}.")
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to persist sandbox metadata for key "
+            f"{{sandbox_info.get('cache_key')!r}}."
+        ) from exc
 
 
 # Resolve the scoped sandbox by checking config, metadata, then creating if needed.
@@ -1136,17 +1157,17 @@ async def _resolve_sandbox_for_scope(
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
-    sandbox_record: object | None = None,
-) -> tuple[SandboxBackendProtocol, dict]:
+    sandbox_info: Any = None,
+) -> tuple[SandboxBackendProtocol, SandboxInfo]:
     """Resolve the sandbox for this scope, reconnecting from metadata before create."""
     cache_key = _sandbox_cache_key(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
     )
-    record = _valid_sandbox_record(sandbox_record, cache_key=cache_key)
-    if record is None:
-        record = await _get_sandbox_record_from_metadata(
+    sandbox_info = _validate_sandbox_info(sandbox_info, cache_key=cache_key)
+    if sandbox_info is None:
+        sandbox_info = await _get_sandbox_info_from_metadata(
             cache_key,
             scope=scope,
             thread_id=thread_id,
@@ -1158,22 +1179,22 @@ async def _resolve_sandbox_for_scope(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
-        sandbox_record=record,
+        sandbox_info=sandbox_info,
     )
-    canonical_record = _sandbox_record_for_backend(cache_key, sandbox_backend)
-    if canonical_record != record:
-        await _persist_sandbox_record_if_possible(
-            canonical_record,
+    canonical_info = _sandbox_info_for_backend(cache_key, sandbox_backend)
+    if canonical_info != sandbox_info:
+        await _persist_sandbox_info_if_possible(
+            canonical_info,
             scope=scope,
             thread_id=thread_id,
             assistant_id=assistant_id,
         )
-    return sandbox_backend, canonical_record
+    return sandbox_backend, canonical_info
 
 
 def _build_backend_factory(
     assistant_id: str,
-    initial_sandbox_record: dict | None = None,
+    initial_sandbox_info: SandboxInfo | None = None,
 ):
     """Return a backend factory that builds the composite per invocation."""
     def _factory(ctx):  # noqa: ARG001
@@ -1186,16 +1207,16 @@ def _build_backend_factory(
             thread_id=thread_id,
             assistant_id=assistant_id,
         )
-        sandbox_record = _valid_sandbox_record(
-            configurable.get(_SANDBOX_RECORD_KEY),
+        sandbox_info = _validate_sandbox_info(
+            configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info,
             cache_key=cache_key,
-        ) or _valid_sandbox_record(initial_sandbox_record, cache_key=cache_key)
+        )
         sandbox_backend = _get_or_create_sandbox(
             cache_key,
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,
             assistant_id=assistant_id,
-            sandbox_record=sandbox_record,
+            sandbox_info=sandbox_info,
         )
 
         routes = {{
@@ -1244,12 +1265,12 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
         thread_id=thread_id,
         assistant_id=assistant_id,
     )
-    sandbox_record = _valid_sandbox_record(
-        configurable.get(_SANDBOX_RECORD_KEY),
+    sandbox_info = _validate_sandbox_info(
+        configurable.get(_SANDBOX_INFO_KEY),
         cache_key=sandbox_cache_key,
     )
-    if sandbox_record is None and (SANDBOX_SCOPE != "thread" or thread_id):
-        _, sandbox_record = await _resolve_sandbox_for_scope(
+    if sandbox_info is None and (SANDBOX_SCOPE != "thread" or thread_id):
+        _, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,
             assistant_id=assistant_id,
@@ -1279,7 +1300,7 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     all_subagents: list = []
     {sync_subagents_load_call}
 
-    backend_factory = _build_backend_factory(assistant_id, sandbox_record)
+    backend_factory = _build_backend_factory(assistant_id, sandbox_info)
 
     # Preload AGENTS.md + user memory into the agent's context.
     memory_sources = [f"{{MEMORIES_PREFIX}}AGENTS.md"]

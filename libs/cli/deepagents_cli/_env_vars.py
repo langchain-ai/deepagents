@@ -68,6 +68,9 @@ HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
 HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
 """Hide the current git branch in the TUI footer when enabled."""
 
+HIDE_SPLASH_VERSION = "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION"
+"""Hide version and local-install details in the splash screen when enabled."""
+
 KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
 

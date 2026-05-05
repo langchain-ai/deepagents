@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 from deepagents_cli import theme
+from deepagents_cli._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
 from deepagents_cli._version import __version__
 from deepagents_cli.config import (
     _get_editable_install_path,
@@ -294,7 +295,8 @@ class WelcomeBanner(Static):
             else TStyle(foreground=TColor.parse(colors.primary), bold=True)
         )
 
-        if not ansi and _is_editable_install():
+        hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        if not hide_version and not ansi and _is_editable_install():
             # Highlight local-install version tag with tool accent; art stays primary.
             dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
             version_tag = f"v{__version__} (local)"
@@ -316,7 +318,7 @@ class WelcomeBanner(Static):
         accent: str | TStyle = "bold" if ansi else colors.primary
         success_color: str = "bold green" if ansi else colors.success
 
-        editable_path = _get_editable_install_path()
+        editable_path = None if hide_version else _get_editable_install_path()
         if editable_path:
             parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 

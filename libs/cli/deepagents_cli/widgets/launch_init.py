@@ -66,6 +66,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
     LaunchNameScreen .launch-init-copy {
         height: auto;
         color: $text;
+        text-align: center;
         margin-bottom: 1;
     }
 
@@ -93,11 +94,12 @@ class LaunchNameScreen(ModalScreen[str | None]):
             Widgets for the modal content.
         """
         with Vertical():
-            yield Static("Welcome to Deep Agents", classes="launch-init-title")
             yield Static(
-                Content.assemble(
-                    "Start this thread by choosing how Deep Agents should address you."
-                ),
+                "Welcome to Interrupt 2026: Deep Agents PvP Speedrun",
+                classes="launch-init-title",
+            )
+            yield Static(
+                Content.assemble("Enter your name to play"),
                 classes="launch-init-copy",
             )
             yield Input(

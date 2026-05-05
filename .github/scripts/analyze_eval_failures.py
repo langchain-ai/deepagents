@@ -129,7 +129,7 @@ async def run(report_path: Path) -> None:
         print(msg, file=sys.stderr)  # noqa: T201
         sys.exit(1)
 
-    model_name = os.environ.get("ANALYSIS_MODEL", _DEFAULT_MODEL)
+    model_name = os.environ.get("ANALYSIS_MODEL") or _DEFAULT_MODEL
     try:
         model = init_chat_model(model_name)
     except Exception as exc:  # noqa: BLE001

@@ -223,7 +223,7 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.prs != '[]' && needs.release-please.outputs.prs
       != ''
-    name: Update lockfiles (${{ matrix.pr.headBranchName }})
+    name: Update lockfiles
     runs-on: ubuntu-latest
     permissions:
       contents: write

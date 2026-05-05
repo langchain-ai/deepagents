@@ -174,10 +174,15 @@ on:
           - "google_genai:gemini-3-flash-preview"
           - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
-        description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
+        description: "Pin OpenRouter to one or more providers (comma-separated allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to openrouter: models."
         required: false
         default: ""
         type: string
+      openrouter_allow_fallbacks:
+        description: "Soft allowlist: prefer the providers in `openrouter_provider` but allow OpenRouter to fall back to any other provider hosting the model. Off (default) = strict pin."
+        required: false
+        default: false
+        type: boolean
       openai_reasoning_effort:
         description: "Reasoning effort for OpenAI models (applied as the `reasoning_effort` model kwarg). Only applies to openai: models."
         required: false
@@ -244,6 +249,7 @@ jobs:
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
@@ -297,6 +303,11 @@ jobs:
           fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${OPENROUTER_ALLOW_FALLBACKS}" = "true" ]; then
+              echo "| \`openrouter_allow_fallbacks\` | ✅ soft (preferred + fallback) |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`openrouter_allow_fallbacks\` | 🔒 strict (no fallback) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
           if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
             echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -353,6 +364,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -375,6 +387,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -397,6 +410,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -419,6 +433,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -441,6 +456,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -463,6 +479,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -485,6 +502,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -507,6 +525,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -529,6 +548,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -551,6 +571,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -573,6 +594,7 @@ jobs:
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit

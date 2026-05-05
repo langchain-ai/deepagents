@@ -248,7 +248,7 @@ Dispatch the **📊 Eval trials - GHA** workflow (`evals_trials.yml`).
 | `model` | Single spec, e.g. `openai:gpt-5.5`. No presets — trials are single-model only |
 | `trials` | 1–20 (the local CLI accepts up to 50; the workflow caps lower since a runaway runner pool is harder to recover than a stuck terminal) |
 | `parallel` | Off (default): trials run sequentially. On: all trials run concurrently |
-| `eval_categories`, `eval_tiers`, `openai_reasoning_effort`, `openrouter_provider` | Same semantics as `evals.yml` |
+| `eval_categories`, `eval_tiers`, `openai_reasoning_effort`, `openrouter_provider`, `openrouter_allow_fallbacks` | Same semantics as `evals.yml` (the OpenRouter pin accepts a comma-separated allowlist; `openrouter_allow_fallbacks` toggles strict pin vs. soft preference) |
 
 The `parallel` toggle exists to trade time for API burst pressure. Sequential mode keeps the per-second call rate equivalent to a single eval run, so it is safe for any provider; parallel mode finishes ~N× faster but bursts every trial's traffic at once and should only be used when the provider can absorb the load.
 

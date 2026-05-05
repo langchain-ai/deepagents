@@ -85,7 +85,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--openrouter-provider",
         action="store",
         default=None,
-        help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
+        help=(
+            "Pin OpenRouter to one or more providers (comma-separated allowlist). "
+            "E.g. --openrouter-provider MiniMax or --openrouter-provider MiniMax,Fireworks"
+        ),
+    )
+    parser.addoption(
+        "--openrouter-allow-fallbacks",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow OpenRouter to fall back outside --openrouter-provider when the "
+            "listed providers are unavailable. Default is strict (no fallbacks)."
+        ),
     )
     parser.addoption(
         "--openai-reasoning-effort",
@@ -196,14 +208,22 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
     kwargs: dict[str, Any] = {}
     provider = request.config.getoption("--openrouter-provider")
+    allow_fallbacks = bool(request.config.getoption("--openrouter-allow-fallbacks"))
     if provider:
         if not model_name.startswith("openrouter:"):
             msg = "--openrouter-provider requires an openrouter: model prefix"
             raise ValueError(msg)
+        providers = [p.strip() for p in provider.split(",") if p.strip()]
+        if not providers:
+            msg = "--openrouter-provider must contain at least one provider name"
+            raise ValueError(msg)
         kwargs["openrouter_provider"] = {
-            "only": [provider],
-            "allow_fallbacks": False,
+            "only": providers,
+            "allow_fallbacks": allow_fallbacks,
         }
+    elif allow_fallbacks:
+        msg = "--openrouter-allow-fallbacks requires --openrouter-provider"
+        raise ValueError(msg)
     if model_name.startswith("openrouter:"):
         # OpenRouter SDK passes timeout=None to httpx, disabling its default
         # 5s read timeout. This causes indefinite hangs on TCP stalls.

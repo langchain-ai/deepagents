@@ -45,10 +45,15 @@ on:
         default: ""
         type: string
       openrouter_provider:
-        description: "Pin OpenRouter to a specific provider (e.g. `MiniMax`)."
+        description: "Pin OpenRouter to one or more providers (comma-separated allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
         required: false
         default: ""
         type: string
+      openrouter_allow_fallbacks:
+        description: "Soft allowlist: prefer the listed providers but allow OpenRouter to fall back. Off (default) = strict pin."
+        required: false
+        default: false
+        type: boolean
       openai_reasoning_effort:
         description: "Reasoning effort for OpenAI models."
         required: false
@@ -129,13 +134,15 @@ jobs:
 
           # Defense in depth: these flow through to `_eval.yml` as shell
           # arguments. Reject anything outside a comma-separated identifier
-          # list before we hand them off.
+          # list before we hand them off. `openrouter_provider` accepts a
+          # comma-separated allowlist (e.g. `MiniMax,Fireworks`) so it uses
+          # the CSV pattern; `repl` is single-valued so it stays on SLUG.
           _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
           _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
           for name, value, pattern in (
               ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
-              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _SLUG_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _CSV_RE),
               ("repl", os.environ.get("REPL", ""), _SLUG_RE),
           ):
               if not pattern.match(value):
@@ -186,6 +193,7 @@ jobs:
       eval_tiers: ${{ inputs.eval_tiers }}
       analyze_failures: false
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
       repl: ${{ inputs.repl }}
     secrets: inherit
@@ -328,6 +336,29 @@ jobs:
                           md=fmt(t.get("median_duration_s")),
                       )
                   )
+
+          # Per-trial × per-category matrix: lets you see whether a regression
+          # is concentrated in one category or spread across all of them — info
+          # the across-trial mean/stdev table above hides.
+          cat_keys = sorted(cats.keys())
+          if trials and cat_keys:
+              labels_path = Path(os.environ["GITHUB_WORKSPACE"]) / "libs/evals/deepagents_evals/categories.json"
+              labels = {}
+              try:
+                  labels = json.loads(labels_path.read_text()).get("labels", {})
+              except (FileNotFoundError, json.JSONDecodeError) as exc:
+                  print(f"::warning::Could not load category labels from {labels_path}: {exc}")
+              def esc(s): return str(s).replace("|", "\\|")
+              header = "| # | " + " | ".join(esc(labels.get(c, c)) for c in cat_keys) + " |"
+              sep = "|---:|" + "|".join("---:" for _ in cat_keys) + "|"
+              lines += ["", "### Per-trial correctness by category", "", header, sep]
+              for t in trials:
+                  scores = t.get("category_scores") or {}
+                  cells = [
+                      "-" if scores.get(c) is None else fmt(scores.get(c), 3)
+                      for c in cat_keys
+                  ]
+                  lines.append(f"| {t.get('trial_index')} | " + " | ".join(cells) + " |")
 
           out = os.environ.get("GITHUB_STEP_SUMMARY")
           if out:

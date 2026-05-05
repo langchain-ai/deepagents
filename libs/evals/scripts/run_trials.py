@@ -282,6 +282,8 @@ def _build_pytest_args(args: argparse.Namespace, report_path: Path) -> list[str]
         cmd.extend(["--openai-reasoning-effort", args.openai_reasoning_effort])
     if args.openrouter_provider:
         cmd.extend(["--openrouter-provider", args.openrouter_provider])
+    if args.openrouter_allow_fallbacks:
+        cmd.append("--openrouter-allow-fallbacks")
     if args.repl:
         cmd.extend(["--repl", args.repl])
     cmd.extend(args.pytest_extra)
@@ -493,7 +495,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--openrouter-provider",
         default=None,
-        help="Pin OpenRouter to a specific provider (e.g. MiniMax).",
+        help=(
+            "Pin OpenRouter to one or more providers (comma-separated allowlist), "
+            "e.g. MiniMax or MiniMax,Fireworks."
+        ),
+    )
+    parser.add_argument(
+        "--openrouter-allow-fallbacks",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow OpenRouter to fall back outside --openrouter-provider when the "
+            "listed providers are unavailable. Default is strict (no fallbacks)."
+        ),
     )
     parser.add_argument(
         "--repl",

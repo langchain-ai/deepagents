@@ -42,10 +42,15 @@ on:
         default: "anthropic:claude-haiku-4-5-20251001"
         type: string
       openrouter_provider:
-        description: "Pin OpenRouter to a single provider."
+        description: "Pin OpenRouter to one or more providers (comma-separated allowlist)."
         required: false
         default: ""
         type: string
+      openrouter_allow_fallbacks:
+        description: "Allow OpenRouter to fall back outside `openrouter_provider`. Default is strict (no fallbacks)."
+        required: false
+        default: false
+        type: boolean
       openai_reasoning_effort:
         description: "Reasoning effort for OpenAI models (minimal | low | medium | high | xhigh)."
         required: false
@@ -170,9 +175,14 @@ jobs:
         if: inputs.openrouter_provider != '' && inputs.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
         run: |
           provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
-          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s\n' "${PYTEST_ADDOPTS}" "${provider}" >> "$GITHUB_ENV"
+          extra=""
+          if [ "${OPENROUTER_ALLOW_FALLBACKS}" = "true" ]; then
+            extra=" --openrouter-allow-fallbacks"
+          fi
+          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s%s\n' "${PYTEST_ADDOPTS}" "${provider}" "${extra}" >> "$GITHUB_ENV"
 
       - name: "🧠 Apply OpenAI reasoning effort"
         if: inputs.openai_reasoning_effort != '' && inputs.provider == 'openai'

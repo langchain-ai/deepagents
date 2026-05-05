@@ -321,6 +321,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "eval_tier": [],
         "openai_reasoning_effort": None,
         "openrouter_provider": None,
+        "openrouter_allow_fallbacks": False,
         "repl": None,
         "out_dir": Path("/tmp/out"),
         "pytest_extra": [],
@@ -361,8 +362,23 @@ class TestBuildPytestArgs:
         assert cmd[cmd.index("--openai-reasoning-effort") + 1] == "medium"
         assert "--openrouter-provider" in cmd
         assert cmd[cmd.index("--openrouter-provider") + 1] == "MiniMax"
+        assert "--openrouter-allow-fallbacks" not in cmd
         assert "--repl" in cmd
         assert cmd[cmd.index("--repl") + 1] == "quickjs"
+
+    def test_openrouter_provider_accepts_comma_separated_allowlist(self) -> None:
+        args = _make_args(openrouter_provider="MiniMax,Fireworks")
+        cmd = run_trials._build_pytest_args(args, Path("/tmp/r.json"))
+        # Pytest does the parsing; the script just forwards the string verbatim.
+        assert cmd[cmd.index("--openrouter-provider") + 1] == "MiniMax,Fireworks"
+
+    def test_openrouter_allow_fallbacks_passed_as_bare_flag(self) -> None:
+        args = _make_args(
+            openrouter_provider="MiniMax,Fireworks",
+            openrouter_allow_fallbacks=True,
+        )
+        cmd = run_trials._build_pytest_args(args, Path("/tmp/r.json"))
+        assert "--openrouter-allow-fallbacks" in cmd
 
     def test_pytest_extra_forwarded(self) -> None:
         args = _make_args(pytest_extra=["-k", "smoke"])

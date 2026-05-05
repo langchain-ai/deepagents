@@ -43,9 +43,13 @@ _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "baseten:moonshotai/Kimi-K2.6",
         "google_genai:gemini-3.1-pro-preview",
         "openai:gpt-5.4",
         "openai:gpt-5.5",
+        "openrouter:deepseek/deepseek-v4-pro",
+        "openrouter:minimax/minimax-m2.7",
+        "openrouter:z-ai/glm-5.1",
     }
 )
 """Curated frontier-tier models shown in the launch/init picker."""

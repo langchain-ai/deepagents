@@ -781,8 +781,12 @@ class TestCuratedModelSelection:
         all_models = [
             ("google_genai:gemma-4-26b-it", "google_genai"),
             ("anthropic:claude-opus-4-7", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.5", "openai"),
+            ("openrouter:minimax/minimax-m2.7", "openrouter"),
+            ("openrouter:z-ai/glm-5.1", "openrouter"),
+            ("openrouter:deepseek/deepseek-v4-pro", "openrouter"),
         ]
 
         curated = ModelSelectorScreen._curate_models(
@@ -794,8 +798,12 @@ class TestCuratedModelSelection:
 
         assert curated == [
             ("anthropic:claude-opus-4-7", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.5", "openai"),
+            ("openrouter:minimax/minimax-m2.7", "openrouter"),
+            ("openrouter:z-ai/glm-5.1", "openrouter"),
+            ("openrouter:deepseek/deepseek-v4-pro", "openrouter"),
         ]
 
     def test_curated_models_fall_back_to_full_list_without_allowlist(self) -> None:

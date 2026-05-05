@@ -501,6 +501,10 @@ class TestBundleAuth:
         assert "auth = Auth()" in content
         assert "SUPABASE_URL" in content
         assert "add_owner" in content
+        assert "@auth.on\nasync def add_owner" in content
+        assert "@auth.on.store\nasync def scope_store" in content
+        assert "@auth.on.crons.create\nasync def scope_cron_create" in content
+        assert "@auth.on.crons\nasync def scope_crons" in content
 
     def test_auth_py_not_generated_without_auth(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")
@@ -534,6 +538,10 @@ class TestBundleAuth:
         compile(content, "<auth.py>", "exec")
         assert "CLERK_SECRET_KEY" in content
         assert "add_owner" in content
+        assert "@auth.on\nasync def add_owner" in content
+        assert "@auth.on.store\nasync def scope_store" in content
+        assert "@auth.on.crons.create\nasync def scope_cron_create" in content
+        assert "@auth.on.crons\nasync def scope_crons" in content
 
     def test_supabase_auth_py_valid_python(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")

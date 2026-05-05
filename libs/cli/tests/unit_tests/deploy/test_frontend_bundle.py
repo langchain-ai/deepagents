@@ -86,7 +86,9 @@ def test_bundle_emits_app_py(
     assert "Starlette" in content
     assert "StaticFiles" in content
     assert "TypeAdapter(SandboxRequest)" in content
+    assert "from auth import get_current_user" in content
     assert '_AUTH_PROVIDER = "supabase"' in content
+    assert "await get_current_user(" in content
     assert 'Route("/sandboxes/{sandbox_id}/files"' in content
     assert "_UPLOADS_ENABLED = False" in content
 
@@ -209,7 +211,7 @@ def test_bundle_succeeds_with_anonymous_provider(
     assert '"identity": "anonymous"' in auth_py
     app_py = (build_dir / "app.py").read_text(encoding="utf-8")
     assert '_AUTH_PROVIDER = "anonymous"' in app_py
-    assert '_AUTH_PROVIDER in {"anonymous", "none"}' in app_py
+    assert "await get_current_user(authorization=authorization)" in app_py
 
     # Frontend bundle copied with anonymous runtime config injected.
     html = (build_dir / "frontend_dist" / "index.html").read_text(encoding="utf-8")

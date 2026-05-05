@@ -410,12 +410,12 @@ SANDBOX_BLOCKS = {
 AUTH_ON_HANDLER = '''\
 
 
-@auth.on.threads
+@auth.on
 async def add_owner(
     ctx: Auth.types.AuthContext,
     value: dict,
 ):
-    """Scope all resources to the authenticated user."""
+    """Scope metadata-backed resources to the authenticated user."""
     if is_studio_user(ctx.user):
         return {}
 
@@ -423,6 +423,47 @@ async def add_owner(
     metadata = value.setdefault("metadata", {})
     metadata.update(filters)
     return filters
+
+
+@auth.on.store
+async def scope_store(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.store.value,
+):
+    """Scope store operations to the authenticated user's namespace."""
+    if is_studio_user(ctx.user):
+        return None
+
+    namespace = tuple(value["namespace"]) if value.get("namespace") else ()
+    if not namespace or namespace[0] != ctx.user.identity:
+        namespace = (ctx.user.identity, *namespace)
+    value["namespace"] = namespace
+    return None
+
+
+@auth.on.crons.create
+async def scope_cron_create(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.crons.create.value,
+):
+    """Create crons under the authenticated user's identity."""
+    if is_studio_user(ctx.user):
+        return None
+
+    value["user_id"] = ctx.user.identity
+    return None
+
+
+@auth.on.crons
+async def scope_crons(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.crons.value,
+):
+    """Scope cron operations to the authenticated user."""
+    if is_studio_user(ctx.user):
+        return None
+
+    return {"user_id": ctx.user.identity}
 '''
 
 AUTH_BLOCK_SUPABASE = '''\
@@ -1382,7 +1423,9 @@ from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from auth import get_current_user
 from deploy_graph import DEFAULT_ASSISTANT_ID, SANDBOX_SCOPE, _resolve_sandbox_for_scope
+from langgraph_sdk import Auth
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 _UPLOADS_ENABLED = __DEEPAGENTS_UPLOADS_ENABLED__
@@ -1404,25 +1447,24 @@ class UploadRequest(SandboxRequest):
     filename: str | None = None
 
 
-class AuthHeaders(BaseModel):
-    authorization: str | None = None
-
-
 _SANDBOX_REQUEST_ADAPTER = TypeAdapter(SandboxRequest)
 _UPLOAD_REQUEST_ADAPTER = TypeAdapter(UploadRequest)
-_AUTH_HEADERS_ADAPTER = TypeAdapter(AuthHeaders)
 
 
-def _require_authenticated_api_request(request: Request) -> JSONResponse | None:
-    if _AUTH_PROVIDER in {"anonymous", "none"}:
-        return None
-    headers = _AUTH_HEADERS_ADAPTER.validate_python(
-        {"authorization": request.headers.get("authorization")}
-    )
-    if not headers.authorization or not headers.authorization.startswith("Bearer "):
+async def _require_authenticated_api_request(request: Request) -> JSONResponse | None:
+    authorization = request.headers.get("authorization")
+    try:
+        if _AUTH_PROVIDER == "anonymous":
+            await get_current_user(authorization=authorization)
+        else:
+            await get_current_user(
+                authorization=authorization,
+                path=request.url.path,
+            )
+    except Auth.exceptions.HTTPException as exc:
         return JSONResponse(
-            {"error": "missing or invalid authorization header"},
-            status_code=401,
+            {"error": exc.detail},
+            status_code=exc.status_code,
         )
     return None
 
@@ -1501,7 +1543,7 @@ async def ensure_sandbox(request: Request):
             {"error": "file uploads require a sandbox"},
             status_code=404,
         )
-    auth_error = _require_authenticated_api_request(request)
+    auth_error = await _require_authenticated_api_request(request)
     if auth_error is not None:
         return auth_error
 
@@ -1532,7 +1574,7 @@ async def upload_file(request: Request):
             {"error": "file uploads require a sandbox"},
             status_code=404,
         )
-    auth_error = _require_authenticated_api_request(request)
+    auth_error = await _require_authenticated_api_request(request)
     if auth_error is not None:
         return auth_error
 

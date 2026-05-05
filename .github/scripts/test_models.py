@@ -57,7 +57,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "anthropic:claude-sonnet-4-6",
                 "provider": "anthropic",
-                "artifact_key": "000-anthropic-claude-sonnet-4-6",
+                "artifact_key": "anthropic-claude-sonnet-4-6",
             }
         ]
     }
@@ -66,7 +66,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "openrouter:moonshotai/kimi-k2.6",
                 "provider": "openrouter",
-                "artifact_key": "001-openrouter-moonshotai-kimi-k2.6",
+                "artifact_key": "openrouter-moonshotai-kimi-k2.6",
             }
         ]
     }
@@ -75,7 +75,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "new_provider:model-1",
                 "provider": "new_provider",
-                "artifact_key": "002-new_provider-model-1",
+                "artifact_key": "new_provider-model-1",
             }
         ]
     }
@@ -91,7 +91,7 @@ def test_harbor_matrix_output_stays_flat(models: ModuleType) -> None:
                 {
                     "model": "openai:gpt-5.4",
                     "provider": "openai",
-                    "artifact_key": "000-openai-gpt-5.4",
+                    "artifact_key": "openai-gpt-5.4",
                 }
             ]
         }
@@ -174,28 +174,106 @@ def test_has_models_serializes_to_lowercase_bool(models: ModuleType) -> None:
 
 
 @pytest.mark.parametrize(
-    ("index", "spec", "expected"),
+    ("spec", "expected"),
     [
-        (0, "openrouter:moonshotai/kimi-k2.6", "000-openrouter-moonshotai-kimi-k2.6"),
-        (5, "openrouter:foo//bar", "005-openrouter-foo-bar"),
-        (12, ":leading-colon", "012-leading-colon"),
-        (99, "trailing-slash/", "099-trailing-slash"),
-        (7, "anthropic:claude-opus-4-7", "007-anthropic-claude-opus-4-7"),
+        ("openrouter:moonshotai/kimi-k2.6", "openrouter-moonshotai-kimi-k2.6"),
+        ("openrouter:foo//bar", "openrouter-foo-bar"),
+        (":leading-colon", "leading-colon"),
+        ("trailing-slash/", "trailing-slash"),
+        ("anthropic:claude-opus-4-7", "anthropic-claude-opus-4-7"),
     ],
 )
 def test_artifact_key_handles_disallowed_characters(
-    models: ModuleType, index: int, spec: str, expected: str
+    models: ModuleType, spec: str, expected: str
 ) -> None:
     """`_artifact_key` strips/collapses every char outside `[a-zA-Z0-9._-]`."""
-    assert models._artifact_key(index, spec) == expected
+    assert models._artifact_key(spec) == expected
 
 
-def test_artifact_key_index_disambiguates_identical_slugs(
+def test_resolve_models_dedupes_repeated_specs(models: ModuleType) -> None:
+    """`_resolve_models` deduplicates so `artifact_key` cannot collide downstream.
+
+    Without this, a typo'd `models_override` like `openai:gpt-5.5,openai:gpt-5.5`
+    would produce two matrix rows that race to upload artifacts under the same
+    name and fail mid-run.
+    """
+    resolved = models._resolve_models(
+        "eval", "anthropic:claude-sonnet-4-6,anthropic:claude-sonnet-4-6"
+    )
+    assert resolved == ["anthropic:claude-sonnet-4-6"]
+
+
+def test_resolve_models_preserves_first_occurrence_order(
     models: ModuleType,
 ) -> None:
-    """Same spec at different indexes still produces unique keys."""
-    spec = "anthropic:claude-sonnet-4-6"
-    assert models._artifact_key(0, spec) != models._artifact_key(1, spec)
+    """Dedupe keeps each spec at its first position — guards against `set()`.
+
+    A future "simplification" to `list(set(specs))` would silently scramble
+    the matrix order; this test pins the `dict.fromkeys` contract.
+    """
+    resolved = models._resolve_models(
+        "eval",
+        "anthropic:claude-sonnet-4-6,openai:gpt-5.5,anthropic:claude-sonnet-4-6,"
+        "openai:gpt-5.5,google_genai:gemini-3.1-pro",
+    )
+    assert resolved == [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-5.5",
+        "google_genai:gemini-3.1-pro",
+    ]
+
+
+def test_resolve_models_dedupes_preset_branch(models: ModuleType) -> None:
+    """Dedupe applies to preset resolution too, not just manual `models_override`.
+
+    The `_artifact_key` docstring promises uniqueness is enforced by
+    `_resolve_models`; this test pins that promise across both code paths so
+    a future REGISTRY edit that accidentally duplicates a spec won't blow up
+    the matrix mid-run.
+    """
+    resolved = models._resolve_models("eval", "all")
+    assert len(resolved) == len(set(resolved))
+
+
+def test_matrix_outputs_rejects_colliding_artifact_keys(
+    models: ModuleType,
+) -> None:
+    """Defense-in-depth: if dedupe is ever bypassed, `_matrix_outputs` raises.
+
+    Bypasses `_resolve_models` to feed two distinct specs that slugify to the
+    same key (`foo:a/b` and `foo:a-b` both become `foo-a-b`) — the actual
+    failure mode the tripwire defends against. Asserts both the slug and the
+    raw model specs appear in the message so a CI failure is self-diagnosing.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        models._matrix_outputs("eval", ["foo:a/b", "foo:a-b"])
+    msg = str(excinfo.value)
+    assert "Duplicate artifact_key" in msg
+    assert "foo-a-b" in msg
+    assert "foo:a/b" in msg
+    assert "foo:a-b" in msg
+
+
+def test_matrix_outputs_rejects_three_way_collision(
+    models: ModuleType,
+) -> None:
+    """Three-way collision lists the offending key once, with all three specs.
+
+    Exercises the `len(specs) > 1` branch in the collision detector — the
+    list-of-models grouping must not split a 3+ collision into separate
+    entries or duplicate the slug in the message.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        models._matrix_outputs(
+            "eval",
+            ["foo:a/b", "foo:a-b", "foo:a:b"],
+        )
+    msg = str(excinfo.value)
+    # Slug appears exactly once; all three offending specs are named.
+    assert msg.count("'foo-a-b'") == 1
+    assert "foo:a/b" in msg
+    assert "foo:a-b" in msg
+    assert "foo:a:b" in msg
 
 
 def test_provider_returns_whole_string_when_no_colon(models: ModuleType) -> None:

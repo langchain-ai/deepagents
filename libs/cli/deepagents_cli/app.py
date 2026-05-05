@@ -829,6 +829,11 @@ class DeepAgentsApp(App):
         during background startup.
         """
 
+        self._resume_thread_resolved_event = asyncio.Event()
+        """Set once `-r` resume resolution has completed or is unnecessary."""
+        if resume_thread is None:
+            self._resume_thread_resolved_event.set()
+
         self._initial_prompt = initial_prompt
         """Prompt to auto-submit after first paint (from `-m`)."""
 
@@ -1728,15 +1733,15 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resume = self._resume_thread_intent
-        self._resume_thread_intent = None  # consumed
-
-        if not resume:
-            return
-
-        default_agent = DEFAULT_ASSISTANT_ID
-
         try:
+            resume = self._resume_thread_intent
+            self._resume_thread_intent = None  # consumed
+
+            if not resume:
+                return
+
+            default_agent = DEFAULT_ASSISTANT_ID
+
             if resume == "__MOST_RECENT__":
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
@@ -1779,6 +1784,8 @@ class DeepAgentsApp(App):
                 "Could not look up thread history. Starting new session.",
                 severity="warning",
             )
+        finally:
+            self._resume_thread_resolved_event.set()
 
         # Update session state if ready (may still be initializing in a
         # concurrent worker)
@@ -3374,7 +3381,6 @@ class DeepAgentsApp(App):
 
             if name:
                 self._launch_user_name = name
-                self._dispatch_launch_name_hook(name)
                 name_memory_task = asyncio.create_task(
                     self._write_launch_name_memory(name)
                 )
@@ -3474,15 +3480,16 @@ class DeepAgentsApp(App):
             AppMessage(Content.from_markup("Welcome, $name.", name=name))
         )
 
-    def _dispatch_launch_name_hook(self, name: str) -> None:
+    @staticmethod
+    def _dispatch_launch_name_hook(name: str, assistant_id: str) -> None:
         """Fire the onboarding name hook for external integrations.
 
         Args:
             name: Submitted user name.
+            assistant_id: Agent identifier associated with the submitted name.
         """
         from deepagents_cli.hooks import dispatch_hook_fire_and_forget
 
-        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
         dispatch_hook_fire_and_forget(
             "user.name.set",
             {
@@ -3517,7 +3524,9 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.onboarding import write_onboarding_name_memory
 
+        await self._resume_thread_resolved_event.wait()
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        self._dispatch_launch_name_hook(name, assistant_id)
         ok = await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
         if not ok:
             self.notify(

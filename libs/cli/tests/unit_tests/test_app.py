@@ -567,7 +567,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         assert app._launch_user_name == "Ada"
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         write_name.assert_called_once_with("Ada", "coder")
         switch_model_mock.assert_awaited_once_with(
@@ -614,7 +614,6 @@ class TestStartupSequence:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
-        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         model_prompted = asyncio.Event()
         release_write = asyncio.Event()
@@ -641,7 +640,6 @@ class TestStartupSequence:
             await asyncio.wait_for(task, timeout=1)
 
         app._write_launch_name_memory.assert_awaited_once_with("Ada")  # type: ignore[attr-defined]
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
         app._prompt_launch_dependencies_then_model.assert_awaited_once_with()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
 
@@ -699,7 +697,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
@@ -734,7 +732,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
-        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
@@ -804,8 +802,45 @@ class TestStartupSequence:
         with patch(
             "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
         ) as dispatch_hook:
-            app._dispatch_launch_name_hook("Ada")
+            app._dispatch_launch_name_hook("Ada", "coder")
 
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
+    async def test_write_launch_name_waits_for_resume_agent_resolution(self) -> None:
+        """The name hook should use the agent resolved from a resumed thread."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id=None,
+            resume_thread="thread-from-coder",
+            thread_id="thread-123",
+        )
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+            patch(
+                "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
+            task = asyncio.create_task(app._write_launch_name_memory("Ada"))
+            await asyncio.sleep(0)
+
+            write_name.assert_not_called()
+            dispatch_hook.assert_not_called()
+
+            app._assistant_id = "coder"
+            app._resume_thread_resolved_event.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        write_name.assert_called_once_with("Ada", "coder")
         dispatch_hook.assert_called_once_with(
             "user.name.set",
             {

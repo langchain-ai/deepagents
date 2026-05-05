@@ -275,6 +275,16 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
+  test-quickjs:
+    name: "🧪 Test quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.11"
+
   test-repl:
     name: "🧪 Test repl"
     needs: changes
@@ -355,6 +365,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-quickjs
       - test-repl
       - benchmark-deepagents
       - benchmark-cli

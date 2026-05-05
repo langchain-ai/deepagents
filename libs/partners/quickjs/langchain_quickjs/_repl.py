@@ -725,15 +725,14 @@ class _ThreadREPL:
                 return
             # quickjs-rs can re-raise host callback exceptions directly
             # (tool failures, bridge runtime errors) instead of always
-            # wrapping them as JSError(name="HostError", ...). Preserve the
-            # REPL contract and surface them as HostError blocks.
+            # wrapping them as JSError(name="HostError", ...). Keep
+            # PTCCallBudgetExceeded model-recoverable, but let all other
+            # host errors propagate to ToolNode's default handler.
             if isinstance(error, _PTCCallBudgetExceededError):
                 outcome.error_type = "PTCCallBudgetExceeded"
                 outcome.error_message = error.render_message()
                 return
-            logger.warning("console-bridge host error: %s", error)
-            outcome.error_type = "HostError"
-            outcome.error_message = "Host function failed"
+            raise error
         finally:
             _clear_exception_references(error)
 

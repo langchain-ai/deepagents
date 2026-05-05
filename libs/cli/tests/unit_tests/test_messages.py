@@ -624,60 +624,6 @@ class TestAppMessageOnClickOpensLink:
 _MSG_STORE_PATH = "deepagents_cli.widgets.messages"
 
 
-class TestShowTimestampToast:
-    """Tests for `_show_timestamp_toast` helper."""
-
-    def test_noop_when_widget_not_mounted(self) -> None:
-        """Should not raise when widget has no app."""
-        widget = MagicMock(spec=["app", "id"])
-        # Simulate unmounted widget: .app property raises
-        type(widget).app = property(
-            lambda _: (_ for _ in ()).throw(RuntimeError("no app"))
-        )
-        widget.id = "msg-abc"
-        _show_timestamp_toast(widget)  # should not raise
-
-    def test_noop_when_widget_id_is_none(self) -> None:
-        """Should return early when widget.id is None."""
-        widget = MagicMock()
-        widget.id = None
-        widget.app = MagicMock()
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_noop_when_message_not_in_store(self) -> None:
-        """Should return early when message is not found in the store."""
-        widget = MagicMock()
-        widget.id = "msg-missing"
-        widget.app._message_store.get_message.return_value = None
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_shows_toast_with_formatted_timestamp(self) -> None:
-        """Should call notify with a human-readable timestamp."""
-        from deepagents_cli.widgets.message_store import MessageData, MessageType
-
-        data = MessageData(
-            type=MessageType.USER,
-            content="hello",
-            id="msg-test123",
-            timestamp=1709744055.0,  # 2024-03-06 17:14:15 UTC
-        )
-        widget = MagicMock()
-        widget.id = "msg-test123"
-        widget.app._message_store.get_message.return_value = data
-
-        _show_timestamp_toast(widget)
-
-        widget.app.notify.assert_called_once()
-        call_args = widget.app.notify.call_args
-        label = call_args[0][0]
-        # Should contain month abbreviation and time components
-        assert "Mar" in label
-        assert ":" in label
-        assert call_args[1]["timeout"] == 3
-
-
 class TestTimestampClickMixin:
     """Tests for `_TimestampClickMixin` on message widgets."""
 

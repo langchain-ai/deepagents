@@ -60,7 +60,7 @@ def _show_timestamp_toast(widget: Static | Vertical) -> None:  # noqa: ARG001  #
     #     return  # noqa: ERA001
     # if not widget.id:
     #     return  # noqa: ERA001
-    # store = app._message_store  # type: ignore[attr-defined]  # noqa: ERA001
+    # store = app._message_store  # noqa: ERA001
     # data = store.get_message(widget.id)  # noqa: ERA001
     # if not data:
     #     return  # noqa: ERA001

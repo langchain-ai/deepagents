@@ -552,6 +552,7 @@ class TestStartupSequence:
 
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = track_mount_message  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -566,6 +567,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         assert app._launch_user_name == "Ada"
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         write_name.assert_called_once_with("Ada", "coder")
         switch_model_mock.assert_awaited_once_with(
@@ -612,6 +614,7 @@ class TestStartupSequence:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         app._push_screen_wait = AsyncMock(return_value="Ada")  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         model_prompted = asyncio.Event()
         release_write = asyncio.Event()
@@ -638,6 +641,7 @@ class TestStartupSequence:
             await asyncio.wait_for(task, timeout=1)
 
         app._write_launch_name_memory.assert_awaited_once_with("Ada")  # type: ignore[attr-defined]
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
         app._prompt_launch_dependencies_then_model.assert_awaited_once_with()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
 
@@ -680,6 +684,7 @@ class TestStartupSequence:
         app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -694,6 +699,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
@@ -713,6 +719,7 @@ class TestStartupSequence:
         switch_model_mock = AsyncMock()
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -727,6 +734,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada")  # type: ignore[attr-defined]
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
@@ -741,6 +749,7 @@ class TestStartupSequence:
         switch_failure = RuntimeError("missing credentials")
         app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         notify_mock = MagicMock()
         app.notify = notify_mock  # type: ignore[method-assign]
 
@@ -784,6 +793,27 @@ class TestStartupSequence:
         assert notify_kwargs.get("severity") == "warning"
         assert notify_kwargs.get("markup") is False
 
+    def test_dispatch_launch_name_hook_sends_name_payload(self) -> None:
+        """The onboarding name hook should include the submitted name."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+
+        with patch(
+            "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+        ) as dispatch_hook:
+            app._dispatch_launch_name_hook("Ada")
+
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
     async def test_launch_init_sequence_times_out_waiting_for_server(self) -> None:
         """A stuck server should not trap onboarding past the timeout."""
         from deepagents_cli import app as app_module
@@ -796,6 +826,7 @@ class TestStartupSequence:
         app._switch_model = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app._connecting = True
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()

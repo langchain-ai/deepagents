@@ -3374,6 +3374,7 @@ class DeepAgentsApp(App):
 
             if name:
                 self._launch_user_name = name
+                self._dispatch_launch_name_hook(name)
                 name_memory_task = asyncio.create_task(
                     self._write_launch_name_memory(name)
                 )
@@ -3471,6 +3472,23 @@ class DeepAgentsApp(App):
         """Mount the personalized onboarding welcome message."""
         await self._mount_message(
             AppMessage(Content.from_markup("Welcome, $name.", name=name))
+        )
+
+    def _dispatch_launch_name_hook(self, name: str) -> None:
+        """Fire the onboarding name hook for external integrations.
+
+        Args:
+            name: Submitted user name.
+        """
+        from deepagents_cli.hooks import dispatch_hook_fire_and_forget
+
+        assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        dispatch_hook_fire_and_forget(
+            "user.name.set",
+            {
+                "name": name,
+                "assistant_id": assistant_id,
+            },
         )
 
     async def _mark_onboarding_complete(self) -> None:

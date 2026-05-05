@@ -629,7 +629,7 @@ class _ThreadREPL:
                 self._installed_skills.add(cache_key)
         return errors
 
-    async def _aeval_async(
+    async def _aeval_async(  # noqa: C901
         self,
         code: str,
         *,
@@ -674,67 +674,47 @@ class _ThreadREPL:
         try:
             value = await ctx.eval_async(code, timeout=self._per_call_timeout)
             outcome.result = stringify(value)
+        except _PTCCallBudgetExceededError as e:
+            outcome.error_type = "PTCCallBudgetExceeded"
+            outcome.error_message = e.render_message()
+            _clear_exception_references(e)
+        except MarshalError as e:
+            outcome.result_kind = "handle"
+            outcome.result = await self._describe_via_handle_async(code)
+            _clear_exception_references(e)
+        except QJSTimeoutError as e:
+            outcome.error_type = "Timeout"
+            outcome.error_message = str(e)
+            _clear_exception_references(e)
+        except DeadlockError as e:
+            # Top-level Promise never resolved and no async host work in
+            # flight. Surface as a distinct error type because the fix
+            # is user-level (their JS has an un-resolvable Promise or a
+            # sync host fn that should be async); a plain error-type
+            # message without context would make this hard to diagnose.
+            outcome.error_type = "Deadlock"
+            outcome.error_message = str(e)
+            _clear_exception_references(e)
         except HostCancellationError:
             # JS declined to catch a cancellation — re-raise as
             # CancelledError so asyncio unwinds the caller's task.
             # Do not record anything in ``outcome``; the call is dead.
             raise asyncio.CancelledError from None
-        except Exception as e:  # noqa: BLE001
-            await self._record_eval_error(outcome, error=e, code=code)
+        except JSError as e:
+            self._record_js_error(outcome, e)
+            _clear_exception_references(e)
+        except ConcurrentEvalError as e:
+            outcome.error_type = "ConcurrentEval"
+            outcome.error_message = str(e)
+            _clear_exception_references(e)
+        except MemoryLimitError as e:
+            outcome.error_type = "OutOfMemory"
+            outcome.error_message = str(e)
+            _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
-
-    async def _record_eval_error(
-        self,
-        outcome: EvalOutcome,
-        *,
-        error: Exception,
-        code: str,
-    ) -> None:
-        """Map eval exceptions to wire-visible outcome fields."""
-        try:
-            if isinstance(error, MarshalError):
-                outcome.result_kind = "handle"
-                outcome.result = await self._describe_via_handle_async(code)
-                return
-            if isinstance(error, QJSTimeoutError):
-                outcome.error_type = "Timeout"
-                outcome.error_message = str(error)
-                return
-            if isinstance(error, DeadlockError):
-                # Top-level Promise never resolved and no async host work in
-                # flight. Surface as a distinct error type because the fix
-                # is user-level (their JS has an un-resolvable Promise or a
-                # sync host fn that should be async); a plain error-type
-                # message without context would make this hard to diagnose.
-                outcome.error_type = "Deadlock"
-                outcome.error_message = str(error)
-                return
-            if isinstance(error, JSError):
-                self._record_js_error(outcome, error)
-                return
-            if isinstance(error, ConcurrentEvalError):
-                outcome.error_type = "ConcurrentEval"
-                outcome.error_message = str(error)
-                return
-            if isinstance(error, MemoryLimitError):
-                outcome.error_type = "OutOfMemory"
-                outcome.error_message = str(error)
-                return
-            # quickjs-rs can re-raise host callback exceptions directly
-            # (tool failures, bridge runtime errors) instead of always
-            # wrapping them as JSError(name="HostError", ...). Keep
-            # PTCCallBudgetExceeded model-recoverable, but let all other
-            # host errors propagate to ToolNode's default handler.
-            if isinstance(error, _PTCCallBudgetExceededError):
-                outcome.error_type = "PTCCallBudgetExceeded"
-                outcome.error_message = error.render_message()
-                return
-            raise error
-        finally:
-            _clear_exception_references(error)
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name

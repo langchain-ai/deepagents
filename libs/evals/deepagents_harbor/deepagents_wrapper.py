@@ -96,8 +96,8 @@ class DeepAgentsWrapper(BaseAgent):
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
-        openrouter_allow_fallbacks: bool = False,
         *args: Any,
+        openrouter_allow_fallbacks: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize Deep AgentsWrapper.
@@ -120,16 +120,24 @@ class DeepAgentsWrapper(BaseAgent):
                 will only route to a provider in `openrouter_provider` and
                 hard-fail otherwise (strict allowlist). When `True`, the
                 listed providers are preferred but OpenRouter may fall
-                back to any other provider hosting the model.
+                back to any other provider hosting the model. Has no
+                effect on its own and requires `openrouter_provider` to
+                be set.
 
         Raises:
             ValueError: If `model_name` is empty/whitespace, if
                 `openrouter_provider` is set without an `openrouter:`
-                prefix, or if `openrouter_provider` parses to an empty
-                list.
+                prefix, if `openrouter_provider` is non-empty but
+                contains no provider names (e.g. only commas/whitespace),
+                or if `openrouter_allow_fallbacks` is `True` without
+                `openrouter_provider`.
         """
         if not model_name or not model_name.strip():
             msg = "model_name must be a non-empty string"
+            raise ValueError(msg)
+
+        if openrouter_allow_fallbacks and not openrouter_provider:
+            msg = "openrouter_allow_fallbacks requires openrouter_provider"
             raise ValueError(msg)
 
         super().__init__(logs_dir, model_name, *args, **kwargs)

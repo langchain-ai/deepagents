@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING
 
 import pytest
@@ -73,6 +74,14 @@ class TestParseOpenrouterProviders:
 
     def test_drops_empty_tokens(self) -> None:
         assert _parse_openrouter_providers("MiniMax,,Fireworks,") == ["MiniMax", "Fireworks"]
+
+    def test_empty_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one non-empty provider name"):
+            _parse_openrouter_providers("")
+
+    def test_whitespace_only_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least one non-empty provider name"):
+            _parse_openrouter_providers("   ")
 
     def test_all_empty_raises(self) -> None:
         with pytest.raises(ValueError, match="at least one non-empty provider name"):
@@ -164,3 +173,18 @@ class TestOpenRouterRoutingKwargs:
                 model_name="openrouter:minimax/minimax-m2",
                 openrouter_provider=" , , ",
             )
+
+    def test_allow_fallbacks_without_provider_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            ValueError, match="openrouter_allow_fallbacks requires openrouter_provider"
+        ):
+            DeepAgentsWrapper(
+                logs_dir=tmp_path,
+                model_name="openrouter:minimax/minimax-m2",
+                openrouter_allow_fallbacks=True,
+            )
+
+    def test_allow_fallbacks_is_keyword_only(self) -> None:
+        sig = inspect.signature(DeepAgentsWrapper.__init__)
+        param = sig.parameters["openrouter_allow_fallbacks"]
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY

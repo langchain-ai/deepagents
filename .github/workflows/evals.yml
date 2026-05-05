@@ -303,11 +303,21 @@ jobs:
           fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
-            if [ "${OPENROUTER_ALLOW_FALLBACKS}" = "true" ]; then
-              echo "| \`openrouter_allow_fallbacks\` | ✅ soft (preferred + fallback) |" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "| \`openrouter_allow_fallbacks\` | 🔒 strict (no fallback) |" >> "$GITHUB_STEP_SUMMARY"
-            fi
+            # Mirror `_eval.yml` boolean parsing: accept the GitHub-typed
+            # lowercase `true`/`false` plus common variants so a non-typed
+            # caller can't silently render the wrong badge here.
+            case "${OPENROUTER_ALLOW_FALLBACKS,,}" in
+              true|1|yes)
+                echo "| \`openrouter_allow_fallbacks\` | ✅ soft (preferred + fallback) |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              false|0|no|"")
+                echo "| \`openrouter_allow_fallbacks\` | 🔒 strict (no fallback) |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                echo "::error::Unrecognized openrouter_allow_fallbacks=${OPENROUTER_ALLOW_FALLBACKS}; expected true/false."
+                exit 1
+                ;;
+            esac
           fi
           if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
             echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"

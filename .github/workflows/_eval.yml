@@ -178,10 +178,24 @@ jobs:
           OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
         run: |
           provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
+          # Defense in depth: GitHub serializes typed `boolean` inputs as
+          # lowercase "true"/"false", but if this workflow is ever wired to
+          # a string-valued source (workflow_run payload, matrix string,
+          # caller-side env literal) the value could arrive as "True"/"1"/
+          # "yes". Normalize and fail loudly on anything unrecognized so a
+          # silent strict-pin never masquerades as a soft preference.
           extra=""
-          if [ "${OPENROUTER_ALLOW_FALLBACKS}" = "true" ]; then
-            extra=" --openrouter-allow-fallbacks"
-          fi
+          case "${OPENROUTER_ALLOW_FALLBACKS,,}" in
+            true|1|yes)
+              extra=" --openrouter-allow-fallbacks"
+              ;;
+            false|0|no|"")
+              ;;
+            *)
+              echo "::error::Unrecognized openrouter_allow_fallbacks=${OPENROUTER_ALLOW_FALLBACKS}; expected true/false."
+              exit 1
+              ;;
+          esac
           printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s%s\n' "${PYTEST_ADDOPTS}" "${provider}" "${extra}" >> "$GITHUB_ENV"
 
       - name: "🧠 Apply OpenAI reasoning effort"

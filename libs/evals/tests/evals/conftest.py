@@ -12,6 +12,8 @@ if TYPE_CHECKING:
 
 from deepagents import __version__ as deepagents_version
 
+from deepagents_harbor.deepagents_wrapper import _parse_openrouter_providers
+
 pytest_plugins = ["tests.evals.pytest_reporter"]
 
 
@@ -213,12 +215,8 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
         if not model_name.startswith("openrouter:"):
             msg = "--openrouter-provider requires an openrouter: model prefix"
             raise ValueError(msg)
-        providers = [p.strip() for p in provider.split(",") if p.strip()]
-        if not providers:
-            msg = "--openrouter-provider must contain at least one provider name"
-            raise ValueError(msg)
         kwargs["openrouter_provider"] = {
-            "only": providers,
+            "only": _parse_openrouter_providers(provider),
             "allow_fallbacks": allow_fallbacks,
         }
     elif allow_fallbacks:

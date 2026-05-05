@@ -20,7 +20,7 @@
 
 name: "📊 Evals - GHA"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠' || '' }}
+  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠' || '' }}
 
 on:
   workflow_dispatch:
@@ -143,6 +143,11 @@ on:
         required: false
         default: ""
         type: string
+      eval_categories_exclude:
+        description: "Category list to skip; takes precedence over the include filter on conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'. Empty = skip none."
+        required: false
+        default: ""
+        type: string
       eval_tiers:
         description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
         required: false
@@ -253,6 +258,7 @@ jobs:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude || '(none)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
           OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
@@ -293,6 +299,19 @@ jobs:
               done
               echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
+          fi
+          # Show excluded eval categories
+          if [ "${EVAL_CATEGORIES_EXCLUDE}" = "(none)" ]; then
+            echo "| \`eval_categories_exclude\` | (none) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra cats <<< "${EVAL_CATEGORIES_EXCLUDE}"
+            comma_list=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
+            done
+            echo "| \`eval_categories_exclude\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
           fi
           # Show eval tiers
           if [ "${EVAL_TIERS}" = "(all)" ]; then
@@ -376,6 +395,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -399,6 +419,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -422,6 +443,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -445,6 +467,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -468,6 +491,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -491,6 +515,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -514,6 +539,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -537,6 +563,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -560,6 +587,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -583,6 +611,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
@@ -606,6 +635,7 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}

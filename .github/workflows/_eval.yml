@@ -26,6 +26,11 @@ on:
         required: false
         default: ""
         type: string
+      eval_categories_exclude:
+        description: "Comma-separated eval categories to skip."
+        required: false
+        default: ""
+        type: string
       eval_tiers:
         description: "Comma-separated eval tiers to run."
         required: false
@@ -99,7 +104,7 @@ jobs:
     # in `evals.yml` is intentionally static — GHA does not evaluate `name:`
     # expressions for jobs skipped via `if:`, so referencing `${{ matrix.* }}`
     # there would render as raw template text in the UI.
-    name: "📊 ${{ inputs.model }} · ${{ inputs.eval_categories || 'all categories' }} · ${{ inputs.eval_tiers || 'all tiers' }}"
+    name: "📊 ${{ inputs.model }} · ${{ inputs.eval_categories || 'all categories' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }} · ${{ inputs.eval_tiers || 'all tiers' }}"
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 360
@@ -154,6 +159,20 @@ jobs:
             cat=$(echo "$cat" | xargs)
             [ -z "$cat" ] && continue
             flags+=(--eval-category "$cat")
+          done
+          printf 'PYTEST_ADDOPTS=%s %s\n' "${PYTEST_ADDOPTS}" "${flags[*]}" >> "$GITHUB_ENV"
+
+      - name: "🏷️ Apply category exclude filter"
+        if: inputs.eval_categories_exclude != ''
+        env:
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
+        run: |
+          flags=()
+          IFS=',' read -ra cats <<< "${EVAL_CATEGORIES_EXCLUDE}"
+          for cat in "${cats[@]}"; do
+            cat=$(echo "$cat" | xargs)
+            [ -z "$cat" ] && continue
+            flags+=(--eval-category-exclude "$cat")
           done
           printf 'PYTEST_ADDOPTS=%s %s\n' "${PYTEST_ADDOPTS}" "${flags[*]}" >> "$GITHUB_ENV"
 

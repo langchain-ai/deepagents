@@ -78,6 +78,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
     )
     parser.addoption(
+        "--eval-category-exclude",
+        action="append",
+        default=[],
+        help="Skip evals tagged with this category, even when --eval-category would include them (repeatable). E.g. --eval-category-exclude memory",
+    )
+    parser.addoption(
         "--eval-tier",
         action="append",
         default=[],
@@ -123,36 +129,49 @@ def _filter_by_marker(
     *,
     option: str,
     marker_name: str,
+    exclude_option: str | None = None,
 ) -> None:
-    """Deselect items whose *marker_name* value is not in the CLI *option* list.
+    """Keep items whose *marker_name* value is in the include list and not in the exclude list.
 
-    Exits the test session with returncode 1 if any requested values are not
-    found among collected tests.
+    An empty include list means "include everything"; an empty exclude list
+    means "exclude nothing". When a marker value appears in both lists, the
+    exclude list wins.
+
+    Exits the test session with returncode 1 if any include or exclude value
+    does not match a marker on the collected tests.
 
     Args:
         config: The pytest config object.
         items: Mutable list of collected test items (modified in-place).
-        option: CLI option name (e.g. `--eval-category`).
+        option: CLI include option name (e.g. `--eval-category`).
         marker_name: Pytest marker to read (e.g. `eval_category`).
+        exclude_option: CLI exclude option name, if supported.
     """
     values = config.getoption(option)
-    if not values:
+    excluded = config.getoption(exclude_option) if exclude_option else []
+    if not values and not excluded:
         return
 
     known = {m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args}
     unknown = set(values) - known
-    if unknown:
-        msg = (
-            f"Unknown {option} values: {sorted(unknown)}. "
-            f"Known values in collected tests: {sorted(known)}"
-        )
+    unknown_excluded = set(excluded) - known
+    if unknown or unknown_excluded:
+        parts = []
+        if unknown:
+            parts.append(f"Unknown {option} values: {sorted(unknown)}")
+        if unknown_excluded:
+            parts.append(f"Unknown {exclude_option} values: {sorted(unknown_excluded)}")
+        msg = f"{'; '.join(parts)}. Known values in collected tests: {sorted(known)}"
         pytest.exit(msg, returncode=1)
 
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
         marker = item.get_closest_marker(marker_name)
-        if marker and marker.args and marker.args[0] in values:
+        marker_value = marker.args[0] if marker and marker.args else None
+        included = not values or marker_value in values
+        is_excluded = marker_value in excluded
+        if included and not is_excluded:
             selected.append(item)
         else:
             deselected.append(item)
@@ -161,7 +180,13 @@ def _filter_by_marker(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    _filter_by_marker(config, items, option="--eval-category", marker_name="eval_category")
+    _filter_by_marker(
+        config,
+        items,
+        option="--eval-category",
+        marker_name="eval_category",
+        exclude_option="--eval-category-exclude",
+    )
     _filter_by_marker(config, items, option="--eval-tier", marker_name="eval_tier")
 
 

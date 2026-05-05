@@ -62,6 +62,12 @@ real PyPI release. Any non-empty value enables the flag (including `"0"` or
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
+HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
+"""Hide the current working directory in the TUI footer when enabled."""
+
+HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
+"""Hide the current git branch in the TUI footer when enabled."""
+
 KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
 

@@ -42,12 +42,22 @@ on:
         default: "anthropic:claude-haiku-4-5-20251001"
         type: string
       openrouter_provider:
-        description: "Pin OpenRouter to a single provider."
+        description: "Pin OpenRouter to one or more providers (comma-separated allowlist)."
         required: false
         default: ""
         type: string
+      openrouter_allow_fallbacks:
+        description: "Allow OpenRouter to fall back outside `openrouter_provider`. Default is strict (no fallbacks)."
+        required: false
+        default: false
+        type: boolean
       openai_reasoning_effort:
         description: "Reasoning effort for OpenAI models (minimal | low | medium | high | xhigh)."
+        required: false
+        default: ""
+        type: string
+      repl:
+        description: "REPL middleware to use for `@pytest.mark.repl` tests (`quickjs` | `langchain`). Empty = bind tools directly."
         required: false
         default: ""
         type: string
@@ -84,7 +94,12 @@ env:
 
 jobs:
   eval:
-    name: "📊 Eval (${{ inputs.model }})"
+    # Carries the per-run detail (model · categories · tiers) so it appears in
+    # the matrix-job breadcrumb when the job actually runs. The outer caller
+    # in `evals.yml` is intentionally static — GHA does not evaluate `name:`
+    # expressions for jobs skipped via `if:`, so referencing `${{ matrix.* }}`
+    # there would render as raw template text in the UI.
+    name: "📊 ${{ inputs.model }} · ${{ inputs.eval_categories || 'all categories' }} · ${{ inputs.eval_tiers || 'all tiers' }}"
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 360
@@ -160,9 +175,28 @@ jobs:
         if: inputs.openrouter_provider != '' && inputs.provider == 'openrouter'
         env:
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
         run: |
           provider=$(echo "$OPENROUTER_PROVIDER" | xargs)
-          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s\n' "${PYTEST_ADDOPTS}" "${provider}" >> "$GITHUB_ENV"
+          # Defense in depth: GitHub serializes typed `boolean` inputs as
+          # lowercase "true"/"false", but if this workflow is ever wired to
+          # a string-valued source (workflow_run payload, matrix string,
+          # caller-side env literal) the value could arrive as "True"/"1"/
+          # "yes". Normalize and fail loudly on anything unrecognized so a
+          # silent strict-pin never masquerades as a soft preference.
+          extra=""
+          case "${OPENROUTER_ALLOW_FALLBACKS,,}" in
+            true|1|yes)
+              extra=" --openrouter-allow-fallbacks"
+              ;;
+            false|0|no|"")
+              ;;
+            *)
+              echo "::error::Unrecognized openrouter_allow_fallbacks=${OPENROUTER_ALLOW_FALLBACKS}; expected true/false."
+              exit 1
+              ;;
+          esac
+          printf 'PYTEST_ADDOPTS=%s --openrouter-provider %s%s\n' "${PYTEST_ADDOPTS}" "${provider}" "${extra}" >> "$GITHUB_ENV"
 
       - name: "🧠 Apply OpenAI reasoning effort"
         if: inputs.openai_reasoning_effort != '' && inputs.provider == 'openai'
@@ -171,6 +205,25 @@ jobs:
         run: |
           effort=$(echo "$OPENAI_REASONING_EFFORT" | xargs)
           printf 'PYTEST_ADDOPTS=%s --openai-reasoning-effort %s\n' "${PYTEST_ADDOPTS}" "${effort}" >> "$GITHUB_ENV"
+
+      - name: "🧪 Apply REPL middleware"
+        # `repl` is `type: string` so a `workflow_call` caller could pass any
+        # value; the case below is the source of truth for accepted values.
+        # Keep the `repl` choice enums in `evals.yml` and `evals_trials.yml`
+        # in sync with this list.
+        if: inputs.repl != ''
+        env:
+          REPL: ${{ inputs.repl }}
+        run: |
+          repl=$(echo "$REPL" | xargs)
+          case "$repl" in
+            quickjs|langchain) ;;
+            *)
+              echo "::error::Unsupported repl value: ${repl}. Allowed: quickjs, langchain."
+              exit 1
+              ;;
+          esac
+          printf 'PYTEST_ADDOPTS=%s --repl %s\n' "${PYTEST_ADDOPTS}" "${repl}" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

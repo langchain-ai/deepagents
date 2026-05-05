@@ -92,10 +92,23 @@ def write_config(tmp_path: Path) -> Callable[..., str]:
 
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect `Path.home()` to a temp directory."""
+    """Redirect `Path.home()` and `DEFAULT_STATE_DIR` into a temp directory.
+
+    `Path.home` is patched for code that resolves it at call time;
+    `DEFAULT_STATE_DIR` is patched for code (like `mcp_auth._tokens_dir`)
+    that pulls from the import-time-frozen constant in `model_config`.
+    Without the second patch, `FileTokenStorage` reads/writes the real
+    `~/.deepagents/.state/mcp-tokens/` directory, which leaks token state
+    across tests and causes flakes (e.g. one test's `set_tokens` makes a
+    later test's `get_tokens` return non-`None`).
+    """
     fake = tmp_path / "home"
     fake.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake))
+    monkeypatch.setattr(
+        "deepagents_cli.model_config.DEFAULT_STATE_DIR",
+        fake / ".deepagents" / ".state",
+    )
     return fake
 
 

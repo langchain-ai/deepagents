@@ -677,25 +677,24 @@ def _provider(model_spec: str) -> str:
     return model_spec.split(":", 1)[0]
 
 
-def _artifact_key(index: int, model_spec: str) -> str:
-    """Build a stable, artifact-safe key for one model matrix entry.
+def _artifact_key(model_spec: str) -> str:
+    """Build an artifact-safe key for one model matrix entry.
 
     GitHub Actions artifact names disallow several characters that appear in
-    model specs (e.g., `:` and `/`), and two artifacts cannot share a name
-    within a workflow run. The numeric `index` prefix guarantees uniqueness
-    even if two specs collapse to the same slug; the regex replaces every
-    disallowed character with `-`.
+    model specs (e.g., `:` and `/`), so the regex replaces every disallowed
+    character with `-`. Uniqueness across a workflow run is enforced by
+    `_resolve_models` (dedupe) and `_matrix_outputs` (assertion); see those
+    callers.
     """
-    slug = _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
-    return f"{index:03d}-{slug}"
+    return _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
 
 
-def _matrix_entry(index: int, model_spec: str) -> dict[str, str]:
+def _matrix_entry(model_spec: str) -> dict[str, str]:
     """Build one GitHub Actions matrix entry for a model."""
     return {
         "model": model_spec,
         "provider": _provider(model_spec),
-        "artifact_key": _artifact_key(index, model_spec),
+        "artifact_key": _artifact_key(model_spec),
     }
 
 
@@ -716,7 +715,19 @@ def _matrix_outputs(workflow: str, models: list[str]) -> dict[str, object]:
     Returns:
         Mapping of GitHub output names to JSON-serializable values.
     """
-    entries = [_matrix_entry(index, model) for index, model in enumerate(models)]
+    entries = [_matrix_entry(model) for model in models]
+    # Tripwire: `_resolve_models` dedupes raw specs, and our `provider:model`
+    # convention plus the registry's canonical specs make it effectively
+    # impossible for two distinct specs to collapse to the same slug. If this
+    # ever fires, reintroduce a disambiguating prefix in `_artifact_key`.
+    by_key: dict[str, list[str]] = {}
+    for entry in entries:
+        by_key.setdefault(entry["artifact_key"], []).append(entry["model"])
+    collisions = {key: specs for key, specs in by_key.items() if len(specs) > 1}
+    if collisions:
+        details = "; ".join(f"{key!r} <- {specs}" for key, specs in collisions.items())
+        msg = f"Duplicate artifact_key(s) in matrix: {details}"
+        raise ValueError(msg)
     outputs: dict[str, object] = {"matrix": {"include": entries}}
 
     if workflow != "eval":
@@ -758,21 +769,24 @@ def _resolve_models(workflow: str, selection: str) -> list[str]:
     normalized = selection.strip()
 
     if normalized in presets:
-        return _filter_by_tag(f"{workflow}:", presets[normalized])
-
-    specs = [s.strip() for s in normalized.split(",") if s.strip()]
-    if not specs:
-        msg = f"No models resolved from {env_var} (got empty or whitespace-only input)"
-        raise ValueError(msg)
-    invalid = [s for s in specs if ":" not in s]
-    if invalid:
-        msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
-        raise ValueError(msg)
-    unsafe = [s for s in specs if not _SAFE_SPEC_RE.match(s)]
-    if unsafe:
-        msg = f"Model spec(s) contain disallowed characters: {', '.join(repr(s) for s in unsafe)}"
-        raise ValueError(msg)
-    return specs
+        specs = _filter_by_tag(f"{workflow}:", presets[normalized])
+    else:
+        specs = [s.strip() for s in normalized.split(",") if s.strip()]
+        if not specs:
+            msg = f"No models resolved from {env_var} (got empty or whitespace-only input)"
+            raise ValueError(msg)
+        invalid = [s for s in specs if ":" not in s]
+        if invalid:
+            msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
+            raise ValueError(msg)
+        unsafe = [s for s in specs if not _SAFE_SPEC_RE.match(s)]
+        if unsafe:
+            msg = f"Model spec(s) contain disallowed characters: {', '.join(repr(s) for s in unsafe)}"
+            raise ValueError(msg)
+    # Order-preserving dedupe so duplicate entries (typo'd `models_override`,
+    # or a future REGISTRY edit that accidentally repeats a spec) cannot
+    # collide on `artifact_key` downstream.
+    return list(dict.fromkeys(specs))
 
 
 def main() -> None:

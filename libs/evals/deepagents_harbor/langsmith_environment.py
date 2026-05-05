@@ -265,8 +265,7 @@ class LangSmithEnvironment(BaseEnvironment):
         )
 
         await sandbox.run(
-            f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}"
-            f" {EnvironmentPaths.artifacts_dir}",
+            f"mkdir -p {EnvironmentPaths.agent_dir} {EnvironmentPaths.verifier_dir}",
             timeout=30,
         )
 
@@ -292,10 +291,10 @@ class LangSmithEnvironment(BaseEnvironment):
         substring match, so it can return unrelated entries).
 
         Behavior:
-          - If a snapshot with the exact name is ``ready`` -> return.
-          - If it exists but is in any other state -> raise ``RuntimeError``
-            with a clear instruction to wait for it to finish or delete it.
-          - Otherwise -> build it via ``create_snapshot`` (blocks until ready).
+            - If a snapshot with the exact name is ``ready`` -> return.
+            - If it exists but is in any other state -> raise ``RuntimeError``
+                with a clear instruction to wait for it to finish or delete it.
+            - Otherwise -> build it via ``create_snapshot`` (blocks until ready).
 
         The helper does not return an ID: downstream callers pass
         ``snapshot_name`` straight to ``create_sandbox``.

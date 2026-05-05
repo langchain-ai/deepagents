@@ -1,0 +1,153 @@
+# Monthly bump of the uv pin in `.github/actions/uv_setup/action.yml`.
+#
+# We pin uv (rather than letting setup-uv resolve latest) because
+# `releases.astral.sh` lags GitHub Releases on new uv versions, causing CI
+# to flap on fresh-release days. This workflow keeps the pin fresh without
+# exposing that race.
+#
+# Dependabot's `github-actions` ecosystem only updates `uses:` SHA pins, not
+# the `with: version:` input we pass to `astral-sh/setup-uv`, so we open the
+# PR ourselves. Idempotent: if a PR for the target version already exists,
+# the workflow exits without creating a duplicate.
+
+name: "Bump uv pin"
+
+on:
+  schedule:
+    - cron: "0 9 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump-uv-pin
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: "Open PR if uv has a newer release"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve current and latest uv versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          action_file=".github/actions/uv_setup/action.yml"
+          current=$(grep -oE 'version: "[0-9]+\.[0-9]+\.[0-9]+"' "$action_file" \
+            | sed -E 's/version: "([^"]+)"/\1/' | head -n1)
+          latest=$(gh api repos/astral-sh/uv/releases/latest --jq .tag_name)
+          semver='^[0-9]+\.[0-9]+\.[0-9]+$'
+          if [[ ! "$current" =~ $semver ]]; then
+            echo "::error::Could not parse current uv pin from $action_file (got '$current')"
+            exit 1
+          fi
+          if [[ ! "$latest" =~ $semver ]]; then
+            echo "::error::Unexpected uv tag from GitHub API (got '$latest')"
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "branch=chore/bump-uv-$latest" >> "$GITHUB_OUTPUT"
+          echo "Current pin: $current"
+          echo "Latest uv:   $latest"
+
+      - name: Skip if already up to date
+        if: steps.versions.outputs.current == steps.versions.outputs.latest
+        run: echo "uv pin already at ${{ steps.versions.outputs.latest }}; nothing to do."
+
+      - name: Skip if PR already open for this version
+        id: existing
+        if: steps.versions.outputs.current != steps.versions.outputs.latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+        run: |
+          set -euo pipefail
+          count=$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
+            echo "Open PR already exists for $BRANCH; skipping."
+          fi
+
+      - name: Wait for astral mirror to replicate
+        id: mirror
+        if: steps.versions.outputs.current != steps.versions.outputs.latest && steps.existing.outputs.count == '0'
+        env:
+          LATEST: ${{ steps.versions.outputs.latest }}
+        run: |
+          set -euo pipefail
+          # The mirror can lag GitHub Releases. If it hasn't replicated yet,
+          # defer the bump rather than landing a pin that races the mirror
+          # on every CI run. `|| echo "000"` keeps a connection failure
+          # (DNS, TCP refused) on the deferral path instead of aborting.
+          url="https://releases.astral.sh/github/uv/releases/download/${LATEST}/uv-x86_64-unknown-linux-gnu.tar.gz"
+          status=$(curl -sIo /dev/null -w '%{http_code}' --max-time 30 "$url" || echo "000")
+          echo "Mirror HEAD $url -> $status"
+          if [ "$status" = "200" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::astral mirror has not replicated uv $LATEST yet (HTTP $status); skipping bump."
+          fi
+
+      - name: Open bump PR
+        if: steps.versions.outputs.current != steps.versions.outputs.latest && steps.existing.outputs.count == '0' && steps.mirror.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT: ${{ steps.versions.outputs.current }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          action_file=".github/actions/uv_setup/action.yml"
+
+          before=$(grep -cE "version: \"${CURRENT}\"" "$action_file" || true)
+          if [ "$before" -ne 1 ]; then
+            echo "::error::Expected exactly 1 'version: \"$CURRENT\"' in $action_file, found $before"
+            exit 1
+          fi
+          sed -i -E "s/version: \"${CURRENT}\"/version: \"${LATEST}\"/" "$action_file"
+          after=$(grep -cE "version: \"${LATEST}\"" "$action_file" || true)
+          if [ "$after" -ne 1 ]; then
+            echo "::error::Expected exactly 1 'version: \"$LATEST\"' after sed, found $after"
+            exit 1
+          fi
+          if git diff --quiet "$action_file"; then
+            echo "No changes after sed; bailing out (current=$CURRENT, latest=$LATEST)."
+            exit 1
+          fi
+
+          # Reuse-or-recreate orphan branch from a prior run that pushed
+          # but failed before `gh pr create` (no open PR sits on it).
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+            git push origin --delete "$BRANCH"
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$action_file"
+          git commit -m "chore(deps): bump uv to $LATEST"
+          git push --set-upstream origin "$BRANCH"
+
+          body_file="$(mktemp)"
+          {
+            printf 'Bumps the uv pin in `.github/actions/uv_setup/action.yml` from `%s` to [`%s`](https://github.com/astral-sh/uv/releases/tag/%s).\n\n' "$CURRENT" "$LATEST" "$LATEST"
+            printf 'Opened automatically by `bump_uv_pin.yml`. Mirror availability on `releases.astral.sh` was verified before this PR was created, so CI should not race the fallback.\n'
+          } > "$body_file"
+
+          gh pr create \
+            --head "$BRANCH" \
+            --base "$DEFAULT_BRANCH" \
+            --title "chore(deps): bump uv to $LATEST" \
+            --body-file "$body_file"

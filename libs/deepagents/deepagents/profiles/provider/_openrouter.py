@@ -39,9 +39,23 @@ See https://openrouter.ai/docs/app-attribution for details.
 _OPENROUTER_APP_TITLE = "Deep Agents"
 """Default `app_title` (maps to `X-Title`) for OpenRouter attribution."""
 
+_OPENROUTER_ALLOW_AZURE_ENV = "DEEPAGENTS_OPENROUTER_ALLOW_AZURE"
+"""Env var that opts back into Azure as an OpenRouter upstream provider.
+
+By default the SDK injects `openrouter_provider={"ignore": ["azure"]}` to keep
+OpenRouter from routing reasoning-model calls through Azure. Azure's Responses
+API support is fine in isolation, but OpenRouter's `/responses` beta is
+documented stateless — it does not propagate `store=true` or `previous_response_id`
+plumbing — so any prior `rs_*` reasoning item the client replays cannot be looked
+up upstream and the request fails with `"Item with id 'rs_...' not found"`.
+Set this var to a truthy value (`1`, `true`, `yes`, `on`) to allow Azure back
+into the provider pool, accepting the multi-turn reasoning breakage as the
+trade-off.
+"""
+
 
 def _openrouter_attribution_kwargs() -> dict[str, Any]:
-    """Build OpenRouter attribution kwargs, deferring to env var overrides.
+    """Build default OpenRouter kwargs, deferring to env var overrides.
 
     `ChatOpenRouter` reads `OPENROUTER_APP_URL` and `OPENROUTER_APP_TITLE` via
     `from_env()` defaults. Explicit kwargs passed to the constructor take
@@ -53,14 +67,22 @@ def _openrouter_attribution_kwargs() -> dict[str, Any]:
     and suppresses the SDK default. This lets a caller opt out of app
     attribution without unsetting the variable.
 
+    Also injects `openrouter_provider={"ignore": ["azure"]}` so OpenRouter never
+    routes to Azure as the upstream provider. Opt out by setting
+    `DEEPAGENTS_OPENROUTER_ALLOW_AZURE` to a truthy value. The ignore is a
+    no-op for non-OpenAI models (Azure is not a candidate provider for them),
+    so the rule is safe to apply globally.
+
     Returns:
-        Dictionary of attribution kwargs to spread into `init_chat_model`.
+        Dictionary of kwargs to spread into `init_chat_model`.
     """
     kwargs: dict[str, Any] = {}
     if os.environ.get("OPENROUTER_APP_URL") is None:
         kwargs["app_url"] = _OPENROUTER_APP_URL
     if os.environ.get("OPENROUTER_APP_TITLE") is None:
         kwargs["app_title"] = _OPENROUTER_APP_TITLE
+    if os.environ.get(_OPENROUTER_ALLOW_AZURE_ENV, "").strip().lower() not in {"1", "true", "yes", "on"}:
+        kwargs["openrouter_provider"] = {"ignore": ["azure"]}
     return kwargs
 
 

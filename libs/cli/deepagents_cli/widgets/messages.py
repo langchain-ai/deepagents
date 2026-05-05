@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _show_timestamp_toast(widget: Static | Vertical) -> None:
+def _show_timestamp_toast(widget: Static | Vertical) -> None:  # noqa: ARG001  # temporarily disabled
     """Show a toast with the message's creation timestamp.
 
     No-ops silently if the widget is not mounted or has no associated message
@@ -50,21 +50,23 @@ def _show_timestamp_toast(widget: Static | Vertical) -> None:
     Args:
         widget: The message widget whose timestamp to display.
     """
-    from datetime import UTC, datetime
-
-    try:
-        app = widget.app
-    except Exception:  # noqa: BLE001  # Textual raises when widget has no app
-        return
-    if not widget.id:
-        return
-    store = app._message_store  # type: ignore[attr-defined]
-    data = store.get_message(widget.id)
-    if not data:
-        return
-    dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
-    label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
-    app.notify(label, timeout=3)
+    # TODO: temporarily disabled — uncomment to restore click-to-show-timestamp
+    return  # early return while feature is disabled
+    # from datetime import UTC, datetime  # noqa: ERA001
+    #
+    # try:  # noqa: ERA001
+    #     app = widget.app  # noqa: ERA001
+    # except Exception:  # Textual raises when widget has no app  # noqa: ERA001
+    #     return  # noqa: ERA001
+    # if not widget.id:
+    #     return  # noqa: ERA001
+    # store = app._message_store  # noqa: ERA001
+    # data = store.get_message(widget.id)  # noqa: ERA001
+    # if not data:
+    #     return  # noqa: ERA001
+    # dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()  # noqa: ERA001
+    # label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"  # noqa: ERA001, E501
+    # app.notify(label, timeout=3)  # noqa: ERA001
 
 
 class _TimestampClickMixin:

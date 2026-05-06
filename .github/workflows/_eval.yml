@@ -153,15 +153,6 @@ jobs:
         # combining that environment variable with `--locked`.
         run: uv sync --group test
 
-      - name: "🌳 Record source tree"
-        run: |
-          {
-            echo "### 🌳 Source tree"
-            echo ""
-            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on \`${GITHUB_REF_NAME}\`."
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: "🔖 Record resolved versions"
         run: |
           {

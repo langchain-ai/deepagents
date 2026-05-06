@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from deepagents_cli._env_vars import HIDE_SPLASH_VERSION
 from deepagents_cli.config import (
     _ASCII_BANNER,
     _UNICODE_BANNER,
@@ -315,6 +316,19 @@ class TestGetBanner:
             banner = get_banner()
         assert "(local)" in banner
         assert f"v{__version__} (local)" in banner
+
+    @patch.dict(
+        "os.environ",
+        {"UI_CHARSET_MODE": "unicode", HIDE_SPLASH_VERSION: "1"},
+        clear=False,
+    )
+    def test_get_banner_hides_version_and_local_suffix(self) -> None:
+        """Splash version override should hide version and skip local detection."""
+        with patch("deepagents_cli.config._is_editable_install") as editable:
+            banner = get_banner()
+        editable.assert_not_called()
+        assert f"v{__version__}" not in banner
+        assert "(local)" not in banner
 
     def test_unicode_banner_contains_box_drawing_chars(self) -> None:
         """Test that Unicode banner contains non-ASCII box drawing characters."""

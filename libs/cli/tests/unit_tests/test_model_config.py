@@ -16,18 +16,26 @@ from deepagents_cli.model_config import (
     ModelConfigError,
     ModelProfileEntry,
     ModelSpec,
+    ProviderAuthSource,
+    ProviderAuthState,
+    ProviderAuthStatus,
     _get_builtin_providers,
     _get_provider_profile_modules,
+    _is_local_endpoint,
     _load_provider_profiles,
     _profile_module_from_class_path,
     clear_caches,
+    clear_default_agent,
     clear_default_model,
     get_available_models,
     get_model_profiles,
+    get_provider_auth_status,
     has_provider_credentials,
     is_warning_suppressed,
+    load_default_agent,
     load_recent_agent,
     load_thread_columns,
+    save_default_agent,
     save_recent_agent,
     save_recent_model,
     save_thread_columns,
@@ -134,6 +142,148 @@ class TestHasProviderCredentials:
             clear=True,
         ):
             assert has_provider_credentials("anthropic") is True
+
+
+@pytest.fixture
+def fake_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the credential store into a temp directory."""
+    state_dir = tmp_path / ".state"
+    monkeypatch.setattr("deepagents_cli.model_config.DEFAULT_STATE_DIR", state_dir)
+    return state_dir
+
+
+class TestStoredCredentials:
+    """Stored API keys (added via /auth) integrate into auth resolution."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_dotenv_prefixed_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip `DEEPAGENTS_CLI_*` keys preloaded from `~/.deepagents/.env`.
+
+        `dotenv.load_dotenv()` runs at config-import time and may inject
+        prefixed variants that win over `monkeypatch.setenv` in
+        `resolve_env_var`'s lookup order.
+        """
+        for var in (
+            "DEEPAGENTS_CLI_ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CLI_OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_resolve_provider_credential_prefers_stored_over_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored credential beats env var (matches pi-mono ordering)."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        auth_store.set_stored_key("anthropic", "from-store")
+
+        assert resolve_provider_credential("anthropic") == "from-store"
+
+    def test_resolve_provider_credential_falls_back_to_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Env var is used when no stored credential exists."""
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        assert resolve_provider_credential("anthropic") == "from-env"
+
+    def test_resolve_provider_credential_returns_none_for_unknown_provider(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Provider with no env-var binding and no stored key returns None."""
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert resolve_provider_credential("totally-unknown") is None
+
+    def test_status_reports_stored_credential(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key flips status to CONFIGURED with a stored detail."""
+        from deepagents_cli import auth_store
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        auth_store.set_stored_key("anthropic", "from-store")
+
+        status = get_provider_auth_status("anthropic")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.STORED
+        assert status.env_var == "ANTHROPIC_API_KEY"
+
+    def test_apply_stored_credentials_sets_env_var(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`apply_stored_credentials` exports the stored key into os.environ."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        auth_store.set_stored_key("openai", "from-store")
+        applied = apply_stored_credentials("openai")
+
+        assert applied is True
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "from-store"
+
+    def test_apply_stored_credentials_overrides_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored credential takes precedence over an already-set env var."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+        auth_store.set_stored_key("openai", "from-store")
+
+        assert apply_stored_credentials("openai") is True
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "from-store"
+
+    def test_apply_stored_credentials_noop_when_no_store(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key means no environment mutation."""
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        assert apply_stored_credentials("anthropic") is False
+        import os
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-env"
+
+    def test_corrupt_store_does_not_block_status(
+        self,
+        fake_state_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A corrupt auth.json doesn't poison `get_provider_auth_status`."""
+        path = fake_state_dir / "auth.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        # Status should still resolve via env var without raising.
+        status = get_provider_auth_status("anthropic")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
 
 
 class TestThreadColumnPersistence:
@@ -476,6 +626,40 @@ class TestResolveEnvVar:
         from deepagents_cli.model_config import resolve_env_var
 
         assert resolve_env_var("DEEPAGENTS_CLI_MY_KEY") == "direct"
+
+
+class TestUnknownProviderError:
+    """Tests for the structured `UnknownProviderError` exception."""
+
+    def test_message_mentions_spec_and_docs_url(self):
+        """Message references both `model_spec` and the docs URL."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        exc = UnknownProviderError(model_spec="mystery-model")
+        assert exc.model_spec == "mystery-model"
+        assert exc.docs_url == PROVIDERS_DOCS_URL
+        assert "mystery-model" in str(exc)
+        assert PROVIDERS_DOCS_URL in str(exc)
+
+    def test_empty_model_spec_rejected(self):
+        """Empty `model_spec` raises `ValueError` at construction time."""
+        from deepagents_cli.model_config import UnknownProviderError
+
+        with pytest.raises(ValueError, match="non-empty"):
+            UnknownProviderError(model_spec="")
+
+    def test_docs_url_is_class_attribute(self):
+        """`docs_url` lives on the class, not the instance — same for every error."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        # Class-level access works without an instance.
+        assert UnknownProviderError.docs_url == PROVIDERS_DOCS_URL
 
 
 class TestProviderApiKeyEnv:
@@ -1637,14 +1821,62 @@ class TestHasProviderCredentialsFallback:
     """Tests for has_provider_credentials() falling back to ModelConfig."""
 
     def test_falls_back_to_config_no_key_required(self, tmp_path):
-        """Returns None for config provider with no api_key_env (unknown)."""
+        """Returns True for local Ollama with no api_key_env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["llama3"]
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert has_provider_credentials("ollama") is None
+            assert has_provider_credentials("ollama") is True
+
+    def test_ollama_remote_without_key_is_unknown(self, tmp_path):
+        """Remote Ollama without optional auth should not claim local readiness."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert "OLLAMA_API_KEY" in (status.detail or "")
+        assert legacy is None
+
+    def test_ollama_optional_api_key_is_configured(self, tmp_path):
+        """OLLAMA_API_KEY marks Ollama as configured for cloud/hosted use."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "test-key"}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert legacy is True
+
+    def test_google_vertexai_missing_project_uses_implicit_auth(self):
+        """Vertex AI should not fail just because GOOGLE_CLOUD_PROJECT is unset."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("google_vertexai")
+            legacy = has_provider_credentials("google_vertexai")
+
+        assert status.state is ProviderAuthState.IMPLICIT
+        assert legacy is True
 
     def test_falls_back_to_config_with_key_set(self, tmp_path):
         """Returns True for config provider with api_key_env set in env."""
@@ -1711,6 +1943,148 @@ api_key_env = "CIS_API_KEY"
         auth failures at model-creation time.
         """
         assert has_provider_credentials("nonexistent_provider_xyz") is None
+
+
+class TestIsLocalEndpoint:
+    """Tests for _is_local_endpoint URL classification."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            "localhost",
+            "localhost:11434",
+            "http://localhost",
+            "http://localhost:11434",
+            "127.0.0.1:11434",
+            "http://127.0.0.1",
+            "::1",
+            "http://[::1]:11434",
+            "0.0.0.0",
+            "http://0.0.0.0:11434",
+        ],
+    )
+    def test_local_endpoints(self, url: str | None) -> None:
+        """Loopback hostnames and bare URLs resolve as local."""
+        assert _is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://ollama.example.com",
+            "http://192.168.1.5:11434",
+            "https://api.cloud.com/v1",
+            "remote-host:11434",
+        ],
+    )
+    def test_non_local_endpoints(self, url: str) -> None:
+        """Non-loopback hostnames resolve as remote."""
+        assert _is_local_endpoint(url) is False
+
+    def test_non_string_input_returns_false(self) -> None:
+        """Non-string input must not raise (defensive against TOML drift)."""
+        assert _is_local_endpoint(123) is False  # type: ignore[arg-type]
+
+
+class TestProviderAuthStatusBranches:
+    """Direct coverage of get_provider_auth_status states beyond Ollama."""
+
+    def test_managed_state_for_class_path_provider(self, tmp_path: Path) -> None:
+        """class_path without api_key_env returns MANAGED with custom-auth detail."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            status = get_provider_auth_status("cis")
+
+        assert status.state is ProviderAuthState.MANAGED
+        assert status.detail == "custom auth"
+        assert status.env_var is None
+
+    def test_missing_state_for_known_provider_without_env(self) -> None:
+        """Hardcoded provider with no env set returns MISSING with the env name."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "ANTHROPIC_API_KEY"
+        assert status.blocks_start is True
+
+    def test_missing_state_for_config_provider_with_empty_env(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Config provider with api_key_env set but unset env returns MISSING."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("fireworks")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "FIREWORKS_API_KEY"
+
+    def test_ollama_host_env_drives_locality(self, tmp_path: Path) -> None:
+        """OLLAMA_HOST env var controls local vs. remote when no base_url is set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"OLLAMA_HOST": "https://ollama.example.com"},
+                clear=True,
+            ),
+        ):
+            status = get_provider_auth_status("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+
+
+class TestProviderAuthStatusMissingDetail:
+    """Tests for ProviderAuthStatus.missing_detail() rendering."""
+
+    def test_with_env_var_uses_env_var_message(self) -> None:
+        """env_var presence yields a 'not set or is empty' message."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="anthropic",
+            env_var="ANTHROPIC_API_KEY",
+        )
+        assert status.missing_detail() == "ANTHROPIC_API_KEY is not set or is empty"
+
+    def test_with_detail_only_falls_back_to_detail(self) -> None:
+        """Without env_var but with a detail string, returns the detail."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="custom",
+            detail="bespoke auth missing",
+        )
+        assert status.missing_detail() == "bespoke auth missing"
+
+    def test_without_env_var_or_detail_returns_unknown_provider_hint(self) -> None:
+        """Bare MISSING falls back to a 'not recognized' hint."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="phantom",
+        )
+        message = status.missing_detail()
+        assert "phantom" in message
+        assert "not recognized" in message
 
 
 class TestModelConfigGetClassPath:
@@ -2518,6 +2892,146 @@ recent = "researcher"
         assert load_recent_agent(config_path) is None
 
 
+class TestDefaultAgent:
+    """save_default_agent + clear_default_agent + load_default_agent round-trip."""
+
+    def test_save_creates_file_with_agents_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        assert save_default_agent("coder", config_path) is True
+
+        assert config_path.exists()
+        assert 'default = "coder"' in config_path.read_text()
+
+    def test_save_preserves_recent_and_other_sections(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+
+[agents]
+recent = "researcher"
+""")
+        save_default_agent("coder", config_path)
+
+        content = config_path.read_text()
+        assert 'default = "anthropic:claude-sonnet-4-5"' in content
+        assert 'recent = "researcher"' in content
+        assert 'default = "coder"' in content
+
+    def test_load_returns_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        save_default_agent("coder", config_path)
+
+        assert load_default_agent(config_path) == "coder"
+
+    def test_load_missing_file_returns_none(self, tmp_path):
+        assert load_default_agent(tmp_path / "missing.toml") is None
+
+    def test_load_missing_section_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "x"\n')
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_non_string_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = 123\n")
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_independent_of_recent(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+recent = "researcher"
+""")
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_removes_default_only(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+default = "coder"
+recent = "researcher"
+""")
+        assert clear_default_agent(config_path) is True
+
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_missing_file_returns_true(self, tmp_path):
+        assert clear_default_agent(tmp_path / "missing.toml") is True
+
+    def test_clear_missing_key_returns_true(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\nrecent = "researcher"\n')
+        assert clear_default_agent(config_path) is True
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_save_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during write must produce `False`, not propagate.
+
+        The picker UI branches on the boolean — an unhandled exception
+        would crash the modal mid-action.
+        """
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_save_returns_false_on_typeerror(self, tmp_path, monkeypatch):
+        """TypeError from `tomli_w.dump` falls into the bool contract."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "unsupported type"
+            raise TypeError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_clear_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during clear must produce `False`, not propagate."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "coder"\n')
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert clear_default_agent(config_path) is False
+
+    def test_load_returns_none_for_whitespace(self, tmp_path):
+        """Whitespace-only string is treated as missing, not as a valid name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "   "\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_empty_string(self, tmp_path):
+        """Empty string is treated as missing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = ""\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_list_type(self, tmp_path):
+        """A list under `[agents].default` is rejected, not coerced."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = [1, 2]\n")
+        assert load_default_agent(config_path) is None
+
+
 class TestModelConfigLoadRecent:
     """Tests for ModelConfig.load() reading recent_model."""
 
@@ -2624,7 +3138,45 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-6"
+        assert result == "anthropic:claude-opus-4-7"
+
+    def test_vertex_project_does_not_drive_env_default(self, tmp_path):
+        """Vertex project alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", "test-project"),
+            patch.object(settings, "nvidia_api_key", None),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
+
+    def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
+        """NVIDIA key alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", None),
+            patch.object(settings, "nvidia_api_key", "test-key"),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
 
 
 class TestIsWarningSuppressed:

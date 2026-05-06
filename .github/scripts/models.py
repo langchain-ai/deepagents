@@ -154,9 +154,11 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set0",
+                "eval:open",
                 "eval:docs",
                 "eval:baseten",
                 "harbor:set0",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:baseten",
             }
@@ -179,15 +181,15 @@ REGISTRY: tuple[Model, ...] = (
     ),
     # -- Fireworks --
     Model(
-        "fireworks:fireworks/deepseek-v3p2",
+        "fireworks:accounts/fireworks/models/deepseek-v3p2",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/deepseek-v3-0324",
+        "fireworks:accounts/fireworks/models/deepseek-v3-0324",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/qwen3-vl-235b-a22b-thinking",
+        "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
         frozenset(
             {
                 "eval:set0",
@@ -200,20 +202,75 @@ REGISTRY: tuple[Model, ...] = (
         ),
     ),
     Model(
-        "fireworks:fireworks/minimax-m2p1",
+        "fireworks:accounts/fireworks/models/minimax-m2p1",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/kimi-k2p5",
+        "fireworks:accounts/fireworks/models/kimi-k2p5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/glm-5",
+        "fireworks:accounts/fireworks/models/glm-5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
     ),
     Model(
-        "fireworks:fireworks/minimax-m2p5",
+        "fireworks:accounts/fireworks/models/minimax-m2p5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/kimi-k2p6",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/minimax-m2p7",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/glm-5p1",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
     ),
     # -- Google --
     Model(
@@ -281,7 +338,7 @@ REGISTRY: tuple[Model, ...] = (
     # -- NVIDIA --
     Model(
         "nvidia:nvidia/nemotron-3-super-120b-a12b",
-        frozenset({"eval:open", "eval:nvidia", "harbor:open", "harbor:nvidia"}),
+        frozenset({"eval:nvidia", "harbor:nvidia"}),
     ),
     # -- Ollama --
     Model(
@@ -322,10 +379,8 @@ REGISTRY: tuple[Model, ...] = (
         frozenset(
             {
                 "eval:set0",
-                "eval:open",
                 "eval:ollama",
                 "harbor:set0",
-                "harbor:open",
                 "harbor:ollama",
             }
         ),
@@ -501,8 +556,10 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:minimax/minimax-m2.7",
         frozenset(
             {
+                "eval:open",
                 "eval:docs",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:openrouter",
             }
@@ -543,7 +600,9 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:nvidia/nemotron-3-super-120b-a12b",
         frozenset(
             {
+                "eval:open",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:openrouter",
             }
         ),
@@ -552,8 +611,10 @@ REGISTRY: tuple[Model, ...] = (
         "openrouter:deepseek/deepseek-v4-pro",
         frozenset(
             {
+                "eval:open",
                 "eval:docs",
                 "eval:openrouter",
+                "harbor:open",
                 "harbor:docs",
                 "harbor:openrouter",
             }
@@ -591,6 +652,7 @@ _PRESET_SECTIONS: list[tuple[str | None, list[tuple[str, str | None]]]] = [
             ("mega", "mega"),
             ("fast", "fast"),
             ("open", "open"),
+            ("open-fireworks", "open-fireworks"),
             ("docs", "docs"),
         ],
     ),
@@ -677,25 +739,24 @@ def _provider(model_spec: str) -> str:
     return model_spec.split(":", 1)[0]
 
 
-def _artifact_key(index: int, model_spec: str) -> str:
-    """Build a stable, artifact-safe key for one model matrix entry.
+def _artifact_key(model_spec: str) -> str:
+    """Build an artifact-safe key for one model matrix entry.
 
     GitHub Actions artifact names disallow several characters that appear in
-    model specs (e.g., `:` and `/`), and two artifacts cannot share a name
-    within a workflow run. The numeric `index` prefix guarantees uniqueness
-    even if two specs collapse to the same slug; the regex replaces every
-    disallowed character with `-`.
+    model specs (e.g., `:` and `/`), so the regex replaces every disallowed
+    character with `-`. Uniqueness across a workflow run is enforced by
+    `_resolve_models` (dedupe) and `_matrix_outputs` (assertion); see those
+    callers.
     """
-    slug = _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
-    return f"{index:03d}-{slug}"
+    return _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
 
 
-def _matrix_entry(index: int, model_spec: str) -> dict[str, str]:
+def _matrix_entry(model_spec: str) -> dict[str, str]:
     """Build one GitHub Actions matrix entry for a model."""
     return {
         "model": model_spec,
         "provider": _provider(model_spec),
-        "artifact_key": _artifact_key(index, model_spec),
+        "artifact_key": _artifact_key(model_spec),
     }
 
 
@@ -716,7 +777,19 @@ def _matrix_outputs(workflow: str, models: list[str]) -> dict[str, object]:
     Returns:
         Mapping of GitHub output names to JSON-serializable values.
     """
-    entries = [_matrix_entry(index, model) for index, model in enumerate(models)]
+    entries = [_matrix_entry(model) for model in models]
+    # Tripwire: `_resolve_models` dedupes raw specs, and our `provider:model`
+    # convention plus the registry's canonical specs make it effectively
+    # impossible for two distinct specs to collapse to the same slug. If this
+    # ever fires, reintroduce a disambiguating prefix in `_artifact_key`.
+    by_key: dict[str, list[str]] = {}
+    for entry in entries:
+        by_key.setdefault(entry["artifact_key"], []).append(entry["model"])
+    collisions = {key: specs for key, specs in by_key.items() if len(specs) > 1}
+    if collisions:
+        details = "; ".join(f"{key!r} <- {specs}" for key, specs in collisions.items())
+        msg = f"Duplicate artifact_key(s) in matrix: {details}"
+        raise ValueError(msg)
     outputs: dict[str, object] = {"matrix": {"include": entries}}
 
     if workflow != "eval":
@@ -758,21 +831,24 @@ def _resolve_models(workflow: str, selection: str) -> list[str]:
     normalized = selection.strip()
 
     if normalized in presets:
-        return _filter_by_tag(f"{workflow}:", presets[normalized])
-
-    specs = [s.strip() for s in normalized.split(",") if s.strip()]
-    if not specs:
-        msg = f"No models resolved from {env_var} (got empty or whitespace-only input)"
-        raise ValueError(msg)
-    invalid = [s for s in specs if ":" not in s]
-    if invalid:
-        msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
-        raise ValueError(msg)
-    unsafe = [s for s in specs if not _SAFE_SPEC_RE.match(s)]
-    if unsafe:
-        msg = f"Model spec(s) contain disallowed characters: {', '.join(repr(s) for s in unsafe)}"
-        raise ValueError(msg)
-    return specs
+        specs = _filter_by_tag(f"{workflow}:", presets[normalized])
+    else:
+        specs = [s.strip() for s in normalized.split(",") if s.strip()]
+        if not specs:
+            msg = f"No models resolved from {env_var} (got empty or whitespace-only input)"
+            raise ValueError(msg)
+        invalid = [s for s in specs if ":" not in s]
+        if invalid:
+            msg = f"Invalid model spec(s) (expected 'provider:model'): {', '.join(repr(s) for s in invalid)}"
+            raise ValueError(msg)
+        unsafe = [s for s in specs if not _SAFE_SPEC_RE.match(s)]
+        if unsafe:
+            msg = f"Model spec(s) contain disallowed characters: {', '.join(repr(s) for s in unsafe)}"
+            raise ValueError(msg)
+    # Order-preserving dedupe so duplicate entries (typo'd `models_override`,
+    # or a future REGISTRY edit that accidentally repeats a spec) cannot
+    # collide on `artifact_key` downstream.
+    return list(dict.fromkeys(specs))
 
 
 def main() -> None:

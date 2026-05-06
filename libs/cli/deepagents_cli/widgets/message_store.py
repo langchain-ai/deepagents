@@ -350,7 +350,8 @@ class MessageData:
         if isinstance(widget, ErrorMessage):
             return cls(
                 type=MessageType.ERROR,
-                content=widget._content,
+                # `_content` may be `Content` (link spans drop on resume).
+                content=str(widget._content),
                 id=widget_id,
             )
 

@@ -75,6 +75,67 @@ class TestErrorMessageMarkupSafety:
         assert isinstance(rendered, Content)
         assert rendered.plain == "Error: something broke"
 
+    def test_error_message_accepts_content_with_link_span(self) -> None:
+        """Pre-built `Content` with `link` spans passes through to render output."""
+        from textual.style import Style as TStyle
+
+        url = "https://docs.langchain.com/oss/python/deepagents/cli/providers"
+        body = Content.assemble(
+            "see ",
+            (url, TStyle(underline=True, link=url)),
+        )
+        rendered = ErrorMessage(body).render()
+        assert isinstance(rendered, Content)
+        links = [
+            getattr(span.style, "link", None)
+            for span in rendered.spans
+            if getattr(span.style, "link", None)
+        ]
+        assert links == [url]
+        assert rendered.plain == f"Error: see {url}"
+
+    def test_error_message_click_on_link_opens_url(self) -> None:
+        """Click on a `link`-styled span should route through `open_style_link`."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("see https://example.com")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link="https://example.com"),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_called_once_with(event)
+        mock_toast.assert_not_called()
+
+    def test_error_message_click_off_link_shows_timestamp(self) -> None:
+        """Click outside a link span should fall back to the timestamp toast."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("plain error, no URL")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link=None),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_not_called()
+        mock_toast.assert_called_once_with(msg)
+
 
 class TestAppMessageMarkupSafety:
     """Test AppMessage handles content with brackets safely."""
@@ -561,60 +622,6 @@ class TestAppMessageOnClickOpensLink:
 # ---------------------------------------------------------------------------
 
 _MSG_STORE_PATH = "deepagents_cli.widgets.messages"
-
-
-class TestShowTimestampToast:
-    """Tests for `_show_timestamp_toast` helper."""
-
-    def test_noop_when_widget_not_mounted(self) -> None:
-        """Should not raise when widget has no app."""
-        widget = MagicMock(spec=["app", "id"])
-        # Simulate unmounted widget: .app property raises
-        type(widget).app = property(
-            lambda _: (_ for _ in ()).throw(RuntimeError("no app"))
-        )
-        widget.id = "msg-abc"
-        _show_timestamp_toast(widget)  # should not raise
-
-    def test_noop_when_widget_id_is_none(self) -> None:
-        """Should return early when widget.id is None."""
-        widget = MagicMock()
-        widget.id = None
-        widget.app = MagicMock()
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_noop_when_message_not_in_store(self) -> None:
-        """Should return early when message is not found in the store."""
-        widget = MagicMock()
-        widget.id = "msg-missing"
-        widget.app._message_store.get_message.return_value = None
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_shows_toast_with_formatted_timestamp(self) -> None:
-        """Should call notify with a human-readable timestamp."""
-        from deepagents_cli.widgets.message_store import MessageData, MessageType
-
-        data = MessageData(
-            type=MessageType.USER,
-            content="hello",
-            id="msg-test123",
-            timestamp=1709744055.0,  # 2024-03-06 17:14:15 UTC
-        )
-        widget = MagicMock()
-        widget.id = "msg-test123"
-        widget.app._message_store.get_message.return_value = data
-
-        _show_timestamp_toast(widget)
-
-        widget.app.notify.assert_called_once()
-        call_args = widget.app.notify.call_args
-        label = call_args[0][0]
-        # Should contain month abbreviation and time components
-        assert "Mar" in label
-        assert ":" in label
-        assert call_args[1]["timeout"] == 3
 
 
 class TestTimestampClickMixin:

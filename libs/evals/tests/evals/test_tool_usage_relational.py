@@ -438,11 +438,17 @@ RELATIONAL_TOOL_IMPLEMENTATIONS = {tool.name: tool for tool in RELATIONAL_TOOLS}
 def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create agent."""
     middleware = []
+    tools = None
     if repl_name == "langchain":
         middleware = [ReplMiddleware(ptc=RELATIONAL_TOOLS, add_ptc_docs=True)]
     elif repl_name == "quickjs":
         middleware = [REPLMiddleware(ptc=RELATIONAL_TOOLS)]
-    return create_deep_agent(model=model, middleware=middleware)
+    elif repl_name is None:
+        tools = RELATIONAL_TOOLS
+    else:
+        msg = f'Unknown repl_name "{repl_name}"'
+        raise ValueError(msg)
+    return create_deep_agent(model=model, tools=tools, middleware=middleware)
 
 
 @pytest.mark.eval_tier("baseline")

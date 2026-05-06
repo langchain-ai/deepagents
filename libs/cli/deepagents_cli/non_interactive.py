@@ -891,7 +891,7 @@ async def _run_startup_command(
 
 async def run_non_interactive(
     message: str,
-    assistant_id: str = "agent",
+    assistant_id: str = DEFAULT_AGENT_NAME,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices

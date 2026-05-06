@@ -14,6 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_cli._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_cli.config import get_glyphs
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,8 @@ class StatusBar(Horizontal):
         super().__init__(**kwargs)
         # Store initial cwd - will be used in compose()
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
+        self._hide_cwd = is_env_truthy(HIDE_CWD)
+        self._hide_git_branch = is_env_truthy(HIDE_GIT_BRANCH)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -207,13 +210,18 @@ class StatusBar(Horizontal):
         Priority (highest first): model, cwd, git branch.
         """
         width = event.size.width
+        branch_threshold = (
+            self._CWD_WIDTH_THRESHOLD
+            if self._hide_cwd
+            else self._BRANCH_WIDTH_THRESHOLD
+        )
         with suppress(NoMatches):
             self.query_one("#branch-display", Static).display = (
-                width >= self._BRANCH_WIDTH_THRESHOLD
+                not self._hide_git_branch and width >= branch_threshold
             )
         with suppress(NoMatches):
             self.query_one("#cwd-display", Static).display = (
-                width >= self._CWD_WIDTH_THRESHOLD
+                not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD
             )
 
     def on_mount(self) -> None:
@@ -221,6 +229,12 @@ class StatusBar(Horizontal):
         from deepagents_cli.config import settings
 
         self.cwd = self._initial_cwd
+        if self._hide_cwd:
+            with suppress(NoMatches):
+                self.query_one("#cwd-display", Static).display = False
+        if self._hide_git_branch:
+            with suppress(NoMatches):
+                self.query_one("#branch-display", Static).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""

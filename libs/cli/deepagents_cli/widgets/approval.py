@@ -364,21 +364,15 @@ class ApprovalMenu(Container):
         self._handle_selection(self._selected)
 
     def action_select_approve(self) -> None:
-        """Select approve option."""
-        self._selected = 0
-        self._update_options()
+        """Submit approve option."""
         self._handle_selection(0)
 
     def action_select_auto(self) -> None:
-        """Select auto-approve option."""
-        self._selected = 1
-        self._update_options()
+        """Submit auto-approve option."""
         self._handle_selection(1)
 
     def action_select_reject(self) -> None:
-        """Select reject option."""
-        self._selected = 2
-        self._update_options()
+        """Submit reject option."""
         self._handle_selection(2)
 
     def action_toggle_expand(self) -> None:
@@ -398,6 +392,8 @@ class ApprovalMenu(Container):
             2: "reject",
         }
         decision = {"type": decision_map[option]}
+
+        self.display = False
 
         # Resolve the future
         if self._future and not self._future.done():

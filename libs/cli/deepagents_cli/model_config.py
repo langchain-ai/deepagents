@@ -262,6 +262,15 @@ DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 """Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
 
+DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
+"""Directory for CLI-managed internal state (`~/.deepagents/.state`).
+
+Holds files the CLI writes for its own bookkeeping — OAuth tokens, the
+sessions database, version-check caches, input history. Kept separate from
+top-level user-facing config and agent directories so listing/iterating
+`~/.deepagents` doesn't conflate state with agents.
+"""
+
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",

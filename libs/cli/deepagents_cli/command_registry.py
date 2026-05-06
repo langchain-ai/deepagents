@@ -250,7 +250,7 @@ SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE
 QUEUE_BOUND: frozenset[str] = _build_bypass_set(BypassTier.QUEUED)
 """Commands that must wait in the queue when the app is busy."""
 
-HIDDEN_DEBUG: frozenset[str] = frozenset({"/debug-error"})
+HIDDEN_DEBUG: frozenset[str] = frozenset({"/debug-error", "/timer"})
 """Hidden debug commands not exposed in autocomplete or help."""
 
 ALL_CLASSIFIED: frozenset[str] = (

@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
+    from textual.timer import Timer
     from textual.widget import Widget
     from textual.worker import Worker
 
@@ -1251,6 +1252,16 @@ class DeepAgentsApp(App):
         Startup workers register notices (missing deps, update available)
         here; the user opens them via toast click or `ctrl+n`.
         """
+
+        self._timer_handle: Timer | None = None
+        """Active countdown timer started via the hidden `/timer` command."""
+
+        self._timer_seconds_remaining = 0
+        """Seconds left in the active countdown; drives the header sub_title."""
+
+        self._timer_prior_sub_title: str | None = None
+        """`App.sub_title` snapshot captured before a timer started, restored
+        when the timer is cancelled or replaced."""
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -4479,6 +4490,8 @@ class DeepAgentsApp(App):
                     " exited with code 3"
                 )
             )
+        elif cmd == "/timer" or cmd.startswith("/timer "):
+            await self._handle_timer_command(command)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -4486,6 +4499,114 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    _TIMER_DEFAULT_MINUTES: ClassVar[int] = 5
+    _TIMER_MAX_MINUTES: ClassVar[int] = 24 * 60
+
+    async def _handle_timer_command(self, command: str) -> None:
+        """Handle the hidden `/timer [N]` command.
+
+        Starts a countdown that drives `App.sub_title`. `N` is the duration
+        in minutes (default `_TIMER_DEFAULT_MINUTES`). `/timer stop` cancels
+        the active countdown.
+        """
+        await self._mount_message(UserMessage(command))
+
+        arg = command.strip()[len("/timer") :].strip()
+        if arg.lower() in {"stop", "cancel", "off"}:
+            if self._timer_handle is None:
+                await self._mount_message(AppMessage("No timer running."))
+            else:
+                self._stop_timer()
+                await self._mount_message(AppMessage("Timer stopped."))
+            return
+
+        if arg:
+            try:
+                minutes = int(arg)
+            except ValueError:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Invalid timer duration {arg!r}. Usage: /timer [minutes]"
+                    )
+                )
+                return
+        else:
+            minutes = self._TIMER_DEFAULT_MINUTES
+
+        if minutes <= 0 or minutes > self._TIMER_MAX_MINUTES:
+            await self._mount_message(
+                ErrorMessage(
+                    f"Timer duration must be between 1 and {self._TIMER_MAX_MINUTES}"
+                    " minutes."
+                )
+            )
+            return
+
+        await self._start_timer(minutes)
+        await self._mount_message(AppMessage(f"Timer started: {minutes} minute(s)."))
+
+    async def _start_timer(self, minutes: int) -> None:
+        """Start (or restart) the countdown timer for `minutes` minutes."""
+        if self._timer_handle is not None:
+            self._timer_handle.stop()
+            self._timer_handle = None
+        else:
+            self._timer_prior_sub_title = self.sub_title
+
+        await self._ensure_header_mounted()
+        self._timer_seconds_remaining = minutes * 60
+        self._render_timer_sub_title()
+        self._timer_handle = self.set_interval(1.0, self._tick_timer)
+
+    def _tick_timer(self) -> None:
+        """Per-second timer callback: decrement and update sub_title."""
+        self._timer_seconds_remaining -= 1
+        if self._timer_seconds_remaining <= 0:
+            self._timer_seconds_remaining = 0
+            self._render_timer_sub_title()
+            if self._timer_handle is not None:
+                self._timer_handle.stop()
+                self._timer_handle = None
+            self.notify("Timer finished.", title="⏱ Timer", markup=False)
+            self.bell()
+            return
+        self._render_timer_sub_title()
+
+    def _stop_timer(self) -> None:
+        """Cancel the active countdown and restore the prior sub_title."""
+        if self._timer_handle is not None:
+            self._timer_handle.stop()
+            self._timer_handle = None
+        self._timer_seconds_remaining = 0
+        self.sub_title = self._timer_prior_sub_title or ""
+        self._timer_prior_sub_title = None
+
+    def _render_timer_sub_title(self) -> None:
+        """Format the remaining time as `MM:SS` and push to `App.sub_title`."""
+        seconds = max(0, self._timer_seconds_remaining)
+        minutes, secs = divmod(seconds, 60)
+        label = "Time's up" if seconds == 0 else f"{minutes:02d}:{secs:02d}"
+        self.sub_title = f"⏱ {label}"
+
+    async def _ensure_header_mounted(self) -> None:
+        """Mount `_StaticHeader` on demand if `SHOW_HEADER` was disabled.
+
+        The compose-time gate on `DEEPAGENTS_CLI_SHOW_HEADER` skips the
+        header when the env var is falsy. Since the timer renders into the
+        header's `sub_title`, mount it dynamically the first time `/timer`
+        runs so the experiment is usable without a relaunch. Awaits the
+        mount so the `HeaderTitle` child exists before the caller updates
+        `sub_title` (whose watcher queries that child).
+        """
+        if self.query("#app-header"):
+            return
+        # Best-effort mount: a hidden debug command should not crash the app
+        # if the layout state somehow rejects the new widget.
+        try:
+            await self.mount(_StaticHeader(id="app-header"))
+        except Exception:
+            logger.warning("Failed to mount header for /timer", exc_info=True)
 
     async def _invoke_skill(
         self,

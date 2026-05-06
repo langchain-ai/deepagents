@@ -6973,6 +6973,92 @@ class TestHeaderAndTitle:
             assert not app.query(Header)
 
 
+class TestTimerCommand:
+    """Hidden `/timer [N]` countdown that drives `App.sub_title`."""
+
+    async def test_timer_starts_with_default_minutes(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer")
+            assert app._timer_handle is not None
+            assert app._timer_seconds_remaining == 5 * 60
+            assert app.sub_title.startswith("⏱ 05:00")
+            app._stop_timer()
+
+    async def test_timer_accepts_custom_minutes(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 12")
+            assert app._timer_seconds_remaining == 12 * 60
+            assert app.sub_title.startswith("⏱ 12:00")
+            app._stop_timer()
+
+    async def test_timer_rejects_non_integer(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer abc")
+            assert app._timer_handle is None
+            assert app._timer_seconds_remaining == 0
+
+    async def test_timer_rejects_zero_or_negative(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 0")
+            assert app._timer_handle is None
+
+    async def test_timer_stop_cancels_active_timer(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 3")
+            assert app._timer_handle is not None
+            await app._handle_command("/timer stop")
+            assert app._timer_handle is None
+            assert app._timer_seconds_remaining == 0
+
+    async def test_timer_tick_decrements_remaining(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 1")
+            assert app._timer_seconds_remaining == 60
+            app._tick_timer()
+            assert app._timer_seconds_remaining == 59
+            assert app.sub_title == "⏱ 00:59"
+            app._stop_timer()
+
+    async def test_timer_expiry_stops_handle(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 1")
+            app._timer_seconds_remaining = 1
+            app._tick_timer()
+            assert app._timer_handle is None
+            assert app._timer_seconds_remaining == 0
+            assert app.sub_title == "⏱ Time's up"
+
+    async def test_timer_mounts_header_when_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/timer` mounts the header on demand even when SHOW_HEADER is off."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(Header)
+            await app._handle_command("/timer 2")
+            await pilot.pause()
+            assert len(app.query(Header)) == 1
+            app._stop_timer()
+
+
 class TestHandleExternalSignal:
     """Verify routing of `kind=signal` external events."""
 

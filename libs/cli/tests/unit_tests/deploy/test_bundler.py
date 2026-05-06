@@ -232,6 +232,17 @@ class TestRenderDeployGraph:
         assert 'SANDBOX_PROVIDER != "none"' in result
         assert "StateBackend" in result
 
+    def test_daytona_block_reconnects_from_sandbox_info(self) -> None:
+        """Generated Daytona deploy graph must reconnect from persisted sandbox info."""
+        config = _minimal_config(provider="daytona")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        compile(result, "<deploy_graph_daytona_reconnect>", "exec")
+        assert "def _reconnect_sandbox" in result
+        assert "client.get(sandbox_id)" in result
+        assert "_ensure_ready_daytona_sandbox(sandbox)" in result
+        assert "Match CLI semantics" not in result
+
     def test_langsmith_block_uses_snapshot_api(self) -> None:
         """Generated langsmith block must reference the snapshot API surface.
 

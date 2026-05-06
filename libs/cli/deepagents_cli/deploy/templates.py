@@ -194,6 +194,57 @@ SANDBOX_BLOCK_DAYTONA = '''\
 from langchain_daytona import DaytonaSandbox
 
 _SANDBOXES: dict = {}
+_DAYTONA_TRANSITIONAL_STATES = frozenset(
+    {
+        "building_snapshot",
+        "creating",
+        "pending_build",
+        "pulling_snapshot",
+        "resizing",
+        "restoring",
+        "starting",
+    }
+)
+_DAYTONA_UNRECOVERABLE_STATES = frozenset(
+    {
+        "archived",
+        "archiving",
+        "build_failed",
+        "destroyed",
+        "destroying",
+    }
+)
+
+
+def _ensure_ready_daytona_sandbox(sandbox):
+    """Return True if `sandbox` is usable after any needed lifecycle calls."""
+    state = getattr(sandbox, "state", None)
+    if state == "started":
+        return True
+    if state == "stopped":
+        sandbox.start()
+        return True
+    if state in _DAYTONA_TRANSITIONAL_STATES:
+        sandbox.wait_for_sandbox_start()
+        return True
+    if state == "error" and getattr(sandbox, "recoverable", False):
+        sandbox.recover()
+        return True
+
+    if state in _DAYTONA_UNRECOVERABLE_STATES or state == "error":
+        logger.warning(
+            "Daytona sandbox %s is not reconnectable; state=%s recoverable=%s",
+            getattr(sandbox, "id", None),
+            state,
+            getattr(sandbox, "recoverable", None),
+        )
+    else:
+        logger.warning(
+            "Daytona sandbox %s is in unknown state %s; will create fresh",
+            getattr(sandbox, "id", None),
+            state,
+        )
+    return False
 
 
 def _get_or_create_sandbox(
@@ -208,7 +259,17 @@ def _get_or_create_sandbox(
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
-    # Match CLI semantics: Daytona sandbox reconnect by ID is not supported.
+    backend = _reconnect_sandbox(
+        cache_key,
+        scope=scope,
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+        sandbox_info=sandbox_info,
+    )
+    if backend is not None:
+        _SANDBOXES[cache_key] = backend
+        return backend
+
     from daytona import Daytona, CreateSandboxFromImageParams
 
     client = Daytona()
@@ -217,6 +278,42 @@ def _get_or_create_sandbox(
     _SANDBOXES[cache_key] = backend
     logger.info("Created Daytona sandbox %s for cache_key %s", sandbox.id, cache_key)
     return backend
+
+
+# Reconnect to an existing Daytona sandbox from validated sandbox info.
+def _reconnect_sandbox(
+    cache_key,
+    *,
+    scope=None,  # noqa: ARG001
+    thread_id=None,  # noqa: ARG001
+    assistant_id=None,  # noqa: ARG001
+    sandbox_info: SandboxInfo | None = None,
+):
+    if not sandbox_info:
+        return None
+    sandbox_id = sandbox_info.get("sandbox_id")
+    if sandbox_info.get("provider") != "daytona":
+        raise RuntimeError("Expected Daytona sandbox info.")
+    if not isinstance(sandbox_id, str):
+        raise RuntimeError("Daytona sandbox info is missing sandbox_id.")
+
+    try:
+        from daytona import Daytona
+
+        client = Daytona()
+        sandbox = client.get(sandbox_id)
+        if not _ensure_ready_daytona_sandbox(sandbox):
+            return None
+    except Exception:
+        logger.warning(
+            "Failed to reconnect Daytona sandbox %s for key %s",
+            sandbox_id,
+            cache_key,
+            exc_info=True,
+        )
+        return None
+    logger.info("Reconnected Daytona sandbox %s for key %s", sandbox_id, cache_key)
+    return DaytonaSandbox(sandbox=sandbox)
 '''
 """Sandbox creation block for the Daytona provider."""
 

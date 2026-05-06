@@ -65,7 +65,7 @@ def is_valid_ptc_tool_name(name: str) -> bool:
     return is_valid_js_identifier(to_camel_case(name))
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
+def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
@@ -83,10 +83,38 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
         "The agent tools listed below are exposed on the global object at "
-        "`globalThis.tools` (also reachable as `tools`). Each takes a single object "
-        "argument and returns a Promise that resolves to a string.\n\n"
-        "Invocation pattern: `await tools.<name>({ ... })`).\n\n"
-        "Use `await`; combine with `Promise.all` for concurrent calls.\n\n"
+        "`globalThis.tools` (also reachable as `tools`). Each takes a single "
+        "object argument and returns a Promise that resolves to a string "
+        "(structured return values are JSON-serialized).\n\n"
+        "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
+        "- Use `await` to get tool results; combine with `Promise.all` for "
+        "independent calls so they run concurrently.\n"
+        f"- If the task needs multiple tool calls, prefer one `{tool_name}` "
+        "invocation that performs all of them rather than splitting the work "
+        f"across multiple `{tool_name}` calls — each round-trip costs a model "
+        "turn.\n"
+        "- Pipeline dependent calls within a single program. If a result from "
+        "one tool is needed as input to a later tool, chain them in one "
+        "program instead of returning the intermediate value to the model.\n"
+        "- If a tool returns an ID or other value that can be passed directly "
+        "into the next tool, trust it and chain the calls instead of stopping "
+        "to double-check it.\n"
+        "- To inspect an intermediate value, `console.log` it inside the same "
+        "program; otherwise, fetch as much information as possible in one "
+        "call.\n"
+        f"- Only split work across multiple `{tool_name}` invocations when "
+        "you genuinely cannot determine what to do next without additional "
+        "model reasoning or user input.\n\n"
+        "Example shape — substitute real tool names:\n\n"
+        "```typescript\n"
+        'const usersJson = await tools.findUsers({ name: "Ada" });\n'
+        "const userId = JSON.parse(usersJson)[0].id;\n"
+        "const [city, normalized] = await Promise.all([\n"
+        "  tools.cityForUser({ user_id: userId }),\n"
+        '  tools.normalize({ name: "Ada" }),\n'
+        "]);\n"
+        "console.log({ city, normalized });\n"
+        "```\n\n"
         "```typescript\n"
         f"{body}\n"
         "```"

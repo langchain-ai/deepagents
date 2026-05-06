@@ -1310,7 +1310,11 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
         configurable.get(_SANDBOX_INFO_KEY),
         cache_key=sandbox_cache_key,
     )
-    if sandbox_info is None and (SANDBOX_SCOPE != "thread" or thread_id):
+    if (
+        SANDBOX_PROVIDER != "none"
+        and sandbox_info is None
+        and (SANDBOX_SCOPE != "thread" or thread_id)
+    ):
         _, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,

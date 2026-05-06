@@ -224,6 +224,14 @@ class TestRenderDeployGraph:
             result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
+    def test_no_sandbox_skips_sandbox_info_resolution(self) -> None:
+        """StateBackend has no provider id, so skip sandbox info persistence."""
+        config = _minimal_config(provider="none")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert 'SANDBOX_PROVIDER != "none"' in result
+        assert "StateBackend" in result
+
     def test_langsmith_block_uses_snapshot_api(self) -> None:
         """Generated langsmith block must reference the snapshot API surface.
 

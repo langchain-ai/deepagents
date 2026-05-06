@@ -1,9 +1,6 @@
 # `vibe-players` — test runbook
 
-End-to-end smoke test for the player-dispatch CLI. Both `vibe-players`
-(CLI) and `vibe-control` (web UI) delegate to the same iTerm2
-session-discovery helpers in `control/control_server/iterm_ctrl.py`,
-so passing this runbook validates the web panel's Players section too.
+End-to-end smoke test for the player-dispatch CLI. Both `vibe-players` (CLI) and `vibe-control` (web UI) delegate to the same iTerm2 session-discovery helpers in `control/control_server/iterm_ctrl.py`, so passing this runbook validates the web panel's Players section too.
 
 Run commands from `vibe-coding-olympics/control/` unless noted.
 
@@ -21,12 +18,7 @@ From `vibe-coding-olympics/`:
 ./play.sh "a website for a taco truck" 3001
 ```
 
-Expect: a new iTerm2 window, tab 1 running the CLI (splash → skill → first
-turn), tab 2 running `tail -f /tmp/vite.log`. iTerm2's title bar for tab 1
-should read **`vibe-player-3001`** and the launch shell should print a socket
-path like `/tmp/deepagents-vibe-3001.sock`. If the title tag is missing,
-every command below will miss; if the socket path is missing, `clear` cannot
-reach the CLI.
+Expect: a new iTerm2 window, tab 1 running the CLI (splash → skill → first turn), tab 2 running `tail -f /tmp/vite.log`. iTerm2's title bar for tab 1 should read **`vibe-player-3001`** and the launch shell should print a socket path like `/tmp/deepagents-vibe-3001.sock`. If the title tag is missing, every command below will miss; if the socket path is missing, `clear` cannot reach the CLI.
 
 ## 2. Confirm discovery
 
@@ -40,8 +32,7 @@ Expect:
 vibe-player-3001
 ```
 
-Launch a second player on another port and rerun `list` to confirm both
-show up:
+Launch a second player on another port and rerun `list` to confirm both show up:
 
 ```bash
 ./play.sh "a minimalist timer" 3002
@@ -99,8 +90,7 @@ Stdout:
 reset vibe-player-3001
 ```
 
-Re-verify with `list` — the session still shows up (the shell still owns
-the tag; `deepagents -y` started by `reset` runs inside it).
+Re-verify with `list` — the session still shows up (the shell still owns the tag; `deepagents -y` started by `reset` runs inside it).
 
 Fan-out variant: `reset --all`.
 
@@ -120,8 +110,7 @@ uv run vibe-players reset --all   # optional
 # then close the iTerm2 windows by hand
 ```
 
-`play.sh` also auto-frees the port next time you relaunch, so leaking a
-window doesn't block a rerun.
+`play.sh` also auto-frees the port next time you relaunch, so leaking a window doesn't block a rerun.
 
 ## Troubleshooting
 

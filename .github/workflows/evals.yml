@@ -238,6 +238,9 @@ jobs:
       other_matrix: ${{ steps.set-matrix.outputs.other_matrix }}
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
         env:
@@ -305,6 +308,91 @@ jobs:
             done
             echo "| \`eval_categories_exclude\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          # Resolved category list = (selected) - (excluded). The catalog at
+          # `libs/evals/deepagents_evals/categories.json` enumerates `(all)`
+          # for this summary; runtime category filtering is performed by
+          # pytest against `@pytest.mark.eval_category(...)` markers in
+          # `libs/evals/tests/evals/conftest.py`, so the JSON and the markers
+          # can drift. Names that don't appear in the JSON are surfaced as
+          # warnings here, but pytest is the final arbiter.
+          CATEGORIES_JSON="libs/evals/deepagents_evals/categories.json"
+          catalog=()
+          catalog_error=""
+          if [ ! -f "${CATEGORIES_JSON}" ]; then
+            catalog_error="catalog file missing: \`${CATEGORIES_JSON}\`"
+          elif catalog_raw=$(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["categories"]))' "${CATEGORIES_JSON}" 2>/dev/null); then
+            mapfile -t catalog <<< "${catalog_raw}"
+          else
+            catalog_error="catalog parse failed"
+          fi
+          if [ -n "${catalog_error}" ]; then
+            echo "| **resolved categories** | _(${catalog_error})_ |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Could not compute resolved eval categories: ${catalog_error}"
+          else
+            unknowns=()
+            if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
+              selected=("${catalog[@]}")
+            else
+              IFS=',' read -ra raw <<< "${EVAL_CATEGORIES}"
+              selected=()
+              for cat in "${raw[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -z "$cat" ] && continue
+                selected+=("$cat")
+                in_catalog=0
+                for known in "${catalog[@]}"; do
+                  [ "$cat" = "$known" ] && in_catalog=1 && break
+                done
+                [ "$in_catalog" -eq 0 ] && unknowns+=("$cat")
+              done
+            fi
+            excluded=()
+            if [ "${EVAL_CATEGORIES_EXCLUDE}" != "(none)" ]; then
+              IFS=',' read -ra raw <<< "${EVAL_CATEGORIES_EXCLUDE}"
+              for cat in "${raw[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -z "$cat" ] && continue
+                excluded+=("$cat")
+                in_catalog=0
+                for known in "${catalog[@]}"; do
+                  [ "$cat" = "$known" ] && in_catalog=1 && break
+                done
+                [ "$in_catalog" -eq 0 ] && unknowns+=("$cat")
+              done
+            fi
+            resolved=()
+            for cat in "${selected[@]}"; do
+              skip=0
+              for ex in "${excluded[@]}"; do
+                if [ "$cat" = "$ex" ]; then
+                  skip=1
+                  break
+                fi
+              done
+              [ $skip -eq 0 ] && resolved+=("$cat")
+            done
+            if [ ${#resolved[@]} -eq 0 ]; then
+              row_value="_(none — exclusion removed every selected category)_"
+            else
+              comma_list=""
+              for cat in "${resolved[@]}"; do
+                [ -n "$comma_list" ] && comma_list="${comma_list}, "
+                comma_list="${comma_list}\`${cat}\`"
+              done
+              row_value="${comma_list}"
+            fi
+            unknown_note=""
+            if [ ${#unknowns[@]} -gt 0 ]; then
+              note=""
+              for cat in "${unknowns[@]}"; do
+                [ -n "$note" ] && note="${note}, "
+                note="${note}\`${cat}\`"
+                echo "::warning::Eval category '${cat}' is not in ${CATEGORIES_JSON}; possible typo or missing catalog entry."
+              done
+              unknown_note="<br>⚠️ _Not in catalog: ${note}_"
+            fi
+            echo "| **resolved categories** | ${row_value}${unknown_note} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           # Show eval tiers
           if [ "${EVAL_TIERS}" = "(all)" ]; then
             echo "| \`eval_tiers\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
@@ -349,9 +437,6 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix

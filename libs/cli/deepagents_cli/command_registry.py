@@ -91,6 +91,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset",
     ),
     SlashCommand(
+        name="/force-clear",
+        description="Interrupt active work, clear chat, and start new thread",
+        bypass_tier=BypassTier.ALWAYS,
+        hidden_keywords="reset interrupt",
+    ),
+    SlashCommand(
         name="/editor",
         description="Open prompt in external editor ($EDITOR)",
         bypass_tier=BypassTier.QUEUED,

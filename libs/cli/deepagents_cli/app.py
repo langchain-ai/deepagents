@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_cli.event_bus import EventSource, ExternalEvent
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
@@ -419,6 +420,19 @@ class QueuedMessage:
 
     mode: InputMode
     """The input mode that determines message routing."""
+
+
+class ExternalInput(Message):
+    """Textual message carrying an external prompt or command."""
+
+    def __init__(self, event: ExternalEvent) -> None:
+        """Create an external input message.
+
+        Args:
+            event: Transport-independent external event.
+        """
+        super().__init__()
+        self.event = event
 
 
 DeferredActionKind = Literal[
@@ -1164,6 +1178,12 @@ class DeepAgentsApp(App):
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._external_event_source: EventSource | None = None
+        """Optional alpha external event source, enabled by environment."""
+
+        self._external_event_source_task: asyncio.Task[None] | None = None
+        """Background task that owns the external event source lifecycle."""
+
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
@@ -1402,6 +1422,50 @@ class DeepAgentsApp(App):
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
+        self._maybe_start_external_event_source()
+
+    def _maybe_start_external_event_source(self) -> None:
+        """Start the alpha external event listener when explicitly enabled."""
+        from deepagents_cli._env_vars import (
+            EXTERNAL_EVENT_SOCKET,
+            EXTERNAL_EVENT_SOCKET_PATH,
+            is_env_truthy,
+        )
+
+        if not is_env_truthy(EXTERNAL_EVENT_SOCKET):
+            return
+
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        raw_path = os.environ.get(EXTERNAL_EVENT_SOCKET_PATH)
+        path = Path(raw_path).expanduser() if raw_path else None
+        source = UnixSocketEventSource(path)
+        self._external_event_source = source
+        self._external_event_source_task = asyncio.create_task(
+            self._run_external_event_source(source)
+        )
+
+    async def _run_external_event_source(self, source: EventSource) -> None:
+        """Run the configured external event source until app shutdown.
+
+        Raises:
+            asyncio.CancelledError: When the app is exiting.
+        """
+
+        async def sink(event: ExternalEvent) -> None:
+            await asyncio.sleep(0)
+            self.post_message(ExternalInput(event))
+
+        try:
+            await source.start(sink)
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("External event source failed")
+        finally:
+            with suppress(Exception):
+                await source.stop()
 
     async def _refresh_git_branch(self) -> None:
         """Resolve the current git branch and update the status bar.
@@ -3704,23 +3768,17 @@ class DeepAgentsApp(App):
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
-    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        """Handle submitted input from ChatInput widget."""
-        value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+    async def _submit_input(self, value: str, mode: InputMode) -> None:
+        """Submit input through the normal queue and bypass policy.
 
-        # Reset quit pending state on any input
-        self._quit_pending = False
-
-        from deepagents_cli.hooks import dispatch_hook
-
-        await dispatch_hook("user.prompt", {})
-
-        # /quit and /q always execute immediately, even mid-thread-switch.
+        Args:
+            value: Message or command text.
+            mode: Input routing mode.
+        """
         from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
 
         if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
-            self.exit()
+            await self._process_message(value, mode)
             return
 
         # Prevent message handling while a thread switch is in-flight.
@@ -3759,6 +3817,40 @@ class DeepAgentsApp(App):
             return
 
         await self._process_message(value, mode)
+
+    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        """Handle submitted input from ChatInput widget."""
+        value = event.value
+        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+
+        # Reset quit pending state on any input
+        self._quit_pending = False
+
+        from deepagents_cli.hooks import dispatch_hook
+
+        await dispatch_hook("user.prompt", {})
+
+        await self._submit_input(value, mode)
+
+    async def on_external_input(self, event: ExternalInput) -> None:
+        """Route external prompt and command events through the app queue."""
+        external = event.event
+        if external.kind == "signal":
+            await self._handle_external_signal(external.payload)
+            return
+
+        mode: InputMode = "command" if external.kind == "command" else "normal"
+        await self._submit_input(external.payload, mode)
+
+    async def _handle_external_signal(self, payload: str) -> None:
+        """Handle a small alpha set of generic external signals."""
+        signal_name = payload.strip().lower()
+        if signal_name == "interrupt":
+            self.action_interrupt()
+        elif signal_name == "force-clear":
+            await self._submit_input("/force-clear", "command")
+        else:
+            logger.warning("Ignoring unknown external signal %r", payload)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
@@ -4134,7 +4226,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /auth, /clear, /offload, /editor, "
+                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
+                "/offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
@@ -4163,7 +4256,9 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd == "/clear":
+        elif cmd in {"/clear", "/force-clear"}:
+            if cmd == "/force-clear":
+                self._force_interrupt_active_work()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
@@ -5543,6 +5638,20 @@ class DeepAgentsApp(App):
         self._queued_widgets.clear()
         self._deferred_actions.clear()
 
+    def _force_interrupt_active_work(self) -> None:
+        """Best-effort interruption used by `/force-clear` before clearing UI."""
+        if self._pending_approval_widget:
+            with suppress(Exception):
+                self._pending_approval_widget.action_select_reject()
+        if self._pending_ask_user_widget:
+            with suppress(Exception):
+                self._pending_ask_user_widget.action_cancel()
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+        self._discard_queue()
+
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.
 
@@ -5791,6 +5900,8 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        if self._external_event_source_task is not None:
+            self._external_event_source_task.cancel()
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.

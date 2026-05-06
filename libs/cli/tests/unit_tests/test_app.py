@@ -36,10 +36,12 @@ from deepagents_cli.app import (
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
+    ExternalInput,
     QueuedMessage,
     TextualSessionState,
     _write_iterm_escape,
 )
+from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.launch_init import LaunchNameScreen
 from deepagents_cli.widgets.messages import (
@@ -3925,6 +3927,60 @@ class TestSlashCommandBypass:
 
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
+
+    async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
+        """/force-clear should process immediately when agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/force-clear", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_external_command_uses_same_bypass_policy(self) -> None:
+        """External command events should route through normal command policy."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(
+                            kind="command",
+                            payload="/force-clear",
+                            source="test",
+                        )
+                    )
+                )
+                await pilot.pause()
+
+            pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_external_prompt_queues_when_agent_running(self) -> None:
+        """External prompt events should queue while the agent is busy."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(
+                ExternalInput(
+                    ExternalEvent(kind="prompt", payload="next task", source="test")
+                )
+            )
+            await pilot.pause()
+
+            assert list(app._pending_messages) == [
+                QueuedMessage(text="next task", mode="normal")
+            ]
 
     async def test_version_executes_during_connecting(self) -> None:
         """/version should process immediately when only connecting."""

@@ -64,6 +64,12 @@ at launch so the update-available flow can be exercised without waiting for a
 real PyPI release. Any non-empty value enables the flag (including `"0"` or
 `"false"`)."""
 
+EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET"
+"""Enable the alpha local Unix-socket external event listener."""
+
+EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH"
+"""Explicit path for the alpha local Unix-socket external event listener."""
+
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 

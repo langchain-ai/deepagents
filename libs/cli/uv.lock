@@ -1026,7 +1026,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.52a1"
+version = "0.0.52a2"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1216,7 +1216,7 @@ requires-dist = [
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.2.2,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.0a7,<2.0.0" },
-    { name = "langgraph-api", git = "https://github.com/langchain-ai/langgraph-api?subdirectory=api&rev=38ce15259e33059c270726da8493cf5de0ccec6a" },
+    { name = "langgraph-api", git = "https://github.com/langchain-ai/langgraph-api?subdirectory=api&rev=35231f7a2effd50b0a78e91da3423bb7fba63748" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0a1,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.15,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.3.11,<1.0.0" },
@@ -3079,8 +3079,8 @@ wheels = [
 
 [[package]]
 name = "langgraph-api"
-version = "0.8.6"
-source = { git = "https://github.com/langchain-ai/langgraph-api?subdirectory=api&rev=38ce15259e33059c270726da8493cf5de0ccec6a#38ce15259e33059c270726da8493cf5de0ccec6a" }
+version = "0.8.7"
+source = { git = "https://github.com/langchain-ai/langgraph-api?subdirectory=api&rev=35231f7a2effd50b0a78e91da3423bb7fba63748#35231f7a2effd50b0a78e91da3423bb7fba63748" }
 dependencies = [
     { name = "cloudpickle" },
     { name = "cryptography" },
@@ -3091,7 +3091,6 @@ dependencies = [
     { name = "httpx" },
     { name = "jsonschema-rs" },
     { name = "langchain-core" },
-    { name = "langchain-protocol" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint" },
     { name = "langgraph-runtime-inmem" },
@@ -3112,7 +3111,6 @@ dependencies = [
     { name = "uvicorn" },
     { name = "uvloop", marker = "sys_platform != 'win32'" },
     { name = "watchfiles" },
-    { name = "websockets" },
     { name = "zstandard" },
 ]
 
@@ -3181,7 +3179,7 @@ wheels = [
 [[package]]
 name = "langgraph-runtime-inmem"
 version = "0.28.0"
-source = { git = "https://github.com/langchain-ai/langgraph-api?subdirectory=runtime_inmem&rev=38ce15259e33059c270726da8493cf5de0ccec6a#38ce15259e33059c270726da8493cf5de0ccec6a" }
+source = { git = "https://github.com/langchain-ai/langgraph-api?subdirectory=runtime_inmem&rev=35231f7a2effd50b0a78e91da3423bb7fba63748#35231f7a2effd50b0a78e91da3423bb7fba63748" }
 dependencies = [
     { name = "blockbuster" },
     { name = "croniter" },

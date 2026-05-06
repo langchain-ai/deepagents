@@ -7,6 +7,7 @@ the REPL so one ``eval`` can orchestrate many tool invocations.
 from __future__ import annotations
 
 import json
+from typing import Any, Literal
 
 import pytest
 from langchain_core.messages import ToolMessage
@@ -14,8 +15,10 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
+from typing_extensions import TypedDict
 
 from langchain_quickjs import REPLMiddleware
+from langchain_quickjs._prompt import _format_return_annotation
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -649,3 +652,81 @@ def test_middleware_rejects_dict_ptc_config_during_prepare() -> None:
     mw = REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
+
+
+# ---------------------------------------------------------------------------
+# Return-type rendering
+# ---------------------------------------------------------------------------
+
+
+class _StatusRecord(BaseModel):
+    """Pydantic model used as a "bare class" return type."""
+
+    status: str
+
+
+class _ServiceLookup(TypedDict):
+    id: int
+    name: str
+
+
+@pytest.mark.parametrize(
+    ("annotation", "expected"),
+    [
+        (int, "number"),
+        (float, "number"),
+        (str, "string"),
+        (bool, "boolean"),
+        (type(None), "null"),
+        (Any, "unknown"),
+        (list[int], "number[]"),
+        (list, "unknown[]"),
+        (dict[str, int], "Record<string, number>"),
+        (dict, "Record<string, unknown>"),
+        (str | None, "string | null"),
+        (Literal["active", "resolved"], '"active" | "resolved"'),
+        (_ServiceLookup, "_ServiceLookup"),
+        (_StatusRecord, "_StatusRecord"),
+        # Things outside our trimmed scope render as ``unknown``:
+        (int | str, "unknown"),
+        (tuple[int, str], "unknown"),
+    ],
+)
+def test_format_return_annotation_covers_supported_branches(
+    annotation: Any, expected: str
+) -> None:
+    assert _format_return_annotation(annotation) == expected
+
+
+def test_render_ptc_prompt_uses_concrete_return_types_and_typed_dict_block() -> None:
+    """``render_ptc_prompt`` renders ``Promise<T>`` and a referenced-type block."""
+
+    def get_service_id() -> int:
+        """Return a service id."""
+        return 1
+
+    async def list_services(name: str) -> list[_ServiceLookup]:
+        """List services with a similar name."""
+        return [{"id": 1, "name": name}]
+
+    tools = [
+        StructuredTool.from_function(
+            name="get_service_id",
+            description="Return a service id.",
+            func=get_service_id,
+        ),
+        StructuredTool.from_function(
+            name="list_services",
+            description="List services with a similar name.",
+            coroutine=list_services,
+        ),
+    ]
+    prompt = render_ptc_prompt(tools)
+    # Concrete return types appear in the signatures.
+    assert "Promise<number>" in prompt
+    assert "Promise<_ServiceLookup[]>" in prompt
+    # The referenced TypedDict gets pulled into its own block at the bottom.
+    assert "Referenced types:" in prompt
+    assert "type _ServiceLookup = {" in prompt
+    assert "id: number;" in prompt
+    assert "name: string;" in prompt

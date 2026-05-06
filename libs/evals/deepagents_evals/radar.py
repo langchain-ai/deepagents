@@ -266,31 +266,29 @@ def generate_radar(
             zorder=4,
         )
 
-        # Score annotations with background pill.  When multiple models are
-        # plotted, stagger radially outward along each spoke so pills don't
-        # pile up at the same point.
-        multi = len(results) > 1
-        radial_bump = 0.05 + idx * 0.06 if multi else 0.04
-
-        for angle, val in zip(angles[:-1], values[:-1], strict=True):
-            ax.text(
-                angle,
-                val + radial_bump,
-                f"{val:.0%}",
-                ha="center",
-                va="center",
-                fontsize=6.5 if multi else 7,
-                fontweight="medium",
-                color=color,
-                zorder=6,
-                bbox={
-                    "boxstyle": "round,pad=0.2",
-                    "facecolor": t.bg,
-                    "edgecolor": color,
-                    "linewidth": 0.5,
-                    "alpha": t.pill_alpha,
-                },
-            )
+        # Score annotations with background pill.  Skipped in multi-model
+        # charts because pills from different models pile up at each spoke
+        # and the accompanying results table already gives exact values.
+        if len(results) == 1:
+            for angle, val in zip(angles[:-1], values[:-1], strict=True):
+                ax.text(
+                    angle,
+                    val + 0.04,
+                    f"{val:.0%}",
+                    ha="center",
+                    va="center",
+                    fontsize=7,
+                    fontweight="medium",
+                    color=color,
+                    zorder=6,
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "facecolor": t.bg,
+                        "edgecolor": color,
+                        "linewidth": 0.5,
+                        "alpha": t.pill_alpha,
+                    },
+                )
 
     # Legend — anchored to the figure's upper-right to avoid wasting space.
     legend = fig.legend(

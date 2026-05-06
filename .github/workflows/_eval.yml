@@ -146,7 +146,30 @@ jobs:
           working-directory: libs/evals
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test
+        run: uv sync --group test --locked
+
+      - name: "🌳 Record source tree"
+        run: |
+          {
+            echo "### 🌳 Source tree"
+            echo ""
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on \`${GITHUB_REF_NAME}\`."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🔖 Record resolved versions"
+        run: |
+          {
+            echo "### 🔖 Resolved package versions"
+            echo ""
+            echo "Model: \`${{ inputs.model }}\`"
+            echo ""
+            echo '```'
+            uv pip list 2>/dev/null \
+              | grep -E '^(langchain|langgraph|langsmith|deepagents)(-[a-z0-9_]+)*[[:space:]]' \
+              | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "🏷️ Apply category filter"
         if: inputs.eval_categories != ''

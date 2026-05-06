@@ -670,7 +670,7 @@ jobs:
         id: install-evals
         if: hashFiles('evals_summary.json') != ''
         working-directory: libs/evals
-        run: uv sync --extra charts
+        run: uv sync --extra charts --locked
 
       - name: "📊 Generate radar chart"
         id: radar-chart

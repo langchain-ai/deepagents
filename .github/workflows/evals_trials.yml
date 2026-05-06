@@ -224,7 +224,7 @@ jobs:
 
       - name: "📦 Install evals package"
         working-directory: libs/evals
-        run: uv sync --group test
+        run: uv sync --group test --locked
 
       - name: "📊 Aggregate trial reports"
         working-directory: libs/evals

@@ -142,7 +142,10 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.12"
-          cache-suffix: evals
+          # Per-shard scope so parallel matrix jobs don't race on the same
+          # cache key. `artifact_key` is enforced unique by the matrix
+          # builder (`_artifact_key` in `.github/scripts/models.py`).
+          cache-suffix: evals-${{ inputs.artifact_key }}
           working-directory: libs/evals
 
       - name: "📦 Install Dependencies"

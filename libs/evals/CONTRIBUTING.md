@@ -294,7 +294,7 @@ Each trial creates its own LangSmith experiment.
 
 ### Running in CI
 
-Dispatch the **📊 Eval trials - GHA** workflow (`evals_trials.yml`).
+Dispatch the **📊 Eval trials** workflow (`evals_trials.yml`).
 
 | Input | Notes |
 |---|---|

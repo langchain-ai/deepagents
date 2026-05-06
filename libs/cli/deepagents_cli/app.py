@@ -1275,7 +1275,8 @@ class DeepAgentsApp(App):
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
-                defer_connecting_display=self._connecting,
+                defer_connecting_display=self._connecting
+                and self._resume_thread_intent is None,
                 id="welcome-banner",
             )
             yield Container(id="messages")

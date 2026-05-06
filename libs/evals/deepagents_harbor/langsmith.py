@@ -11,6 +11,7 @@ Provides functions for:
 import asyncio
 import datetime
 import hashlib
+import inspect
 import json
 import os
 import subprocess
@@ -18,14 +19,15 @@ import sys
 import tempfile
 import urllib.parse
 import uuid
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import aiohttp
 import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
 from harbor.registry.client import (
-    RegistryClient,  # ty: ignore[unresolved-import]  # harbor API drift, tracked separately
+    RegistryClientFactory,
 )
 from langsmith import Client
 from langsmith.utils import LangSmithError, LangSmithNotFoundError
@@ -35,6 +37,19 @@ LANGSMITH_API_URL = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain
 
 _API_KEY_ENV_VARS = ("LANGSMITH_SANDBOX_API_KEY", "LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Environment variables checked (in priority order) when resolving an API key."""
+
+
+class _RegistryClient(Protocol):
+    """Subset of Harbor registry client behavior used by this module."""
+
+    def download_dataset(
+        self,
+        name: str,
+        *,
+        overwrite: bool = False,
+        output_dir: Path | None = None,
+    ) -> list[DownloadedDatasetItem] | Awaitable[list[DownloadedDatasetItem]]:
+        """Download Harbor dataset tasks."""
 
 
 def resolve_langsmith_api_key() -> tuple[str, str] | None:
@@ -206,6 +221,62 @@ def _scan_downloaded_tasks(
     return examples
 
 
+def _dataset_ref(dataset_name: str, version: str) -> str:
+    """Return the Harbor dataset reference accepted by current registry clients.
+
+    Args:
+        dataset_name: Harbor dataset name, with or without an embedded version.
+        version: Harbor dataset version to append when `dataset_name` is unversioned.
+
+    Returns:
+        A Harbor dataset reference in `name@version` form when needed.
+    """
+    if "@" in dataset_name or not version:
+        return dataset_name
+    return f"{dataset_name}@{version}"
+
+
+async def _await_download_result(
+    result: Awaitable[list[DownloadedDatasetItem]],
+) -> list[DownloadedDatasetItem]:
+    """Await a Harbor download result."""
+    return await result
+
+
+def _download_dataset(
+    dataset_name: str,
+    *,
+    version: str,
+    overwrite: bool,
+    output_dir: Path,
+) -> list[DownloadedDatasetItem]:
+    """Download a Harbor dataset through the current registry client API.
+
+    Harbor's registry client is now factory-created and its `download_dataset`
+    method is async. The surrounding LangSmith CLI remains synchronous, so this
+    boundary keeps the rest of the module unchanged.
+
+    Args:
+        dataset_name: Harbor dataset name.
+        version: Harbor dataset version.
+        overwrite: Whether to overwrite cached remote tasks.
+        output_dir: Directory where Harbor should download tasks.
+
+    Returns:
+        Downloaded Harbor dataset items.
+    """
+    registry_client = cast("_RegistryClient", RegistryClientFactory.create())
+    result = registry_client.download_dataset(
+        _dataset_ref(dataset_name, version),
+        overwrite=overwrite,
+        output_dir=output_dir,
+    )
+    if inspect.isawaitable(result):
+        awaitable = cast("Awaitable[list[DownloadedDatasetItem]]", result)
+        return asyncio.run(_await_download_result(awaitable))
+    return result
+
+
 def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
     """Create a LangSmith dataset from Harbor tasks.
 
@@ -220,9 +291,8 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Using temporary directory: {output_dir}")
 
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-    registry_client = RegistryClient()
-    downloaded_tasks = registry_client.download_dataset(
-        name=dataset_name,
+    downloaded_tasks = _download_dataset(
+        dataset_name,
         version=version,
         overwrite=overwrite,
         output_dir=output_dir,

@@ -66,6 +66,13 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local alpha event-listener env vars from affecting tests."""
+    monkeypatch.delenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make app-specific CSS variables available to all test `App` instances.
 

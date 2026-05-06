@@ -67,6 +67,15 @@ at launch so the update-available flow can be exercised without waiting for a
 real PyPI release. Any non-empty value enables the flag (including `"0"` or
 `"false"`)."""
 
+EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET"
+"""Enable the local Unix-socket external event listener.
+
+Parsed by `is_env_truthy`; off by default. Wire format and behavior are
+considered experimental until the listener is documented in the CLI README."""
+
+EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH"
+"""Override the default Unix-socket path for the external event listener."""
+
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 

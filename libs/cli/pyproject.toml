@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.52a1"
+version = "0.0.52a2"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,6 +37,7 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.3.11,<1.0.0",
     "langgraph-cli[inmem]>=0.4.15,<1.0.0",
+    "langgraph-api",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
@@ -170,6 +171,7 @@ deepagents = { path = "../deepagents", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
+langgraph-api = { git = "https://github.com/langchain-ai/langgraph-api", rev = "38ce15259e33059c270726da8493cf5de0ccec6a", subdirectory = "api" }
 
 [tool.ty.environment]
 python-version = "3.11"

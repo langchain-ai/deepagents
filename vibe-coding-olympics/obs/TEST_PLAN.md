@@ -12,7 +12,7 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
 
 ## 1. OBS one-time setup
 
-1. OBS → Tools → WebSocket Server Settings → enable, note port (`4455`) + password.
+1. OBS → Tools → WebSocket Server Settings → enable, note port (`4455`). Leave authentication disabled for the default local setup.
 2. Create scenes: `Idle`, `Coding`, `Scoreboard`.
 3. Add `Text (FreeType 2)` sources with these exact names and some placeholder text:
    - `Coding` scene: `PromptText`, `Contestant1Name`, `Contestant2Name`
@@ -24,9 +24,10 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
 
 ```bash
 cd /Users/mdrxy/oss/deepagents/vibe-coding-olympics/obs
-export OBS_PASSWORD='paste-from-obs'   # skip if auth disabled
 uv run vibe-obs
 ```
+
+If you enable OBS WebSocket authentication, set `OBS_PASSWORD` before launching.
 
 Leave it running. Use a second terminal for everything below.
 

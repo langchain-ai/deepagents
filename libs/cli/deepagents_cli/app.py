@@ -1179,10 +1179,14 @@ class DeepAgentsApp(App):
         """Startup task reference (set in on_mount)."""
 
         self._external_event_source: EventSource | None = None
-        """Optional alpha external event source, enabled by environment."""
+        """External event source created when its env var is enabled.
+
+        Cleared back to `None` if the listener fails to start so callers can
+        distinguish a configured-and-running listener from a no-op.
+        """
 
         self._external_event_source_task: asyncio.Task[None] | None = None
-        """Background task that owns the external event source lifecycle."""
+        """Lifecycle task for `_external_event_source`; cleared together."""
 
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
@@ -1425,7 +1429,7 @@ class DeepAgentsApp(App):
         self._maybe_start_external_event_source()
 
     def _maybe_start_external_event_source(self) -> None:
-        """Start the alpha external event listener when explicitly enabled."""
+        """Start the external event listener when explicitly enabled."""
         from deepagents_cli._env_vars import (
             EXTERNAL_EVENT_SOCKET,
             EXTERNAL_EVENT_SOCKET_PATH,
@@ -1446,26 +1450,39 @@ class DeepAgentsApp(App):
         )
 
     async def _run_external_event_source(self, source: EventSource) -> None:
-        """Run the configured external event source until app shutdown.
+        """Drive `source` from start to shutdown, surfacing failures to the user.
+
+        Args:
+            source: External event source whose lifecycle this task owns.
 
         Raises:
-            asyncio.CancelledError: When the app is exiting.
+            asyncio.CancelledError: Re-raised when the task is cancelled
+                during app shutdown so the cleanup path runs to completion.
         """
 
-        async def sink(event: ExternalEvent) -> None:
-            await asyncio.sleep(0)
+        async def sink(event: ExternalEvent) -> None:  # noqa: RUF029  # protocol requires async callable; post_message is sync
             self.post_message(ExternalInput(event))
 
         try:
             await source.start(sink)
-            await asyncio.Event().wait()
+            await source.serve_forever()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            logger.exception("External event source failed")
-        finally:
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.exception("External event source failed to start")
+            self._external_event_source = None
             with suppress(Exception):
+                self.notify(
+                    f"External event listener failed: {exc}",
+                    severity="error",
+                    timeout=8,
+                    markup=False,
+                )
+        finally:
+            try:
                 await source.stop()
+            except Exception:
+                logger.exception("Error while stopping external event source")
 
     async def _refresh_git_branch(self) -> None:
         """Resolve the current git branch and update the status bar.
@@ -3768,16 +3785,32 @@ class DeepAgentsApp(App):
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
-    async def _submit_input(self, value: str, mode: InputMode) -> None:
-        """Submit input through the normal queue and bypass policy.
+    async def _submit_input(
+        self,
+        value: str,
+        mode: InputMode,
+        *,
+        force_bypass: bool = False,
+    ) -> None:
+        """Submit input, fast-pathing always-immediate commands.
+
+        For commands in `ALWAYS_IMMEDIATE` (or whenever `force_bypass` is set
+        by an external caller), the value is processed directly. Otherwise
+        the standard queue and per-tier bypass policy applies.
 
         Args:
-            value: Message or command text.
+            value: Raw text submitted by the user or external source.
             mode: Input routing mode.
+            force_bypass: When `True`, skip queueing and process the value
+                immediately. External callers use this to mirror the
+                `ALWAYS_IMMEDIATE` fast path for commands they classify as
+                urgent.
         """
         from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
 
-        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
+        if force_bypass or (
+            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+        ):
             await self._process_message(value, mode)
             return
 
@@ -3833,22 +3866,36 @@ class DeepAgentsApp(App):
         await self._submit_input(value, mode)
 
     async def on_external_input(self, event: ExternalInput) -> None:
-        """Route external prompt and command events through the app queue."""
+        """Route external prompt and command events through the app queue.
+
+        Honors `event.bypass`: when an external caller supplies any tier
+        other than `QUEUED`, the event skips the queue regardless of normal
+        per-command policy. This is the documented escape hatch for
+        scripted callers that need to inject high-priority work.
+        """
+        from deepagents_cli.command_registry import BypassTier
+
         external = event.event
         if external.kind == "signal":
             await self._handle_external_signal(external.payload)
             return
 
         mode: InputMode = "command" if external.kind == "command" else "normal"
-        await self._submit_input(external.payload, mode)
+        force_bypass = external.bypass is not BypassTier.QUEUED
+        await self._submit_input(external.payload, mode, force_bypass=force_bypass)
 
     async def _handle_external_signal(self, payload: str) -> None:
-        """Handle a small alpha set of generic external signals."""
+        """Dispatch an external signal payload to the corresponding action.
+
+        The wire-protocol decoder rejects unknown signal names before they
+        reach this method, so the `else` branch only fires when callers
+        construct an `ExternalEvent` directly with an unvalidated payload.
+        """
         signal_name = payload.strip().lower()
         if signal_name == "interrupt":
             self.action_interrupt()
         elif signal_name == "force-clear":
-            await self._submit_input("/force-clear", "command")
+            await self._submit_input("/force-clear", "command", force_bypass=True)
         else:
             logger.warning("Ignoring unknown external signal %r", payload)
 
@@ -5630,6 +5677,42 @@ class DeepAgentsApp(App):
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)
 
+    def _cleanup_external_event_source_sync(self) -> None:
+        """Synchronously close the external event listener and unlink its socket.
+
+        Called from `exit()` because the event loop is about to be torn
+        down and the task's async `finally` would never complete. Close
+        the asyncio server (releases the file descriptor) and unlink the
+        socket path so we never leave stale entries on disk.
+        """
+        source = self._external_event_source
+        if source is None:
+            return
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        if isinstance(source, UnixSocketEventSource):
+            server = source._server  # synchronous teardown peer
+            source._server = None
+            if server is not None:
+                with suppress(Exception):
+                    server.close()
+            with suppress(FileNotFoundError):
+                from deepagents_cli.event_bus import _unlink_existing_socket
+
+                try:
+                    _unlink_existing_socket(source.path)
+                except FileExistsError:
+                    logger.warning(
+                        "Leaving non-socket entry at %s during exit",
+                        source.path,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to unlink event socket %s: %s",
+                        source.path,
+                        exc,
+                    )
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -5639,13 +5722,25 @@ class DeepAgentsApp(App):
         self._deferred_actions.clear()
 
     def _force_interrupt_active_work(self) -> None:
-        """Best-effort interruption used by `/force-clear` before clearing UI."""
+        """Cancel in-flight work before the standard `/clear` path runs.
+
+        Rejects pending approvals, cancels pending ask-user prompts, kills
+        the shell worker, kills the agent worker, and drops the queued
+        message backlog. UI clearing itself happens in the calling
+        `/clear` handler. Each widget interaction is best-effort: a torn-
+        down widget should not abort the interrupt sequence, but the
+        underlying error is logged so regressions are visible.
+        """
         if self._pending_approval_widget:
-            with suppress(Exception):
+            try:
                 self._pending_approval_widget.action_select_reject()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to reject pending approval")
         if self._pending_ask_user_widget:
-            with suppress(Exception):
+            try:
                 self._pending_ask_user_widget.action_cancel()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to cancel pending ask-user")
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
@@ -5902,6 +5997,13 @@ class DeepAgentsApp(App):
             self._git_branch_refresh_task.cancel()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
+        # Cancellation alone is not enough: the task's `finally` block runs
+        # asynchronously, and the event loop is about to be torn down by
+        # `super().exit()`. Synchronously close the server and unlink the
+        # socket file so we never leave a stale entry on disk.
+        if self._external_event_source is not None:
+            self._cleanup_external_event_source_sync()
+            self._external_event_source = None
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.

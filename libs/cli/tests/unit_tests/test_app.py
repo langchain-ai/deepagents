@@ -6934,3 +6934,197 @@ class TestHeaderAndTitle:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert not app.query(Header)
+
+
+class TestHandleExternalSignal:
+    """Verify routing of `kind=signal` external events."""
+
+    async def test_interrupt_calls_action_interrupt(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "action_interrupt") as action:
+                await app._handle_external_signal("interrupt")
+            action.assert_called_once_with()
+
+    async def test_force_clear_routes_to_command_with_force_bypass(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_submit_input", new_callable=AsyncMock) as submit:
+                await app._handle_external_signal("force-clear")
+            submit.assert_called_once_with("/force-clear", "command", force_bypass=True)
+
+    async def test_unknown_signal_is_no_op(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "action_interrupt") as action,
+                patch.object(app, "_submit_input", new_callable=AsyncMock) as submit,
+            ):
+                # Bypasses ExternalEvent's __post_init__ guard which would
+                # otherwise reject this payload at the wire boundary.
+                await app._handle_external_signal("intrupt")
+            action.assert_not_called()
+            submit.assert_not_called()
+
+
+class TestExternalEventEnvGating:
+    """`_maybe_start_external_event_source` env-var contract."""
+
+    async def test_off_by_default(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._external_event_source is None
+            assert app._external_event_source_task is None
+
+    async def test_falsy_value_does_not_start(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "0")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._external_event_source is None
+
+    async def test_truthy_value_starts_listener(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import shutil
+        import tempfile
+
+        # Use short-path tmp to avoid AF_UNIX path-length limit on macOS.
+        socket_dir = tempfile.mkdtemp(dir="/tmp")
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "1")
+            monkeypatch.setenv(
+                "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH",
+                f"{socket_dir}/events.sock",
+            )
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._external_event_source is not None
+                assert app._external_event_source_task is not None
+        finally:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+        del tmp_path
+
+    async def test_socket_file_removed_on_exit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+        import tempfile
+        from pathlib import Path as _Path
+
+        socket_dir = tempfile.mkdtemp(dir="/tmp")
+        socket_path = _Path(socket_dir) / "events.sock"
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "1")
+            monkeypatch.setenv(
+                "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH",
+                str(socket_path),
+            )
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                for _ in range(50):
+                    if socket_path.exists():
+                        break
+                    await asyncio.sleep(0.01)
+                assert socket_path.exists()
+                app.exit()
+                await pilot.pause()
+            assert not socket_path.exists()
+        finally:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+class TestForceInterruptActiveWork:
+    """Verify `_force_interrupt_active_work` cancels in-flight work."""
+
+    async def test_cancels_agent_worker(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            app._agent_worker = worker
+            app._force_interrupt_active_work()
+            worker.cancel.assert_called_once()
+
+    async def test_cancels_shell_worker(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._shell_running = True
+            worker = MagicMock()
+            app._shell_worker = worker
+            app._force_interrupt_active_work()
+            worker.cancel.assert_called_once()
+
+    async def test_rejects_pending_approval(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            app._pending_approval_widget = widget
+            app._force_interrupt_active_work()
+            widget.action_select_reject.assert_called_once()
+
+    async def test_cancels_pending_ask_user(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            app._pending_ask_user_widget = widget
+            app._force_interrupt_active_work()
+            widget.action_cancel.assert_called_once()
+
+    async def test_drops_queued_messages(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(QueuedMessage(text="x", mode="normal"))
+            app._force_interrupt_active_work()
+            assert len(app._pending_messages) == 0
+
+    async def test_widget_failure_is_logged_not_raised(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            widget.action_select_reject.side_effect = AttributeError("boom")
+            app._pending_approval_widget = widget
+            # Must not raise: best-effort interruption.
+            app._force_interrupt_active_work()
+
+
+class TestExternalBypassFieldHonored:
+    """`event.bypass` overrides queue when set on a prompt event."""
+
+    async def test_prompt_with_bypass_skips_queue(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(
+                            kind="prompt",
+                            payload="urgent",
+                            source="test",
+                            bypass=BypassTier.ALWAYS,
+                        )
+                    )
+                )
+                await pilot.pause()
+            pm.assert_called_once_with("urgent", "normal")
+            assert len(app._pending_messages) == 0
+
+
+# Local import for BypassTier in TestExternalBypassFieldHonored.
+from deepagents_cli.command_registry import BypassTier  # noqa: E402

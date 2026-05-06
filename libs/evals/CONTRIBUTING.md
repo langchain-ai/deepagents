@@ -187,6 +187,59 @@ python scripts/generate_radar.py --summary evals_summary.json -o charts/radar.pn
 python scripts/generate_radar.py --toy -o charts/radar.png
 ```
 
+#### Composite radar across multiple workflow runs
+
+Each CI run charts the models from that single dispatch. To overlay results from several runs (e.g. a bake-off across providers, where each model was dispatched as its own run) onto one radar, use the `composite_radar.py` wrapper. It downloads the `evals-summary` artifact from each run, concatenates the per-run JSON arrays, and invokes `generate_radar.py` so every entry becomes a separate trace.
+
+Requires the `gh` CLI authenticated against the target repo. Example:
+
+```bash
+cd libs/evals
+uv run python scripts/composite_radar.py \
+  25403850424 25403883357 25403894412 25403919855 25403953867 \
+  -o /tmp/composite-radar.png \
+  --title "Composite — <describe the cohort>"
+```
+
+Output: `composite-radar.png` (light) and `composite-radar-dark.png` (dark). Add `--individual-dir <path>` to also emit one PNG per model. Use `--repo owner/name` to pull from a fork.
+
+Notes:
+
+- Axes are auto-detected from the union of `category_scores` keys, ordered per `EVAL_CATEGORIES` (`unit_test` is excluded by design).
+- All-zero-score models are dropped by default as likely infrastructure failures. To override, run `generate_radar.py` directly with `--keep-zero-scores` against the merged summary the wrapper leaves behind under `--workdir --keep-workdir`.
+- Trace label = the `model` field of each summary entry. If two runs used the same model on different configs, edit the merged `combined_summary.json` (via `--workdir --keep-workdir`) before re-rendering so the legend stays unambiguous.
+- The summary artifact is uploaded by the `📋 Aggregate evals` job; runs whose aggregate job didn't complete won't have one to download.
+
+If you need to merge by hand (no `gh` CLI, or summaries from a non-CI source), the equivalent manual procedure is:
+
+```bash
+# 1. Pick a working dir and list the run IDs you want to combine.
+mkdir -p /tmp/composite-radar && cd /tmp/composite-radar
+RUNS=(25403850424 25403883357 25403894412 25403919855 25403953867)
+
+# 2. Download the evals-summary artifact from each run.
+for run in "${RUNS[@]}"; do
+  mkdir -p "$run"
+  gh run download "$run" -R langchain-ai/deepagents -n evals-summary -D "$run"
+done
+
+# 3. Concatenate. Each artifact is a JSON array; flatten them into one array.
+python3 -c "
+import json, pathlib, sys
+combined = []
+for r in sys.argv[1:]:
+    combined.extend(json.loads(pathlib.Path(f'{r}/evals_summary.json').read_text()))
+pathlib.Path('combined_summary.json').write_text(json.dumps(combined, indent=2))
+" "${RUNS[@]}"
+
+# 4. Render. Run from libs/evals so uv resolves the chart extra.
+cd "$REPO_ROOT/libs/evals"
+uv run python scripts/generate_radar.py \
+  --summary /tmp/composite-radar/combined_summary.json \
+  -o /tmp/composite-radar/composite-radar.png \
+  --title "Composite — <describe the cohort>"
+```
+
 ### Eval catalog
 
 [`EVAL_CATALOG.md`](EVAL_CATALOG.md) is an auto-generated quick reference listing every eval grouped by category, with links to the source definition on GitHub and the local file path.

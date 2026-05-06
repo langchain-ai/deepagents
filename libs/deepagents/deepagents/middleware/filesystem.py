@@ -1532,11 +1532,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if result.truncated:
                 parts.append("\n[Output was truncated due to size limits]")
 
+            is_error = result.exit_code is not None and result.exit_code != 0
             return ToolMessage(
                 content="".join(parts),
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
-                status="success",
+                status="error" if is_error else "success",
             )
 
         async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
@@ -1621,11 +1622,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if result.truncated:
                 parts.append("\n[Output was truncated due to size limits]")
 
+            is_error = result.exit_code is not None and result.exit_code != 0
             return ToolMessage(
                 content="".join(parts),
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
-                status="success",
+                status="error" if is_error else "success",
             )
 
         return StructuredTool.from_function(

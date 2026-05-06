@@ -96,7 +96,7 @@ def test_hitl_agent(model: BaseChatModel) -> None:
     review_configs = interrupt_value["review_configs"]
     assert any(
         review_config["action_name"] == "sample_tool"
-        and review_config["allowed_decisions"] == ["approve", "edit", "reject"]
+        and review_config["allowed_decisions"] == ["approve", "edit", "reject", "respond"]
         for review_config in review_configs
     )
     assert any(
@@ -159,7 +159,7 @@ def test_subagent_with_hitl(model: BaseChatModel) -> None:
     review_configs = interrupt_value["review_configs"]
     assert any(
         review_config["action_name"] == "sample_tool"
-        and review_config["allowed_decisions"] == ["approve", "edit", "reject"]
+        and review_config["allowed_decisions"] == ["approve", "edit", "reject", "respond"]
         for review_config in review_configs
     )
     assert any(
@@ -236,12 +236,12 @@ def test_subagent_with_custom_interrupt_on(model: BaseChatModel) -> None:
     review_configs = interrupt_value["review_configs"]
     assert any(
         review_config["action_name"] == "get_weather"
-        and review_config["allowed_decisions"] == ["approve", "edit", "reject"]
+        and review_config["allowed_decisions"] == ["approve", "edit", "reject", "respond"]
         for review_config in review_configs
     )
     assert any(
         review_config["action_name"] == "get_soccer_scores"
-        and review_config["allowed_decisions"] == ["approve", "edit", "reject"]
+        and review_config["allowed_decisions"] == ["approve", "edit", "reject", "respond"]
         for review_config in review_configs
     )
 

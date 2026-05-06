@@ -35,7 +35,7 @@ from quickjs_rs import (
 )
 
 from langchain_quickjs._format import (
-    coerce_tool_output,
+    coerce_tool_output_for_ptc,
     format_handle,
     stringify,
 )
@@ -210,22 +210,26 @@ def _inject_tool_args_for_ptc(
     """Mirror LangGraph's ``ToolNode._inject_tool_args`` for PTC calls.
 
     LangChain tools that declare ``ToolRuntime`` / ``InjectedState`` /
-    ``InjectedStore`` only see those values when a real ``ToolNode``
-    wires them in. PTC calls bypass the ToolNode, so we replicate the
-    detection logic here. The outer runtime (captured from the active
-    ``eval`` tool invocation) provides state/store/context/config;
-    ``tool_call_id`` is freshly minted per sub-call.
+    ``InjectedStore`` / ``InjectedToolCallId`` only see those values when
+    a real ``ToolNode`` (or the ``BaseTool`` tool-call envelope path)
+    wires them in. PTC calls bypass both, so we replicate the detection
+    logic here. The outer runtime (captured from the active ``eval`` tool
+    invocation) provides state/store/context/config; ``tool_call_id`` is
+    freshly minted per sub-call.
     """
+    enriched = dict(payload)
+    enriched.update(_collect_tool_call_id_args(tool, tool_call_id))
+
     try:
         from langgraph.prebuilt.tool_node import (  # noqa: PLC0415 — optional dep, imported here so ImportError is catchable
             _get_all_injected_args,
         )
     except ImportError:  # pragma: no cover — langgraph always present
-        return payload
+        return enriched
 
     injected = _get_all_injected_args(tool)
     if not injected or outer_runtime is None:
-        return payload
+        return enriched
 
     # Build a ToolRuntime matching the outer one but with a fresh
     # tool_call_id. ``type(outer_runtime)`` rather than a literal import
@@ -242,7 +246,6 @@ def _inject_tool_args_for_ptc(
         server_info=getattr(outer_runtime, "server_info", None),
     )
 
-    enriched = dict(payload)
     if injected.runtime:
         enriched[injected.runtime] = derived
     # InjectedState: state can be injected under one or more arg names.
@@ -259,6 +262,48 @@ def _inject_tool_args_for_ptc(
     if injected.store and outer_runtime.store is not None:
         enriched[injected.store] = outer_runtime.store
     return enriched
+
+
+def _collect_tool_call_id_args(tool: Any, tool_call_id: str) -> dict[str, str]:
+    """Return ``{arg_name: tool_call_id}`` for each ``InjectedToolCallId`` field.
+
+    PTC calls invoke tools with an args dict (not a ``tool_call`` envelope),
+    so ``BaseTool._parse_input``'s built-in injection of ``InjectedToolCallId``
+    does not run. Detect those params using the same combination of schema
+    annotations and ``get_type_hints`` that langgraph's
+    ``_get_all_injected_args`` uses, then populate the args dict ourselves.
+    """
+    try:
+        from typing import get_type_hints  # noqa: PLC0415
+
+        from langchain_core.tools.base import (  # noqa: PLC0415
+            InjectedToolCallId,
+            _is_injected_arg_type,
+            get_all_basemodel_annotations,
+        )
+    except ImportError:  # pragma: no cover — both deps are required at runtime
+        return {}
+
+    try:
+        schema_annotations = get_all_basemodel_annotations(tool.get_input_schema())
+    except Exception:  # noqa: BLE001 — schema introspection is best-effort
+        schema_annotations = {}
+    func = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    try:
+        func_annotations = (
+            get_type_hints(func, include_extras=True) if func is not None else {}
+        )
+    except Exception:  # noqa: BLE001 — type-hint resolution is best-effort
+        func_annotations = {}
+
+    # Match langgraph's merge order: schema annotations override func ones.
+    all_annotations = {**func_annotations, **schema_annotations}
+
+    return {
+        name: tool_call_id
+        for name, type_ in all_annotations.items()
+        if _is_injected_arg_type(type_, injected_type=InjectedToolCallId)
+    }
 
 
 def _bridge_symbol_name(tool_name: str) -> str:
@@ -474,7 +519,7 @@ class _ThreadREPL:
         ctx = self._require_ctx()
         registered = self._registered_tools
 
-        async def _bridge(raw_input: Any = None) -> str:
+        async def _bridge(raw_input: Any = None) -> Any:
             tool = registered.get(camel)
             if tool is None:
                 # Shouldn't happen — we only rewrite ``globalThis.tools``
@@ -492,17 +537,19 @@ class _ThreadREPL:
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
             call_id = _synth_tool_call_id(tool.name)
-            # Build a ToolCall-shaped input so InjectedToolCallId and the
-            # runtime-arg injection in _inject_tool_args_for_ptc fire.
+            # Inject runtime/state/store/tool_call_id ourselves so we can
+            # invoke with a plain args dict. The tool-call envelope path
+            # would auto-inject these, but it also wraps the return in a
+            # ToolMessage and string-coerces ``.content``, which destroys
+            # native return types (lists, dicts, numbers) before the JS
+            # side can see them.
             args = _inject_tool_args_for_ptc(
                 tool, payload, state.outer_runtime, call_id
             )
             result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_loop=state.outer_loop,
+                tool, args, outer_loop=state.outer_loop
             )
-            return coerce_tool_output(result)
+            return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)

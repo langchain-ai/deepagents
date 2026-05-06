@@ -84,8 +84,10 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "### API Reference — `tools` namespace\n\n"
         "The agent tools listed below are exposed on the global object at "
         "`globalThis.tools` (also reachable as `tools`). Each takes a single "
-        "object argument and returns a Promise that resolves to a string "
-        "(structured return values are JSON-serialized).\n\n"
+        "object argument and returns a Promise that resolves to the tool's "
+        "native value: strings as strings, numbers as numbers, lists as "
+        "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
+        "`JSON.parse` results — they are already typed.\n\n"
         "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
         "- Use `await` to get tool results; combine with `Promise.all` for "
         "independent calls so they run concurrently.\n"
@@ -107,8 +109,8 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "model reasoning or user input.\n\n"
         "Example shape — substitute real tool names:\n\n"
         "```typescript\n"
-        'const usersJson = await tools.findUsers({ name: "Ada" });\n'
-        "const userId = JSON.parse(usersJson)[0].id;\n"
+        'const users = await tools.findUsers({ name: "Ada" });\n'
+        "const userId = users[0].id;\n"
         "const [city, normalized] = await Promise.all([\n"
         "  tools.cityForUser({ user_id: userId }),\n"
         '  tools.normalize({ name: "Ada" }),\n'
@@ -135,7 +137,7 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
 
 def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
     default_signature = f"async function {fn_name}"
-    default_signature += "(input: Record<string, unknown>): Promise<string>"
+    default_signature += "(input: Record<string, unknown>): Promise<unknown>"
     if not schema or not isinstance(schema.get("properties"), dict):
         return default_signature
     props: dict[str, Any] = schema["properties"]
@@ -150,7 +152,7 @@ def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
     body = "\n".join(fields) if fields else ""
     if not body:
         return default_signature
-    return f"async function {fn_name}(input: {{\n{body}\n}}): Promise<string>"
+    return f"async function {fn_name}(input: {{\n{body}\n}}): Promise<unknown>"
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:

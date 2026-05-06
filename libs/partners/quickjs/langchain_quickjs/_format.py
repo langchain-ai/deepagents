@@ -82,6 +82,56 @@ def coerce_tool_output(value: Any) -> str:
     return _coerce_message_content(value)
 
 
+# Types the quickjs_rs binding marshals natively from Python to JS without
+# information loss. Anything else gets JSON-encoded so the JS side at least
+# sees a stable string (rather than a Python repr).
+_NATIVE_JS_TYPES = (str, bool, int, float, type(None), list, dict)
+
+
+def coerce_tool_output_for_ptc(value: Any) -> Any:
+    """Coerce a tool result for the PTC bridge, preserving native types.
+
+    The quickjs_rs ``register`` bridge marshals Python primitives, ``list``,
+    and ``dict`` directly to native JS values, so the model can use them
+    without an explicit ``JSON.parse``. This helper unwraps LangChain's
+    ``ToolMessage`` / ``Command`` envelopes (matching ``coerce_tool_output``'s
+    selection rules) and returns the underlying value typed.
+
+    For values the binding cannot marshal natively (Pydantic models, custom
+    classes, etc.), fall back to a JSON-encoded string so the JS side still
+    receives a usable representation.
+    """
+    if isinstance(value, Command):
+        return coerce_tool_output_for_ptc(_extract_command_content(value))
+    if isinstance(value, ToolMessage):
+        return coerce_tool_output_for_ptc(value.content)
+    if isinstance(value, list):
+        for entry in reversed(value):
+            if isinstance(entry, ToolMessage):
+                return coerce_tool_output_for_ptc(entry.content)
+            if isinstance(entry, Command):
+                return coerce_tool_output_for_ptc(_extract_command_content(entry))
+    if isinstance(value, _NATIVE_JS_TYPES):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _extract_command_content(command: Command) -> Any:
+    """Return the trailing message content from a ``Command`` update, if any."""
+    update = command.update
+    if isinstance(update, dict):
+        messages = update.get("messages")
+        if isinstance(messages, list):
+            for entry in reversed(messages):
+                content = getattr(entry, "content", None)
+                if content is not None:
+                    return content
+    return str(update)
+
+
 def _coerce_message_content(content: Any) -> str:
     if isinstance(content, str):
         return content

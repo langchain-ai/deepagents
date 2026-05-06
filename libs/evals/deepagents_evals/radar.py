@@ -7,9 +7,11 @@ encodes the score (0-1 correctness).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -398,10 +400,44 @@ def _safe_filename(model: str) -> str:
     return safe.strip("-") or "unknown"
 
 
+_MODELS_REGISTRY_PATH = Path(__file__).resolve().parents[3] / ".github" / "scripts" / "models.py"
+"""Path to the canonical eval model registry.
+
+Resolves at module import time. Inside the monorepo this points at
+`.github/scripts/models.py`; for installed-package consumers the path will
+not exist and label lookups fall back gracefully (see `_registry_labels`).
+"""
+
+
+@lru_cache(maxsize=1)
+def _registry_labels() -> dict[str, str]:
+    """Return a `spec → display_name` map from `.github/scripts/models.py`.
+
+    Empty dict when the registry file isn't reachable (e.g. installed-package
+    use outside the repo). Cached so repeated chart generations don't reload.
+    """
+    if not _MODELS_REGISTRY_PATH.is_file():
+        return {}
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_evals_models_registry", _MODELS_REGISTRY_PATH
+        )
+        if spec is None or spec.loader is None:
+            return {}
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except (OSError, SyntaxError, ImportError):
+        return {}
+    return {m.spec: m.display_name for m in mod.REGISTRY}
+
+
 def _short_model_name(model: str) -> str:
     """Shorten `provider:model-name-version` to a readable label.
 
-    Strips the `provider:` prefix if present and truncates to 30 characters.
+    Prefers the curated `display_name` from `.github/scripts/models.py` when
+    the spec is registered. Falls back to stripping the `provider:` prefix
+    and truncating to 30 characters — used for ad-hoc specs and for
+    installed-package consumers that can't reach the repo's registry.
 
     Args:
         model: Full model identifier.
@@ -409,11 +445,13 @@ def _short_model_name(model: str) -> str:
     Returns:
         Shortened display name.
     """
+    label = _registry_labels().get(model)
+    if label:
+        return label
+
     max_len = 30
-    # Strip provider prefix if present.
     if ":" in model:
         model = model.split(":", 1)[1]
-    # Truncate long names.
     if len(model) > max_len:
         model = model[: max_len - 3] + "..."
     return model

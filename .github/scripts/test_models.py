@@ -13,6 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_SCRIPT = REPO_ROOT / ".github" / "scripts" / "models.py"
 EVALS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "evals.yml"
+HARBOR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "harbor.yml"
 
 
 def _load_models_script() -> ModuleType:
@@ -324,3 +325,101 @@ def test_main_writes_per_provider_outputs_to_github_output(
 
     for line in written:
         assert "\n" not in line
+
+
+def test_every_registered_model_has_display_labels(models: ModuleType) -> None:
+    """Every `Model` in `REGISTRY` must declare non-empty display fields.
+
+    These labels feed radar legends and `MODEL_GROUPS.md` provider headings;
+    a blank entry would silently render an empty legend item or `() (N models)`.
+    """
+    for entry in models.REGISTRY:
+        assert entry.display_name, f"empty display_name for {entry.spec!r}"
+        assert entry.provider_label, f"empty provider_label for {entry.spec!r}"
+
+
+def test_provider_label_is_uniform_within_a_provider(models: ModuleType) -> None:
+    """All models sharing a `provider:` prefix must share one `provider_label`.
+
+    The doc generator reads the label from the *first* match, so a mismatch
+    would silently hide some models' label preference.
+    """
+    by_prefix: dict[str, set[str]] = {}
+    for entry in models.REGISTRY:
+        prefix = entry.spec.split(":", 1)[0]
+        by_prefix.setdefault(prefix, set()).add(entry.provider_label)
+    inconsistent = {p: ls for p, ls in by_prefix.items() if len(ls) > 1}
+    assert not inconsistent, f"provider_label drift: {inconsistent}"
+
+
+def test_display_name_helper_returns_curated_label(models: ModuleType) -> None:
+    """`display_name` returns the curated label for a registered spec."""
+    assert models.display_name("anthropic:claude-sonnet-4-6") == "Claude Sonnet 4.6"
+    assert models.display_name("xai:grok-4") == "Grok 4"
+
+
+def test_display_name_helper_falls_back_to_bare_model(models: ModuleType) -> None:
+    """`display_name` falls back to the model portion when spec is unknown."""
+    assert models.display_name("madeup:my-cool-model") == "my-cool-model"
+    assert models.display_name("just-a-name") == "just-a-name"
+
+
+def test_provider_label_helper_returns_curated_label(models: ModuleType) -> None:
+    """`provider_label` returns the curated label for a registered spec."""
+    assert models.provider_label("google_genai:gemini-3.1-pro-preview") == "Google"
+    assert models.provider_label("xai:grok-4") == "xAI"
+
+
+def test_provider_label_helper_falls_back_to_prefix(models: ModuleType) -> None:
+    """`provider_label` falls back to the raw prefix for unknown specs."""
+    assert models.provider_label("madeup_provider:foo") == "madeup_provider"
+
+
+def _expected_dropdown_options(models: ModuleType) -> set[str]:
+    """Return the full allowed `models:` dropdown set: REGISTRY & presets & providers.
+
+    Mirrors the workflow's logic — a dropdown choice resolves to either an
+    explicit spec, a preset name handled by `_resolve_models`, a provider
+    prefix (also a preset), or the empty/`all` sentinels.
+    """
+    registry = {m.spec for m in models.REGISTRY}
+    presets = {p for _, ps in models._PRESET_SECTIONS for p, _ in ps}  # noqa: SLF001
+    providers = {m.spec.split(":", 1)[0] for m in models.REGISTRY}
+    return registry | presets | providers | {"", "all"}
+
+
+@pytest.mark.parametrize(
+    "workflow_path",
+    [EVALS_WORKFLOW, HARBOR_WORKFLOW],
+    ids=lambda p: p.name,
+)
+def test_workflow_models_dropdown_matches_registry(
+    models: ModuleType, workflow_path: Path
+) -> None:
+    """`models:` dropdown options must match REGISTRY & presets & providers.
+
+    Catches two drift modes: (1) an orphan option that no longer resolves to a
+    real spec/preset (silent fallthrough to `_resolve_models`'s empty-result
+    error at workflow_dispatch time), and (2) a registered spec that wasn't
+    surfaced in the dropdown so users can't pick it without typing into
+    `models_override`.
+    """
+    workflow = yaml.safe_load(workflow_path.read_text())
+    # PyYAML 1.1 coerces the bare YAML key `on:` to the boolean `True`.
+    # Either form may appear depending on yaml lib version, so check both.
+    triggers = workflow.get(True, workflow.get("on"))
+    options = triggers["workflow_dispatch"]["inputs"]["models"]["options"]
+    declared = {str(o) for o in options}
+    expected = _expected_dropdown_options(models)
+
+    orphan = declared - expected
+    missing = expected - declared - {""}  # empty sentinel handled by default
+
+    assert not orphan, (
+        f"{workflow_path.name}: dropdown contains options not in REGISTRY/presets/providers: "
+        f"{sorted(orphan)}"
+    )
+    assert not missing, (
+        f"{workflow_path.name}: REGISTRY/presets/providers missing from dropdown: "
+        f"{sorted(missing)}"
+    )

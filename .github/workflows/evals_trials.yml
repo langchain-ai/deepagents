@@ -13,7 +13,7 @@
 # unique `evals-report-trial-NNN-<slug>` artifact name; the aggregate job
 # downloads them all and runs `scripts/run_trials.py --aggregate-only`.
 
-name: "📊 Eval trials"
+name: "📊 Evals - N Trials"
 run-name: >-
   📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
 

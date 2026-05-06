@@ -26,7 +26,7 @@ Bring the OBS runner up first (it owns game state):
 
 ```bash
 # terminal 1
-cd ../obs && OBS_PASSWORD='...' uv run vibe-obs   # http://localhost:8765
+cd ../obs && uv run vibe-obs                      # http://localhost:8765
 ```
 
 Then the control panel:

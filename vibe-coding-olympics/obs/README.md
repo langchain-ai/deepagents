@@ -18,7 +18,7 @@ uv sync
 ## OBS prerequisites
 
 1. OBS 28+ (obs-websocket is built-in).
-2. Tools → WebSocket Server Settings → enable, note port (default `4455`) + password.
+2. Tools → WebSocket Server Settings → enable, note port (default `4455`). Leave authentication disabled for the default local setup.
 3. Create three scenes (names overridable via env):
    - `Idle` — standby card
    - `Coding` — contestant view; contains the text sources below
@@ -32,9 +32,10 @@ uv sync
 ## Run
 
 ```bash
-export OBS_PASSWORD=...      # only if OBS requires one
 uv run vibe-obs              # starts FastAPI on 127.0.0.1:8765
 ```
+
+If you enable OBS WebSocket authentication, set `OBS_PASSWORD` before launching.
 
 On startup the runner connects to OBS, primes the idle scene, and clears all four text sources. If OBS is unreachable, the server still starts and `/healthz` reports `obs_connected: false`.
 
@@ -77,7 +78,7 @@ All env-driven. Defaults shown.
 | --- | --- | --- |
 | `OBS_HOST` | `localhost` | obs-websocket host |
 | `OBS_PORT` | `4455` | obs-websocket port |
-| `OBS_PASSWORD` | _(empty)_ | obs-websocket password |
+| `OBS_PASSWORD` | _(empty)_ | Optional obs-websocket password, only needed when OBS WebSocket authentication is enabled |
 | `OBS_SCENE_IDLE` | `Idle` | Scene for `IDLE` phase |
 | `OBS_SCENE_CODING` | `Coding` | Scene for `CODING` phase |
 | `OBS_SCENE_SCOREBOARD` | `Scoreboard` | Scene for `SCOREBOARD` phase |

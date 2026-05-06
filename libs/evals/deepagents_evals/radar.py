@@ -438,8 +438,6 @@ def load_results_from_summary(path: str | Path) -> list[ModelResult]:
         ValueError: If a score value in `category_scores` is not numeric.
         KeyError: If an entry is missing `category_scores`.
     """
-    import json
-
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     results: list[ModelResult] = []
     for entry in data:

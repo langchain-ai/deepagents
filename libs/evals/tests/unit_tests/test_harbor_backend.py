@@ -49,12 +49,12 @@ class _FakeHarborEnvironment:
         if source_path not in self.files:
             msg = f"File not found: {source_path}"
             raise FileNotFoundError(msg)
-        Path(target_path).write_bytes(self.files[source_path])
+        Path(target_path).write_bytes(self.files[source_path])  # noqa: ASYNC240  # in-memory test fake; tmp_path I/O is fine
 
     async def upload_file(self, source_path: Path | str, target_path: str) -> None:
         if target_path in self.upload_errors:
             raise self.upload_errors[target_path]
-        content = Path(source_path).read_bytes()
+        content = Path(source_path).read_bytes()  # noqa: ASYNC240  # in-memory test fake; tmp_path I/O is fine
         self.uploaded[target_path] = content
         self.files[target_path] = content
 

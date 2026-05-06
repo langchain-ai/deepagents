@@ -79,6 +79,9 @@ HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS"
+"""Hide rotating tips in the startup splash when enabled."""
+
 HIDE_NEW_THREAD_MESSAGE = "DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE"
 """Hide the `/clear` confirmation message that includes the new thread id."""
 

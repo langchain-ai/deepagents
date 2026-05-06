@@ -2090,15 +2090,24 @@ class DeepAgentsApp(App):
         LangChain from the event-loop thread while it's still running can
         race on partially-initialized module locks.
 
-        `CancelledError` propagates so app shutdown isn't silently absorbed.
+        `asyncio.CancelledError` propagates so app shutdown isn't silently
+        absorbed. `WorkerCancelled` and `WorkerFailed` (both `Exception`
+        subclasses, distinct from `CancelledError`) are caught: prewarm is a
+        cache optimization, so a cancelled or failed worker just means the
+        next inline import is a cold load instead of a dict lookup.
         """
-        from textual.worker import WorkerFailed
+        from textual.worker import WorkerCancelled, WorkerFailed
 
         worker = self._prewarm_worker
         if worker is None:
             return
         try:
             await worker.wait()
+        except WorkerCancelled:
+            # Cancellation is benign here: app shutdown or another exclusive
+            # worker in the same group displaced the prewarm. The subsequent
+            # inline imports will still succeed — just without the warm-up.
+            logger.debug("Import prewarm worker was cancelled", exc_info=True)
         except WorkerFailed:
             # Prewarm body best-efforts third-party imports and already
             # warns; logging at WARNING here surfaces unexpected failures

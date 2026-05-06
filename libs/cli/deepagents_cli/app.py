@@ -782,10 +782,16 @@ class DeepAgentsApp(App):
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
             title: Override the Textual `App.title` shown in the optional
-                header bar. When `None`, the class-level `TITLE` is used.
+                header bar.
+
+                When `None`, the class-level `TITLE` is used.
+
                 Reassigning `app.title` at runtime updates the header live.
             sub_title: Override the Textual `App.sub_title` shown in the
-                optional header bar. When `None`, the parent default is used.
+                optional header bar.
+
+                When `None`, the parent default is used.
+
                 Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
         """

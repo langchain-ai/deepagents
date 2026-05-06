@@ -98,10 +98,7 @@ SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
 
 SHOW_HEADER = "DEEPAGENTS_CLI_SHOW_HEADER"
-"""Show Textual's native header bar at the top of the TUI when enabled.
-
-The header displays the current `App.title` (and `App.sub_title`). Disabled
-by default to preserve the existing layout. Parsed by `is_env_truthy`."""
+"""Show Textual's native header bar at the top of the TUI when enabled."""
 
 THEME = "DEEPAGENTS_CLI_THEME"
 """Force the CLI to launch with this theme name when set."""

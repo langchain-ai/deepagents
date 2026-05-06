@@ -15,7 +15,7 @@
 
 name: "📊 Evals - N Trials"
 run-name: >-
-  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ inputs.eval_tiers && format(' tier:{0}', inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
 
 on:
   workflow_dispatch:
@@ -35,7 +35,26 @@ on:
         default: false
         type: boolean
       eval_categories:
-        description: "Comma-separated eval categories. Empty = all."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - conversation
+          - file_operations
+          - memory
+          - retrieval
+          - summarization
+          - tool_use
+          - unit_test
+      eval_categories_override:
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        required: false
+        default: ""
+        type: string
+      eval_categories_exclude:
+        description: "Category list to skip; takes precedence over the include filter on conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'. Empty = skip none."
         required: false
         default: ""
         type: string
@@ -92,7 +111,11 @@ jobs:
       max_parallel: ${{ steps.build.outputs.max_parallel }}
       provider: ${{ steps.build.outputs.provider }}
       slug: ${{ steps.build.outputs.slug }}
+      eval_categories: ${{ steps.build.outputs.eval_categories }}
     steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: "🐍 Build trial matrix"
         id: build
         env:
@@ -100,12 +123,17 @@ jobs:
           TRIALS: ${{ inputs.trials }}
           PARALLEL: ${{ inputs.parallel }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+          EVAL_CATEGORIES_OVERRIDE: ${{ inputs.eval_categories_override }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
           EVAL_TIERS: ${{ inputs.eval_tiers }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
         run: |
           python3 << 'PYEOF'
           import json, os, re, sys
+          from pathlib import Path
 
           # Per-CI cap: stricter than run_trials.py's `_MAX_TRIALS = 50` so a
           # typo in the dispatch form can't burn a whole runner pool. If you
@@ -141,6 +169,8 @@ jobs:
           _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
           for name, value, pattern in (
               ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
+              ("eval_categories_override", os.environ.get("EVAL_CATEGORIES_OVERRIDE", ""), _CSV_RE),
+              ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
               ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _CSV_RE),
               ("repl", os.environ.get("REPL", ""), _SLUG_RE),
@@ -150,6 +180,20 @@ jobs:
                   sys.exit(1)
 
           slug = re.sub(r"[^a-zA-Z0-9_\-]", "-", model).strip("-")
+
+          # Override takes precedence over the dropdown (mirrors `evals.yml`).
+          eval_categories_in = (
+              os.environ.get("EVAL_CATEGORIES_OVERRIDE", "").strip()
+              or os.environ.get("EVAL_CATEGORIES", "").strip()
+          )
+          eval_categories_exclude = os.environ.get("EVAL_CATEGORIES_EXCLUDE", "").strip()
+          eval_tiers = os.environ.get("EVAL_TIERS", "").strip()
+          openrouter_provider = os.environ.get("OPENROUTER_PROVIDER", "").strip()
+          openrouter_allow_fallbacks = (
+              os.environ.get("OPENROUTER_ALLOW_FALLBACKS", "").strip().lower() == "true"
+          )
+          openai_reasoning_effort = os.environ.get("OPENAI_REASONING_EFFORT", "").strip()
+          repl = os.environ.get("REPL", "").strip()
 
           entries = [
               {
@@ -167,14 +211,140 @@ jobs:
               f.write(f"max_parallel={max_parallel}\n")
               f.write(f"provider={provider}\n")
               f.write(f"slug={slug}\n")
+              f.write(f"eval_categories={eval_categories_in}\n")
+
+          # Resolve categories against the catalog so the dispatch summary
+          # shows what will actually run after include/exclude filtering.
+          # Mirrors the logic in `evals.yml`'s prep job (kept in Python here
+          # since the rest of this step is already Python). Names that don't
+          # appear in the JSON are surfaced as warnings; pytest is the final
+          # arbiter when the markers and JSON drift.
+          categories_json = Path("libs/evals/deepagents_evals/categories.json")
+          catalog: list[str] = []
+          catalog_error = ""
+          try:
+              catalog = list(json.loads(categories_json.read_text())["categories"])
+          except FileNotFoundError:
+              catalog_error = f"catalog file missing: `{categories_json}`"
+          except (KeyError, json.JSONDecodeError) as exc:
+              catalog_error = f"catalog parse failed: {exc}"
+
+          def _split_csv(value: str) -> list[str]:
+              return [c.strip() for c in value.split(",") if c.strip()]
+
+          unknowns: list[str] = []
+          if eval_categories_in:
+              selected = _split_csv(eval_categories_in)
+              for cat in selected:
+                  if catalog and cat not in catalog:
+                      unknowns.append(cat)
+          else:
+              selected = list(catalog)
+
+          excluded = _split_csv(eval_categories_exclude)
+          for cat in excluded:
+              if catalog and cat not in catalog:
+                  unknowns.append(cat)
+
+          resolved = [c for c in selected if c not in excluded]
+
+          for cat in unknowns:
+              print(
+                  f"::warning::Eval category '{cat}' is not in {categories_json}; "
+                  "possible typo or missing catalog entry."
+              )
 
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
+              lines: list[str] = []
+              sha = os.environ.get("GITHUB_SHA", "")
+              server = os.environ.get("GITHUB_SERVER_URL", "")
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              ref_name = os.environ.get("GITHUB_REF_NAME", "")
+              ref = os.environ.get("GITHUB_REF", "")
+              if sha and server and repo:
+                  lines += [
+                      "### 🌳 Source tree",
+                      "",
+                      (
+                          f"Run fired from [`{sha[:7]}`]({server}/{repo}/tree/{sha}) on "
+                          f"[`{ref_name}`]({server}/{repo}/tree/{ref})."
+                      ),
+                      "",
+                  ]
+
+              lines += [
+                  "### 📊 Trial dispatch inputs",
+                  "",
+                  "| Input | Value |",
+                  "|---|---|",
+                  f"| `model` | `{model}` |",
+                  f"| `trials` | {n} |",
+                  f"| `parallelism` | {'parallel' if parallel else 'sequential'} (max-parallel={max_parallel}) |",
+              ]
+
+              override_val = os.environ.get("EVAL_CATEGORIES_OVERRIDE", "").strip()
+              dropdown_val = os.environ.get("EVAL_CATEGORIES", "").strip()
+              if override_val:
+                  lines.append(f"| `eval_categories_override` | `{override_val}` |")
+              elif dropdown_val:
+                  lines.append(f"| `eval_categories` | `{dropdown_val}` |")
+              else:
+                  lines.append("| `eval_categories` | (all) |")
+
+              if eval_categories_in:
+                  cats = _split_csv(eval_categories_in)
+                  if len(cats) > 1:
+                      bulleted = "<br>".join(f"• <code>{c}</code>" for c in cats)
+                      lines.append(f"| `eval_categories` (expanded) | {bulleted} |")
+
+              if excluded:
+                  comma_list = ", ".join(f"`{c}`" for c in excluded)
+                  lines.append(f"| `eval_categories_exclude` | {comma_list} |")
+              else:
+                  lines.append("| `eval_categories_exclude` | (none) |")
+
+              if catalog_error:
+                  lines.append(f"| **resolved categories** | _({catalog_error})_ |")
+                  print(f"::warning::Could not compute resolved eval categories: {catalog_error}")
+              else:
+                  if not resolved:
+                      row_value = "_(none — exclusion removed every selected category)_"
+                  else:
+                      row_value = ", ".join(f"`{c}`" for c in resolved)
+                  unknown_note = ""
+                  if unknowns:
+                      note = ", ".join(f"`{c}`" for c in unknowns)
+                      unknown_note = f"<br>⚠️ _Not in catalog: {note}_"
+                  lines.append(f"| **resolved categories** | {row_value}{unknown_note} |")
+
+              if eval_tiers:
+                  tiers_list = ", ".join(f"`{t}`" for t in _split_csv(eval_tiers))
+                  lines.append(f"| `eval_tiers` | {tiers_list} |")
+              else:
+                  lines.append("| `eval_tiers` | (all) |")
+
+              if openrouter_provider:
+                  lines.append(f"| `openrouter_provider` | `{openrouter_provider}` |")
+                  badge = (
+                      "✅ soft (preferred + fallback)"
+                      if openrouter_allow_fallbacks
+                      else "🔒 strict (no fallback)"
+                  )
+                  lines.append(f"| `openrouter_allow_fallbacks` | {badge} |")
+              if openai_reasoning_effort:
+                  lines.append(f"| `openai_reasoning_effort` | `{openai_reasoning_effort}` |")
+              if repl:
+                  lines.append(f"| `repl` | `{repl}` |")
+
+              lines += [
+                  "",
+                  "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)",
+                  "",
+              ]
+
               with open(summary, "a") as f:
-                  f.write("### Trial dispatch\n\n")
-                  f.write(f"- model: `{model}`\n")
-                  f.write(f"- trials: {n}\n")
-                  f.write(f"- parallelism: {'parallel' if parallel else 'sequential'} (max-parallel={max_parallel})\n")
+                  f.write("\n".join(lines) + "\n")
           PYEOF
 
   eval-trial:
@@ -189,7 +359,8 @@ jobs:
       model: ${{ inputs.model }}
       provider: ${{ needs.prep.outputs.provider }}
       artifact_key: ${{ matrix.artifact_key }}
-      eval_categories: ${{ inputs.eval_categories }}
+      eval_categories: ${{ needs.prep.outputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers }}
       analyze_failures: false
       openrouter_provider: ${{ inputs.openrouter_provider }}

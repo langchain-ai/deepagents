@@ -444,6 +444,37 @@ jobs:
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
+      - name: "🔖 Record resolved versions"
+        # Versions are identical for every per-model job (same lockfile, same
+        # Python), so we resolve them once here instead of repeating the dump
+        # in each `_eval.yml` matrix job. Read `uv.lock` directly to avoid
+        # paying for a `uv sync` just for `pip list`.
+        run: |
+          {
+            echo "<details>"
+            echo "<summary>🔖 Resolved package versions (click to expand)</summary>"
+            echo ""
+            echo '```'
+            python3 - <<'PYEOF'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("libs/evals/uv.lock").read_text())
+          pattern = re.compile(r"^(langchain|langgraph|langsmith|deepagents)(-[a-z0-9_]+)*$")
+          rows = sorted(
+              (p["name"], p["version"])
+              for p in lock.get("package", [])
+              if pattern.match(p["name"])
+          )
+          for name, version in rows:
+              print(f"{name}=={version}")
+          PYEOF
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
 
   # Per-provider serialization: each provider runs as its own matrix job with
   # max-parallel: 1 so calls to a single provider queue rather than fan out

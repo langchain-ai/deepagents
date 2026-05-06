@@ -4,6 +4,12 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
+Categories (for `--eval-category` filtering):
+
+```txt
+file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
+```
+
 **105 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)

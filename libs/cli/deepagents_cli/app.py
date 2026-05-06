@@ -18,11 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
+from textual import on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen
@@ -97,7 +99,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste
+    from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
@@ -615,6 +617,23 @@ def _toast_identity(
             _toast_internals_warned[0] = True
         return None
     return getattr(notif, "identity", None)
+
+
+class _StaticHeader(Header):
+    """`Header` variant that doesn't toggle tall mode on click.
+
+    Textual's default `Header._on_click` toggles a `-tall` class to expand the
+    header from 1 to 3 lines. Subclassing alone isn't enough: Textual's message
+    dispatch walks the full MRO and invokes every matching handler, so the
+    parent's `_on_click` still fires unless we call `event.prevent_default()`,
+    which sets `_no_default_action` and breaks the MRO walk
+    (see `MessagePump._get_dispatch_methods`).
+    """
+
+    @on(Click)
+    def _suppress_header_click(self, event: Click) -> None:  # noqa: PLR6301
+        event.prevent_default()
+        event.stop()
 
 
 class DeepAgentsApp(App):
@@ -1285,7 +1304,7 @@ class DeepAgentsApp(App):
         from deepagents_cli._env_vars import SHOW_HEADER, is_env_truthy
 
         if is_env_truthy(SHOW_HEADER):
-            yield Header(id="app-header")
+            yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):

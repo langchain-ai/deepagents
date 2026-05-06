@@ -256,7 +256,7 @@ jobs:
           {
             echo "### 🌳 Source tree"
             echo ""
-            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on \`${GITHUB_REF_NAME}\`."
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on [\`${GITHUB_REF_NAME}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF})."
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"

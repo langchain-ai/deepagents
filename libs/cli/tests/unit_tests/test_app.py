@@ -6813,3 +6813,68 @@ class TestPrewarmAwait:
         # don't crash the Toast renderer (see CLAUDE.md guidance).
         for notify_call in warning_calls:
             assert notify_call.kwargs.get("markup") is False
+
+
+class TestHeaderAndTitle:
+    """Header widget visibility and custom title overrides."""
+
+    async def test_default_title_is_deep_agents(self) -> None:
+        """Without overrides, `App.title` is the class-level `TITLE`."""
+        app = DeepAgentsApp()
+        assert app.title == "Deep Agents"
+
+    async def test_custom_title_kwarg_sets_app_title(self) -> None:
+        """The `title` kwarg overrides the default Textual `App.title`."""
+        app = DeepAgentsApp(title="My Custom Agent")
+        assert app.title == "My Custom Agent"
+
+    async def test_custom_sub_title_kwarg_sets_app_sub_title(self) -> None:
+        """The `sub_title` kwarg overrides the default `App.sub_title`."""
+        app = DeepAgentsApp(sub_title="staging")
+        assert app.sub_title == "staging"
+
+    async def test_title_can_be_reassigned_at_runtime(self) -> None:
+        """`App.title` is reactive and accepts runtime reassignment."""
+        app = DeepAgentsApp(title="Initial")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.title = "Updated"
+            await pilot.pause()
+            assert app.title == "Updated"
+
+    async def test_header_hidden_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without `DEEPAGENTS_CLI_SHOW_HEADER`, no `Header` widget is mounted."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(Header)
+
+    async def test_header_mounted_when_env_var_truthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setting `DEEPAGENTS_CLI_SHOW_HEADER=1` mounts the `Header` widget."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHOW_HEADER", "1")
+        from textual.widgets import Header
+
+        app = DeepAgentsApp(title="Custom")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            headers = app.query(Header)
+            assert len(headers) == 1
+
+    async def test_header_not_mounted_when_env_var_falsy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CLI_SHOW_HEADER=0` keeps the header hidden."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHOW_HEADER", "0")
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(Header)

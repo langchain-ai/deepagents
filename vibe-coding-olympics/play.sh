@@ -2,7 +2,7 @@
 # Launch a fresh player round in a new iTerm2 window.
 #
 # Layout:
-#   tab 1 — deepagents CLI, auto-invoking the web-vibe skill with PROMPT
+#   tab 1 — Deep Agents CLI, auto-invoking the web-vibe skill with PROMPT
 #   tab 2 — tail -f of the Vite log, so server activity is visible
 #
 # Requires (one-time per laptop):
@@ -30,6 +30,7 @@ PORT="${2:-3001}"
 
 DIR=$(mktemp -d -t "vibe-player-${PORT}-XXXX")
 LOG="/tmp/vite.log"
+EVENT_SOCKET="/tmp/deepagents-vibe-${PORT}.sock"
 : > "$LOG"   # ensure tail -f has a file to open even on first-ever run
 
 # Expose the repo's .deepagents/ (skills, configs) to the fresh round dir so
@@ -49,8 +50,10 @@ fi
 echo "Player dir: $DIR"
 echo "Port:       $PORT"
 echo "Log:        $LOG"
+echo "Socket:     $EVENT_SOCKET"
 
 export VIBE_PORT="$PORT" VIBE_DIR="$DIR" VIBE_PROMPT="$PROMPT" VIBE_LOG="$LOG"
+export VIBE_EVENT_SOCKET="$EVENT_SOCKET"
 
 # Free the port up front so the poller below can't race a zombie Vite from a
 # previous round. Without this, the poller's first curl would succeed against
@@ -104,6 +107,8 @@ PORT = os.environ["VIBE_PORT"]
 DIR = os.environ["VIBE_DIR"]
 PROMPT = os.environ["VIBE_PROMPT"].strip()
 LOG = os.environ["VIBE_LOG"]
+EVENT_SOCKET = os.environ["VIBE_EVENT_SOCKET"]
+STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026\n\nReady to vibecode!"
 
 if not PROMPT:
     raise SystemExit("VIBE_PROMPT is empty; play.sh must pass a non-empty prompt")
@@ -129,13 +134,27 @@ async def main(connection):
     tag = f"vibe-player-{PORT}"
     await top.async_set_name(tag)
     await top.async_set_variable("user.vibe_player", PORT)
+    await top.async_set_variable("user.vibe_event_socket", EVENT_SOCKET)
 
     # Prime env + cwd in the CLI pane so the agent's shell-outs see VIBE_* vars.
     await top.async_send_text(
         "export "
         f"VIBE_PORT={shlex.quote(PORT)} "
         f"VIBE_DIR={shlex.quote(DIR)} "
-        f"VIBE_LOG={shlex.quote(LOG)}\n"
+        f"VIBE_LOG={shlex.quote(LOG)} "
+        f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
+        "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION=1 "
+        "DEEPAGENTS_CLI_HIDE_GIT_BRANCH=1 "
+        "DEEPAGENTS_CLI_HIDE_CWD=1 "
+        "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING=1 "
+        "DEEPAGENTS_CLI_DEBUG_ONBOARDING=1 "
+        f"DEEPAGENTS_CLI_THEME={shlex.quote('langchain dark')} "
+        "DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE=1 "
+        "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS=1 "
+        "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET=1 "
+        f"DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH={shlex.quote(EVENT_SOCKET)} "
+        "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER="
+        f"{shlex.quote(STARTUP_SUBHEADER)}\n"
     )
     await top.async_send_text(f"cd {shlex.quote(DIR)}\n")
 

@@ -23,8 +23,10 @@ From `vibe-coding-olympics/`:
 
 Expect: a new iTerm2 window, tab 1 running the CLI (splash → skill → first
 turn), tab 2 running `tail -f /tmp/vite.log`. iTerm2's title bar for tab 1
-should read **`vibe-player-3001`**. If it doesn't, the tag isn't set and
-every command below will miss.
+should read **`vibe-player-3001`** and the launch shell should print a socket
+path like `/tmp/deepagents-vibe-3001.sock`. If the title tag is missing,
+every command below will miss; if the socket path is missing, `clear` cannot
+reach the CLI.
 
 ## 2. Confirm discovery
 
@@ -48,7 +50,7 @@ uv run vibe-players list
 # vibe-player-3002
 ```
 
-## 3. Test `clear`
+## 3. Test socket `clear`
 
 Let the CLI on port 3001 build up a few turns of conversation first, then:
 
@@ -58,8 +60,10 @@ uv run vibe-players clear --port 3001
 
 Expect in that iTerm2 tab:
 
-- `/clear` appears in the input.
-- The CLI runs it, conversation resets, you're on a fresh thread.
+- No slash command is typed into the input.
+- The controller sends a `force-clear` signal over the player's
+  `DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH`.
+- The CLI resets to a fresh thread.
 - The 3002 session is untouched.
 
 Stdout on the controlling shell:
@@ -86,7 +90,7 @@ Expect:
 
 1. `/quit` appears in the CLI input and runs — the Textual app exits.
 2. ~1 s pause.
-3. `deepagents` is typed at the now-bare shell prompt and launches a
+3. `deepagents -y` is typed at the now-bare shell prompt and launches a
    fresh CLI — splash screen visible, no skill auto-invoked, no prompt.
 
 Stdout:
@@ -96,7 +100,7 @@ reset vibe-player-3001
 ```
 
 Re-verify with `list` — the session still shows up (the shell still owns
-the tag; `deepagents` started by `reset` runs inside it).
+the tag; `deepagents -y` started by `reset` runs inside it).
 
 Fan-out variant: `reset --all`.
 
@@ -124,10 +128,10 @@ window doesn't block a rerun.
 - **`list` shows nothing after `play.sh`**: confirm iTerm2's Python API is
   enabled; restart iTerm2 if you just toggled it. Double-check the tab
   title reads `vibe-player-<port>`.
-- **`clear` runs but nothing happens in the CLI**: the focused pane in the
-  tagged tab probably isn't the CLI one. `vibe-players` targets every
-  session whose tag matches — if you manually split the pane, both get
-  the keystrokes.
-- **`reset` sends `deepagents` before the CLI has exited**: bump
+- **`clear` runs but nothing happens in the CLI**: confirm the player was
+  launched by the updated `play.sh` and that `/tmp/deepagents-vibe-<port>.sock`
+  exists while the CLI is running. Old player sessions do not advertise an
+  external event socket.
+- **`reset` sends `deepagents -y` before the CLI has exited**: bump
   `RESET_QUIT_GRACE_SECS` in `control/control_server/iterm_ctrl.py`.
 - **Stale tag on a dead window**: close the window; the tag goes with it.

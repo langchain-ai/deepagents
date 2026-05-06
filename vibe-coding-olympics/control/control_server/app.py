@@ -196,7 +196,7 @@ _INDEX_HTML = """<!doctype html>
 <section>
   <h2>Players</h2>
   <button class="secondary" id="btn-list">List</button>
-  <button class="secondary" id="btn-clear">Clear all</button>
+  <button class="secondary" id="btn-clear">Socket clear all</button>
   <button class="danger" id="btn-reset-players">Reset all</button>
 </section>
 

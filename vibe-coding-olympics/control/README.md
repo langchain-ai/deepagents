@@ -61,7 +61,7 @@ uv run vibe-players reset --all
 | `/api/round/end` | POST | `{scores: {name: float}}` | Fires `end` on the FSM |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM |
 | `/api/players` | GET | — | Lists active player ports |
-| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends `/clear` to player CLI(s) |
+| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends a socket `force-clear` signal to player CLI(s) |
 | `/api/players/reset` | POST | `{port?: str, all?: bool}` | Quits + relaunches player CLI(s) |
 
 ## Configuration
@@ -74,4 +74,4 @@ uv run vibe-players reset --all
 
 ## Session-discovery contract
 
-`play.sh` tags each new iTerm2 session it creates with both a user-variable (`user.vibe_player=<port>`) and a session name (`vibe-player-<port>`). `control_server/iterm_ctrl.py` is the single source of truth that reads those tags; both the web panel and `vibe-players` CLI delegate to it. If you ever change the tagging convention, update `play.sh` and `iterm_ctrl.py` together.
+`play.sh` tags each new iTerm2 session it creates with a player user-variable (`user.vibe_player=<port>`), a socket user-variable (`user.vibe_event_socket=<path>`), and a session name (`vibe-player-<port>`). `control_server/iterm_ctrl.py` is the single source of truth that reads those tags; both the web panel and `vibe-players` CLI delegate to it. If you ever change the tagging convention, update `play.sh` and `iterm_ctrl.py` together.

@@ -38,7 +38,7 @@ async def _cmd_list(_args: argparse.Namespace) -> int:
 
 
 async def _cmd_clear(args: argparse.Namespace) -> int:
-    """Send `/clear` to matching sessions."""
+    """Send a socket `force-clear` signal to matching sessions."""
     cleared = await iterm_ctrl.clear_players(_resolve_targets(args))
     if not cleared:
         print("No matching player sessions.", file=sys.stderr)
@@ -77,7 +77,7 @@ def _parse_args() -> argparse.Namespace:
     sub.add_parser("list", help="List active player sessions")
 
     for name, help_text in (
-        ("clear", "Send /clear to player CLI(s)"),
+        ("clear", "Send a socket force-clear signal to player CLI(s)"),
         ("reset", "Quit and relaunch player CLI(s) back to the splash screen"),
     ):
         p = sub.add_parser(name, help=help_text)

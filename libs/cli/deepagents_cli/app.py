@@ -18,17 +18,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
+from textual import on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.theme import Theme
-from textual.widgets import Static
+from textual.widgets import Header, Static
 from textual.widgets._toast import (
     Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
 )
@@ -97,7 +99,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste
+    from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
@@ -617,6 +619,23 @@ def _toast_identity(
     return getattr(notif, "identity", None)
 
 
+class _StaticHeader(Header):
+    """`Header` variant that doesn't toggle tall mode on click.
+
+    Textual's default `Header._on_click` toggles a `-tall` class to expand the
+    header from 1 to 3 lines. Subclassing alone isn't enough: Textual's message
+    dispatch walks the full MRO and invokes every matching handler, so the
+    parent's `_on_click` still fires unless we call `event.prevent_default()`,
+    which sets `_no_default_action` and breaks the MRO walk
+    (see `MessagePump._get_dispatch_methods`).
+    """
+
+    @on(Click)
+    def _suppress_header_click(self, event: Click) -> None:  # noqa: PLR6301
+        event.prevent_default()
+        event.stop()
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
@@ -729,6 +748,8 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        title: str | None = None,
+        sub_title: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -779,9 +800,25 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            title: Override the Textual `App.title` shown in the optional
+                header bar.
+
+                When `None`, the class-level `TITLE` is used.
+
+                Reassigning `app.title` at runtime updates the header live.
+            sub_title: Override the Textual `App.sub_title` shown in the
+                optional header bar.
+
+                When `None`, the parent default is used.
+
+                Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        if title is not None:
+            self.title = title
+        if sub_title is not None:
+            self.sub_title = sub_title
 
         self._register_custom_themes()
 
@@ -1264,6 +1301,10 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
+        from deepagents_cli._env_vars import SHOW_HEADER, is_env_truthy
+
+        if is_env_truthy(SHOW_HEADER):
+            yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
@@ -7520,6 +7561,8 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    title: str | None = None,
+    sub_title: str | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -7562,6 +7605,11 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        title: Override the Textual `App.title` shown in the optional header
+            bar (gated on `DEEPAGENTS_CLI_SHOW_HEADER`). When `None`, the
+            default `"Deep Agents"` is used.
+        sub_title: Override the Textual `App.sub_title` shown in the optional
+            header bar.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -7584,6 +7632,8 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        title=title,
+        sub_title=sub_title,
     )
     try:
         await app.run_async()

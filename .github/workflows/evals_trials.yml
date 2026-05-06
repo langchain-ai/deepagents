@@ -13,7 +13,7 @@
 # unique `evals-report-trial-NNN-<slug>` artifact name; the aggregate job
 # downloads them all and runs `scripts/run_trials.py --aggregate-only`.
 
-name: "📊 Eval trials - GHA"
+name: "📊 Eval trials"
 run-name: >-
   📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
 
@@ -224,6 +224,8 @@ jobs:
 
       - name: "📦 Install evals package"
         working-directory: libs/evals
+        # `UV_FROZEN=true` already enforces lockfile use; uv 0.11 rejects
+        # combining that environment variable with `--locked`.
         run: uv sync --group test
 
       - name: "📊 Aggregate trial reports"

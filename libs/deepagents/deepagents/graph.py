@@ -104,17 +104,6 @@ class _DeepAgentState(AgentState):
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_deep_agent_messages_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
 
-class _DeepAgentStateMiddleware(AgentMiddleware[_DeepAgentState, Any, Any]):
-    """No-op middleware whose sole purpose is to register _DeepAgentState last.
-
-    langchain's _resolve_schemas merges middleware state schemas from a set,
-    so the last schema iterated wins for each field. By appending this middleware
-    after all others, _DeepAgentState (with DeltaChannel for messages) wins over
-    the BinaryOperatorAggregate defined on AgentState.
-    """
-
-    state_schema = _DeepAgentState
-
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -753,9 +742,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
-    # Append last so _DeepAgentState (DeltaChannel on messages) wins when
-    # langchain merges all middleware state schemas.
-    deepagent_middleware.append(_DeepAgentStateMiddleware())
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale
@@ -788,6 +774,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         model,
         system_prompt=final_system_prompt,
         tools=_tools,
+        state_schema=_DeepAgentState,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,
@@ -798,12 +785,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache=cache,
         transformers=[_subagent_factory],
     )
-    # langchain's _resolve_schemas merges middleware state schemas from a set,
-    # so _DeepAgentState's DeltaChannel annotation for messages is non-deterministically
-    # overwritten by the BinaryOperatorAggregate from AgentState-inheriting middleware
-    # schemas. Enforce the correct channel type post-compilation.
-    if not isinstance(agent.channels.get("messages"), DeltaChannel):
-        agent.channels["messages"] = DeltaChannel(_deep_agent_messages_reducer, snapshot_frequency=50)  # ty: ignore[invalid-argument-type]
     return agent.with_config(
         {
             "recursion_limit": 9_999,

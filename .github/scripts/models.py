@@ -234,39 +234,6 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
-        "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
-        frozenset(
-            {
-                "eval:set0",
-                "eval:set1",
-                "eval:fireworks",
-                "harbor:set0",
-                "harbor:set1",
-                "harbor:fireworks",
-            }
-        ),
-        "Qwen3 VL 235B A22B Thinking",
-        "Fireworks",
-    ),
-    Model(
-        "fireworks:accounts/fireworks/models/kimi-k2p5",
-        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
-        "Kimi K2.5",
-        "Fireworks",
-    ),
-    Model(
-        "fireworks:accounts/fireworks/models/glm-5",
-        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
-        "GLM-5",
-        "Fireworks",
-    ),
-    Model(
-        "fireworks:accounts/fireworks/models/minimax-m2p5",
-        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
-        "MiniMax M2.5",
-        "Fireworks",
-    ),
-    Model(
         "fireworks:accounts/fireworks/models/deepseek-v4-pro",
         frozenset(
             {
@@ -280,6 +247,12 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
+        "fireworks:accounts/fireworks/models/kimi-k2p5",
+        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
+        "Kimi K2.5",
+        "Fireworks",
+    ),
+    Model(
         "fireworks:accounts/fireworks/models/kimi-k2p6",
         frozenset(
             {
@@ -290,6 +263,31 @@ REGISTRY: tuple[Model, ...] = (
             }
         ),
         "Kimi K2.6",
+        "Fireworks",
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/glm-5",
+        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
+        "GLM-5",
+        "Fireworks",
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/glm-5p1",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+        "GLM-5.1",
+        "Fireworks",
+    ),
+    Model(
+        "fireworks:accounts/fireworks/models/minimax-m2p5",
+        frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
+        "MiniMax M2.5",
         "Fireworks",
     ),
     Model(
@@ -319,16 +317,18 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
-        "fireworks:accounts/fireworks/models/glm-5p1",
+        "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
         frozenset(
             {
-                "eval:open-fireworks",
+                "eval:set0",
+                "eval:set1",
                 "eval:fireworks",
-                "harbor:open-fireworks",
+                "harbor:set0",
+                "harbor:set1",
                 "harbor:fireworks",
             }
         ),
-        "GLM-5.1",
+        "Qwen3 VL 235B A22B Thinking",
         "Fireworks",
     ),
     # -- Google --

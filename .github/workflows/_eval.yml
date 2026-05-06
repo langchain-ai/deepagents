@@ -149,7 +149,9 @@ jobs:
           working-directory: libs/evals
 
       - name: "📦 Install Dependencies"
-        run: uv sync --group test --locked
+        # `UV_FROZEN=true` already enforces lockfile use; uv 0.11 rejects
+        # combining that environment variable with `--locked`.
+        run: uv sync --group test
 
       - name: "🌳 Record source tree"
         run: |

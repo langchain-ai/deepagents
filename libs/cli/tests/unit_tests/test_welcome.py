@@ -2,16 +2,32 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.style import Style
 from textual.content import Content
 from textual.style import Style as TStyle
 
+from deepagents_cli._env_vars import (
+    DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
+    HIDE_CWD,
+    HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_TIPS,
+    HIDE_SPLASH_VERSION,
+)
+from deepagents_cli._version import __version__
 from deepagents_cli.widgets.welcome import (
     _TIPS,
     WelcomeBanner,
     build_connecting_footer,
     build_welcome_footer,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clear_startup_splash_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local startup splash overrides from affecting tests."""
+    monkeypatch.delenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, raising=False)
+    monkeypatch.delenv(HIDE_SPLASH_TIPS, raising=False)
 
 
 def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
@@ -41,12 +57,15 @@ def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]
 def _make_banner(
     thread_id: str | None = None,
     project_name: str | None = None,
+    *,
+    hide_langsmith_tracing: bool = False,
 ) -> WelcomeBanner:
     """Create a `WelcomeBanner` with all env vars cleared.
 
     Args:
         thread_id: Optional thread ID to display.
         project_name: If set, simulates LangSmith being configured.
+        hide_langsmith_tracing: Whether to hide tracing info from the splash.
 
     Returns:
         A `WelcomeBanner` instance ready for testing.
@@ -59,6 +78,8 @@ def _make_banner(
         env["LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_PROJECT"] = project_name
         env["DEEPAGENTS_CLI_LANGSMITH_PROJECT"] = project_name
+    if hide_langsmith_tracing:
+        env[HIDE_LANGSMITH_TRACING] = "1"
 
     # Temporarily clear the cached settings singleton so _get_settings()
     # re-creates it from the patched env vars inside the context manager.
@@ -150,6 +171,22 @@ class TestBuildBannerThreadLink:
         assert links
         assert links[0] == f"{project_url}/t/77777?utm_source=deepagents-cli"
 
+    def test_hide_langsmith_tracing_env_var_hides_project_and_thread(self) -> None:
+        """Tracing splash frontmatter should hide when the env var is enabled."""
+        widget = _make_banner(
+            thread_id="77777",
+            project_name="my-project",
+            hide_langsmith_tracing=True,
+        )
+        banner = widget._build_banner(
+            project_url="https://smith.langchain.com/o/org/projects/p/abc123"
+        )
+
+        assert "LangSmith tracing:" not in banner.plain
+        assert "my-project" not in banner.plain
+        assert "Thread:" not in banner.plain
+        assert "77777" not in banner.plain
+
 
 class TestUpdateThreadId:
     """Tests for `update_thread_id`."""
@@ -223,6 +260,47 @@ class TestBuildBannerEditableInstall:
             widget = WelcomeBanner()
             banner = widget._build_banner()
         assert "Installed from:" not in banner.plain
+
+    def test_hide_splash_version_env_var_hides_local_install_details(self) -> None:
+        """Splash version override should hide version and local install details."""
+        with (
+            patch.dict("os.environ", {HIDE_SPLASH_VERSION: "1"}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ) as editable,
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/dev/deepagents",
+            ) as editable_path,
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        editable.assert_not_called()
+        editable_path.assert_not_called()
+        assert f"v{__version__}" not in banner.plain
+        assert "(local)" not in banner.plain
+        assert "Installed from:" not in banner.plain
+
+    def test_hide_cwd_env_var_hides_editable_install_path(self) -> None:
+        """Cwd privacy override should hide the local editable install path."""
+        with (
+            patch.dict("os.environ", {HIDE_CWD: "1"}, clear=True),
+            patch(
+                "deepagents_cli.widgets.welcome._is_editable_install",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.widgets.welcome._get_editable_install_path",
+                return_value="~/oss/deepagents/libs/cli",
+            ) as editable_path,
+        ):
+            widget = WelcomeBanner()
+            banner = widget._build_banner()
+        editable_path.assert_not_called()
+        assert f"v{__version__}" in banner.plain
+        assert "Installed from:" not in banner.plain
+        assert "~/oss/deepagents/libs/cli" not in banner.plain
 
 
 class TestBuildBannerReturnType:
@@ -299,11 +377,50 @@ class TestBuildWelcomeFooter:
             in build_welcome_footer().plain
         )
 
+    def test_startup_subheader_env_var_overrides_ready_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Startup subheader override should replace the default ready prompt."""
+        monkeypatch.setenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, "Ship it.")
+
+        plain = build_welcome_footer(tip="Use /help").plain
+
+        assert "Ship it." in plain
+        assert "Ready to code! What would you like to build?" not in plain
+        assert "Tip: Use /help" in plain
+
     def test_contains_tip(self) -> None:
         """Footer should include a tip from the rotating tips list."""
         plain = build_welcome_footer().plain
         assert "Tip: " in plain
         assert any(tip in plain for tip in _TIPS)
+
+    def test_hide_splash_tips_env_var_hides_tip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Splash tips should hide when the env var is enabled."""
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+
+        plain = build_welcome_footer(tip="Use /help").plain
+
+        assert "Ready to code! What would you like to build?" in plain
+        assert "Tip: " not in plain
+        assert "Use /help" not in plain
+        assert plain.split("\n") == [
+            "",
+            "Ready to code! What would you like to build?",
+        ]
+
+    def test_hide_splash_tips_env_var_skips_random_tip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Disabling splash tips should avoid selecting a random tip."""
+        monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
+
+        with patch("deepagents_cli.widgets.welcome._pick_tip") as pick_tip:
+            build_welcome_footer()
+
+        pick_tip.assert_not_called()
 
     def test_startup_cmd_tip_registered(self) -> None:
         """New `--startup-cmd` flag must have a discoverability tip."""
@@ -348,6 +465,15 @@ class TestBannerFooterPosition:
         lines = widget._build_banner().plain.strip().splitlines()
         assert "Ready to code" in lines[-2]
         assert lines[-1].strip().startswith("Tip: ")
+
+    def test_hide_splash_tips_env_var_hides_tip_in_banner(self) -> None:
+        """Full startup banner should omit tips when the env var is enabled."""
+        with patch.dict("os.environ", {HIDE_SPLASH_TIPS: "1"}, clear=True):
+            widget = WelcomeBanner()
+        plain = widget._build_banner().plain
+        lines = plain.strip().splitlines()
+        assert "Ready to code" in lines[-1]
+        assert "Tip: " not in plain
 
     def test_footer_is_last_with_thread_id(self) -> None:
         """Footer remains last when a thread ID is displayed."""
@@ -456,3 +582,73 @@ class TestBannerConnectingFooterVariants:
         plain = widget._build_banner().plain
         assert "Resuming..." in plain
         assert "local server" not in plain
+
+
+class TestDeferredConnectingDisplay:
+    """Tests for deferred display of the connecting footer at startup."""
+
+    def test_deferred_shows_ready_footer(self) -> None:
+        """When deferring, the welcome footer renders despite `connecting=True`."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." not in plain
+        assert "Ready to code" in plain
+
+    def test_defer_flag_ignored_when_not_connecting(self) -> None:
+        """`defer_connecting_display` is a no-op when `connecting` is `False`."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=False, defer_connecting_display=True)
+        assert widget._defer_connecting_display is False
+        assert "Ready to code" in widget._build_banner().plain
+
+    def test_reveal_shows_connecting_footer(self) -> None:
+        """`reveal_connecting_footer` flips the banner to the connecting state."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        with patch.object(widget, "update"):
+            widget.reveal_connecting_footer()
+        plain = widget._build_banner().plain
+        assert "Connecting to server..." in plain
+        assert "Ready to code" not in plain
+
+    def test_reveal_is_noop_when_not_deferring(self) -> None:
+        """Calling `reveal_connecting_footer` without deferral does nothing."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True)
+        with patch.object(widget, "update") as mock_update:
+            widget.reveal_connecting_footer()
+        mock_update.assert_not_called()
+
+    def test_set_connected_clears_deferred_state(self) -> None:
+        """`set_connected` resets the deferral flag and stops the timer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        timer = MagicMock()
+        widget._defer_timer = timer
+        with patch.object(widget, "update"):
+            widget.set_connected()
+        assert widget._defer_connecting_display is False
+        assert widget._defer_timer is None
+        timer.stop.assert_called_once()
+
+    def test_set_idle_clears_deferred_state(self) -> None:
+        """`set_idle` resets the deferral flag and stops the timer."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner(connecting=True, defer_connecting_display=True)
+        timer = MagicMock()
+        widget._defer_timer = timer
+        with patch.object(widget, "update"):
+            widget.set_idle()
+        assert widget._defer_connecting_display is False
+        assert widget._defer_timer is None
+        timer.stop.assert_called_once()
+
+    def test_set_connecting_does_not_defer(self) -> None:
+        """Mid-session `set_connecting` shows the connecting footer immediately."""
+        with patch.dict("os.environ", {}, clear=True):
+            widget = WelcomeBanner()
+        with patch.object(widget, "update"):
+            widget.set_connecting()
+        assert widget._defer_connecting_display is False
+        assert "Connecting to server..." in widget._build_banner().plain

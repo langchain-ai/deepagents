@@ -24,7 +24,9 @@ from typing import Any
 import aiohttp
 import toml
 from harbor.models.dataset_item import DownloadedDatasetItem
-from harbor.registry.client import RegistryClientFactory
+from harbor.registry.client import (
+    RegistryClient,  # ty: ignore[unresolved-import]  # harbor API drift, tracked separately
+)
 from langsmith import Client
 from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
@@ -57,7 +59,7 @@ def _get_git_remote_url() -> str:
     """
     try:
         raw = (
-            subprocess.check_output(  # noqa: S603
+            subprocess.check_output(
                 ["git", "remote", "get-url", "origin"],  # noqa: S607
                 stderr=subprocess.DEVNULL,
                 timeout=5,
@@ -174,7 +176,7 @@ def _scan_downloaded_tasks(
         instruction = _read_instruction(task_path)
         metadata = _read_task_metadata(task_path)
         solution = _read_solution(task_path)
-        task_name = downloaded_task.id.name
+        task_name = downloaded_task.id.name  # ty: ignore[unresolved-attribute]  # harbor API drift, tracked separately
         task_id = str(downloaded_task.id)
 
         if instruction:
@@ -218,7 +220,7 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Using temporary directory: {output_dir}")
 
     print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
-    registry_client = RegistryClientFactory.create()
+    registry_client = RegistryClient()
     downloaded_tasks = registry_client.download_dataset(
         name=dataset_name,
         version=version,

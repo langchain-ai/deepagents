@@ -160,6 +160,19 @@ jobs:
                 core.warning(`Could not minimize stale comment on PR #${prNumber}: ${e.message}`);
               }
 
+              // Both re-run blocks below need the PR's current head SHA. If
+              // this fetch fails we cannot target either re-run, so warn and
+              // skip to the next PR.
+              let pr;
+              try {
+                ({ data: pr } = await github.rest.pulls.get({
+                  owner, repo, pull_number: prNumber,
+                }));
+              } catch (e) {
+                core.warning(`Could not fetch PR #${prNumber} after reopen (HTTP ${e.status ?? 'unknown'}): ${e.message}`);
+                continue;
+              }
+
               // Re-run the failed require_issue_link check so it picks up the
               // new assignment.  The re-run uses the original event payload but
               // fetches live issue data, so the assignment check will pass.
@@ -170,9 +183,6 @@ jobs:
               // return 0 results.  This is acceptable because any push after reopen
               // triggers a fresh require_issue_link run against the new SHA.
               try {
-                const { data: pr } = await github.rest.pulls.get({
-                  owner, repo, pull_number: prNumber,
-                });
                 const { data: runs } = await github.rest.actions.listWorkflowRuns({
                   owner, repo,
                   workflow_id: 'require_issue_link.yml',
@@ -191,5 +201,55 @@ jobs:
                 }
               } catch (e) {
                 core.warning(`Could not re-run require_issue_link check for PR #${prNumber} (HTTP ${e.status ?? 'unknown'}): ${e.message}`);
+              }
+
+              // Re-run CI when the original pull_request run was cancelled by
+              // the auto-close. The reopen is performed with GITHUB_TOKEN, so
+              // GitHub suppresses the normal pull_request.reopened trigger.
+              //
+              // Unlike the require_issue_link block above (which always uses
+              // reRunWorkflowFailedJobs), a cancelled run has no "failed" jobs
+              // in GitHub's classification, so the API choice branches on the
+              // observed conclusion.
+              try {
+                const { data: ciRuns } = await github.rest.actions.listWorkflowRuns({
+                  owner, repo,
+                  workflow_id: 'ci.yml',
+                  head_sha: pr.head.sha,
+                  status: 'completed',
+                  per_page: 1,
+                });
+
+                const staleConclusions = new Set(['cancelled', 'failure', 'timed_out', 'startup_failure']);
+                const latestCiRun = ciRuns.workflow_runs[0];
+                if (latestCiRun && staleConclusions.has(latestCiRun.conclusion)) {
+                  if (latestCiRun.conclusion === 'failure') {
+                    await github.rest.actions.reRunWorkflowFailedJobs({
+                      owner, repo,
+                      run_id: latestCiRun.id,
+                    });
+                  } else {
+                    await github.rest.actions.reRunWorkflow({
+                      owner, repo,
+                      run_id: latestCiRun.id,
+                    });
+                  }
+                  console.log(`Re-ran CI run ${latestCiRun.id} (${latestCiRun.conclusion}) for PR #${prNumber}`);
+                } else if (latestCiRun) {
+                  console.log(`Latest CI run ${latestCiRun.id} concluded ${latestCiRun.conclusion} — skipping re-run`);
+                } else {
+                  console.log(`No completed CI runs found for PR #${prNumber} — skipping re-run`);
+                }
+              } catch (e) {
+                // 404: run was deleted. 422: re-run not permitted (e.g.,
+                // workflow disabled, run not eligible). Both are
+                // non-recoverable for this PR. Anything else (403/429/5xx)
+                // is likely transient or a config issue and should fail the
+                // job so the maintainer is alerted.
+                if (e.status === 404 || e.status === 422) {
+                  core.warning(`Could not re-run CI for PR #${prNumber} (HTTP ${e.status}): ${e.message}`);
+                } else {
+                  throw e;
+                }
               }
             }

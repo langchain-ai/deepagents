@@ -94,6 +94,35 @@ jobs:
               return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
             }
 
+            // Defer to pr_lint.yml when the title isn't conventional-commit-
+            // shaped at all. Otherwise both checks fire on the same PR and
+            // this one's sticky comment is just noisy duplication of the
+            // title-lint failure. The parse check exists to catch *body*
+            // issues hidden behind an otherwise-valid title; without a valid
+            // type prefix, release-please would never reach the body anyway.
+            //
+            // Intentionally loose: shape-only check. The type/scope allowlist
+            // (and validity rules like disallowed uppercase scopes) live in
+            // pr_lint.yml — don't tighten this regex to match that allowlist
+            // or you'll re-introduce the duplicate-comment problem for titles
+            // that are shaped correctly but use a disallowed type/scope.
+            const titlePrefixRegex = /^[a-z]+(?:\([^)]*\))?!?: .+/;
+            if (!titlePrefixRegex.test(title)) {
+              core.info(`Title "${title}" is not conventional-commit-shaped; deferring to pr_lint.yml.`);
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    ...context.repo,
+                    comment_id: existing.id,
+                  });
+                }
+              } catch (cleanupErr) {
+                core.warning(`Could not clean up prior parse-check comment: ${cleanupErr.message}`);
+              }
+              return;
+            }
+
             async function postStickyOrSummary(commentBody, summaryHeading) {
               try {
                 const existing = await findStickyComment();

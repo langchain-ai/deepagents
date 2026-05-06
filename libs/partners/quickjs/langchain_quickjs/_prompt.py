@@ -18,8 +18,7 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
     "REPL.\n"
-    "- State (variables, functions) persists across tool calls within a single turn of "
-    "conversation. They DO NOT persist across multiple turns.\n"
+    "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "
     "no `fetch`, no `require`.\n"
@@ -33,10 +32,19 @@ def render_repl_system_prompt(
     tool_name: str,
     timeout: float,
     memory_limit_mb: int,
+    snapshot_between_turns: bool,
 ) -> str:
     """Render the base REPL system prompt text for ``REPLMiddleware``."""
+    state_persistence_line = (
+        "- State (variables, functions) persists across tool calls and across "
+        "multiple turns for this conversation thread."
+        if snapshot_between_turns
+        else "- State (variables, functions) persists across tool calls within "
+        "a single turn of conversation. They DO NOT persist across multiple turns."
+    )
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         tool_name=tool_name,
+        state_persistence_line=state_persistence_line,
         timeout=timeout,
         memory_limit_mb=memory_limit_mb,
     )

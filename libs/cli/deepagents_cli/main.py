@@ -34,10 +34,6 @@ from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
 
-# Duplicated from agent.DEFAULT_AGENT_NAME to avoid importing the heavy agent
-# module at startup. Keep in sync with agent.py. Tested.
-_DEFAULT_AGENT_NAME = "agent"
-
 
 def _resolve_agent_arg(args: argparse.Namespace) -> str:
     """Resolve the final agent identifier from parsed CLI args.
@@ -45,13 +41,17 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     Precedence, highest first:
 
     1. Explicit `-a <name>` (stored as `args.agent` by argparse).
-    2. `-r <thread>` is present → use `_DEFAULT_AGENT_NAME`. The real agent is
+    2. `-r <thread>` is present → use `DEFAULT_AGENT_NAME`. The real agent is
         inferred later by `_resolve_resume_thread` via thread metadata
-        (`get_thread_agent`), so we must NOT pre-seed a recent-agent here or
+        (`get_thread_agent`), so we must NOT pre-seed a stored agent here or
         it would suppress that inference.
-    3. `[agents].recent` from config, if it points at an agent whose
-        directory still exists.
-    4. `_DEFAULT_AGENT_NAME` as the final fallback.
+    3. `[agents].default` from config — the user's intentional sticky
+        default (set via Ctrl+S in the `/agents` picker).
+    4. `[agents].recent` from config — the most recently switched-to agent.
+    5. `DEFAULT_AGENT_NAME` as the final fallback.
+
+    Both `default` and `recent` are gated by `_recent_agent_is_valid` so a
+    stale entry pointing at a deleted agent directory is ignored.
 
     Extracted from the `cli_main` body so it's unit-testable without
     constructing the full arg tree.
@@ -62,17 +62,23 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     Returns:
         The agent identifier to hand downstream.
     """
+    from deepagents_cli._constants import DEFAULT_AGENT_NAME
+
     if args.agent is not None:
         return args.agent
     if getattr(args, "resume_thread", None) is not None:
-        return _DEFAULT_AGENT_NAME
+        return DEFAULT_AGENT_NAME
 
-    from deepagents_cli.model_config import load_recent_agent
+    from deepagents_cli.model_config import load_default_agent, load_recent_agent
+
+    default = load_default_agent()
+    if default and _recent_agent_is_valid(default):
+        return default
 
     recent = load_recent_agent()
     if recent and _recent_agent_is_valid(recent):
         return recent
-    return _DEFAULT_AGENT_NAME
+    return DEFAULT_AGENT_NAME
 
 
 def _recent_agent_is_valid(name: str) -> bool:
@@ -381,12 +387,73 @@ async def _preload_session_mcp_server_info(
                 )
 
 
+_HELP_SPECS: dict[str, tuple[str | None, str]] = {
+    "help": (None, "show_help"),
+    "agents": ("agents_command", "show_agents_help"),
+    "skills": ("skills_command", "show_skills_help"),
+    "threads": ("threads_command", "show_threads_help"),
+    "mcp": ("mcp_command", "show_mcp_help"),
+}
+"""Maps top-level command names to their startup-fast-path help dispatch.
+
+Each value is `(subcommand_dest, ui_help_fn_name)`:
+
+- `subcommand_dest` is the argparse `dest=` for the group's sub-subparsers,
+    or `None` for leaf commands like `help`. When non-`None` and the parsed
+    namespace has a value at that attribute, a real subcommand was given and
+    the fast path declines.
+- `ui_help_fn_name` is the attribute on `deepagents_cli.ui` invoked to
+    render the help screen.
+
+When adding a new top-level command group with sub-subparsers, register it
+here and add a corresponding `show_<group>_help` to `ui.py`. The drift
+test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+"""
+
+
+def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
+    """Render help for `help` and bare command groups before the heavy bootstrap.
+
+    Short-circuits before `console`/`settings` are imported so help-only
+    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
+    `help`, `agents`, `skills`, `threads`, and `mcp` commands when no
+    subcommand was given.
+
+    Args:
+        args: Namespace from `parse_args()`. Only `command` and the per-group
+            `<group>_command` attributes are read; both may be absent.
+
+    Returns:
+        `True` when help was rendered and the caller should exit; `False`
+            when the command requires the full runtime path.
+    """
+    command = getattr(args, "command", None)
+    if not isinstance(command, str):
+        return False
+    spec = _HELP_SPECS.get(command)
+    if spec is None:
+        return False
+
+    command_attr, help_fn_name = spec
+    if command_attr is not None and getattr(args, command_attr, None) is not None:
+        return False
+
+    from deepagents_cli import ui
+
+    # 2-arg `getattr` is intentional: a missing/renamed `show_*_help` in
+    # `ui.py` is a developer bug and should raise `AttributeError` loudly
+    # rather than fall through to a silent no-op.
+    getattr(ui, help_fn_name)()
+    return True
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
     Returns:
         Parsed arguments namespace.
     """
+    from deepagents_cli._constants import DEFAULT_AGENT_NAME
     from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.mcp_commands import setup_mcp_parsers
     from deepagents_cli.output import add_json_output_arg
@@ -616,8 +683,9 @@ def parse_args() -> argparse.Namespace:
         metavar="NAME",
         help=(
             "Agent to use (e.g., coder, researcher). "
-            "If omitted, falls back to [agents].recent in config, then "
-            f"the '{_DEFAULT_AGENT_NAME}' default."
+            "If omitted, falls back to [agents].default, then "
+            "[agents].recent, then "
+            f"the '{DEFAULT_AGENT_NAME}' built-in default."
         ),
     )
 
@@ -625,7 +693,7 @@ def parse_args() -> argparse.Namespace:
         "-M",
         "--model",
         metavar="MODEL",
-        help="Model to use (e.g., claude-sonnet-4-6, gpt-5.2). "
+        help="Model to use (e.g., claude-opus-4-7, gpt-5.5). "
         "Provider is auto-detected from model name.",
     )
 
@@ -927,6 +995,7 @@ async def run_textual_cli_async(
         settings,
     )
     from deepagents_cli.model_config import ModelConfigError, ModelSpec
+    from deepagents_cli.onboarding import should_run_onboarding
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -994,6 +1063,7 @@ async def run_textual_cli_async(
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
             startup_cmd=startup_cmd,
+            launch_init=should_run_onboarding(),
             profile_override=profile_override,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
@@ -1444,9 +1514,15 @@ def cli_main() -> None:
     try:
         args = parse_args()
 
-        # Best-effort, idempotent migration of legacy state files from
-        # ~/.deepagents/ to ~/.deepagents/.state/. Placed after parse_args
-        # so --help/--version exit before any I/O.
+        if _show_bare_command_group_help(args):
+            return
+
+        # Best-effort, idempotent migration. Placed after parse_args and the
+        # bare-help fast path so --help / --version / `deepagents <group>`
+        # exit before any I/O. Wrapped broadly so an unexpected non-OSError
+        # (e.g., RuntimeError from `Path.home()` when $HOME is unset on a CI
+        # runner) cannot crash startup — state migration has zero functional
+        # value vs. failing-soft.
         try:
             from deepagents_cli.state_migration import migrate_legacy_state
 
@@ -1457,8 +1533,9 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
-        # Import console/settings AFTER arg parsing so --help (which exits
-        # inside parse_args) never pays the settings bootstrap cost.
+        # Import console/settings AFTER arg parsing and after the bare-help
+        # fast path so neither argparse's `--help`/`-h` exit nor
+        # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_cli.config import console, settings
 
         model_params: dict[str, Any] | None = None

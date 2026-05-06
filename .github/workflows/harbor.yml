@@ -45,6 +45,7 @@ on:
           - mega
           - fast
           - open
+          - open-fireworks
           - docs
           - anthropic
           - baseten
@@ -70,13 +71,18 @@ on:
           - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:fireworks/deepseek-v3p2"
-          - "fireworks:fireworks/deepseek-v3-0324"
-          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
-          - "fireworks:fireworks/minimax-m2p1"
-          - "fireworks:fireworks/kimi-k2p5"
-          - "fireworks:fireworks/glm-5"
-          - "fireworks:fireworks/minimax-m2p5"
+          - "fireworks:accounts/fireworks/models/deepseek-v3p2"
+          - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
+          - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
+          - "fireworks:accounts/fireworks/models/minimax-m2p1"
+          - "fireworks:accounts/fireworks/models/kimi-k2p5"
+          - "fireworks:accounts/fireworks/models/glm-5"
+          - "fireworks:accounts/fireworks/models/minimax-m2p5"
+          - "fireworks:accounts/fireworks/models/deepseek-v4-pro"
+          - "fireworks:accounts/fireworks/models/kimi-k2p6"
+          - "fireworks:accounts/fireworks/models/minimax-m2p7"
+          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8"
+          - "fireworks:accounts/fireworks/models/glm-5p1"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"
           - "google_genai:gemini-3-flash-preview"

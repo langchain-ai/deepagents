@@ -7,7 +7,7 @@ questions efficiently.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, overload
 
 import pytest
 from deepagents import create_deep_agent
@@ -126,11 +126,6 @@ class EngineerSearchResult(TypedDict):
 class TeamSearchResult(TypedDict):
     id: int
     name: str
-
-
-DataItemT = TypeVar(
-    "DataItemT", Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy
-)
 
 
 ENGINEER_DATA: list[Engineer] = [
@@ -343,7 +338,9 @@ def _similarity_search(
     return [{"id": item["id"], key: item[key]} for item in ranked]
 
 
-def _get_by_id(data: list[DataItemT], item_id: int, label: str) -> DataItemT:
+def _get_by_id[
+    DataItemT: (Incident, Service, Engineer, Team, Repo, Runbook, Environment, Alert, Deploy)
+](data: list[DataItemT], item_id: int, label: str) -> DataItemT:
     for item in data:
         if item["id"] == item_id:
             return item
@@ -769,14 +766,17 @@ async def _incident_graph_tool_error_middleware(
 def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create an agent implementation."""
     middleware = [_incident_graph_tool_error_middleware]
+    tools = None
     if repl_name == "langchain":
         middleware.append(ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
     elif repl_name == "quickjs":
         middleware.append(REPLMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
-    elif repl_name is not None:
+    elif repl_name is None:
+        tools = INCIDENT_GRAPH_TOOLS
+    else:
         msg = f'Unknown repl_name "{repl_name}"'
         raise ValueError(msg)
-    return create_deep_agent(model=model, middleware=middleware)
+    return create_deep_agent(model=model, tools=tools, middleware=middleware)
 
 
 @pytest.fixture

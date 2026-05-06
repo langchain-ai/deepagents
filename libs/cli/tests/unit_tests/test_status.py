@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size
 
+from deepagents_cli._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_cli.widgets.status import StatusBar
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class StatusBarApp(App):
@@ -16,8 +22,53 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestCwdDisplay:
+    """Tests for the cwd display in the status bar."""
+
+    async def test_hide_cwd_env_var_hides_display(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cwd display should stay hidden when the env var override is enabled."""
+        monkeypatch.setenv(HIDE_CWD, "1")
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            cwd = pilot.app.query_one("#cwd-display")
+            assert cwd.display is False
+            await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert cwd.display is False
+
+    async def test_hide_cwd_env_var_keeps_branch_visible_at_medium_width(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hiding cwd should not hide the branch when there is enough space."""
+        monkeypatch.setenv(HIDE_CWD, "1")
+        async with StatusBarApp().run_test(size=(85, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            cwd = pilot.app.query_one("#cwd-display")
+            branch = pilot.app.query_one("#branch-display")
+            assert cwd.display is False
+            assert branch.display is True
+
+
 class TestBranchDisplay:
     """Tests for the git branch display in the status bar."""
+
+    async def test_hide_git_branch_env_var_hides_display(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Branch display should stay hidden when the env var override is enabled."""
+        monkeypatch.setenv(HIDE_GIT_BRANCH, "1")
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.branch = "main"
+            await pilot.pause()
+            branch = pilot.app.query_one("#branch-display")
+            assert branch.display is False
+            await pilot.resize_terminal(120, 24)
+            await pilot.pause()
+            assert branch.display is False
 
     async def test_branch_display_empty_by_default(self) -> None:
         """Branch display should be empty when no branch is set."""

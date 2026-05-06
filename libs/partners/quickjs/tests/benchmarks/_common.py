@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from collections.abc import (
     Iterator,  # noqa: TC003  # pydantic resolves this annotation at runtime
-    Sequence,  # noqa: TC003  # used in runtime-accessed annotations
 )
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
-from pydantic import Field
+
+from langchain_quickjs import REPLMiddleware
+from tests._common import FakeChatModel
 
 if TYPE_CHECKING:
-    from langchain_quickjs import REPLMiddleware
+    from langchain_quickjs.middleware import REPLState
 
 CONSOLE_LOG_CODE = "for (let i = 0; i < 200; i += 1) {  console.log(`line-${i}`);}'ok';"
 PTC_ONLY_CODE = (
@@ -36,16 +36,9 @@ PTC_AND_CONSOLE_CODE = (
     "  return values.length;"
     "})();"
 )
+COUNTER_INIT_CODE = "let counter = 0; String(counter);"
+COUNTER_NEXT_CODE = 'typeof counter === "number" ? String(counter += 1) : "missing";'
 THROUGHPUT_ITERATIONS = 200
-
-
-class FakeChatModel(GenericFakeChatModel):
-    """Generic fake chat model whose ``bind_tools`` keeps scripted messages."""
-
-    messages: Iterator[AIMessage | str] = Field(exclude=True)
-
-    def bind_tools(self, tools: Sequence[Any], **_: Any) -> FakeChatModel:
-        return self
 
 
 @tool("echo_payload")
@@ -112,3 +105,48 @@ def assert_eval_succeeded(result: dict[str, Any]) -> None:
     """Assert the REPL eval did not produce a tool error envelope."""
     tool_message = eval_tool_message(result)
     assert "<error" not in tool_message.content, tool_message.content
+
+
+def run_counter_turns(
+    *,
+    turn_count: int,
+    snapshot_between_turns: bool,
+) -> list[str]:
+    """Run `turn_count` REPL turns and return counter values per turn."""
+    middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
+    state: REPLState = {}
+    runtime: Any = None  # hooks ignore runtime; `None` keeps this path lightweight
+    values: list[str] = []
+    try:
+        for turn_index in range(turn_count):
+            before = middleware.before_agent(state=state, runtime=runtime)
+            if before is not None:
+                state.update(before)
+
+            repl = middleware._registry.get(middleware._fallback_thread_id)
+            code = COUNTER_INIT_CODE if turn_index == 0 else COUNTER_NEXT_CODE
+            outcome = repl.eval_sync(code)
+            assert outcome.error_type is None, outcome.error_message
+            assert outcome.result is not None
+            values.append(outcome.result)
+
+            after = middleware.after_agent(state=state, runtime=runtime)
+            if after is not None:
+                state.update(after)
+    finally:
+        middleware._registry.close()
+    return values
+
+
+def assert_counter_turn_values(
+    *,
+    values: list[str],
+    snapshot_between_turns: bool,
+) -> None:
+    """Assert expected counter values with snapshots enabled/disabled."""
+    expected = (
+        [str(turn_index) for turn_index in range(len(values))]
+        if snapshot_between_turns
+        else ["0", *(["missing"] * max(0, len(values) - 1))]
+    )
+    assert values == expected, f"expected {expected}, got {values}"

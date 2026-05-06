@@ -33,6 +33,11 @@ import os
 AUTO_UPDATE = "DEEPAGENTS_CLI_AUTO_UPDATE"
 """Enable automatic CLI updates ('1', 'true', or 'yes')."""
 
+DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
+    "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
+)
+"""Override the startup splash subheader text when set."""
+
 DEBUG = "DEEPAGENTS_CLI_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -48,6 +53,11 @@ center UI can be exercised without waiting for real conditions. Does not
 auto-open the update modal (use `DEEPAGENTS_CLI_DEBUG_UPDATE` for that). Any
 non-empty value enables the flag (including `"0"` or `"false"`)."""
 
+DEBUG_ONBOARDING = "DEEPAGENTS_CLI_DEBUG_ONBOARDING"
+"""Force the onboarding flow to open on every interactive startup.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled."""
+
 DEBUG_UPDATE = "DEEPAGENTS_CLI_DEBUG_UPDATE"
 """Inject a sample update-available notification and auto-open the update modal
 at launch so the update-available flow can be exercised without waiting for a
@@ -56,6 +66,21 @@ real PyPI release. Any non-empty value enables the flag (including `"0"` or
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
+
+HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
+"""Hide local path displays in the TUI footer and startup splash when enabled."""
+
+HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
+"""Hide the current git branch in the TUI footer when enabled."""
+
+HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING"
+"""Hide LangSmith tracing project/thread info in the startup splash when enabled."""
+
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS"
+"""Hide rotating tips in the startup splash when enabled."""
+
+HIDE_SPLASH_VERSION = "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION"
+"""Hide version and local-install details in the splash screen when enabled."""
 
 KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
@@ -71,6 +96,9 @@ SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
+
+THEME = "DEEPAGENTS_CLI_THEME"
+"""Force the CLI to launch with this theme name when set."""
 
 USER_ID = "DEEPAGENTS_CLI_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""

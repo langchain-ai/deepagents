@@ -279,24 +279,36 @@ class TestOptionOrdering:
         menu.set_future(future)
         menu._handle_selection(index)
         assert future.result() == {"type": expected_type}
+        assert menu.display is False
         loop.close()
 
     @pytest.mark.parametrize(
-        ("action", "expected_index"),
+        ("action", "expected_type"),
         [
-            ("action_select_approve", 0),
-            ("action_select_auto", 1),
-            ("action_select_reject", 2),
+            ("action_select_approve", "approve"),
+            ("action_select_auto", "auto_approve_all"),
+            ("action_select_reject", "reject"),
         ],
     )
-    def test_action_select_sets_correct_index(
-        self, action: str, expected_index: int
+    def test_quick_actions_submit_without_rendering_selection(
+        self, action: str, expected_type: str
     ) -> None:
-        """Each action_select_* method must update _selected to the correct index."""
+        """Quick actions must submit the right decision without repainting."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
         menu = ApprovalMenu({"name": "write", "args": {"path": "f.py", "content": ""}})
+        menu.set_future(future)
+        menu._selected = 1
         menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
+        menu._update_options = MagicMock()  # type: ignore[method-assign]
         getattr(menu, action)()
-        assert menu._selected == expected_index
+        assert future.result() == {"type": expected_type}
+        assert menu._selected == 1
+        assert menu.display is False
+        menu._update_options.assert_not_called()  # ty: ignore[unresolved-attribute]
+        loop.close()
 
     @pytest.mark.parametrize(
         ("key", "expected_type"),

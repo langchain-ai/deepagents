@@ -5,7 +5,6 @@ Single-site website scoring CLI + async library. LLM-as-judge across 6 axes plus
 ## Install
 
 ```bash
-cd eval
 uv sync && .venv/bin/playwright install chromium
 ```
 

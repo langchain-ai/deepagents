@@ -8,7 +8,26 @@ Run commands from `vibe-coding-olympics/control/` unless noted.
 
 - iTerm2 running; Prefs → General → Magic → **Enable Python API** is **on**.
 - `uv sync` has been run in `control/` (installs `iterm2` + `fastapi`).
-- `deepagents` CLI is on your `$PATH`.
+- `deepagents` CLI is on your `$PATH`. Install it locally as a `uv` tool from `libs/cli`, e.g.:
+
+  ```bash
+  uv tool install -e /Users/mdrxy/oss/deepagents/libs/cli \
+    --with-editable ~/lc/libs/langchain_v1 \
+    --with-editable ~/lc/libs/core \
+    --with-editable ~/lc/libs/partners/anthropic \
+    --with-editable ~/lc/libs/partners/openai \
+    --with-editable ~/lc/libs/partners/groq \
+    --with-editable ~/lc/libs/partners/ollama \
+    --with-editable ~/oss/langchain-google/libs/genai \
+    --with-editable ~/oss/langchain/libs/partners/openrouter \
+    --with-editable ~/oss/langchain-nvidia/libs/ai-endpoints \
+    --with-editable ~/oss/langchain-baseten/libs/baseten \
+    --with-editable ~/oss/langchain/libs/partners/fireworks \
+    --with langchain-daytona \
+    --with langchain-modal \
+    --with langchain-runloop \
+    -U
+  ```
 
 ## 1. Launch a player
 

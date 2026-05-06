@@ -1200,7 +1200,7 @@ class DeepAgentsApp(App):
         - The agent is a local `Pregel` graph (e.g. ACP mode, test harnesses).
 
         Used to gate features that require a server-backed agent (e.g. model
-        switching via `ConfigurableModelMiddleware`, checkpointer fallback).
+        switching via `ConfigurableModelMiddleware`, thread registration).
         Checks the agent type rather than server ownership so this works for
         both CLI-spawned servers and externally managed ones.
 
@@ -4703,9 +4703,6 @@ class DeepAgentsApp(App):
             if result.offload_warning:
                 await self._mount_message(ErrorMessage(result.offload_warning))
 
-            if remote := self._remote_agent():
-                await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
-
             await self._agent.aupdate_state(
                 config, {"_summarization_event": result.new_event}
             )
@@ -5063,9 +5060,10 @@ class DeepAgentsApp(App):
             return {}
 
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        remote_config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 
         if remote := self._remote_agent():
-            await remote.aensure_thread(config)
+            await remote.aensure_thread(remote_config)
 
         state = await self._agent.aget_state(config)
 

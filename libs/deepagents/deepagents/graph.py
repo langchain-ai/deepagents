@@ -6,6 +6,7 @@ middleware.
 """
 
 import logging
+import uuid
 from collections.abc import Callable, Sequence
 from typing import Annotated, Any, Required, cast
 
@@ -16,11 +17,11 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.messages import AnyMessage, BaseMessage, RemoveMessage, SystemMessage
+from langchain_core.messages.utils import convert_to_messages
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
-from langgraph.graph.message import _messages_delta_reducer
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -57,10 +58,62 @@ from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt, 
 logger = logging.getLogger(__name__)
 
 
+def _deep_agent_messages_reducer(state: list[AnyMessage], writes: list[list[AnyMessage]]) -> list[AnyMessage]:  # noqa: C901, PLR0912
+    """DeltaChannel reducer for messages with full add_messages parity.
+
+    Extends langgraph's _messages_delta_reducer with missing-ID UUID assignment
+    so that eviction (model_copy with same id) and RemoveMessage tombstoning
+    work correctly. Backport candidate for langgraph.
+    """
+    flat: list[Any] = []
+    for w in writes:
+        if isinstance(w, list):
+            flat.extend(w)
+        else:
+            flat.append(w)
+    state_msgs: list[AnyMessage] = state if state and isinstance(state[0], BaseMessage) else cast("list[AnyMessage]", convert_to_messages(state))
+    msgs = cast("list[AnyMessage]", convert_to_messages(flat))
+    # Assign IDs to any messages that lack them (parity with add_messages).
+    for m in state_msgs:
+        if m.id is None:
+            m.id = str(uuid.uuid4())
+    for m in msgs:
+        if m.id is None:
+            m.id = str(uuid.uuid4())
+    index: dict[str, int] = {m.id: i for i, m in enumerate(state_msgs) if m.id is not None}
+    result: list[AnyMessage | None] = list(state_msgs)
+    for msg in msgs:
+        mid = msg.id
+        if mid is None:
+            result.append(msg)
+        elif isinstance(msg, RemoveMessage):
+            if mid in index:
+                result[index[mid]] = None
+                del index[mid]
+        elif mid in index:
+            result[index[mid]] = msg
+        else:
+            index[mid] = len(result)
+            result.append(msg)
+    return [m for m in result if m is not None]
+
+
 class _DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
-    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_deep_agent_messages_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
+
+class _DeepAgentStateMiddleware(AgentMiddleware[_DeepAgentState, Any, Any]):
+    """No-op middleware whose sole purpose is to register _DeepAgentState last.
+
+    langchain's _resolve_schemas merges middleware state schemas from a set,
+    so the last schema iterated wins for each field. By appending this middleware
+    after all others, _DeepAgentState (with DeltaChannel for messages) wins over
+    the BinaryOperatorAggregate defined on AgentState.
+    """
+
+    state_schema = _DeepAgentState
 
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -700,6 +753,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    # Append last so _DeepAgentState (DeltaChannel on messages) wins when
+    # langchain merges all middleware state schemas.
+    deepagent_middleware.append(_DeepAgentStateMiddleware())
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale
@@ -728,12 +784,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
         return SubagentTransformer(scope, subagent_names=subagent_names)
 
-    return create_agent(
+    agent = create_agent(
         model,
         system_prompt=final_system_prompt,
         tools=_tools,
         middleware=deepagent_middleware,
-        state_schema=_DeepAgentState,
         response_format=response_format,
         context_schema=context_schema,
         checkpointer=checkpointer,
@@ -742,7 +797,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         name=name,
         cache=cache,
         transformers=[_subagent_factory],
-    ).with_config(
+    )
+    # langchain's _resolve_schemas merges middleware state schemas from a set,
+    # so _DeepAgentState's DeltaChannel annotation for messages is non-deterministically
+    # overwritten by the BinaryOperatorAggregate from AgentState-inheriting middleware
+    # schemas. Enforce the correct channel type post-compilation.
+    if not isinstance(agent.channels.get("messages"), DeltaChannel):
+        agent.channels["messages"] = DeltaChannel(_deep_agent_messages_reducer, snapshot_frequency=50)  # ty: ignore[invalid-argument-type]
+    return agent.with_config(
         {
             "recursion_limit": 9_999,
             "metadata": {

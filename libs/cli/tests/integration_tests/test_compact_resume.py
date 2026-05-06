@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -62,12 +60,11 @@ def _event_field(event: object, key: str) -> object | None:
 async def test_compact_resumed_thread_uses_persisted_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Compacts a resumed thread after restart using SQLite-backed history.
+    """Offloads a resumed thread after restart using remote server state.
 
     The test seeds a real persisted thread on one server instance, restarts the
     server, resumes that thread in a fresh `DeepAgentsApp`, and verifies that
-    `/compact` succeeds even when the resumed history comes from the
-    checkpointer rather than live in-memory server state.
+    `/offload` succeeds after the app registers the thread with the server.
     """
     home_dir = tmp_path / "home"
     project_dir = tmp_path / "project"
@@ -92,7 +89,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
     from deepagents_cli.app import DeepAgentsApp
     from deepagents_cli.config import create_model
     from deepagents_cli.server_manager import server_session
-    from deepagents_cli.sessions import generate_thread_id, thread_exists
+    from deepagents_cli.sessions import generate_thread_id
     from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
 
     config_path = home_dir / ".deepagents" / "config.toml"
@@ -124,15 +121,12 @@ async def test_compact_resumed_thread_uses_persisted_history(
                     prompt=_build_long_prompt(turn),
                 )
 
-        assert await thread_exists(thread_id)
-
         compact_backend = CompositeBackend(
             default=FilesystemBackend(root_dir=backend_root, virtual_mode=True),
             routes={},
         )
 
-        # Server 2: same SQLite DB, but a fresh server process and empty
-        # in-memory thread registry.
+        # Server 2: same SQLite DB, but a fresh server process.
         async with server_session(
             assistant_id=assistant_id,
             model_name="itest:fake",
@@ -142,15 +136,6 @@ async def test_compact_resumed_thread_uses_persisted_history(
             sandbox_type="none",
         ) as (agent, _server_proc):
             config = {"configurable": {"thread_id": thread_id}}
-            actual_state = await agent.aget_state(config)
-            actual_values = getattr(actual_state, "values", None) or {}
-
-            # Fresh dev servers may return empty state for persisted threads
-            # after restart. If that behavior changes upstream, force the
-            # empty-state precondition so this test still covers the SQLite
-            # fallback path.
-            if actual_values:
-                agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))  # ty: ignore[invalid-assignment]
 
             app = DeepAgentsApp(
                 agent=agent,  # ty: ignore[invalid-argument-type]
@@ -170,20 +155,15 @@ async def test_compact_resumed_thread_uses_persisted_history(
                         break
 
                 assert app._message_store.total_count > 0
-                resume_messages = app.query(AppMessage)
-                assert any(
-                    "Resumed thread:" in str(widget._content)
-                    for widget in resume_messages
-                )
 
                 await app._handle_offload()
 
-                # `/compact` posts a success message after the async state write
+                # `/offload` posts a success message after the async state write
                 # and archive offload finish.
                 for _ in range(120):
                     await pilot.pause(0.1)
                     if any(
-                        "Conversation compacted." in str(widget._content)
+                        "Offloaded " in str(widget._content)
                         for widget in app.query(AppMessage)
                     ):
                         break
@@ -195,16 +175,15 @@ async def test_compact_resumed_thread_uses_persisted_history(
                     str(widget._content) for widget in app.query(ErrorMessage)
                 ]
 
-            assert "Nothing to compact" not in "\n".join(app_messages)
-            assert any("Conversation compacted." in content for content in app_messages)
+            assert "Nothing to offload" not in "\n".join(app_messages)
+            assert any("Offloaded " in content for content in app_messages)
             assert not error_messages
 
-            # The summarization event must be checkpointed so subsequent turns
-            # see compacted context instead of the full message history.
-            channel_values = await DeepAgentsApp._read_channel_values_from_checkpointer(
-                thread_id
-            )
-            summarization_event = channel_values.get("_summarization_event")
+            # The summarization event must be visible through server state so
+            # subsequent turns see compacted context instead of full history.
+            state = await agent.aget_state(config)
+            values = getattr(state, "values", None) or {}
+            summarization_event = values.get("_summarization_event")
             assert summarization_event is not None
             cutoff = _event_field(summarization_event, "cutoff_index")
             assert isinstance(cutoff, int)
@@ -219,7 +198,7 @@ async def test_compact_resumed_thread_uses_persisted_history(
         archive_path = backend_root / "conversation_history" / f"{thread_id}.md"
         assert archive_path.exists()
         archive_text = archive_path.read_text()
-        assert "Compacted at" in archive_text
+        assert "Offloaded at" in archive_text
         assert "keeps enough unique detail" in archive_text
     finally:
         model_config.clear_caches()

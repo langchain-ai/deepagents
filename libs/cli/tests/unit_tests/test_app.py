@@ -3774,67 +3774,60 @@ class TestFetchThreadHistoryData:
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "Hi there!"
 
-    async def test_server_mode_falls_back_to_checkpointer(self) -> None:
-        """When the server returns empty state, read SQLite checkpointer directly."""
+    async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:
+        """Server-mode history reads should fetch state through the remote server."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         from deepagents_cli.remote_client import RemoteAgent
-        from deepagents_cli.widgets.message_store import MessageData, MessageType
+        from deepagents_cli.widgets.message_store import MessageType
 
-        # Server returns empty state (fresh restart, thread not loaded)
-        empty_state = MagicMock()
-        empty_state.values = {}
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                HumanMessage(content="hello", id="h1"),
+                AIMessage(content="world", id="a1"),
+            ]
+        }
 
-        # spec=RemoteAgent so _remote_agent() isinstance check passes
         mock_agent = MagicMock(spec=RemoteAgent)
-        mock_agent.aget_state = AsyncMock(return_value=empty_state)
+        mock_agent.aensure_thread = AsyncMock()
+        mock_agent.aget_state = AsyncMock(return_value=state)
 
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        payload = await app._fetch_thread_history_data("t-1")
 
-        # Patch the checkpointer fallback to return messages
-        checkpointer_msgs = [
-            HumanMessage(content="hello", id="h1"),
-            AIMessage(content="world", id="a1"),
-        ]
-        with patch.object(
-            DeepAgentsApp,
-            "_read_channel_values_from_checkpointer",
-            return_value={"messages": checkpointer_msgs},
-        ):
-            payload = await app._fetch_thread_history_data("t-1")
-
+        mock_agent.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "t-1"}}
+        )
         assert len(payload.messages) == 2
         assert payload.messages[0].type == MessageType.USER
         assert payload.messages[0].content == "hello"
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "world"
 
-    async def test_server_mode_fallback_includes_context_tokens(self) -> None:
-        """Server-mode fallback should merge `_context_tokens` from the checkpointer."""
+    async def test_server_mode_state_includes_context_tokens(self) -> None:
+        """Server-mode history reads should preserve `_context_tokens` from state."""
         from langchain_core.messages import HumanMessage
 
         from deepagents_cli.remote_client import RemoteAgent
         from deepagents_cli.widgets.message_store import MessageType
 
-        empty_state = MagicMock()
-        empty_state.values = {}
-
-        mock_agent = MagicMock(spec=RemoteAgent)
-        mock_agent.aget_state = AsyncMock(return_value=empty_state)
-
-        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-
-        checkpointer_data = {
+        state = MagicMock()
+        state.values = {
             "messages": [HumanMessage(content="hi", id="h1")],
             "_context_tokens": 5000,
         }
-        with patch.object(
-            DeepAgentsApp,
-            "_read_channel_values_from_checkpointer",
-            return_value=checkpointer_data,
-        ):
-            payload = await app._fetch_thread_history_data("t-1")
 
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aensure_thread = AsyncMock()
+        mock_agent.aget_state = AsyncMock(return_value=state)
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        payload = await app._fetch_thread_history_data("t-1")
+
+        mock_agent.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "t-1"}}
+        )
         assert payload.context_tokens == 5000
         assert len(payload.messages) == 1
         assert payload.messages[0].type == MessageType.USER

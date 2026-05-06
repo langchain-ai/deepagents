@@ -201,6 +201,7 @@ class RemoteAgent:
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
+            TypeError: If the server returns an unexpected state shape.
         """  # noqa: DOC502 — raised by _require_thread_id
         from langgraph_sdk.errors import NotFoundError
 
@@ -213,13 +214,18 @@ class RemoteAgent:
             logger.debug("Thread %s not found on server", thread_id)
             return None
         except TypeError as e:
-            # langgraph SDK bug: _create_state_snapshot does state["checkpoint"]["thread_id"]
-            # but the server returns checkpoint=null for threads with no checkpoint yet
-            # (new threads, or threads registered via aensure_thread before any run).
+            # langgraph SDK bug: _create_state_snapshot does
+            # state["checkpoint"]["thread_id"], but the server returns
+            # checkpoint=null for threads with no checkpoint yet (new threads,
+            # or threads registered via aensure_thread before any run).
             if "subscriptable" in str(e).lower():
-                logger.debug("Thread %s has no checkpoint yet; treating as empty", thread_id)
+                logger.debug(
+                    "Thread %s has no checkpoint yet; treating as empty", thread_id
+                )
                 return None
-            logger.warning("Failed to get state for thread %s", thread_id, exc_info=True)
+            logger.warning(
+                "Failed to get state for thread %s", thread_id, exc_info=True
+            )
             raise
         except Exception:
             logger.warning(

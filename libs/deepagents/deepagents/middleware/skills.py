@@ -135,6 +135,7 @@ from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
+
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 MAX_SKILLS_LOAD_WARNINGS = 20

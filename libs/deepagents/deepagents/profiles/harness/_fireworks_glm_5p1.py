@@ -1,7 +1,7 @@
 """Built-in Fireworks GLM-5p1 harness profile.
 
 Registers a `HarnessProfile` for `fireworks:accounts/fireworks/models/glm-5p1`
-that targets the two largest model-fault clusters surfaced by the
+that targets the three largest model-fault clusters surfaced by the
 deep-agents eval suite on this model:
 
 - *Plan / stop discipline* — the model loops on read-only calls, drops
@@ -13,6 +13,13 @@ deep-agents eval suite on this model:
   empty/defaulted string parameter. Most visible on tau2 db-state
   mismatches, BFCL state mismatches, and HITL tests asserting on
   specific tool-call arguments.
+- *Output channel routing* — when `tools` are bound and the model
+  produces a very short final answer without calling a tool, GLM-5p1
+  served via Fireworks routes the answer into the `reasoning_content`
+  field with empty `content`. Reproduces deterministically against the
+  raw chat-completions endpoint, independent of the SDK adapter. A
+  hard rule in the suffix is sufficient to keep the answer in
+  `content` (8/8 vs. 1/8 in direct API probes).
 
 The suffix is appended to whatever `base_system_prompt` is ultimately
 assembled for the agent, so it layers cleanly on top of user- or
@@ -72,7 +79,17 @@ outcome to the user. Stop the turn when these hold.
 calls accumulate side effects on the underlying system.
 - Before finishing, write a brief confirmation of what changed (or \
 what did not change) so the user does not have to re-derive it from \
-the tool trace."""
+the tool trace.
+
+## Output Channel
+
+- Your assistant message content MUST NEVER be empty. Always emit the \
+user-visible answer in the content field of your reply. The reasoning \
+channel is for internal thoughts only and must not contain the final \
+answer.
+- If your final answer would be a short answer (e.g. "4", "Paris", \
+"yes"), wrap it in a short sentence so content is non-empty — for \
+example: "The answer is 4."."""
 """Text appended to the assembled base system prompt."""
 
 

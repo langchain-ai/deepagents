@@ -417,6 +417,7 @@ jobs:
 
       - name: "📊 Post summary"
         if: always()
+        working-directory: libs/evals
         env:
           MODEL: ${{ inputs.model }}
           N: ${{ inputs.trials }}
@@ -424,7 +425,7 @@ jobs:
           REASONING: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
         run: |
-          python3 << 'PYEOF'
+          uv run python << 'PYEOF'
           import json, os, sys
           from pathlib import Path
 

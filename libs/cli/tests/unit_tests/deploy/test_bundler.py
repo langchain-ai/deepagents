@@ -232,6 +232,18 @@ class TestRenderDeployGraph:
         assert 'SANDBOX_PROVIDER != "none"' in result
         assert "StateBackend" in result
 
+    def test_sandbox_reconnect_uses_server_metadata_first(self) -> None:
+        """Client-provided sandbox records are assertions, not reconnect authority."""
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert "class SandboxAuthorizationError" in result
+        assert "trusted_sandbox_info = await _get_sandbox_info_from_metadata" in result
+        assert 'metadata.get("owner") != user_identity' in result
+        assert "requested_sandbox_id != trusted_sandbox_id" in result
+        assert "Rejected unbound sandbox id" in result
+        assert "configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info" not in result
+
     def test_daytona_block_reconnects_from_sandbox_info(self) -> None:
         """Generated Daytona deploy graph must reconnect from persisted sandbox info."""
         config = _minimal_config(provider="daytona")

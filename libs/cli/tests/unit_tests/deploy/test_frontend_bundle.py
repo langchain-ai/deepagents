@@ -89,6 +89,11 @@ def test_bundle_emits_app_py(
     assert "from auth import get_current_user" in content
     assert '_AUTH_PROVIDER = "supabase"' in content
     assert "await get_current_user(" in content
+    assert "_identity_from_user" in content
+    assert "SandboxAuthorizationError" in content
+    assert "requested_sandbox_id=payload.sandbox_id" in content
+    assert "user_identity=user_identity" in content
+    assert "_sandbox_info_from_payload" not in content
     assert 'Route("/sandboxes/{sandbox_id}/files"' in content
     assert "_UPLOADS_ENABLED = False" in content
 

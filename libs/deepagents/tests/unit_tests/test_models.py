@@ -1145,6 +1145,57 @@ class TestBuiltInProfiles:
         }
         assert len(suffixes) == 1
 
+    def test_fireworks_glm_5p1_has_harness_profile(self) -> None:
+        """Fireworks GLM-5p1 registers a non-empty four-section profile.
+
+        A v2 attempt that promoted Output Channel and dropped Stop
+        Conditions regressed conversation by -0.16 outside the v1
+        4-trial noise band of ±0.02, so v1 was reinstated. See
+        `evals/fireworks_glm_5p1_profile_findings.md`.
+        """
+        profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "## Tool Execution Discipline" in profile.system_prompt_suffix
+        assert "## Parallel Tool Use" in profile.system_prompt_suffix
+        assert "## Stop Conditions" in profile.system_prompt_suffix
+        assert "## Output Channel" in profile.system_prompt_suffix
+
+    def test_fireworks_glm_5p1_section_order(self) -> None:
+        """Section order is part of what works empirically.
+
+        The v1 4-section ordering (TED → Parallel → Stop → Output)
+        held the conversation category at 0.49 ± 0.02 across four
+        trials. A v2 reorder that moved Output Channel to the top
+        regressed conversation to 0.33 (outside the noise band), so
+        the order is locked here as a regression guard.
+        """
+        suffix = _get_harness_profile(
+            "fireworks:accounts/fireworks/models/glm-5p1",
+        ).system_prompt_suffix  # type: ignore[union-attr]
+        sections = [
+            "## Tool Execution Discipline",
+            "## Parallel Tool Use",
+            "## Stop Conditions",
+            "## Output Channel",
+        ]
+        positions = [suffix.index(s) for s in sections]
+        assert positions == sorted(positions), "Profile section order changed; re-run N-trials before merging."
+
+    def test_fireworks_provider_has_no_built_in_profile(self) -> None:
+        """GLM-5p1 registers per-model, not provider-wide — guards bleed-through."""
+        assert _get_harness_profile("fireworks:other-model") is None
+
+    def test_fireworks_glm_5p1_only_sets_system_prompt_suffix(self) -> None:
+        """The profile is suffix-only — no tool/middleware exclusions yet."""
+        profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
+        assert profile is not None
+        assert profile.base_system_prompt is None
+        assert not profile.excluded_tools
+        assert not profile.excluded_middleware
+        assert not profile.tool_description_overrides
+        assert profile.general_purpose_subagent is None
+
 
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""

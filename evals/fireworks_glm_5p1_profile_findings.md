@@ -1,7 +1,13 @@
-# Fireworks GLM-5p1 — harness profile findings (v1)
+# Fireworks GLM-5p1 — harness profile findings
 
-Working notes from the v1 prototype of `_fireworks_glm_5p1.py`. Logged so the v2
-iteration starts from data, not memory.
+Working notes from iterating on `_fireworks_glm_5p1.py`. Logged so future
+iterations start from data, not memory.
+
+**TL;DR — current state: v1 (4-section, Output Channel last).** v2 was
+prototyped on a single-run signal that turned out to be a low-tail outlier
+of v1's distribution; v2 regressed conversation by −0.16 outside the v1
+N-trial noise band and was reverted. Section order is fixed by a unit test
+as a regression guard.
 
 ## Sources
 
@@ -107,3 +113,65 @@ After v2, re-run the same matrix and compare against both this run and the basel
 - Conversation score climbing back toward 0.43.
 - Summarization + tau2 (32, 37, ...) fixes holding.
 - `test_avoid_unnecessary_tool_calls` and `test_single_tool_get_food_calories` — if both still fail, ship the middleware.
+
+---
+
+## v2 results — negative; v1 reinstated
+
+Two runs were kicked off after the v2 plan above:
+
+- **v1 N-trials (variance baseline)**: GHA run [25460918393](https://github.com/langchain-ai/deepagents/actions/runs/25460918393), commit `9aee50ab2` (v1 + Output Channel section). 4 trials × 110 tests/trial. First 4 trials analyzed (run still going).
+- **v2 (single run)**: GHA run [25461031650](https://github.com/langchain-ai/deepagents/actions/runs/25461031650), commit `2cf856fb7`. 119 tests.
+
+### v1 noise band (4 trials)
+
+| Metric | t0 | t1 | t2 | t3 | mean | stdev | range |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `solve_rate` | 0.330 | 0.390 | 0.382 | 0.442 | 0.386 | 0.046 | 0.330–0.442 |
+| `correctness` | 0.820 | 0.820 | 0.820 | 0.810 | 0.818 | 0.005 | 0.81–0.82 |
+| `passed` | 90 | 90 | 90 | 89 | 89.75 | 0.5 | 89–90 |
+| `median_duration_s` | 14.20 | 13.27 | 12.19 | 10.31 | 12.49 | 1.67 | — |
+| **`conversation`** | **0.480** | **0.480** | **0.520** | **0.480** | **0.490** | **0.020** | **0.48–0.52** |
+| `file_operations` | 0.92 | 0.92 | 0.92 | 1.00 | 0.940 | 0.040 | 0.92–1.00 |
+| `tool_use` | 0.89 | 0.89 | 0.87 | 0.85 | 0.875 | 0.019 | 0.85–0.89 |
+| `summarization` | 0.80 | 0.80 | 0.80 | 0.80 | 0.800 | 0.000 | — |
+| `retrieval` | 1.00 | 1.00 | 1.00 | 1.00 | 1.000 | 0.000 | — |
+
+Per-test stability across the 4 trials:
+- **14 stable fails** (4/4 trials): the model-fault clusters identified pre-v1.
+- **14 flaky tests** (1–3/4 trials): the genuine noise floor.
+
+### v2 vs v1 noise band
+
+| Metric | v1 mean (±sd) | v1 range | v2 | Verdict |
+|---|---:|---|---:|---|
+| `solve_rate` | 0.386 ± 0.046 | 0.330–0.442 | 0.381 | **IN BAND** |
+| `correctness` | 0.818 ± 0.005 | 0.81–0.82 | 0.81 | **IN BAND** |
+| `conversation` | **0.490 ± 0.020** | **0.48–0.52** | **0.330** | **−0.16 BELOW BAND** 🔴 |
+| `file_operations` | 0.940 ± 0.040 | 0.92–1.00 | 1.00 | IN BAND (top of) |
+| `tool_use` | 0.875 ± 0.019 | 0.85–0.89 | 0.87 | IN BAND |
+| `summarization` | 0.80 | — | 0.80 | TIED |
+| `retrieval` | 1.00 | — | 1.00 | TIED |
+
+- v2 fixed **0** of v1's 14 stable-fails.
+- v2 introduced **2** net-new failures (`vague_data_analysis`, `tau2_airline[task_38]`) that never failed in any v1 trial.
+
+### Why v2 lost
+
+The v2 design was based on a **single-run** v1 signal (run 25455340145, conversation = 0.29) that I treated as the v1 mean. That run was actually the lower outlier of v1's distribution (mean 0.49, range 0.48–0.52). The "v1 conversation regression" v2 was meant to fix didn't exist — it was noise.
+
+By removing the `Stop Conditions` section to "fix" a non-existent regression, v2 stripped framing the model was using to bound its responses on followup-quality and tau2-conversation tests. Promoting Output Channel to the top of the suffix didn't help cluster E either: `test_avoid_unnecessary_tool_calls` and `test_single_tool_get_food_calories` still emitted empty `content` with the answer in `reasoning_content`. The reorder gave us nothing and the deletion cost us the conversation score.
+
+### Lesson — recorded for future iterations
+
+**Profile changes must be evaluated against an N-trial baseline, not a single run.** The relevant noise band on this model is on the order of ±0.05 for solve_rate and ±0.02 for category scores. Single-run deltas inside that band are not signal. Single-run deltas of 0.10+ are *probably* signal but should still be confirmed with at least one repeat.
+
+### v3 plan — when to attempt
+
+The current v1 profile is the best-tested iteration. v3 only makes sense when there is:
+
+1. A specific cluster of stable v1 fails to target (we have data for `test_avoid_unnecessary_tool_calls`, `test_single_tool_get_food_calories`, the BFCL tasks, and the persistent tau2 fails 7/14/23/29/39/44).
+2. A change scoped tightly enough to not perturb conversation/tool_use scoring (e.g., a `_FireworksReasoningContentMiddleware` that only fires when content is empty and there are no tool calls — fully orthogonal to the suffix and likely safe).
+3. An N-trials run on the candidate before declaring it better.
+
+For now: do not edit the suffix. Route any further wins through middleware.

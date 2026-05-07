@@ -257,8 +257,19 @@ class MCPToolItem(Static):
 
     def toggle_expand(self) -> None:
         """Toggle between collapsed and expanded view."""
-        self._expanded = not self._expanded
-        self.styles.height = "auto" if self._expanded else 1
+        self.set_expanded(not self._expanded)
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Set expansion state explicitly; no-op when already in that state.
+
+        Provides a single seam through which expansion changes flow, so the
+        screen-level `Ctrl+E` toggle-all action and the per-row `toggle_expand`
+        can share the same render path.
+        """
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        self.styles.height = "auto" if expanded else 1
         self._rerender()
 
     def on_mount(self) -> None:
@@ -297,6 +308,10 @@ class MCPViewerScreen(ModalScreen[None]):
         Binding("down", "move_down", "Down", show=False, priority=True),
         Binding("tab", "move_down", "Down", show=False, priority=True),
         Binding("enter", "toggle_expand", "Expand", show=False, priority=True),
+        # Use a non-letter chord so it does not steal text input from the
+        # filter Input. PR #2949 originally proposed `a` for the same
+        # action; we rebound to `ctrl+e` for that reason.
+        Binding("ctrl+e", "toggle_all", "Toggle all", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
@@ -616,6 +631,19 @@ class MCPViewerScreen(ModalScreen[None]):
         """Toggle expand/collapse on the selected tool."""
         if self._tool_widgets:
             self._tool_widgets[self._selected_index].toggle_expand()
+
+    def action_toggle_all(self) -> None:
+        """Expand or collapse every visible tool at once.
+
+        If any visible tool is collapsed, expand all; otherwise collapse all.
+        Operates on `_tool_widgets`, so a filtered view affects only the
+        currently visible subset — hidden tools keep their state.
+        """
+        if not self._tool_widgets:
+            return
+        any_collapsed = any(not w._expanded for w in self._tool_widgets)
+        for widget in self._tool_widgets:
+            widget.set_expanded(any_collapsed)
 
     def action_page_up(self) -> None:
         """Scroll up by one page."""

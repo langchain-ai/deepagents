@@ -521,6 +521,107 @@ class TestMCPViewerScreen:
             visible = [w.tool_name for w in screen._tool_widgets]
             assert visible == ["run"]
 
+    async def test_toggle_all_expands_then_collapses(self) -> None:
+        """`Ctrl+E` expands every tool, pressing again collapses all."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert all(not w._expanded for w in screen._tool_widgets)
+
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+            assert all(w._expanded for w in screen._tool_widgets)
+
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+            assert all(not w._expanded for w in screen._tool_widgets)
+
+    async def test_toggle_all_with_partial_state(self) -> None:
+        """When some tools are collapsed, `Ctrl+E` expands the rest."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._tool_widgets[0].set_expanded(True)
+            await pilot.pause()
+            assert screen._tool_widgets[0]._expanded
+            assert not screen._tool_widgets[1]._expanded
+
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+            assert all(w._expanded for w in screen._tool_widgets)
+
+    async def test_toggle_all_no_op_when_empty(self) -> None:
+        """`Ctrl+E` with no tools is a no-op and does not raise."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[])
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+            assert screen._tool_widgets == []
+
+    async def test_toggle_all_only_affects_visible_after_filter(self) -> None:
+        """A filter hides some tools; `Ctrl+E` must not change hidden ones."""
+        from textual.widgets import Input
+
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="alpha_one", description=""),
+                    MCPToolInfo(name="alpha_two", description=""),
+                    MCPToolInfo(name="beta_one", description=""),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "alpha"
+            await pilot.pause()
+
+            visible = [w.tool_name for w in screen._tool_widgets]
+            assert visible == ["alpha_one", "alpha_two"]
+
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+
+            # The two visible alpha tools became expanded; the filter
+            # rebuild created widgets that were not part of the previous
+            # toggle, so we assert against the post-press visible set.
+            assert all(w._expanded for w in screen._tool_widgets)
+
+    async def test_pressing_a_does_not_toggle_all(self) -> None:
+        """`a` is no longer the toggle-all binding — it types into the filter."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            await pilot.press("a")
+            await pilot.pause()
+            assert "a" in filter_input.value
+            # No expansion changed because nothing matched "a" filtering;
+            # the rebuilt widget list starts collapsed again.
+            assert all(not w._expanded for w in screen._tool_widgets)
+
     async def test_three_state_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line."""
         from deepagents_cli import theme

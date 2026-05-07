@@ -289,10 +289,14 @@ class TestSubagentTransformerUnit:
         assert len(handles) == 2
         names = sorted(h.name for h in handles)
         assert names == ["coder", "researcher"]
-        causes = sorted(
-            h.cause["trigger_call_id"] for h in handles if h.cause is not None
-        )
+        causes = sorted(h.cause["trigger_call_id"] for h in handles if h.cause is not None)
         assert causes == ["p1", "p2"]
+        # Pin the pairing: the future-bug this guards against is
+        # cross-contamination of metadata across parallel calls under
+        # the same parent step. If a regression pairs the wrong
+        # subagent_type with the wrong trigger_call_id, this fails.
+        by_id = {h.cause["trigger_call_id"]: h.graph_name for h in handles}
+        assert by_id == {"p1": "researcher", "p2": "coder"}
 
     def test_status_transitions(self) -> None:
         """A parent-scope tasks-result closes the subagent and marks completed."""

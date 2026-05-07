@@ -76,7 +76,7 @@ class SubagentRunStream(SubgraphRunStream):
 
     @property
     def cause(self) -> dict[str, str] | None:
-        """Spawn descriptor for in-process consumers.
+        """Invocation descriptor for in-process consumers.
 
         Exposes the pregel task id under the `trigger_call_id` key
         (not the model-side `tool_call_id`, which conflated parallel
@@ -116,7 +116,7 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
 
     @property
     def cause(self) -> dict[str, str] | None:
-        """Spawn descriptor for in-process consumers.
+        """Invocation descriptor for in-process consumers.
 
         Exposes the pregel task id under the `trigger_call_id` key
         (not the model-side `tool_call_id`, which conflated parallel
@@ -169,14 +169,17 @@ class SubagentTransformer(_TasksLifecycleBase):
         """Capture subagent metadata from a per-call dispatched task.
 
         `langchain.agents.create_agent` Send-fans out tool calls as
-        ``Send("tools", [tool_call])`` — one pregel task per call,
-        with `input` shaped as a single-element list of tool-call
-        dicts. We mine `subagent_type` and `description` off the
-        `task` tool calls inside that list and stash them keyed by
-        the per-call dispatched task's `id`. The child subgraph's
-        first lifecycle event will carry that same id as
-        `trigger_call_id` (parsed from the ``tools:<id>`` namespace
-        tail), so `_on_started` joins on it directly.
+        ``Send("tools", [tool_call])`` — one pregel task per call —
+        so the per-call dispatched task's `input` is always a
+        single-element list of one tool-call dict
+        (``Send("tools", [tool_call])`` shape). Anything else is not
+        a per-call envelope we recognise and is ignored. We mine
+        `subagent_type` and `description` off that single `task`
+        tool call and stash them keyed by the per-call dispatched
+        task's `id`. The child subgraph's first lifecycle event
+        will carry that same id as `trigger_call_id` (parsed from
+        the ``tools:<id>`` namespace tail), so `_on_started` joins
+        on it directly.
 
         Multiple `task` calls dispatched in the same model turn each
         produce a separate per-call task with its own unique id, so
@@ -187,26 +190,26 @@ class SubagentTransformer(_TasksLifecycleBase):
         task_id = data.get("id")
         if not isinstance(task_id, str):
             return
-        tool_calls = data.get("input")
-        if not isinstance(tool_calls, list):
-            return
-        for tc in tool_calls:
-            if not isinstance(tc, dict) or tc.get("name") != "task":
-                continue
-            args = tc.get("args")
+        payload = data.get("input")
+        if isinstance(payload, list):
+            if len(payload) != 1:
+                return
+            tool_call = payload[0]
+            if not isinstance(tool_call, dict) or tool_call.get("name") != "task":
+                return
+            args = tool_call.get("args")
             if not isinstance(args, dict):
-                continue
+                return
             subagent_type = args.get("subagent_type")
             if not isinstance(subagent_type, str):
-                continue
+                return
             if subagent_type not in self._names:
-                continue
+                return
             description = args.get("description")
             self._pending[task_id] = {
                 "subagent_type": subagent_type,
                 "task_input": description if isinstance(description, str) else "",
             }
-            return
 
     def _on_started(
         self,

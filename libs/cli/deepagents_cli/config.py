@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
+from deepagents_cli._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
 from deepagents_cli._git import resolve_git_branch
 from deepagents_cli._version import __version__
 
@@ -561,6 +562,9 @@ def get_banner() -> str:
         banner = _ASCII_BANNER
     else:
         banner = _UNICODE_BANNER
+
+    if is_env_truthy(HIDE_SPLASH_VERSION):
+        return banner.replace(f"v{__version__}", "")
 
     if _is_editable_install():
         banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")

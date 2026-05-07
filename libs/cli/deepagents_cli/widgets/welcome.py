@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,14 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 from deepagents_cli import theme
+from deepagents_cli._env_vars import (
+    DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER,
+    HIDE_CWD,
+    HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_TIPS,
+    HIDE_SPLASH_VERSION,
+    is_env_truthy,
+)
 from deepagents_cli._version import __version__
 from deepagents_cli.config import (
     _get_editable_install_path,
@@ -142,9 +151,13 @@ class WelcomeBanner(Static):
         self._idle = False
         self._defer_connecting_display = defer_connecting_display and connecting
         self._defer_timer: Timer | None = None
-        self._project_name: str | None = get_langsmith_project_name()
+        self._hide_langsmith_tracing = is_env_truthy(HIDE_LANGSMITH_TRACING)
+        self._hide_splash_tips = is_env_truthy(HIDE_SPLASH_TIPS)
+        self._project_name: str | None = (
+            None if self._hide_langsmith_tracing else get_langsmith_project_name()
+        )
         self._project_url: str | None = None
-        self._tip: str = _pick_tip()
+        self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
 
         super().__init__(self._build_banner(), **kwargs)
 
@@ -294,7 +307,8 @@ class WelcomeBanner(Static):
             else TStyle(foreground=TColor.parse(colors.primary), bold=True)
         )
 
-        if not ansi and _is_editable_install():
+        hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        if not hide_version and not ansi and _is_editable_install():
             # Highlight local-install version tag with tool accent; art stays primary.
             dev_style = TStyle(foreground=TColor.parse(colors.tool), bold=True)
             version_tag = f"v{__version__} (local)"
@@ -316,7 +330,8 @@ class WelcomeBanner(Static):
         accent: str | TStyle = "bold" if ansi else colors.primary
         success_color: str = "bold green" if ansi else colors.success
 
-        editable_path = _get_editable_install_path()
+        hide_editable_path = hide_version or is_env_truthy(HIDE_CWD)
+        editable_path = None if hide_editable_path else _get_editable_install_path()
         if editable_path:
             parts.extend([("Installed from: ", "dim"), (editable_path, "dim"), "\n"])
 
@@ -342,7 +357,7 @@ class WelcomeBanner(Static):
                 parts.append((f"'{self._project_name}'", accent))
             parts.append("\n")
 
-        if self._cli_thread_id:
+        if self._cli_thread_id and not self._hide_langsmith_tracing:
             if project_url:
                 thread_url = (
                     f"{project_url.rstrip('/')}/t/{self._cli_thread_id}"
@@ -399,7 +414,13 @@ class WelcomeBanner(Static):
             )
         elif not self._idle:
             ready_color = "bold" if ansi else colors.primary
-            parts.append(build_welcome_footer(primary_color=ready_color, tip=self._tip))
+            parts.append(
+                build_welcome_footer(
+                    primary_color=ready_color,
+                    tip=self._tip,
+                    show_tip=not self._hide_splash_tips,
+                )
+            )
         # `_idle` ⇒ no footer; chat-surface owns the failure message.
         return Content.assemble(*parts)
 
@@ -428,11 +449,14 @@ def build_connecting_footer(
 
 
 def build_welcome_footer(
-    *, primary_color: str = theme.PRIMARY, tip: str | None = None
+    *,
+    primary_color: str = theme.PRIMARY,
+    tip: str | None = None,
+    show_tip: bool | None = None,
 ) -> Content:
     """Build the footer shown at the bottom of the welcome banner.
 
-    Includes a tip to help users discover features.
+    Includes a tip to help users discover features unless tips are disabled.
 
     Args:
         primary_color: Color string for the ready prompt.
@@ -442,13 +466,21 @@ def build_welcome_footer(
         tip: Tip text to display. When `None`, a random tip is selected.
 
             Pass an explicit value to keep the tip stable across re-renders.
+        show_tip: Whether to show the tip. When `None`, the startup splash tips
+            env var controls visibility.
 
     Returns:
-        Content with the ready prompt and a tip.
+        Content with the ready prompt and, when enabled, a tip.
     """
-    if tip is None:
+    if show_tip is None:
+        show_tip = not is_env_truthy(HIDE_SPLASH_TIPS)
+    if show_tip and tip is None:
         tip = _pick_tip()
-    return Content.assemble(
-        ("\nReady to code! What would you like to build?\n", primary_color),
-        (f"Tip: {tip}", "dim italic"),
+    subheader = (
+        os.environ.get(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER)
+        or "Ready to code! What would you like to build?"
     )
+    parts: list[tuple[str, str]] = [(f"\n{subheader}", primary_color)]
+    if show_tip and tip is not None:
+        parts.append((f"\nTip: {tip}", "dim italic"))
+    return Content.assemble(*parts)

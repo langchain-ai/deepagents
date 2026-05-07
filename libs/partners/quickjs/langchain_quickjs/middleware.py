@@ -421,7 +421,10 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         # Same tradeoff the TS package accepts; see the module docstring.
         exposed_names = frozenset(t.name for t in exposed)
         if self._ptc_prompt_cache is None or self._ptc_prompt_cache[0] != exposed_names:
-            self._ptc_prompt_cache = (exposed_names, render_ptc_prompt(exposed))
+            self._ptc_prompt_cache = (
+                exposed_names,
+                render_ptc_prompt(exposed, tool_name=self._tool_name),
+            )
         return self._base_system_prompt + self._ptc_prompt_cache[1]
 
     def _extend(

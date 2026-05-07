@@ -262,3 +262,74 @@ async def test_repl_snapshot_persists_skill_usage_between_turns(
     second_eval = _eval_tool_message(second)
     assert "<error" not in second_eval.content, second_eval.content
     assert "<result>42</result>" in second_eval.content, second_eval.content
+
+
+@pytest.mark.parametrize(
+    "invoke_mode",
+    ["invoke", "ainvoke"],
+    ids=["sync_invoke", "async_ainvoke"],
+)
+async def test_repl_snapshot_persists_top_level_await_binding_between_turns(
+    invoke_mode: InvokeMode,
+) -> None:
+    """Top-level-await bindings persist after cross-turn snapshot restore.
+
+    Historically, ``quickjs-rs`` dropped lexical bindings created in an eval
+    that used top-level ``await``. The first turn could read ``story``, but
+    after ``after_agent`` snapshot + ``before_agent`` restore, turn 2 raised
+    ``ReferenceError: story is not defined``.
+
+    This regression test locks in the fixed behavior: once the first turn
+    declares ``story`` via top-level ``await``, the second turn can still read it.
+    """
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "eval",
+                    "args": {"code": "const story = await Promise.resolve('hi')"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                },
+            ],
+        ),
+        AIMessage(content="turn 1 done"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "eval",
+                    "args": {"code": "story"},
+                    "id": "call_2",
+                    "type": "tool_call",
+                },
+            ],
+        ),
+        AIMessage(content="turn 2 done"),
+    ]
+    agent = create_deep_agent(
+        model=FakeChatModel(messages=iter(script)),
+        middleware=[REPLMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "quickjs-top-level-await-thread"}}
+
+    first = await _invoke_agent(
+        agent,
+        {"messages": [HumanMessage(content="define story in eval")]},
+        config,
+        invoke_mode,
+    )
+    first_eval = _eval_tool_message(first)
+    assert "<error" not in first_eval.content, first_eval.content
+
+    second = await _invoke_agent(
+        agent,
+        {"messages": [HumanMessage(content="read story from previous turn")]},
+        config,
+        invoke_mode,
+    )
+    second_eval = _eval_tool_message(second)
+    assert "<error" not in second_eval.content, second_eval.content
+    assert "<result>hi</result>" in second_eval.content, second_eval.content

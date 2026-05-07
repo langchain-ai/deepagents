@@ -36,10 +36,12 @@ from deepagents_cli.app import (
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
+    ExternalInput,
     QueuedMessage,
     TextualSessionState,
     _write_iterm_escape,
 )
+from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
 from deepagents_cli.widgets.launch_init import LaunchNameScreen
 from deepagents_cli.widgets.messages import (
@@ -552,6 +554,7 @@ class TestStartupSequence:
 
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = track_mount_message  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -566,6 +569,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         assert app._launch_user_name == "Ada"
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         write_name.assert_called_once_with("Ada", "coder")
         switch_model_mock.assert_awaited_once_with(
@@ -680,6 +684,7 @@ class TestStartupSequence:
         app._prompt_launch_dependencies_then_model = prompt_flow_mock  # type: ignore[assignment]
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -694,6 +699,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         prompt_flow_mock.assert_awaited_once_with()
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
@@ -713,6 +719,7 @@ class TestStartupSequence:
         switch_model_mock = AsyncMock()
         app._switch_model = switch_model_mock  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
 
         with (
             patch(
@@ -727,6 +734,7 @@ class TestStartupSequence:
             await app._run_launch_init_sequence()
 
         write_name.assert_called_once_with("Ada", "coder")
+        app._dispatch_launch_name_hook.assert_called_once_with("Ada", "coder")  # type: ignore[attr-defined]
         switch_model_mock.assert_not_awaited()
         app._mount_message.assert_awaited_once()  # type: ignore[attr-defined]
         mark_complete.assert_called_once_with()
@@ -741,6 +749,7 @@ class TestStartupSequence:
         switch_failure = RuntimeError("missing credentials")
         app._switch_model = AsyncMock(side_effect=switch_failure)  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         notify_mock = MagicMock()
         app.notify = notify_mock  # type: ignore[method-assign]
 
@@ -784,6 +793,64 @@ class TestStartupSequence:
         assert notify_kwargs.get("severity") == "warning"
         assert notify_kwargs.get("markup") is False
 
+    def test_dispatch_launch_name_hook_sends_name_payload(self) -> None:
+        """The onboarding name hook should include the submitted name."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="coder",
+            thread_id="thread-123",
+        )
+
+        with patch(
+            "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+        ) as dispatch_hook:
+            app._dispatch_launch_name_hook("Ada", "coder")
+
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
+    async def test_write_launch_name_waits_for_resume_agent_resolution(self) -> None:
+        """The name hook should use the agent resolved from a resumed thread."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id=None,
+            resume_thread="thread-from-coder",
+            thread_id="thread-123",
+        )
+
+        with (
+            patch(
+                "deepagents_cli.onboarding.write_onboarding_name_memory",
+                return_value=True,
+            ) as write_name,
+            patch(
+                "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
+            task = asyncio.create_task(app._write_launch_name_memory("Ada"))
+            await asyncio.sleep(0)
+
+            write_name.assert_not_called()
+            dispatch_hook.assert_not_called()
+
+            app._assistant_id = "coder"
+            app._resume_thread_resolved_event.set()
+            await asyncio.wait_for(task, timeout=1)
+
+        write_name.assert_called_once_with("Ada", "coder")
+        dispatch_hook.assert_called_once_with(
+            "user.name.set",
+            {
+                "name": "Ada",
+                "assistant_id": "coder",
+            },
+        )
+
     async def test_launch_init_sequence_times_out_waiting_for_server(self) -> None:
         """A stuck server should not trap onboarding past the timeout."""
         from deepagents_cli import app as app_module
@@ -796,6 +863,7 @@ class TestStartupSequence:
         app._switch_model = AsyncMock()  # type: ignore[assignment]
         app._mount_message = AsyncMock()  # type: ignore[assignment]
         app._connecting = True
+        app._dispatch_launch_name_hook = MagicMock()  # type: ignore[method-assign]
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()
@@ -3860,6 +3928,60 @@ class TestSlashCommandBypass:
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
 
+    async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
+        """/force-clear should process immediately when agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/force-clear", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_external_command_uses_same_bypass_policy(self) -> None:
+        """External command events should route through normal command policy."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(
+                            kind="command",
+                            payload="/force-clear",
+                            source="test",
+                        )
+                    )
+                )
+                await pilot.pause()
+
+            pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
+    async def test_external_prompt_queues_when_agent_running(self) -> None:
+        """External prompt events should queue while the agent is busy."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(
+                ExternalInput(
+                    ExternalEvent(kind="prompt", payload="next task", source="test")
+                )
+            )
+            await pilot.pause()
+
+            assert list(app._pending_messages) == [
+                QueuedMessage(text="next task", mode="normal")
+            ]
+
     async def test_version_executes_during_connecting(self) -> None:
         """/version should process immediately when only connecting."""
         app = DeepAgentsApp()
@@ -6514,6 +6636,25 @@ class TestPrewarmAwait:
 
         worker.wait.assert_awaited_once()
 
+    async def test_await_prewarm_imports_swallows_worker_cancelled(self) -> None:
+        """`WorkerCancelled` is non-fatal; prewarm is a cache optimization.
+
+        Distinct from `asyncio.CancelledError`: Textual's `Worker.wait()`
+        raises `WorkerCancelled` (a plain `Exception`) when the awaited
+        worker was cancelled. The caller — typically `_start_server_background`
+        — must not propagate that and crash startup.
+        """
+        from textual.worker import WorkerCancelled
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        worker = MagicMock()
+        worker.wait = AsyncMock(side_effect=WorkerCancelled("cancelled"))
+        app._prewarm_worker = worker
+
+        await app._await_prewarm_imports()  # must not raise
+
+        worker.wait.assert_awaited_once()
+
     async def test_await_prewarm_imports_propagates_cancellation(self) -> None:
         """`CancelledError` MUST propagate so app shutdown isn't absorbed."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
@@ -6728,3 +6869,262 @@ class TestPrewarmAwait:
         # don't crash the Toast renderer (see CLAUDE.md guidance).
         for notify_call in warning_calls:
             assert notify_call.kwargs.get("markup") is False
+
+
+class TestHeaderAndTitle:
+    """Header widget visibility and custom title overrides."""
+
+    async def test_default_title_is_deep_agents(self) -> None:
+        """Without overrides, `App.title` is the class-level `TITLE`."""
+        app = DeepAgentsApp()
+        assert app.title == "Deep Agents"
+
+    async def test_custom_title_kwarg_sets_app_title(self) -> None:
+        """The `title` kwarg overrides the default Textual `App.title`."""
+        app = DeepAgentsApp(title="My Custom Agent")
+        assert app.title == "My Custom Agent"
+
+    async def test_custom_sub_title_kwarg_sets_app_sub_title(self) -> None:
+        """The `sub_title` kwarg overrides the default `App.sub_title`."""
+        app = DeepAgentsApp(sub_title="staging")
+        assert app.sub_title == "staging"
+
+    async def test_title_can_be_reassigned_at_runtime(self) -> None:
+        """`App.title` is reactive and accepts runtime reassignment."""
+        app = DeepAgentsApp(title="Initial")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.title = "Updated"
+            await pilot.pause()
+            assert app.title == "Updated"
+
+    async def test_header_hidden_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without `DEEPAGENTS_CLI_SHOW_HEADER`, no `Header` widget is mounted."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(Header)
+
+    async def test_header_mounted_when_env_var_truthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Setting `DEEPAGENTS_CLI_SHOW_HEADER=1` mounts the `Header` widget."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHOW_HEADER", "1")
+        from textual.widgets import Header
+
+        app = DeepAgentsApp(title="Custom")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            headers = app.query(Header)
+            assert len(headers) == 1
+
+    async def test_header_not_mounted_when_env_var_falsy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CLI_SHOW_HEADER=0` keeps the header hidden."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_SHOW_HEADER", "0")
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(Header)
+
+
+class TestHandleExternalSignal:
+    """Verify routing of `kind=signal` external events."""
+
+    async def test_interrupt_calls_action_interrupt(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "action_interrupt") as action:
+                await app._handle_external_signal("interrupt")
+            action.assert_called_once_with()
+
+    async def test_force_clear_routes_to_command_with_force_bypass(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_submit_input", new_callable=AsyncMock) as submit:
+                await app._handle_external_signal("force-clear")
+            submit.assert_called_once_with("/force-clear", "command", force_bypass=True)
+
+    async def test_unknown_signal_is_no_op(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "action_interrupt") as action,
+                patch.object(app, "_submit_input", new_callable=AsyncMock) as submit,
+            ):
+                # Bypasses ExternalEvent's __post_init__ guard which would
+                # otherwise reject this payload at the wire boundary.
+                await app._handle_external_signal("intrupt")
+            action.assert_not_called()
+            submit.assert_not_called()
+
+
+class TestExternalEventEnvGating:
+    """`_maybe_start_external_event_source` env-var contract."""
+
+    async def test_off_by_default(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._external_event_source is None
+            assert app._external_event_source_task is None
+
+    async def test_falsy_value_does_not_start(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "0")
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._external_event_source is None
+
+    async def test_truthy_value_starts_listener(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import shutil
+        import tempfile
+
+        # Use short-path tmp to avoid AF_UNIX path-length limit on macOS.
+        socket_dir = tempfile.mkdtemp(dir="/tmp")
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "1")
+            monkeypatch.setenv(
+                "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH",
+                f"{socket_dir}/events.sock",
+            )
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert app._external_event_source is not None
+                assert app._external_event_source_task is not None
+        finally:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+        del tmp_path
+
+    async def test_socket_file_removed_on_exit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+        import tempfile
+        from pathlib import Path as _Path
+
+        socket_dir = tempfile.mkdtemp(dir="/tmp")
+        socket_path = _Path(socket_dir) / "events.sock"
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", "1")
+            monkeypatch.setenv(
+                "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH",
+                str(socket_path),
+            )
+            app = DeepAgentsApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                for _ in range(50):
+                    if socket_path.exists():
+                        break
+                    await asyncio.sleep(0.01)
+                assert socket_path.exists()
+                app.exit()
+                await pilot.pause()
+            assert not socket_path.exists()
+        finally:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+class TestForceInterruptActiveWork:
+    """Verify `_force_interrupt_active_work` cancels in-flight work."""
+
+    async def test_cancels_agent_worker(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            app._agent_worker = worker
+            app._force_interrupt_active_work()
+            worker.cancel.assert_called_once()
+
+    async def test_cancels_shell_worker(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._shell_running = True
+            worker = MagicMock()
+            app._shell_worker = worker
+            app._force_interrupt_active_work()
+            worker.cancel.assert_called_once()
+
+    async def test_rejects_pending_approval(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            app._pending_approval_widget = widget
+            app._force_interrupt_active_work()
+            widget.action_select_reject.assert_called_once()
+
+    async def test_cancels_pending_ask_user(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            app._pending_ask_user_widget = widget
+            app._force_interrupt_active_work()
+            widget.action_cancel.assert_called_once()
+
+    async def test_drops_queued_messages(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(QueuedMessage(text="x", mode="normal"))
+            app._force_interrupt_active_work()
+            assert len(app._pending_messages) == 0
+
+    async def test_widget_failure_is_logged_not_raised(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            widget = MagicMock()
+            widget.action_select_reject.side_effect = AttributeError("boom")
+            app._pending_approval_widget = widget
+            # Must not raise: best-effort interruption.
+            app._force_interrupt_active_work()
+
+
+class TestExternalBypassFieldHonored:
+    """`event.bypass` overrides queue when set on a prompt event."""
+
+    async def test_prompt_with_bypass_skips_queue(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(
+                            kind="prompt",
+                            payload="urgent",
+                            source="test",
+                            bypass=BypassTier.ALWAYS,
+                        )
+                    )
+                )
+                await pilot.pause()
+            pm.assert_called_once_with("urgent", "normal")
+            assert len(app._pending_messages) == 0
+
+
+# Local import for BypassTier in TestExternalBypassFieldHonored.
+from deepagents_cli.command_registry import BypassTier  # noqa: E402

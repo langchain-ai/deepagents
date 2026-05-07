@@ -14,6 +14,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_cli._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_cli.config import get_glyphs
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,13 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
+
+PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
+    "fireworks": ("accounts/fireworks/models/",),
+}
+"""Some providers (e.g. Fireworks) require fully-qualified IDs like
+`accounts/fireworks/models/...` that crowd out the rest of the status bar;
+strip the registered prefixes before display."""
 
 
 class ModelLabel(Widget):
@@ -35,6 +43,21 @@ class ModelLabel(Widget):
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
 
+    def _clean_model(self) -> str:
+        """Strip the provider's registered prefix so the status bar stays compact.
+
+        Returns:
+            Model name with the provider's registered prefix removed if present,
+                otherwise the original name.
+        """
+        name = self.model
+        if not name or not self.provider:
+            return name
+        for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -47,7 +70,8 @@ class ModelLabel(Widget):
         """
         if not self.model:
             return 0
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         return len(full)
 
     def render(self) -> RenderResult:
@@ -59,13 +83,14 @@ class ModelLabel(Widget):
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         if len(full) <= width:
             return Content(full)
-        if len(self.model) <= width:
-            return Content(self.model)
+        if len(model) <= width:
+            return Content(model)
         if width > 1:
-            return Content("\u2026" + self.model[-(width - 1) :])
+            return Content("\u2026" + model[-(width - 1) :])
         return Content("\u2026")
 
 
@@ -175,6 +200,8 @@ class StatusBar(Horizontal):
         super().__init__(**kwargs)
         # Store initial cwd - will be used in compose()
         self._initial_cwd = str(cwd) if cwd else str(Path.cwd())
+        self._hide_cwd = is_env_truthy(HIDE_CWD)
+        self._hide_git_branch = is_env_truthy(HIDE_GIT_BRANCH)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -207,13 +234,18 @@ class StatusBar(Horizontal):
         Priority (highest first): model, cwd, git branch.
         """
         width = event.size.width
+        branch_threshold = (
+            self._CWD_WIDTH_THRESHOLD
+            if self._hide_cwd
+            else self._BRANCH_WIDTH_THRESHOLD
+        )
         with suppress(NoMatches):
             self.query_one("#branch-display", Static).display = (
-                width >= self._BRANCH_WIDTH_THRESHOLD
+                not self._hide_git_branch and width >= branch_threshold
             )
         with suppress(NoMatches):
             self.query_one("#cwd-display", Static).display = (
-                width >= self._CWD_WIDTH_THRESHOLD
+                not self._hide_cwd and width >= self._CWD_WIDTH_THRESHOLD
             )
 
     def on_mount(self) -> None:
@@ -221,6 +253,12 @@ class StatusBar(Horizontal):
         from deepagents_cli.config import settings
 
         self.cwd = self._initial_cwd
+        if self._hide_cwd:
+            with suppress(NoMatches):
+                self.query_one("#cwd-display", Static).display = False
+        if self._hide_git_branch:
+            with suppress(NoMatches):
+                self.query_one("#branch-display", Static).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""

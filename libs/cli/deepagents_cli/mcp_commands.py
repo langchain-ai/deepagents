@@ -113,7 +113,9 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         found = discover_mcp_configs()
         if not found:
             print(  # noqa: T201
-                "No MCP config file found. Pass --config <path>.",
+                "No MCP config file found in any auto-discovered location. "
+                "Pass --config <path>, or run `deepagents mcp login --help` "
+                "to see the search paths and config format.",
                 file=sys.stderr,
             )
             return 2

@@ -13,6 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_SCRIPT = REPO_ROOT / ".github" / "scripts" / "models.py"
 EVALS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "evals.yml"
+HARBOR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "harbor.yml"
 
 
 def _load_models_script() -> ModuleType:
@@ -57,7 +58,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "anthropic:claude-sonnet-4-6",
                 "provider": "anthropic",
-                "artifact_key": "000-anthropic-claude-sonnet-4-6",
+                "artifact_key": "anthropic-claude-sonnet-4-6",
             }
         ]
     }
@@ -66,7 +67,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "openrouter:moonshotai/kimi-k2.6",
                 "provider": "openrouter",
-                "artifact_key": "001-openrouter-moonshotai-kimi-k2.6",
+                "artifact_key": "openrouter-moonshotai-kimi-k2.6",
             }
         ]
     }
@@ -75,7 +76,7 @@ def test_eval_matrix_outputs_are_partitioned_by_provider(models: ModuleType) -> 
             {
                 "model": "new_provider:model-1",
                 "provider": "new_provider",
-                "artifact_key": "002-new_provider-model-1",
+                "artifact_key": "new_provider-model-1",
             }
         ]
     }
@@ -91,7 +92,7 @@ def test_harbor_matrix_output_stays_flat(models: ModuleType) -> None:
                 {
                     "model": "openai:gpt-5.4",
                     "provider": "openai",
-                    "artifact_key": "000-openai-gpt-5.4",
+                    "artifact_key": "openai-gpt-5.4",
                 }
             ]
         }
@@ -174,28 +175,106 @@ def test_has_models_serializes_to_lowercase_bool(models: ModuleType) -> None:
 
 
 @pytest.mark.parametrize(
-    ("index", "spec", "expected"),
+    ("spec", "expected"),
     [
-        (0, "openrouter:moonshotai/kimi-k2.6", "000-openrouter-moonshotai-kimi-k2.6"),
-        (5, "openrouter:foo//bar", "005-openrouter-foo-bar"),
-        (12, ":leading-colon", "012-leading-colon"),
-        (99, "trailing-slash/", "099-trailing-slash"),
-        (7, "anthropic:claude-opus-4-7", "007-anthropic-claude-opus-4-7"),
+        ("openrouter:moonshotai/kimi-k2.6", "openrouter-moonshotai-kimi-k2.6"),
+        ("openrouter:foo//bar", "openrouter-foo-bar"),
+        (":leading-colon", "leading-colon"),
+        ("trailing-slash/", "trailing-slash"),
+        ("anthropic:claude-opus-4-7", "anthropic-claude-opus-4-7"),
     ],
 )
 def test_artifact_key_handles_disallowed_characters(
-    models: ModuleType, index: int, spec: str, expected: str
+    models: ModuleType, spec: str, expected: str
 ) -> None:
     """`_artifact_key` strips/collapses every char outside `[a-zA-Z0-9._-]`."""
-    assert models._artifact_key(index, spec) == expected
+    assert models._artifact_key(spec) == expected
 
 
-def test_artifact_key_index_disambiguates_identical_slugs(
+def test_resolve_models_dedupes_repeated_specs(models: ModuleType) -> None:
+    """`_resolve_models` deduplicates so `artifact_key` cannot collide downstream.
+
+    Without this, a typo'd `models_override` like `openai:gpt-5.5,openai:gpt-5.5`
+    would produce two matrix rows that race to upload artifacts under the same
+    name and fail mid-run.
+    """
+    resolved = models._resolve_models(
+        "eval", "anthropic:claude-sonnet-4-6,anthropic:claude-sonnet-4-6"
+    )
+    assert resolved == ["anthropic:claude-sonnet-4-6"]
+
+
+def test_resolve_models_preserves_first_occurrence_order(
     models: ModuleType,
 ) -> None:
-    """Same spec at different indexes still produces unique keys."""
-    spec = "anthropic:claude-sonnet-4-6"
-    assert models._artifact_key(0, spec) != models._artifact_key(1, spec)
+    """Dedupe keeps each spec at its first position — guards against `set()`.
+
+    A future "simplification" to `list(set(specs))` would silently scramble
+    the matrix order; this test pins the `dict.fromkeys` contract.
+    """
+    resolved = models._resolve_models(
+        "eval",
+        "anthropic:claude-sonnet-4-6,openai:gpt-5.5,anthropic:claude-sonnet-4-6,"
+        "openai:gpt-5.5,google_genai:gemini-3.1-pro",
+    )
+    assert resolved == [
+        "anthropic:claude-sonnet-4-6",
+        "openai:gpt-5.5",
+        "google_genai:gemini-3.1-pro",
+    ]
+
+
+def test_resolve_models_dedupes_preset_branch(models: ModuleType) -> None:
+    """Dedupe applies to preset resolution too, not just manual `models_override`.
+
+    The `_artifact_key` docstring promises uniqueness is enforced by
+    `_resolve_models`; this test pins that promise across both code paths so
+    a future REGISTRY edit that accidentally duplicates a spec won't blow up
+    the matrix mid-run.
+    """
+    resolved = models._resolve_models("eval", "all")
+    assert len(resolved) == len(set(resolved))
+
+
+def test_matrix_outputs_rejects_colliding_artifact_keys(
+    models: ModuleType,
+) -> None:
+    """Defense-in-depth: if dedupe is ever bypassed, `_matrix_outputs` raises.
+
+    Bypasses `_resolve_models` to feed two distinct specs that slugify to the
+    same key (`foo:a/b` and `foo:a-b` both become `foo-a-b`) — the actual
+    failure mode the tripwire defends against. Asserts both the slug and the
+    raw model specs appear in the message so a CI failure is self-diagnosing.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        models._matrix_outputs("eval", ["foo:a/b", "foo:a-b"])
+    msg = str(excinfo.value)
+    assert "Duplicate artifact_key" in msg
+    assert "foo-a-b" in msg
+    assert "foo:a/b" in msg
+    assert "foo:a-b" in msg
+
+
+def test_matrix_outputs_rejects_three_way_collision(
+    models: ModuleType,
+) -> None:
+    """Three-way collision lists the offending key once, with all three specs.
+
+    Exercises the `len(specs) > 1` branch in the collision detector — the
+    list-of-models grouping must not split a 3+ collision into separate
+    entries or duplicate the slug in the message.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        models._matrix_outputs(
+            "eval",
+            ["foo:a/b", "foo:a-b", "foo:a:b"],
+        )
+    msg = str(excinfo.value)
+    # Slug appears exactly once; all three offending specs are named.
+    assert msg.count("'foo-a-b'") == 1
+    assert "foo:a/b" in msg
+    assert "foo:a-b" in msg
+    assert "foo:a:b" in msg
 
 
 def test_provider_returns_whole_string_when_no_colon(models: ModuleType) -> None:
@@ -246,3 +325,101 @@ def test_main_writes_per_provider_outputs_to_github_output(
 
     for line in written:
         assert "\n" not in line
+
+
+def test_every_registered_model_has_display_labels(models: ModuleType) -> None:
+    """Every `Model` in `REGISTRY` must declare non-empty display fields.
+
+    These labels feed radar legends and `MODEL_GROUPS.md` provider headings;
+    a blank entry would silently render an empty legend item or `() (N models)`.
+    """
+    for entry in models.REGISTRY:
+        assert entry.display_name, f"empty display_name for {entry.spec!r}"
+        assert entry.provider_label, f"empty provider_label for {entry.spec!r}"
+
+
+def test_provider_label_is_uniform_within_a_provider(models: ModuleType) -> None:
+    """All models sharing a `provider:` prefix must share one `provider_label`.
+
+    The doc generator reads the label from the *first* match, so a mismatch
+    would silently hide some models' label preference.
+    """
+    by_prefix: dict[str, set[str]] = {}
+    for entry in models.REGISTRY:
+        prefix = entry.spec.split(":", 1)[0]
+        by_prefix.setdefault(prefix, set()).add(entry.provider_label)
+    inconsistent = {p: ls for p, ls in by_prefix.items() if len(ls) > 1}
+    assert not inconsistent, f"provider_label drift: {inconsistent}"
+
+
+def test_display_name_helper_returns_curated_label(models: ModuleType) -> None:
+    """`display_name` returns the curated label for a registered spec."""
+    assert models.display_name("anthropic:claude-sonnet-4-6") == "Claude Sonnet 4.6"
+    assert models.display_name("xai:grok-4") == "Grok 4"
+
+
+def test_display_name_helper_falls_back_to_bare_model(models: ModuleType) -> None:
+    """`display_name` falls back to the model portion when spec is unknown."""
+    assert models.display_name("madeup:my-cool-model") == "my-cool-model"
+    assert models.display_name("just-a-name") == "just-a-name"
+
+
+def test_provider_label_helper_returns_curated_label(models: ModuleType) -> None:
+    """`provider_label` returns the curated label for a registered spec."""
+    assert models.provider_label("google_genai:gemini-3.1-pro-preview") == "Google"
+    assert models.provider_label("xai:grok-4") == "xAI"
+
+
+def test_provider_label_helper_falls_back_to_prefix(models: ModuleType) -> None:
+    """`provider_label` falls back to the raw prefix for unknown specs."""
+    assert models.provider_label("madeup_provider:foo") == "madeup_provider"
+
+
+def _expected_dropdown_options(models: ModuleType) -> set[str]:
+    """Return the full allowed `models:` dropdown set: REGISTRY & presets & providers.
+
+    Mirrors the workflow's logic — a dropdown choice resolves to either an
+    explicit spec, a preset name handled by `_resolve_models`, a provider
+    prefix (also a preset), or the empty/`all` sentinels.
+    """
+    registry = {m.spec for m in models.REGISTRY}
+    presets = {p for _, ps in models._PRESET_SECTIONS for p, _ in ps}  # noqa: SLF001
+    providers = {m.spec.split(":", 1)[0] for m in models.REGISTRY}
+    return registry | presets | providers | {"", "all"}
+
+
+@pytest.mark.parametrize(
+    "workflow_path",
+    [EVALS_WORKFLOW, HARBOR_WORKFLOW],
+    ids=lambda p: p.name,
+)
+def test_workflow_models_dropdown_matches_registry(
+    models: ModuleType, workflow_path: Path
+) -> None:
+    """`models:` dropdown options must match REGISTRY & presets & providers.
+
+    Catches two drift modes: (1) an orphan option that no longer resolves to a
+    real spec/preset (silent fallthrough to `_resolve_models`'s empty-result
+    error at workflow_dispatch time), and (2) a registered spec that wasn't
+    surfaced in the dropdown so users can't pick it without typing into
+    `models_override`.
+    """
+    workflow = yaml.safe_load(workflow_path.read_text())
+    # PyYAML 1.1 coerces the bare YAML key `on:` to the boolean `True`.
+    # Either form may appear depending on yaml lib version, so check both.
+    triggers = workflow.get(True, workflow.get("on"))
+    options = triggers["workflow_dispatch"]["inputs"]["models"]["options"]
+    declared = {str(o) for o in options}
+    expected = _expected_dropdown_options(models)
+
+    orphan = declared - expected
+    missing = expected - declared - {""}  # empty sentinel handled by default
+
+    assert not orphan, (
+        f"{workflow_path.name}: dropdown contains options not in REGISTRY/presets/providers: "
+        f"{sorted(orphan)}"
+    )
+    assert not missing, (
+        f"{workflow_path.name}: REGISTRY/presets/providers missing from dropdown: "
+        f"{sorted(missing)}"
+    )

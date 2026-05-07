@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.51](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.50...deepagents-cli==0.0.51) (2026-05-05)
+
+### Features
+
+* `/reload` skill diff report ([#3153](https://github.com/langchain-ai/deepagents/issues/3153)) ([7c3278a](https://github.com/langchain-ai/deepagents/commit/7c3278a46fe1bace82224f43d8e1b7a023d0086a))
+* Surface MCP config discovery paths and format in help screens ([#3152](https://github.com/langchain-ai/deepagents/issues/3152)) ([ce6887c](https://github.com/langchain-ai/deepagents/commit/ce6887c89bacee63bdd74ab9d26097e2e418ff43))
+
 ## [0.0.50](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.49...deepagents-cli==0.0.50) (2026-05-04)
 
 ### Bug Fixes

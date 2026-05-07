@@ -319,6 +319,61 @@ Notes:
 - Effect lands when release-please next syncs the open release PR (push to `main` or manual workflow dispatch). Verify the entry moved/disappeared in the corresponding `release(<component>): X.Y.Z` PR.
 - Update via `gh pr edit <num> --body-file <file>` to avoid shell-escaping the multi-line body. (`gh api -f body=@<file>` does **not** work — `-f` writes the literal string `@<file>` rather than reading the file.)
 
+### Reverting a Merged-but-Unreleased PR
+
+When a PR has merged to `main` but its `release(<component>): X.Y.Z` PR has **not** yet shipped, the bad commit is sitting in the open release PR's changelog. Pick a path based on whether the change should appear in the eventual release notes. (For commits that already shipped, see [Yanking a Release](#yanking-a-release) instead — and ship a follow-up `revert:` patch via the standard flow.)
+
+#### Path A — Hide and Revert (Quiet)
+
+Use when the original commit is a mistake the changelog should not record (broken feature, accidental merge, scope/type mistake that escaped lint). Net effect: the open release PR rebases without the entry, and the version may be recomputed if no other releasable commits remain.
+
+1. **Override the original PR's commit message to a hidden type (`chore`).** Append at the bottom of the merged PR's body, after a horizontal rule:
+
+   ```txt
+   ---
+
+   BEGIN_COMMIT_OVERRIDE
+   chore(<scope>): <short description of the original change>
+   END_COMMIT_OVERRIDE
+   ```
+
+   The `<short description>` should describe the *original change*, not the override or revert — release-please uses this verbatim as the (now-hidden) commit message. Apply with `gh pr edit <num> --body-file body.md` or via the web interface — see the caveats in [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry).
+
+2. **Open a revert PR off `main`** titled `chore(<scope>): revert <original title>`. The `chore` type keeps the revert itself out of the changelog as well.
+
+   ```bash
+   git checkout main && git pull
+   git revert <merge_sha>
+   ```
+
+   (This repo squash-merges, so `<merge_sha>` is a single-parent commit — no `-m` flag needed.)
+
+3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the entry has disappeared from the corresponding `release(<component>): X.Y.Z` PR's rendered body before merging it.
+
+#### Path B — `revert:` with Audit Trail
+
+Use when something measurable has already happened off `main` (downstream consumers tracking the SHA, internal pre-release builds, public discussion of the change). The release PR will list the same change *twice* — once under its original section (`Features`, `Bug Fixes`, etc.) and once under `Reverted Changes` — because `revert` is configured as a visible section in `release-please-config.json`. Trade-off: honest history at the cost of a duplicated entry in a version that never shipped externally.
+
+1. **Open a revert PR off `main`** titled `revert(<scope>): "<original title>"` (Conventional Commits convention quotes the original subject). Body should reference the merge SHA being reverted.
+
+   ```bash
+   git checkout main && git pull
+   git revert <merge_sha>
+   ```
+
+   As in Path A, no `-m` flag — squash-merged commits are single-parent.
+
+2. **Merge the revert PR.**
+
+3. **Wait for release-please to rebase the open release PR** on the next push to `main` (or dispatch the workflow manually). Verify the corresponding `release(<component>): X.Y.Z` PR's rendered body now contains both the original entry and a `Reverted Changes` entry before merging it.
+
+#### Don'ts
+
+- **No force-push to `main`** — branch protection blocks it and would drop unrelated commits anyway.
+- **No empty commits** to "fix up" the changelog — `guard-empty-commit` fails them, and even if it didn't, the empty fan-out would open release PRs for every package (see [Empty commit fan-out](#empty-commit-fan-out)).
+- **Don't edit the release PR body to remove the entry directly** — release-please regenerates the body from merged-PR commits on every sync, so manual edits persist only until the next push to `main`. The override on the original PR is the durable mechanism.
+- **Don't edit `.release-please-manifest.json`** — manifest edits only matter for [Yanking a Release](#yanking-a-release) (versions that already shipped).
+
 ### Yanking a Release
 
 If you need to yank (retract) a release:

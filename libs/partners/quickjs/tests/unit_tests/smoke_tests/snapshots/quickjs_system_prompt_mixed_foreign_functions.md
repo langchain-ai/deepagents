@@ -122,22 +122,39 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 
 ### API Reference — `tools` namespace
 
-The agent tools listed below are exposed on the global object at `globalThis.tools` (also reachable as `tools`). Each takes a single object argument and returns a Promise that resolves to a string.
+The agent tools listed below are exposed on the global object at `globalThis.tools` (also reachable as `tools`). Each takes a single object argument and returns a Promise that resolves to the tool's native value: strings as strings, numbers as numbers, lists as arrays, dicts as objects, and `None` as `null`. You do NOT need to `JSON.parse` results — they are already typed.
 
-Invocation pattern: `await tools.<name>({ ... })`).
+Invocation pattern: `await tools.<name>({ ... })`.
 
-Use `await`; combine with `Promise.all` for concurrent calls.
+- Use `await` to get tool results; combine with `Promise.all` for independent calls so they run concurrently.
+- If the task needs multiple tool calls, prefer one `eval` invocation that performs all of them rather than splitting the work across multiple `eval` calls — each round-trip costs a model turn.
+- Pipeline dependent calls within a single program. If a result from one tool is needed as input to a later tool, chain them in one program instead of returning the intermediate value to the model.
+- If a tool returns an ID or other value that can be passed directly into the next tool, trust it and chain the calls instead of stopping to double-check it.
+- To inspect an intermediate value, `console.log` it inside the same program; otherwise, fetch as much information as possible in one call.
+- Only split work across multiple `eval` invocations when you genuinely cannot determine what to do next without additional model reasoning or user input.
+
+Example shape — substitute real tool names:
+
+```typescript
+const users = await tools.findUsers({ name: "Ada" });
+const userId = users[0].id;
+const [city, normalized] = await Promise.all([
+  tools.cityForUser({ user_id: userId }),
+  tools.normalize({ name: "Ada" }),
+]);
+console.log({ city, normalized });
+```
 
 ```typescript
 /** Find users with the given name. */
 async function findUsersByName(input: {
   name: string;
-}): Promise<string>
+}): Promise<unknown[]>
 
 /** Get the location id for a user. */
 async function getUserLocation(input: {
   user_id: number;
-}): Promise<string>
+}): Promise<number>
 
 /** Get the city for a location. */
 async function getCityForLocation(input: {

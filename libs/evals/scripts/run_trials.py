@@ -159,7 +159,7 @@ def _collect_numeric_values(
         if type(raw) not in (int, float):
             location = f"{nested_under}.{key}" if nested_under else key
             _warn(
-                f"trial {idx}: non-numeric value for {location!r}: {raw!r} "
+                f"trial {idx + 1}: non-numeric value for {location!r}: {raw!r} "
                 f"(type {type(raw).__name__}); excluded from stats"
             )
             continue
@@ -230,7 +230,7 @@ def aggregate_trials(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "category_scores": category_stats,
         "trials": [
             {
-                "trial_index": idx,
+                "trial_index": idx + 1,
                 "created_at": r.get("created_at"),
                 "passed": r.get("passed"),
                 "failed": r.get("failed"),
@@ -314,7 +314,7 @@ def _run_trial(
     """Execute a single trial.
 
     Args:
-        trial_index: Zero-based index of this trial in the sweep.
+        trial_index: One-based index of this trial in the sweep.
         n_trials: Total number of trials being run; only used for logging.
         args: Parsed CLI arguments (forwarded to `_build_pytest_args`).
         out_dir: Directory the trial's report file is written under.
@@ -332,7 +332,7 @@ def _run_trial(
     env["DEEPAGENTS_TRIAL_TOTAL"] = str(n_trials)
 
     print(
-        f"\n=== trial {trial_index + 1}/{n_trials} === model={args.model} report={report_path}",
+        f"\n=== trial {trial_index}/{n_trials} === model={args.model} report={report_path}",
         flush=True,
     )
     print(f"$ {' '.join(cmd)}", flush=True)
@@ -573,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         report_paths = []
         for i in range(args.trials):
             outcome = _run_trial(
-                trial_index=i,
+                trial_index=i + 1,
                 n_trials=args.trials,
                 args=args,
                 out_dir=out_dir,

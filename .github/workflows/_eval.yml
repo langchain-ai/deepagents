@@ -153,20 +153,6 @@ jobs:
         # combining that environment variable with `--locked`.
         run: uv sync --group test
 
-      - name: "🔖 Record resolved versions"
-        run: |
-          {
-            echo "### 🔖 Resolved package versions"
-            echo ""
-            echo "Model: \`${{ inputs.model }}\`"
-            echo ""
-            echo '```'
-            uv pip list 2>/dev/null \
-              | grep -E '^(langchain|langgraph|langsmith|deepagents)(-[a-z0-9_]+)*[[:space:]]' \
-              | sort
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: "🏷️ Apply category filter"
         if: inputs.eval_categories != ''
         env:

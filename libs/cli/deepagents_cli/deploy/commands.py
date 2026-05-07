@@ -9,6 +9,7 @@ import argparse
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -279,6 +280,7 @@ def _deploy(
 
         # Deploy via langgraph CLI.
         _run_langgraph_deploy(build_dir, name=config.agent.name)
+        _auto_wire_issues_board_if_hub(config)
     finally:
         if not dry_run:
             import shutil
@@ -417,3 +419,140 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
         raise SystemExit(result.returncode)
 
     print("\nDeployment complete!")
+
+
+def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
+    """Best-effort issues-board wiring after deploy for hub-backed memories.
+
+    This is intentionally non-fatal: deploy success should not be blocked by
+    optional post-deploy wiring.
+    """
+    if getattr(config.memories, "backend", "") != "hub":
+        return
+
+    context_hub_identifier = config.memories.identifier or f"-/{config.agent.name}"
+    api_key = _resolve_langsmith_api_key()
+    if not api_key:
+        print(
+            "Warning: LANGSMITH/LANGCHAIN API key not found; skipping issues board auto-wire."
+        )
+        return
+
+    session_id = _resolve_tracer_session_id_by_project_name(
+        project_name=config.agent.name,
+        api_key=api_key,
+    )
+    if not session_id:
+        print(
+            "Warning: Could not resolve tracing project after deploy; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    _upsert_issues_board_config(
+        session_id=session_id,
+        api_key=api_key,
+        context_hub_identifier=context_hub_identifier,
+    )
+
+
+def _resolve_langsmith_api_key() -> str:
+    return (
+        os.environ.get("LANGSMITH_API_KEY")
+        or os.environ.get("LANGCHAIN_API_KEY")
+        or os.environ.get("LANGGRAPH_HOST_API_KEY")
+        or ""
+    )
+
+
+def _resolve_langsmith_endpoint() -> str:
+    return (
+        os.environ.get("LANGSMITH_ENDPOINT")
+        or os.environ.get("LANGCHAIN_ENDPOINT")
+        or "https://api.smith.langchain.com"
+    ).rstrip("/")
+
+
+def _resolve_tracer_session_id_by_project_name(*, project_name: str, api_key: str) -> str:
+    """Resolve tracing project id (session id) by name with short retries."""
+    from langsmith import Client
+    from langsmith.utils import LangSmithNotFoundError
+
+    api_url = _resolve_langsmith_endpoint()
+    last_error: Exception | None = None
+    for delay in (0.0, 1.0, 2.0, 4.0):
+        if delay:
+            time.sleep(delay)
+        try:
+            client = Client(api_url=api_url, api_key=api_key)
+            project = client.read_project(project_name=project_name)
+            return str(project.id)
+        except LangSmithNotFoundError as exc:
+            last_error = exc
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            continue
+    if last_error is not None:
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {last_error}")
+    return ""
+
+
+def _upsert_issues_board_config(
+    *,
+    session_id: str,
+    api_key: str,
+    context_hub_identifier: str,
+) -> None:
+    """Best-effort create or patch board config for a deployed agent."""
+    import httpx
+
+    endpoint = _resolve_langsmith_endpoint()
+    url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    tenant_id = os.environ.get("LANGSMITH_TENANT_ID")
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+
+    create_payload = {
+        "cron_schedule": "0 */6 * * *",
+        "heavy_model": "anthropic:issues-agent-heavy",
+        "light_model": "anthropic:issues-agent-light",
+        "context_hub_identifier": context_hub_identifier,
+    }
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            create_resp = client.post(url, headers=headers, json=create_payload)
+            if create_resp.status_code in (200, 201):
+                print(
+                    f"Issues board auto-wired for tracing project {session_id} "
+                    f"({context_hub_identifier})."
+                )
+                return
+            if create_resp.status_code == 409:
+                patch_resp = client.patch(
+                    url,
+                    headers=headers,
+                    json={"context_hub_identifier": context_hub_identifier},
+                )
+                if patch_resp.status_code in (200, 201):
+                    print(
+                        f"Issues board already existed; updated context hub "
+                        f"identifier to {context_hub_identifier}."
+                    )
+                    return
+                print(
+                    "Warning: Failed to patch existing issues board: "
+                    f"HTTP {patch_resp.status_code} — {patch_resp.text[:300]}"
+                )
+                return
+            print(
+                "Warning: Failed to create issues board config: "
+                f"HTTP {create_resp.status_code} — {create_resp.text[:300]}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: Issues board auto-wire failed: {exc}")

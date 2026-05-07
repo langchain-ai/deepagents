@@ -291,10 +291,6 @@ When adding a user-facing CLI feature (new slash command, keybinding, workflow),
 
 Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `libs/cli/deepagents_cli/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
 
-#### Remote thread state
-
-Do not reintroduce direct SQLite checkpointer reads in `DeepAgentsApp` (for example, `_read_channel_values_from_checkpointer`). Remote/server-mode resume and offload should go through the remote server state APIs instead of bypassing the server to inspect local checkpoint channels.
-
 To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
 
 #### Adding a new model provider

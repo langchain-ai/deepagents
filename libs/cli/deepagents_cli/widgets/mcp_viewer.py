@@ -221,11 +221,16 @@ class MCPToolItem(Static):
             required = []
         required_set = {str(item) for item in required}
 
+        # Mirror `_desc_style`: empty when this row is selected, so the
+        # parameter block stays readable on the `$primary` selection
+        # background (CSS recolors text via `.mcp-tool-selected`). When
+        # not selected, render dim so the params sit visually below the
+        # description.
         style = self._desc_style()
-        line_style = style or "dim"
-        # Header line — always dim/muted to keep visual hierarchy below the
-        # tool name and description.
-        result = Content.from_markup("\n    [" + line_style + "]Parameters:[/]")
+        header_template = (
+            "\n    [" + style + "]Parameters:[/]" if style else "\n    Parameters:"
+        )
+        result = Content.from_markup(header_template)
         for prop_name, prop_schema in properties.items():
             if isinstance(prop_schema, dict):
                 prop_type = str(prop_schema.get("type") or "any")
@@ -235,8 +240,13 @@ class MCPToolItem(Static):
             # `Content.from_markup` substitution escapes user-supplied
             # text, so a parameter named `[bold]foo[/]` cannot inject
             # markup tags into the output.
+            line_template = (
+                "\n      [" + style + "]$name: $ptype$star[/]"
+                if style
+                else "\n      $name: $ptype$star"
+            )
             line = Content.from_markup(
-                "\n      [" + line_style + "]$name: $ptype$star[/]",
+                line_template,
                 name=str(prop_name),
                 ptype=prop_type,
                 star=star,

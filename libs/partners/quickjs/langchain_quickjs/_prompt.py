@@ -248,10 +248,20 @@ def _format_return_annotation(annotation: Any) -> str:  # noqa: C901, PLR0912 �
             return f"Record<string, {_format_return_annotation(args[1])}>"
         return "unknown"
 
-    # TypedDict / bare class → render its name. TypedDicts get a definition
-    # block emitted separately by `_collect_referenced_typed_dicts`.
-    if isinstance(annotation, type):
+    # TypedDicts get their own name (definitions are emitted separately by
+    # `_collect_referenced_typed_dicts`). Subclasses of the standard
+    # containers render as the equivalent TS shape. Everything else
+    # (Pydantic models, dataclasses, custom classes) hits ``str(value)`` at
+    # the bridge, so advertise it as ``string`` — the historical default
+    # before native marshaling, and an honest description of what arrives.
+    if _is_typed_dict(annotation):
         return annotation.__name__
+    if isinstance(annotation, type):
+        if issubclass(annotation, dict):
+            return "Record<string, unknown>"
+        if issubclass(annotation, (list, tuple)):
+            return "unknown[]"
+        return "string"
 
     return "unknown"
 

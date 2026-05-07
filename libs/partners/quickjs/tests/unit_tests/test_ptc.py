@@ -686,7 +686,10 @@ class _ServiceLookup(TypedDict):
         (str | None, "string | null"),
         (Literal["active", "resolved"], '"active" | "resolved"'),
         (_ServiceLookup, "_ServiceLookup"),
-        (_StatusRecord, "_StatusRecord"),
+        # Pydantic / dataclass / custom-class returns stringify at the bridge,
+        # so the prompt advertises them as ``string`` rather than the bare
+        # class name.
+        (_StatusRecord, "string"),
         # Things outside our trimmed scope render as ``unknown``:
         (int | str, "unknown"),
         (tuple[int, str], "unknown"),

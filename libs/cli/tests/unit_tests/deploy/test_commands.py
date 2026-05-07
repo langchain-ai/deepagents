@@ -108,13 +108,13 @@ class TestAutoWireIssuesBoard:
 
         called = {"lookup": False}
 
-        def _lookup(**_: object) -> str:
+        def _lookup(**_: object) -> str | None:
             called["lookup"] = True
-            return ""
+            return None
 
         monkeypatch.setattr(
             "deepagents_cli.deploy.commands._resolve_langsmith_api_key",
-            lambda: "",
+            lambda: None,
         )
         monkeypatch.setattr(
             "deepagents_cli.deploy.commands._resolve_tracer_session_id_by_project_name",

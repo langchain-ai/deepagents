@@ -560,47 +560,11 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
     print("\nDeployment complete!")
 
 
-def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
-    """Best-effort issues-board wiring after deploy for hub-backed memories.
-
-    This is intentionally non-fatal: deploy success should not be blocked by
-    optional post-deploy wiring.
-    """
-    if getattr(config.memories, "backend", "") != "hub":
-        return
-
-    context_hub_identifier = config.memories.identifier or f"-/{config.agent.name}"
-    api_key = _resolve_langsmith_api_key()
-    if not api_key:
-        print(
-            "Warning: LANGSMITH/LANGCHAIN API key not found; skipping issues board auto-wire."
-        )
-        return
-
-    session_id = _resolve_tracer_session_id_by_project_name(
-        project_name=config.agent.name,
-        api_key=api_key,
-    )
-    if not session_id:
-        print(
-            "Warning: Could not resolve tracing project after deploy; "
-            "skipping issues board auto-wire."
-        )
-        return
-
-    _upsert_issues_board_config(
-        session_id=session_id,
-        api_key=api_key,
-        context_hub_identifier=context_hub_identifier,
-    )
-
-
-def _resolve_langsmith_api_key() -> str:
+def _resolve_langsmith_api_key() -> str | None:
     return (
         os.environ.get("LANGSMITH_API_KEY")
         or os.environ.get("LANGCHAIN_API_KEY")
         or os.environ.get("LANGGRAPH_HOST_API_KEY")
-        or ""
     )
 
 
@@ -612,7 +576,9 @@ def _resolve_langsmith_endpoint() -> str:
     ).rstrip("/")
 
 
-def _resolve_tracer_session_id_by_project_name(*, project_name: str, api_key: str) -> str:
+def _resolve_tracer_session_id_by_project_name(
+    *, project_name: str, api_key: str
+) -> str | None:
     """Resolve tracing project id (session id) by name with short retries."""
     from langsmith import Client
     from langsmith.utils import LangSmithNotFoundError
@@ -634,7 +600,7 @@ def _resolve_tracer_session_id_by_project_name(*, project_name: str, api_key: st
             continue
     if last_error is not None:
         print(f"Warning: Failed to resolve tracing project '{project_name}': {last_error}")
-    return ""
+    return None
 
 
 def _upsert_issues_board_config(
@@ -695,3 +661,34 @@ def _upsert_issues_board_config(
             )
     except Exception as exc:  # noqa: BLE001
         print(f"Warning: Issues board auto-wire failed: {exc}")
+
+
+def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
+    """Best-effort issues-board wiring after deploy for hub-backed memories."""
+    if getattr(config.memories, "backend", "") != "hub":
+        return
+
+    context_hub_identifier = config.memories.identifier or f"-/{config.agent.name}"
+    api_key = _resolve_langsmith_api_key()
+    if api_key is None:
+        print(
+            "Warning: LANGSMITH/LANGCHAIN API key not found; skipping issues board auto-wire."
+        )
+        return
+
+    session_id = _resolve_tracer_session_id_by_project_name(
+        project_name=config.agent.name,
+        api_key=api_key,
+    )
+    if session_id is None:
+        print(
+            "Warning: Could not resolve tracing project after deploy; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    _upsert_issues_board_config(
+        session_id=session_id,
+        api_key=api_key,
+        context_hub_identifier=context_hub_identifier,
+    )

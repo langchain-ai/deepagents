@@ -1,0 +1,54 @@
+{
+  "platform": "pinduoduo",
+  "page": "login",
+  "description": "拼多多登录页面元素",
+  "elements": {
+    "username_input": {
+      "selectors": [
+        {"type": "css", "value": "#username"},
+        {"type": "css", "value": "input[name='user_name']"},
+        {"type": "css", "value": "input[placeholder*='手机号']"},
+        {"type": "css", "value": "input[placeholder*='用户名']"}
+      ],
+      "description": "用户名输入框",
+      "version": 1
+    },
+    "password_input": {
+      "selectors": [
+        {"type": "css", "value": "#password"},
+        {"type": "css", "value": "input[name='password']"},
+        {"type": "css", "value": "input[placeholder*='密码']"}
+      ],
+      "description": "密码输入框",
+      "version": 1
+    },
+    "login_button": {
+      "selectors": [
+        {"type": "css", "value": ".login-btn"},
+        {"type": "css", "value": ".btn-primary"},
+        {"type": "text", "value": "登录"},
+        {"type": "css", "value": "button[type='submit']"}
+      ],
+      "description": "登录按钮",
+      "version": 1
+    },
+    "verify_code_input": {
+      "selectors": [
+        {"type": "css", "value": "#captcha"},
+        {"type": "css", "value": "input[name='captcha']"},
+        {"type": "css", "value": "input[placeholder*='验证码']"}
+      ],
+      "description": "验证码输入框",
+      "version": 1
+    },
+    "get_verify_code_button": {
+      "selectors": [
+        {"type": "text", "value": "获取验证码"},
+        {"type": "css", "value": ".get-code-btn"},
+        {"type": "xpath", "value": "//button[contains(text(),'获取验证码')]"}
+      ],
+      "description": "获取验证码按钮",
+      "version": 1
+    }
+  }
+}

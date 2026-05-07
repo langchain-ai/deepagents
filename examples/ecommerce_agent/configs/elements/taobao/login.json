@@ -1,0 +1,53 @@
+{
+  "platform": "taobao",
+  "page": "login",
+  "description": "淘宝登录页面元素",
+  "elements": {
+    "username_input": {
+      "selectors": [
+        {"type": "css", "value": "#fm-login-id"},
+        {"type": "css", "value": "input[name='fm-login-id']"},
+        {"type": "css", "value": "input[placeholder*='账号']"},
+        {"type": "css", "value": "input[placeholder*='手机号']"}
+      ],
+      "description": "用户名输入框",
+      "version": 1
+    },
+    "password_input": {
+      "selectors": [
+        {"type": "css", "value": "#fm-login-password"},
+        {"type": "css", "value": "input[name='fm-login-password']"},
+        {"type": "css", "value": "input[placeholder*='密码']"}
+      ],
+      "description": "密码输入框",
+      "version": 1
+    },
+    "login_button": {
+      "selectors": [
+        {"type": "css", "value": "#fm-submit"},
+        {"type": "css", "value": ".fm-button"},
+        {"type": "text", "value": "登录"},
+        {"type": "css", "value": ".submit-btn"}
+      ],
+      "description": "登录按钮",
+      "version": 1
+    },
+    "verify_code_input": {
+      "selectors": [
+        {"type": "css", "value": "#captcha-input"},
+        {"type": "css", "value": "input[name='captcha']"},
+        {"type": "css", "value": "input[placeholder*='验证码']"}
+      ],
+      "description": "验证码输入框",
+      "version": 1
+    },
+    "verify_code_image": {
+      "selectors": [
+        {"type": "css", "value": ".captcha-img"},
+        {"type": "css", "value": "#captcha-image"}
+      ],
+      "description": "验证码图片",
+      "version": 1
+    }
+  }
+}

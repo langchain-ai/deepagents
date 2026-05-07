@@ -1,0 +1,138 @@
+{
+  "platform": "douyin",
+  "page": "publish",
+  "description": "抖音商品发布页面元素",
+  "elements": {
+    "title_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='title']"},
+        {"type": "css", "value": "textarea[name='title']"},
+        {"type": "css", "value": ".title-input"},
+        {"type": "xpath", "value": "//input[@placeholder='请输入商品标题']"}
+      ],
+      "description": "商品标题输入框",
+      "version": 1
+    },
+    "product_desc_textarea": {
+      "selectors": [
+        {"type": "css", "value": "textarea[name='description']"},
+        {"type": "css", "value": ".desc-textarea"},
+        {"type": "css", "value": "textarea[placeholder*='商品描述']"}
+      ],
+      "description": "商品描述文本框",
+      "version": 1
+    },
+    "price_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='price']"},
+        {"type": "css", "value": ".price-input"},
+        {"type": "xpath", "value": "//input[@placeholder='价格']"}
+      ],
+      "description": "商品价格输入框",
+      "version": 1
+    },
+    "original_price_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='originalPrice']"},
+        {"type": "css", "value": ".original-price"},
+        {"type": "xpath", "value": "//input[@placeholder='原价']"}
+      ],
+      "description": "商品原价输入框",
+      "version": 1
+    },
+    "stock_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='stock']"},
+        {"type": "css", "value": ".stock-input"},
+        {"type": "xpath", "value": "//input[@placeholder='库存']"}
+      ],
+      "description": "库存输入框",
+      "version": 1
+    },
+    "sku_add_button": {
+      "selectors": [
+        {"type": "text", "value": "添加规格"},
+        {"type": "css", "value": ".add-sku-btn"},
+        {"type": "xpath", "value": "//button[contains(text(),'添加规格')]"}
+      ],
+      "description": "添加规格按钮",
+      "version": 1
+    },
+    "sku_name_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='skuName']"},
+        {"type": "css", "value": ".sku-name-input"}
+      ],
+      "description": "规格名称输入框",
+      "version": 1
+    },
+    "sku_value_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='skuValue']"},
+        {"type": "css", "value": ".sku-value-input"}
+      ],
+      "description": "规格值输入框",
+      "version": 1
+    },
+    "image_upload_button": {
+      "selectors": [
+        {"type": "css", "value": ".upload-btn"},
+        {"type": "css", "value": ".image-upload"},
+        {"type": "text", "value": "上传图片"}
+      ],
+      "description": "图片上传按钮",
+      "version": 1
+    },
+    "video_upload_button": {
+      "selectors": [
+        {"type": "css", "value": ".video-upload"},
+        {"type": "text", "value": "上传视频"}
+      ],
+      "description": "视频上传按钮",
+      "version": 1
+    },
+    "category_select": {
+      "selectors": [
+        {"type": "css", "value": ".category-select"},
+        {"type": "css", "value": "select[name='category']"},
+        {"type": "text", "value": "选择分类"}
+      ],
+      "description": "商品分类选择",
+      "version": 1
+    },
+    "submit_button": {
+      "selectors": [
+        {"type": "text", "value": "发布商品"},
+        {"type": "css", "value": ".submit-btn"},
+        {"type": "css", "value": ".publish-btn"},
+        {"type": "css", "value": "button[type='submit']"}
+      ],
+      "description": "发布按钮",
+      "version": 1
+    },
+    "draft_button": {
+      "selectors": [
+        {"type": "text", "value": "保存草稿"},
+        {"type": "css", "value": ".draft-btn"}
+      ],
+      "description": "保存草稿按钮",
+      "version": 1
+    },
+    "success_message": {
+      "selectors": [
+        {"type": "css", "value": ".success-message"},
+        {"type": "text", "value": "发布成功"}
+      ],
+      "description": "发布成功提示",
+      "version": 1
+    },
+    "error_message": {
+      "selectors": [
+        {"type": "css", "value": ".error-message"},
+        {"type": "css", "value": ".form-error"}
+      ],
+      "description": "表单错误提示",
+      "version": 1
+    }
+  }
+}

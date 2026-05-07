@@ -1,0 +1,87 @@
+{
+  "platform": "pinduoduo",
+  "page": "publish",
+  "description": "拼多多商品发布页面元素",
+  "elements": {
+    "title_input": {
+      "selectors": [
+        {"type": "css", "value": "#goodsName"},
+        {"type": "css", "value": "input[name='goodsName']"},
+        {"type": "css", "value": ".title-input"}
+      ],
+      "description": "商品标题输入框",
+      "version": 1
+    },
+    "product_desc_textarea": {
+      "selectors": [
+        {"type": "css", "value": "#goodsDesc"},
+        {"type": "css", "value": "textarea[name='goodsDesc']"},
+        {"type": "css", "value": ".desc-textarea"}
+      ],
+      "description": "商品描述文本框",
+      "version": 1
+    },
+    "price_input": {
+      "selectors": [
+        {"type": "css", "value": "#price"},
+        {"type": "css", "value": "input[name='price']"},
+        {"type": "css", "value": ".price-input"}
+      ],
+      "description": "商品价格输入框",
+      "version": 1
+    },
+    "stock_input": {
+      "selectors": [
+        {"type": "css", "value": "#stock"},
+        {"type": "css", "value": "input[name='stock']"},
+        {"type": "css", "value": ".stock-input"}
+      ],
+      "description": "库存输入框",
+      "version": 1
+    },
+    "sku_add_button": {
+      "selectors": [
+        {"type": "text", "value": "添加规格"},
+        {"type": "css", "value": ".add-sku"},
+        {"type": "xpath", "value": "//button[contains(text(),'添加规格')]"}
+      ],
+      "description": "添加规格按钮",
+      "version": 1
+    },
+    "image_upload_button": {
+      "selectors": [
+        {"type": "css", "value": ".upload-image"},
+        {"type": "text", "value": "上传图片"},
+        {"type": "css", "value": ".image-upload-btn"}
+      ],
+      "description": "图片上传按钮",
+      "version": 1
+    },
+    "category_select": {
+      "selectors": [
+        {"type": "css", "value": "#category"},
+        {"type": "css", "value": ".category-select"},
+        {"type": "text", "value": "选择分类"}
+      ],
+      "description": "商品分类选择",
+      "version": 1
+    },
+    "submit_button": {
+      "selectors": [
+        {"type": "text", "value": "发布商品"},
+        {"type": "css", "value": ".submit-btn"},
+        {"type": "css", "value": ".publish-btn"}
+      ],
+      "description": "发布按钮",
+      "version": 1
+    },
+    "success_message": {
+      "selectors": [
+        {"type": "css", "value": ".success-tip"},
+        {"type": "text", "value": "发布成功"}
+      ],
+      "description": "发布成功提示",
+      "version": 1
+    }
+  }
+}

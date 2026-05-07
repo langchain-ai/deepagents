@@ -1,0 +1,35 @@
+{
+  "platform": "xiaohongshu",
+  "page": "login",
+  "description": "小红书登录页面元素",
+  "elements": {
+    "username_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='username']"},
+        {"type": "css", "value": ".username-input"},
+        {"type": "css", "value": "input[placeholder*='手机号']"},
+        {"type": "css", "value": "input[placeholder*='邮箱']"}
+      ],
+      "description": "用户名输入框",
+      "version": 1
+    },
+    "password_input": {
+      "selectors": [
+        {"type": "css", "value": "input[name='password']"},
+        {"type": "css", "value": ".password-input"},
+        {"type": "css", "value": "input[placeholder*='密码']"}
+      ],
+      "description": "密码输入框",
+      "version": 1
+    },
+    "login_button": {
+      "selectors": [
+        {"type": "css", "value": ".login-btn"},
+        {"type": "css", "value": ".btn-primary"},
+        {"type": "text", "value": "登录"}
+      ],
+      "description": "登录按钮",
+      "version": 1
+    }
+  }
+}

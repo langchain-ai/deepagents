@@ -1,0 +1,35 @@
+{
+  "platform": "jingdong",
+  "page": "login",
+  "description": "京东登录页面元素",
+  "elements": {
+    "username_input": {
+      "selectors": [
+        {"type": "css", "value": "#loginname"},
+        {"type": "css", "value": "input[name='loginname']"},
+        {"type": "css", "value": "input[placeholder*='账号']"},
+        {"type": "css", "value": "input[placeholder*='手机号']"}
+      ],
+      "description": "用户名输入框",
+      "version": 1
+    },
+    "password_input": {
+      "selectors": [
+        {"type": "css", "value": "#nloginpwd"},
+        {"type": "css", "value": "input[name='nloginpwd']"},
+        {"type": "css", "value": "input[placeholder*='密码']"}
+      ],
+      "description": "密码输入框",
+      "version": 1
+    },
+    "login_button": {
+      "selectors": [
+        {"type": "css", "value": "#loginsubmit"},
+        {"type": "css", "value": ".login-btn"},
+        {"type": "text", "value": "登录"}
+      ],
+      "description": "登录按钮",
+      "version": 1
+    }
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "platform": "douyin",
+  "page": "reviews",
+  "description": "抖音好评管理页面元素",
+  "elements": {
+    "review_list": {
+      "selectors": [
+        {"type": "css", "value": ".review-list"},
+        {"type": "css", "value": ".comment-list"},
+        {"type": "xpath", "value": "//div[@class='review-list']"}
+      ],
+      "description": "好评列表",
+      "version": 1
+    },
+    "review_item": {
+      "selectors": [
+        {"type": "css", "value": ".review-item"},
+        {"type": "css", "value": ".comment-item"}
+      ],
+      "description": "单个好评项",
+      "version": 1
+    },
+    "review_content": {
+      "selectors": [
+        {"type": "css", "value": ".review-content"},
+        {"type": "css", "value": ".comment-text"}
+      ],
+      "description": "好评内容",
+      "version": 1
+    },
+    "review_score": {
+      "selectors": [
+        {"type": "css", "value": ".review-score"},
+        {"type": "css", "value": ".star-rating"}
+      ],
+      "description": "好评星级",
+      "version": 1
+    },
+    "reply_button": {
+      "selectors": [
+        {"type": "text", "value": "回复"},
+        {"type": "css", "value": ".reply-btn"},
+        {"type": "xpath", "value": "//button[contains(text(),'回复')]"}
+      ],
+      "description": "回复按钮",
+      "version": 1
+    },
+    "reply_input": {
+      "selectors": [
+        {"type": "css", "value": ".reply-input"},
+        {"type": "css", "value": "textarea[name='reply']"},
+        {"type": "css", "value": "input[name='reply']"}
+      ],
+      "description": "回复输入框",
+      "version": 1
+    },
+    "reply_submit_button": {
+      "selectors": [
+        {"type": "text", "value": "发送"},
+        {"type": "css", "value": ".reply-submit"},
+        {"type": "css", "value": ".send-btn"}
+      ],
+      "description": "发送回复按钮",
+      "version": 1
+    },
+    "filter_good_reviews": {
+      "selectors": [
+        {"type": "text", "value": "好评"},
+        {"type": "css", "value": ".filter-good"},
+        {"type": "xpath", "value": "//button[contains(text(),'好评')]"}
+      ],
+      "description": "好评筛选按钮",
+      "version": 1
+    },
+    "filter_bad_reviews": {
+      "selectors": [
+        {"type": "text", "value": "差评"},
+        {"type": "css", "value": ".filter-bad"},
+        {"type": "xpath", "value": "//button[contains(text(),'差评')]"}
+      ],
+      "description": "差评筛选按钮",
+      "version": 1
+    },
+    "filter_unreplied": {
+      "selectors": [
+        {"type": "text", "value": "未回复"},
+        {"type": "css", "value": ".filter-unreplied"},
+        {"type": "xpath", "value": "//button[contains(text(),'未回复')]"}
+      ],
+      "description": "未回复筛选按钮",
+      "version": 1
+    },
+    "next_page_button": {
+      "selectors": [
+        {"type": "text", "value": "下一页"},
+        {"type": "css", "value": ".next-page"},
+        {"type": "css", "value": ".pagination-next"}
+      ],
+      "description": "下一页按钮",
+      "version": 1
+    },
+    "has_next_page": {
+      "selectors": [
+        {"type": "css", "value": ".next-page:not(.disabled)"},
+        {"type": "css", "value": ".pagination-next:not(.disabled)"}
+      ],
+      "description": "是否有下一页",
+      "version": 1
+    },
+    "review_count": {
+      "selectors": [
+        {"type": "css", "value": ".review-count"},
+        {"type": "css", "value": ".total-count"}
+      ],
+      "description": "好评数量",
+      "version": 1
+    }
+  }
+}

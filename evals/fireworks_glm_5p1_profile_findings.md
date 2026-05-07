@@ -7,8 +7,19 @@ iterations start from data, not memory.
 Parallel Tool Use → Stop Conditions). The earlier `Output Channel` section
 was removed after a local ablation showed it was the *sole* cause of stable
 regressions on `test_single_tool_get_food_calories` and
-`test_single_tool_get_user_email`. Cluster E (`reasoning_content` routing)
-moves to a middleware in a separate change.
+`test_single_tool_get_user_email`.
+
+The full OpenRouter 2×2 (siliconflow/fp8 + atlas-cloud/fp8, no-profile vs.
+with-profile, N=3 trials per cell) shows the profile produces **no
+statistically meaningful effect on `solve_rate` at either provider**, with
+small and inconsistent category-level lifts. Cluster E
+(`reasoning_content` routing) was **not observed** in any of 244 failed
+OpenRouter traces — that bug is Fireworks-specific. The deferred
+middleware is no longer warranted for the OpenRouter deployment path.
+
+The decision now is whether to keep the 3-section profile as a documented
+null result or drop it. See the OpenRouter 2×2 and Cluster E sections at
+the bottom for the data behind these conclusions.
 
 ## Sources
 
@@ -267,3 +278,118 @@ Confirmed the new 3-section profile against the same 2 tests:
 | `test_single_tool_get_user_email` | 5/5 |
 
 Cluster E (the original problem Output Channel was meant to solve — `test_avoid_unnecessary_tool_calls`, etc.) remains open and is the target of a separate `_FireworksReasoningContentMiddleware` change.
+
+---
+
+## OpenRouter 2×2 — full N=3 matrix (no-profile vs with-profile, two backends)
+
+After cancelling the Fireworks with-profile arm for latency reasons, focus shifted to OpenRouter. Built out a full 2×2 design (provider pin × profile arm), N=3 sequential trials per cell, identical inputs otherwise.
+
+### Run table
+
+| OpenRouter pin | Arm | Run | Branch | Commit |
+|---|---|---|---|---|
+| `siliconflow/fp8` | no-profile | [25507995458](https://github.com/langchain-ai/deepagents/actions/runs/25507995458) | `main` | [`ee4f7104c`](https://github.com/langchain-ai/deepagents/tree/ee4f7104c58c2477c03c31a958edf4ca78a150c0) |
+| `siliconflow/fp8` | with-profile | [25517643342](https://github.com/langchain-ai/deepagents/actions/runs/25517643342) | `mdrxy/evals/fg51-prof` | [`c13d71bdc`](https://github.com/langchain-ai/deepagents/tree/c13d71bdc89a14da216826403732f6a417178e38) |
+| `atlas-cloud/fp8` | no-profile | [25518860368](https://github.com/langchain-ai/deepagents/actions/runs/25518860368) | `main` | [`fb0f0ba08`](https://github.com/langchain-ai/deepagents/tree/fb0f0ba08a58c3d2ae5db2435c07e3b826f395fa) |
+| `atlas-cloud/fp8` | with-profile | [25517773053](https://github.com/langchain-ai/deepagents/actions/runs/25517773053) | `mdrxy/evals/fg51-prof` | [`c13d71bdc`](https://github.com/langchain-ai/deepagents/tree/c13d71bdc89a14da216826403732f6a417178e38) |
+
+Inputs identical across cells: `model=openrouter:z-ai/glm-5.1`, `trials=3`, `parallel=false`, `eval_categories_exclude=memory,unit_test`, `analyze_failures=true`, `openrouter_allow_fallbacks=false`. Only differences are the two factors under study (provider pin, profile arm). All cells totals=110/trial.
+
+Sanity-checked the comparison: the only deltas between baseline SHAs and branch tip outside the GLM-5.1 eval path are one quickjs commit (`libs/partners/quickjs/`) and one CLI commit (`libs/cli/`). Eval/SDK/workflow paths untouched.
+
+### Headline metrics (mean ± stdev, N=3 trials)
+
+| metric | sili NP | sili WP | atlas NP | atlas WP |
+|---|---:|---:|---:|---:|
+| `solve_rate` | 0.453 ± 0.014 | 0.452 ± 0.007 | 0.363 ± 0.040 | 0.355 ± 0.028 |
+| `correctness` | 0.820 ± 0.026 | 0.817 ± 0.012 | 0.803 ± 0.031 | 0.827 ± 0.023 |
+| `passed` (of 110) | 90.0 ± 2.6 | 89.7 ± 1.2 | 88.3 ± 3.1 | 90.7 ± 2.3 |
+| `median_duration_s` | 10.08 ± 0.45 | 10.02 ± 0.54 | 11.83 ± 1.06 | 12.07 ± 1.64 |
+
+### Category scores
+
+| category | sili NP | sili WP | atlas NP | atlas WP |
+|---|---:|---:|---:|---:|
+| conversation | 0.427 ± 0.081 | 0.430 ± 0.050 | 0.397 ± 0.058 | 0.443 ± 0.100 |
+| file_operations | 0.920 ± 0.000 | 0.973 ± 0.046 | 0.973 ± 0.046 | 1.000 ± 0.000 |
+| retrieval | 1.000 | 1.000 | 1.000 | 1.000 |
+| summarization | 0.800 | 0.733 ± 0.115 | 0.600 | 0.667 ± 0.115 |
+| tool_use | 0.903 ± 0.015 | 0.893 ± 0.025 | 0.890 ± 0.040 | 0.903 ± 0.015 |
+
+### Profile lift (with − no), per provider
+
+| metric / category | siliconflow Δ | atlas-cloud Δ |
+|---|---:|---:|
+| `solve_rate` | **−0.001** | **−0.008** |
+| `correctness` | −0.003 | +0.023 |
+| conversation | +0.003 | +0.047 |
+| file_operations | +0.053 | +0.027 |
+| retrieval | 0.000 | 0.000 |
+| summarization | −0.067 | +0.067 |
+| tool_use | −0.010 | +0.013 |
+
+### Verdict on OpenRouter
+
+The profile produces **no statistically meaningful effect on `solve_rate`** at either provider — both deltas are well inside the within-provider noise band. Some category-level lifts (`file_operations` +0.05/+0.03, `conversation` +0.05 atlas-only) are large enough to be plausibly real but barely outside noise. The summarization signal is **opposite-sign across providers** (−0.07 sili, +0.07 atlas), which is consistent with noise rather than a real effect.
+
+Provider effect (~9 pts on `solve_rate`) dominates everything: atlas-cloud is consistently lower-scoring and slower than siliconflow regardless of profile. The profile doesn't close that gap.
+
+### Hard ceilings (model-level limitations)
+
+10 tests fail 3/3 in **every** cell — these are the model's hard ceiling, not profile-fixable at the prompt layer:
+
+- BFCL state mismatches (3): `multi_turn_composite_199`, `multi_turn_composite_97`, `multi_turn_miss_func_55`
+- Tau2 conversation (4): tasks 7, 14, 23, 44
+- Summarization (1): `test_compact_tool_large_reads`
+- Tool-use composition (1): `nexus_placesapi_15`
+- Followup-quality rubric (1): `detailed_calendar_brief`
+
+These are the same 14 stable v1 fails identified earlier. Consistent picture: prompt-suffix tuning has hit its ceiling on this model.
+
+### Profile-induced regressions on OpenRouter
+
+The two single-tool tests that drove the local ablation (`test_single_tool_get_food_calories`, `test_single_tool_get_user_email`) **do not appear in the OpenRouter failure list at all** — they pass cleanly under both providers, both arms. Confirms those regressions were Output-Channel-section-specific *and* the post-ablation fix sticks.
+
+---
+
+## Cluster E — definitive answer (OpenRouter trace audit)
+
+Goal: decide whether the deferred `_ReasoningContentMiddleware` is warranted for OpenRouter. Pulled all 245 failed-trace AIMessages across the 12 trial sessions in the 2×2 (≈60–65 per cell) and inspected each for the cluster-E pattern: `content == ""` AND no tool calls AND non-empty `reasoning_content`.
+
+| Cell | Failed traces | Cluster-E hits |
+|---|---:|---:|
+| sili-NP | 60 | 0 |
+| sili-WP | 61 | 0 |
+| atlas-NP | 65 | 0 |
+| atlas-WP | 58 | 0 |
+
+**Zero cluster-E hits across all 244 OpenRouter trace failures.** Not a single one.
+
+### What the OpenRouter failures actually look like
+
+Representative sample from `sili-WP`:
+
+| Test | Failure mode |
+|---|---|
+| `test_indirect_email_report` | Agent emitted full-text content (`"No status report file found..."`) — eval failed because the text didn't contain `"Week 10"`. `reasoning_content` is also populated, but `content` is fine. |
+| `test_compact_tool_large_reads` | Agent hit run_limit (3/3) — `content` shows the limit-exceeded marker. Not a channel issue at all. |
+| `test_followup_question_quality` | Agent emitted long `content` — eval failed on rubric ("did not ask one followup question"). `content` is full and non-empty. |
+
+OpenRouter **does** surface `reasoning_content` (≈2/3 of failed traces have it populated), but as a parallel reasoning channel — `content` is also populated correctly. Cluster E (empty `content` with the answer routed into `reasoning_content`) appears to be **Fireworks-specific**, not a general GLM-5p1 trait. The OpenRouter inference path normalizes the output back to a populated `content` field.
+
+### Verdict on `_ReasoningContentMiddleware`
+
+**Not warranted for the OpenRouter deployment path.**
+
+- 0/244 failed traces would be fixed by it.
+- The two tests that exposed the local Fireworks regression (`test_single_tool_get_food_calories`, `test_single_tool_get_user_email`) don't appear in the OpenRouter failure list — they pass cleanly under both providers, both arms.
+- All OpenRouter failures are content-quality issues (wrong answer, missing info, formatting / rubric mismatches), not channel-routing issues. None of these are addressable by a `reasoning_content` → `content` transform.
+
+The middleware would still help Fireworks users (1/10 vs 10/10 in the local ablation), but the Fireworks arm was cancelled for latency reasons, and the OpenRouter route — where deployment is happening — does not have the bug. Building the middleware would be carrying weight this deployment doesn't pay for.
+
+### Refined action items
+
+1. **Profile** — given the null effect on `solve_rate` and the inconsistent / small category lifts, decide whether to keep the 3-section suffix as a documented null result, or drop it. The hard ceilings (10 stable fails) won't move regardless.
+2. **Middleware** — close the ticket. Cluster E does not exist on OpenRouter; the only place it does (Fireworks) is not in scope.
+3. **Future work** — if Fireworks comes back into scope, revisit the middleware. Until then, the prompt-layer wins are exhausted on this model.

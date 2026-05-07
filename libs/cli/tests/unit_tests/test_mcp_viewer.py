@@ -42,6 +42,29 @@ def _sample_info() -> list[MCPServerInfo]:
     ]
 
 
+def _mixed_status_info() -> list[MCPServerInfo]:
+    """Three servers covering all `MCPServerStatus` values."""
+    return [
+        MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        ),
+        MCPServerInfo(
+            name="github",
+            transport="http",
+            status="unauthenticated",
+            error="Run: deepagents mcp login github",
+        ),
+        MCPServerInfo(
+            name="broken",
+            transport="sse",
+            status="error",
+            error="Connection refused",
+        ),
+    ]
+
+
 class TestMCPViewerScreen:
     """Tests for the MCP viewer screen widget."""
 
@@ -180,6 +203,84 @@ class TestMCPViewerScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert not widget._expanded
+
+    async def test_three_state_status_indicators_render(self) -> None:
+        """Each `MCPServerStatus` produces a visually distinct header line."""
+        from deepagents_cli import theme
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            colors = theme.get_theme_colors(screen)
+            headers = screen.query(".mcp-server-header")
+            assert len(headers) == 3
+
+            # Headers are ordered: filesystem (ok), github (unauth), broken (err).
+            ok_text = _widget_text(headers[0])
+            unauth_text = _widget_text(headers[1])
+            err_text = _widget_text(headers[2])
+
+            assert "filesystem" in ok_text
+            assert "stdio" in ok_text
+
+            assert "github" in unauth_text
+            assert "unauthenticated" in unauth_text
+            assert "Run: deepagents mcp login github" in unauth_text
+
+            assert "broken" in err_text
+            assert "error" in err_text
+            assert "Connection refused" in err_text
+
+            # Each header carries the matching theme color in its content spans.
+            ok_spans = repr(headers[0]._Static__content)  # type: ignore[attr-defined]
+            unauth_spans = repr(headers[1]._Static__content)  # type: ignore[attr-defined]
+            err_spans = repr(headers[2]._Static__content)  # type: ignore[attr-defined]
+            assert colors.success in ok_spans
+            assert colors.warning in unauth_spans
+            assert colors.error in err_spans
+
+    async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
+        """Status icons reuse existing `Glyphs` (unicode by default)."""
+        from deepagents_cli.config import get_glyphs
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            glyphs = get_glyphs()
+            headers = screen.query(".mcp-server-header")
+            assert glyphs.checkmark in _widget_text(headers[0])
+            assert glyphs.warning in _widget_text(headers[1])
+            assert glyphs.error in _widget_text(headers[2])
+
+    async def test_synthetic_config_error_entry_renders(self) -> None:
+        """A `<config:foo>` entry from a malformed config file does not crash."""
+        info = [
+            MCPServerInfo(
+                name="<config:bad.json>",
+                transport="config",
+                status="error",
+                error="JSON decode failed at line 3",
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            headers = screen.query(".mcp-server-header")
+            assert len(headers) == 1
+            text = _widget_text(headers[0])
+            assert "<config:bad.json>" in text
+            assert "JSON decode failed" in text
+            # No tools to render — only the header line and the help footer.
+            assert len(screen.query(".mcp-tool-item")) == 0
 
     async def test_click_expands_tool(self) -> None:
         """Clicking a tool selects it and toggles expand."""

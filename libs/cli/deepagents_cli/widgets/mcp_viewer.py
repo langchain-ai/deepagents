@@ -16,10 +16,38 @@ from textual.widgets import Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from deepagents_cli.mcp_tools import MCPServerInfo
+    from deepagents_cli.mcp_tools import MCPServerInfo, MCPServerStatus
 
 from deepagents_cli import theme
-from deepagents_cli.config import get_glyphs, is_ascii_mode
+from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
+
+
+def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
+    """Return the glyph character for a server `status`.
+
+    Maps onto the existing `Glyphs` set so ASCII fallback is automatic
+    (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
+    """
+    if status == "ok":
+        return glyphs.checkmark
+    if status == "unauthenticated":
+        return glyphs.warning
+    return glyphs.error
+
+
+def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
+    """Map a server `status` onto a semantic theme color.
+
+    `ok` -> success (green); `unauthenticated` -> warning (yellow);
+    `error` -> error (red). Returning the theme's hex string lets callers
+    pass the value to `Content.styled()` or `Content.assemble()` so a
+    theme switch recolors the indicator without code changes.
+    """
+    if status == "ok":
+        return colors.success
+    if status == "unauthenticated":
+        return colors.warning
+    return colors.error
 
 
 class MCPToolItem(Static):
@@ -326,35 +354,33 @@ class MCPViewerScreen(ModalScreen[None]):
             )
             scroll.mount(Static(placeholder, classes="mcp-empty"))
         else:
+            colors = theme.get_theme_colors(self)
             flat_index = 0
             for server in self._server_info:
                 tool_count = len(server.tools)
                 t_label = "tool" if tool_count == 1 else "tools"
+                indicator_color = _status_color(server.status, colors)
+                indicator_glyph = _status_glyph(server.status, glyphs)
                 if server.status == "ok":
-                    header_markup = (
-                        "[bold]$name[/bold]"
-                        f" [dim]$transport {glyphs.bullet}"
-                        f" {tool_count} {t_label}[/dim]"
+                    header_content = Content.assemble(
+                        (f"{indicator_glyph} ", indicator_color),
+                        (server.name, "bold"),
+                        (
+                            f" {server.transport} {glyphs.bullet}"
+                            f" {tool_count} {t_label}",
+                            "dim",
+                        ),
                     )
                 else:
-                    header_markup = (
-                        "[bold]$name[/bold]"
-                        " [dim]$transport[/dim]"
-                        f" [yellow]{glyphs.bullet} $status[/yellow]"
-                        " [dim] — $error[/dim]"
+                    error_text = server.error or ""
+                    header_content = Content.assemble(
+                        (f"{indicator_glyph} ", indicator_color),
+                        (server.name, "bold"),
+                        (f" {server.transport}", "dim"),
+                        (f" {glyphs.bullet} {server.status}", indicator_color),
+                        (f" — {error_text}", "dim") if error_text else "",
                     )
-                scroll.mount(
-                    Static(
-                        Content.from_markup(
-                            header_markup,
-                            name=server.name,
-                            transport=server.transport,
-                            status=server.status,
-                            error=server.error or "",
-                        ),
-                        classes="mcp-server-header",
-                    )
-                )
+                scroll.mount(Static(header_content, classes="mcp-server-header"))
                 for tool in server.tools:
                     classes = "mcp-tool-item"
                     if flat_index == 0:

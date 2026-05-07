@@ -1146,11 +1146,16 @@ class TestBuiltInProfiles:
         assert len(suffixes) == 1
 
     def test_fireworks_glm_5p1_has_harness_profile(self) -> None:
-        """Fireworks GLM-5p1 registers a non-empty four-section profile.
+        """Fireworks GLM-5p1 registers a non-empty three-section profile.
 
-        A v2 attempt that promoted Output Channel and dropped Stop
-        Conditions regressed conversation by -0.16 outside the v1
-        4-trial noise band of ±0.02, so v1 was reinstated. See
+        Section set + order: `Tool Execution Discipline` → `Parallel
+        Tool Use` → `Stop Conditions`. An earlier "Output Channel"
+        section was removed: a local ablation study (N=5 per cell, 7
+        variants) showed it was the *sole* cause of stable regressions
+        on `test_single_tool_get_food_calories` and
+        `test_single_tool_get_user_email` (0/10 with the rule, 10/10
+        without). Cluster E (`reasoning_content` routing) should be
+        closed in middleware, not the suffix. See
         `evals/fireworks_glm_5p1_profile_findings.md`.
         """
         profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
@@ -1159,16 +1164,16 @@ class TestBuiltInProfiles:
         assert "## Tool Execution Discipline" in profile.system_prompt_suffix
         assert "## Parallel Tool Use" in profile.system_prompt_suffix
         assert "## Stop Conditions" in profile.system_prompt_suffix
-        assert "## Output Channel" in profile.system_prompt_suffix
+        assert "## Output Channel" not in profile.system_prompt_suffix, (
+            "Output Channel was removed after ablation showed it caused regressions on single-tool tests; reintroducing requires fresh ablation data."
+        )
 
     def test_fireworks_glm_5p1_section_order(self) -> None:
-        """Section order is part of what works empirically.
+        """Section order: TED → Parallel → Stop. Regression guard.
 
-        The v1 4-section ordering (TED → Parallel → Stop → Output)
-        held the conversation category at 0.49 ± 0.02 across four
-        trials. A v2 reorder that moved Output Channel to the top
-        regressed conversation to 0.33 (outside the noise band), so
-        the order is locked here as a regression guard.
+        Reordering or reintroducing sections needs a fresh A/B run
+        before merging — every prior reorder we tried (e.g. Output
+        Channel promoted to first) regressed at least one category.
         """
         suffix = _get_harness_profile(
             "fireworks:accounts/fireworks/models/glm-5p1",
@@ -1177,10 +1182,9 @@ class TestBuiltInProfiles:
             "## Tool Execution Discipline",
             "## Parallel Tool Use",
             "## Stop Conditions",
-            "## Output Channel",
         ]
         positions = [suffix.index(s) for s in sections]
-        assert positions == sorted(positions), "Profile section order changed; re-run N-trials before merging."
+        assert positions == sorted(positions), "Profile section order changed; re-run A/B before merging."
 
     def test_fireworks_provider_has_no_built_in_profile(self) -> None:
         """GLM-5p1 registers per-model, not provider-wide — guards bleed-through."""

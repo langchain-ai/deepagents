@@ -3,11 +3,12 @@
 Working notes from iterating on `_fireworks_glm_5p1.py`. Logged so future
 iterations start from data, not memory.
 
-**TL;DR — current state: v1 (4-section, Output Channel last).** v2 was
-prototyped on a single-run signal that turned out to be a low-tail outlier
-of v1's distribution; v2 regressed conversation by −0.16 outside the v1
-N-trial noise band and was reverted. Section order is fixed by a unit test
-as a regression guard.
+**TL;DR — current state: 3-section profile** (Tool Execution Discipline →
+Parallel Tool Use → Stop Conditions). The earlier `Output Channel` section
+was removed after a local ablation showed it was the *sole* cause of stable
+regressions on `test_single_tool_get_food_calories` and
+`test_single_tool_get_user_email`. Cluster E (`reasoning_content` routing)
+moves to a middleware in a separate change.
 
 ## Sources
 

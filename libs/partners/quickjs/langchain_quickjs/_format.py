@@ -82,10 +82,11 @@ def coerce_tool_output(value: Any) -> str:
     return _coerce_message_content(value)
 
 
-# Types the quickjs_rs binding marshals natively from Python to JS without
-# information loss. Anything else gets JSON-encoded so the JS side at least
-# sees a stable string (rather than a Python repr).
-_NATIVE_JS_TYPES = (str, bool, int, float, type(None), list, dict)
+# Scalar types the quickjs_rs binding marshals natively. Compound shapes
+# (``dict`` / ``list`` / ``tuple``) are walked recursively in
+# ``_coerce_for_marshal``; anything else becomes ``str(value)`` so the JS
+# side can still see a usable value.
+_NATIVE_JS_SCALARS = (str, bool, int, float, type(None))
 
 
 def coerce_tool_output_for_ptc(value: Any) -> Any:
@@ -97,9 +98,12 @@ def coerce_tool_output_for_ptc(value: Any) -> Any:
     ``ToolMessage`` / ``Command`` envelopes (matching ``coerce_tool_output``'s
     selection rules) and returns the underlying value typed.
 
-    For values the binding cannot marshal natively (Pydantic models, custom
-    classes, etc.), fall back to a JSON-encoded string so the JS side still
-    receives a usable representation.
+    Compound returns are walked recursively: nested values that the binding
+    cannot marshal natively (``datetime``, Pydantic models, custom classes)
+    are stringified in place via ``str(value)`` so the surrounding object
+    structure remains navigable from JS. Cyclic structures hit Python's
+    recursion limit and surface as a host error in the eval — same outcome
+    as ``json.dumps`` on a self-referencing dict.
     """
     if isinstance(value, Command):
         return coerce_tool_output_for_ptc(_extract_command_content(value))
@@ -111,12 +115,18 @@ def coerce_tool_output_for_ptc(value: Any) -> Any:
                 return coerce_tool_output_for_ptc(entry.content)
             if isinstance(entry, Command):
                 return coerce_tool_output_for_ptc(_extract_command_content(entry))
-    if isinstance(value, _NATIVE_JS_TYPES):
+    return _coerce_for_marshal(value)
+
+
+def _coerce_for_marshal(value: Any) -> Any:
+    """Convert *value* into a shape the quickjs_rs bridge can marshal."""
+    if isinstance(value, _NATIVE_JS_SCALARS):
         return value
-    try:
-        return json.dumps(value, default=str)
-    except (TypeError, ValueError):
-        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _coerce_for_marshal(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_coerce_for_marshal(v) for v in value]
+    return str(value)
 
 
 def _extract_command_content(command: Command) -> Any:

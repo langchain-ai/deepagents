@@ -20,6 +20,7 @@ from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Annotated, Any
 
 import pytest
@@ -86,6 +87,18 @@ def get_user_count() -> int:
 def get_user_profile() -> dict[str, Any]:
     """Return a small user profile object."""
     return {"id": 21, "name": "Bob", "tags": ["admin", "ops"]}
+
+
+@tool
+def get_user_profile_with_dates() -> dict[str, Any]:
+    """Return a user profile containing nested datetimes (non JS-native values)."""
+    return {
+        "id": 21,
+        "created_at": datetime(2024, 1, 1, 12, 30),  # noqa: DTZ001 — fixture
+        "events": [
+            {"seen_at": datetime(2024, 1, 2, 15, 45)}  # noqa: DTZ001 — fixture
+        ],
+    }
 
 
 @tool
@@ -204,6 +217,23 @@ def test_ptc_dict_return_is_native_js_object() -> None:
         {"messages": [HumanMessage(content="go")]}
     )
     _assert_result_contains(_eval_tool_message(result).content, "21:Bob:admin,ops")
+
+
+def test_ptc_dict_with_nested_non_native_values_does_not_break_eval() -> None:
+    """A PTC tool returning nested non-native values should not break eval."""
+    code = (
+        "const u = await tools.getUserProfileWithDates({});\n"
+        "`${u.id}:${u.created_at}:${u.events[0].seen_at}`;"
+    )
+    result = _make_agent(
+        code,
+        REPLMiddleware(ptc=[get_user_profile_with_dates]),
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    _assert_result_contains(
+        _eval_tool_message(result).content,
+        "21:2024-01-01 12:30:00:2024-01-02 15:45:00",
+    )
 
 
 def test_ptc_none_return_is_js_null() -> None:

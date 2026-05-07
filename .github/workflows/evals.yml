@@ -20,13 +20,25 @@
 
 name: "📊 Evals"
 run-name: >-
-  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠' || '' }}
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override,
+  ',') && 'custom models' || inputs.models_override) || inputs.models || 'all'
+  }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format('
+  [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{
+  inputs.eval_categories_exclude && format(' excluding {0}',
+  inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override ||
+  inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override ||
+  inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format('
+  reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl &&
+  format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠'
+  || '' }}
 
 on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to evaluate. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        description: "Model set to evaluate. Set definitions:
+          libs/evals/MODEL_GROUPS.md. Leave empty to use models_override
+          instead. Defaults to all models if both are empty."
         required: false
         default: ""
         type: choice
@@ -73,7 +85,8 @@ on:
           - "fireworks:accounts/fireworks/models/glm-5p1"
           - "fireworks:accounts/fireworks/models/minimax-m2p5"
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
-          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8"
+          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a\
+            12b-fp8"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"
@@ -106,12 +119,17 @@ on:
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
+        description: "Custom model list (overrides dropdown). Comma-separated
+          'provider:model' specs, e.g.
+          'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the
+          preset selection above."
         required: false
         default: ""
         type: string
       eval_categories:
-        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md.
+          Leave empty to use eval_categories_override instead. Defaults to all
+          if both are empty."
         required: false
         default: ""
         type: choice
@@ -125,17 +143,22 @@ on:
           - tool_use
           - unit_test
       eval_categories_override:
-        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g.
+          'memory,tool_use,retrieval'. Leave empty to use the preset selection
+          above."
         required: false
         default: ""
         type: string
       eval_categories_exclude:
-        description: "Category list to skip; takes precedence over the include filter on conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'. Empty = skip none."
+        description: "Category list to skip; takes precedence over the include filter on
+          conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'.
+          Empty = skip none."
         required: false
         default: ""
         type: string
       eval_tiers:
-        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress
+          tracking). Leave empty for all."
         required: false
         default: ""
         type: choice
@@ -144,7 +167,8 @@ on:
           - baseline
           - hillclimb
       eval_tiers_override:
-        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'."
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g.
+          'baseline,hillclimb'."
         required: false
         default: ""
         type: string
@@ -154,7 +178,8 @@ on:
         default: false
         type: boolean
       analysis_model:
-        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        description: "Model for failure analysis. Only used when analyze_failures is
+          true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
         required: false
         default: ""
         type: choice
@@ -171,17 +196,22 @@ on:
           - "google_genai:gemini-3-flash-preview"
           - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
-        description: "Pin OpenRouter to one or more providers (comma-separated allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to openrouter: models."
+        description: "Pin OpenRouter to one or more providers (comma-separated
+          allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to
+          openrouter: models."
         required: false
         default: ""
         type: string
       openrouter_allow_fallbacks:
-        description: "Soft allowlist: prefer the providers in `openrouter_provider` but allow OpenRouter to fall back to any other provider hosting the model. Off (default) = strict pin."
+        description: "Soft allowlist: prefer the providers in `openrouter_provider` but
+          allow OpenRouter to fall back to any other provider hosting the model.
+          Off (default) = strict pin."
         required: false
         default: false
         type: boolean
       openai_reasoning_effort:
-        description: "Reasoning effort for OpenAI models (applied as the `reasoning_effort` model kwarg). Only applies to openai: models."
+        description: "Reasoning effort for OpenAI models (applied as the
+          `reasoning_effort` model kwarg). Only applies to openai: models."
         required: false
         default: ""
         type: choice
@@ -193,7 +223,8 @@ on:
           - high
           - xhigh
       repl:
-        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty = bind tools directly (native tool calling)."
+        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty =
+          bind tools directly (native tool calling)."
         required: false
         default: ""
         type: choice
@@ -201,6 +232,13 @@ on:
           - ""
           - quickjs
           - langchain
+      notes:
+        description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
+          retry reason). Shown on the run summary; does not affect eval
+          behavior."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -246,7 +284,8 @@ jobs:
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories
+            || '(all)' }}
           EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude || '(none)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
@@ -255,6 +294,7 @@ jobs:
           REPL: ${{ inputs.repl }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+          NOTES: ${{ inputs.notes }}
         run: |
           {
             echo "### 🌳 Source tree"
@@ -433,6 +473,15 @@ jobs:
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          trimmed_notes="${NOTES#"${NOTES%%[![:space:]]*}"}"
+          trimmed_notes="${trimmed_notes%"${trimmed_notes##*[![:space:]]}"}"
+          if [ -n "${trimmed_notes}" ]; then
+            # GitHub Step Summary renders as GFM; pipes break table cells and raw newlines end the row.
+            escaped_notes="${trimmed_notes//|/\\|}"
+            escaped_notes="${escaped_notes//$'\r\n'/<br>}"
+            escaped_notes="${escaped_notes//$'\n'/<br>}"
+            echo "| \`notes\` | ${escaped_notes} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
@@ -474,7 +523,6 @@ jobs:
             echo ""
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
-
 
   # Per-provider serialization: each provider runs as its own matrix job with
   # max-parallel: 1 so calls to a single provider queue rather than fan out
@@ -798,7 +846,8 @@ jobs:
 
       - name: "📊 Generate radar chart"
         id: radar-chart
-        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
+        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome ==
+          'success'
         continue-on-error: true
         working-directory: libs/evals
         env:
@@ -829,11 +878,15 @@ jobs:
                  || needs.eval-xai.result == 'cancelled'
                  || needs.eval-other.result == 'cancelled') && 'cancelled'
             || 'success' }}
-        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
+        run: uv run --extra charts python scripts/generate_radar.py --summary
+          ../../evals_summary.json -o ../../charts/radar.png --individual-dir
+          ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "⚠️ Note radar chart failure"
         if: steps.radar-chart.outcome == 'failure'
-        run: echo "::warning::Radar chart generation failed; see the 'Generate radar chart' step logs. Subsequent chart upload/publish steps will be skipped."
+        run: echo "::warning::Radar chart generation failed; see the 'Generate radar
+          chart' step logs. Subsequent chart upload/publish steps will be
+          skipped."
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

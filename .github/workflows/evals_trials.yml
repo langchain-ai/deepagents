@@ -15,7 +15,17 @@
 
 name: "📊 Evals - N Trials"
 run-name: >-
-  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠' || '' }}
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{
+  inputs.parallel && ' (parallel)' || ' (sequential)' }}${{
+  (inputs.eval_categories_override || inputs.eval_categories) && format('
+  [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{
+  inputs.eval_categories_exclude && format(' excluding {0}',
+  inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override ||
+  inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override ||
+  inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format('
+  reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl &&
+  format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠'
+  || '' }}
 
 on:
   workflow_dispatch:
@@ -30,12 +40,15 @@ on:
         default: "5"
         type: string
       parallel:
-        description: "Run trials in parallel (faster, but bursts API calls). Off → sequential."
+        description: "Run trials in parallel (faster, but bursts API calls). Off →
+          sequential."
         required: false
         default: false
         type: boolean
       eval_categories:
-        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md.
+          Leave empty to use eval_categories_override instead. Defaults to all
+          if both are empty."
         required: false
         default: ""
         type: choice
@@ -49,17 +62,23 @@ on:
           - tool_use
           - unit_test
       eval_categories_override:
-        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g.
+          'memory,tool_use,retrieval'. Leave empty to use the preset selection
+          above."
         required: false
         default: ""
         type: string
       eval_categories_exclude:
-        description: "Category list to skip; takes precedence over the include filter on conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'. Empty = skip none."
+        description: "Category list to skip; takes precedence over the include filter on
+          conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'.
+          Empty = skip none."
         required: false
         default: ""
         type: string
       eval_tiers:
-        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty to use eval_tiers_override instead. Defaults to all if both are empty."
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress
+          tracking). Leave empty to use eval_tiers_override instead. Defaults to
+          all if both are empty."
         required: false
         default: ""
         type: choice
@@ -68,7 +87,8 @@ on:
           - baseline
           - hillclimb
       eval_tiers_override:
-        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'. Leave empty to use the preset selection above."
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g.
+          'baseline,hillclimb'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
@@ -78,7 +98,8 @@ on:
         default: false
         type: boolean
       analysis_model:
-        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        description: "Model for failure analysis. Only used when analyze_failures is
+          true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
         required: false
         default: ""
         type: choice
@@ -95,12 +116,14 @@ on:
           - "google_genai:gemini-3-flash-preview"
           - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
-        description: "Pin OpenRouter to one or more providers (comma-separated allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
+        description: "Pin OpenRouter to one or more providers (comma-separated
+          allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
         required: false
         default: ""
         type: string
       openrouter_allow_fallbacks:
-        description: "Soft allowlist: prefer the listed providers but allow OpenRouter to fall back. Off (default) = strict pin."
+        description: "Soft allowlist: prefer the listed providers but allow OpenRouter
+          to fall back. Off (default) = strict pin."
         required: false
         default: false
         type: boolean
@@ -117,7 +140,8 @@ on:
           - high
           - xhigh
       repl:
-        description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools directly."
+        description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools
+          directly."
         required: false
         default: ""
         type: choice
@@ -125,6 +149,13 @@ on:
           - ""
           - quickjs
           - langchain
+      notes:
+        description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
+          retry reason). Shown on the run summary; does not affect eval
+          behavior."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -165,6 +196,7 @@ jobs:
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          NOTES: ${{ inputs.notes }}
           # Default duplicates `_eval.yml`'s; resolved here once so the
           # step-summary and the matrix forward share a single source.
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
@@ -409,6 +441,16 @@ jobs:
                   lines.append(f"| `openai_reasoning_effort` | `{openai_reasoning_effort}` |")
               if repl:
                   lines.append(f"| `repl` | `{repl}` |")
+
+              notes = os.environ.get("NOTES", "").strip()
+              if notes:
+                  # GitHub Step Summary renders as GFM; pipes break table cells and raw newlines end the row.
+                  escaped = (
+                      notes.replace("|", "\\|")
+                      .replace("\r\n", "<br>")
+                      .replace("\n", "<br>")
+                  )
+                  lines.append(f"| `notes` | {escaped} |")
 
               lines += [
                   "",

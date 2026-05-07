@@ -24,6 +24,13 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
 
+PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
+    "fireworks": ("accounts/fireworks/models/",),
+}
+"""Some providers (e.g. Fireworks) require fully-qualified IDs like
+`accounts/fireworks/models/...` that crowd out the rest of the status bar;
+strip the registered prefixes before display."""
+
 
 class ModelLabel(Widget):
     """A label that displays a model name, right-aligned with smart truncation.
@@ -35,6 +42,21 @@ class ModelLabel(Widget):
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+
+    def _clean_model(self) -> str:
+        """Strip the provider's registered prefix so the status bar stays compact.
+
+        Returns:
+            Model name with the provider's registered prefix removed if present,
+                otherwise the original name.
+        """
+        name = self.model
+        if not name or not self.provider:
+            return name
+        for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
@@ -48,7 +70,8 @@ class ModelLabel(Widget):
         """
         if not self.model:
             return 0
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         return len(full)
 
     def render(self) -> RenderResult:
@@ -60,13 +83,14 @@ class ModelLabel(Widget):
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         if len(full) <= width:
             return Content(full)
-        if len(self.model) <= width:
-            return Content(self.model)
+        if len(model) <= width:
+            return Content(model)
         if width > 1:
-            return Content("\u2026" + self.model[-(width - 1) :])
+            return Content("\u2026" + model[-(width - 1) :])
         return Content("\u2026")
 
 

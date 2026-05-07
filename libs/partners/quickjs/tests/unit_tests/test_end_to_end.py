@@ -20,7 +20,8 @@ from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from datetime import datetime
+from typing import Annotated, Any
 
 import pytest
 from deepagents import create_deep_agent
@@ -28,7 +29,7 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import InjectedToolCallId, tool
 
 from langchain_quickjs import REPLMiddleware
 from tests._common import FakeChatModel
@@ -74,6 +75,45 @@ async def always_fails(value: str) -> str:
 def echo_foo(foo: str) -> str:
     """Echo the value of `foo`."""
     return f"got {foo}"
+
+
+@tool
+def get_user_count() -> int:
+    """Return a count of users."""
+    return 7
+
+
+@tool
+def get_user_profile() -> dict[str, Any]:
+    """Return a small user profile object."""
+    return {"id": 21, "name": "Bob", "tags": ["admin", "ops"]}
+
+
+@tool
+def get_user_profile_with_dates() -> dict[str, Any]:
+    """Return a user profile containing nested datetimes (non JS-native values)."""
+    return {
+        "id": 21,
+        "created_at": datetime(2024, 1, 1, 12, 30),  # noqa: DTZ001 — fixture
+        "events": [
+            {"seen_at": datetime(2024, 1, 2, 15, 45)}  # noqa: DTZ001 — fixture
+        ],
+    }
+
+
+@tool
+def get_user_email_or_none(user_id: int) -> str | None:
+    """Return an email if the user has one, otherwise None."""
+    return None if user_id < 0 else "alice@example.com"
+
+
+@tool
+def echo_call_id(
+    value: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> str:
+    """Return the synthetic tool_call_id back to the caller."""
+    return f"{value}|{tool_call_id}"
 
 
 def _script(code: str, *, final_message: str = "Done.") -> Iterator[AIMessage]:
@@ -141,13 +181,9 @@ def test_deepagent_with_quickjs_interpreter_sync() -> None:
     assert result["messages"][-1].content == "The answer is 42."
 
 
-def test_deepagent_with_quickjs_json_roundtrip_foreign_function_sync() -> None:
-    """Verify sync eval can parse JSON strings returned from PTC tool calls."""
-    code = (
-        "const idsJson = await tools.listUserIds({});\n"
-        "const ids = JSON.parse(idsJson);\n"
-        "ids.join(',');"
-    )
+def test_deepagent_with_quickjs_list_returning_foreign_function_sync() -> None:
+    """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
+    code = "const ids = await tools.listUserIds({});\nids.join(',');"
     result = _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).invoke(
         {
             "messages": [
@@ -160,6 +196,66 @@ def test_deepagent_with_quickjs_json_roundtrip_foreign_function_sync() -> None:
 
     tool_message = _eval_tool_message(result)
     _assert_result_contains(tool_message.content, "1,21,35,41,42,43")
+
+
+def test_ptc_int_return_is_native_js_number() -> None:
+    """A PTC tool returning a Python ``int`` surfaces as a JS ``number``."""
+    code = "const n = await tools.getUserCount({});\n`${typeof n}:${n + 1}`;"
+    result = _make_agent(code, REPLMiddleware(ptc=[get_user_count])).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+    _assert_result_contains(_eval_tool_message(result).content, "number:8")
+
+
+def test_ptc_dict_return_is_native_js_object() -> None:
+    """A PTC tool returning a Python ``dict`` surfaces as a JS object."""
+    code = (
+        "const u = await tools.getUserProfile({});\n"
+        "`${u.id}:${u.name}:${u.tags.join(',')}`;"
+    )
+    result = _make_agent(code, REPLMiddleware(ptc=[get_user_profile])).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+    _assert_result_contains(_eval_tool_message(result).content, "21:Bob:admin,ops")
+
+
+def test_ptc_dict_with_nested_non_native_values_does_not_break_eval() -> None:
+    """A PTC tool returning nested non-native values should not break eval."""
+    code = (
+        "const u = await tools.getUserProfileWithDates({});\n"
+        "`${u.id}:${u.created_at}:${u.events[0].seen_at}`;"
+    )
+    result = _make_agent(
+        code,
+        REPLMiddleware(ptc=[get_user_profile_with_dates]),
+    ).invoke({"messages": [HumanMessage(content="go")]})
+
+    _assert_result_contains(
+        _eval_tool_message(result).content,
+        "21:2024-01-01 12:30:00:2024-01-02 15:45:00",
+    )
+
+
+def test_ptc_none_return_is_js_null() -> None:
+    """A PTC tool returning ``None`` surfaces as JS ``null``."""
+    code = "const r = await tools.getUserEmailOrNone({user_id: -1});\n`${r === null}`;"
+    result = _make_agent(code, REPLMiddleware(ptc=[get_user_email_or_none])).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+    _assert_result_contains(_eval_tool_message(result).content, "true")
+
+
+def test_ptc_injects_tool_call_id_per_call() -> None:
+    """``InjectedToolCallId`` receives a fresh id on each PTC sub-call."""
+    code = (
+        "const a = await tools.echoCallId({value: 'a'});\n"
+        "const b = await tools.echoCallId({value: 'b'});\n"
+        "`${a !== b}:${a.startsWith('a|')}:${b.startsWith('b|')}`;"
+    )
+    result = _make_agent(code, REPLMiddleware(ptc=[echo_call_id])).invoke(
+        {"messages": [HumanMessage(content="go")]}
+    )
+    _assert_result_contains(_eval_tool_message(result).content, "true:true:true")
 
 
 def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:

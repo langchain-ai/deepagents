@@ -9,7 +9,7 @@ from textual.app import App, ComposeResult
 from textual.geometry import Size
 
 from deepagents_cli._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
-from deepagents_cli.widgets.status import StatusBar
+from deepagents_cli.widgets.status import ModelLabel, StatusBar
 
 if TYPE_CHECKING:
     import pytest
@@ -259,3 +259,102 @@ class TestTokenDisplay:
             rendered = str(display.render())
             assert "8.0K" in rendered
             assert "+" not in rendered
+
+
+class TestModelLabelPrefixStripping:
+    """Tests for provider-specific model prefix stripping in ModelLabel."""
+
+    async def test_fireworks_prefix_stripped(self) -> None:
+        """End-to-end: the fireworks prefix is stripped before rendering."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "fireworks:kimi-k2p6" in rendered
+            assert "accounts/fireworks/models/" not in rendered
+
+    async def test_get_content_width_uses_stripped_name(self) -> None:
+        """`get_content_width` sizes to the stripped name, not the raw model."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            await pilot.pause()
+            assert label.get_content_width(Size(0, 0), Size(0, 0)) == len(
+                "fireworks:kimi-k2p6"
+            )
+
+    async def test_provider_dropped_when_full_overflows(self) -> None:
+        """When the cleaned full string overflows, render drops the provider."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            # padding 0 2 -> content width = 9, fits "kimi-k2p6" but not the
+            # full "fireworks:kimi-k2p6" (19 chars).
+            label.styles.width = 13
+            await pilot.pause()
+            assert str(label.render()) == "kimi-k2p6"
+
+    async def test_truncation_uses_stripped_name(self) -> None:
+        """Ellipsis truncation slices the stripped name; the raw prefix never leaks."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            # padding 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
+            label.styles.width = 9
+            await pilot.pause()
+            rendered = str(label.render())
+            assert rendered == "…k2p6"
+            assert "accounts" not in rendered
+
+    async def test_unmatched_prefix_for_registered_provider(self) -> None:
+        """Registered provider whose model doesn't match any prefix is unchanged."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "kimi-k2p6"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "fireworks:kimi-k2p6" in rendered
+
+    async def test_multiple_registered_prefixes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider may register multiple prefixes; each matches independently."""
+        from deepagents_cli.widgets import status
+
+        monkeypatch.setitem(
+            status.PROVIDER_PREFIX_STRIPS,
+            "fireworks",
+            ("accounts/fireworks/models/", "models/"),
+        )
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "models/foo-bar"
+            await pilot.pause()
+            assert label._clean_model() == "foo-bar"
+
+    async def test_non_fireworks_prefix_preserved(self) -> None:
+        """Other providers should not have prefixes stripped."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-4o"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "openai:gpt-4o" in rendered
+
+    async def test_no_provider_no_stripping(self) -> None:
+        """Without a provider, the model name is passed through unchanged."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            await pilot.pause()
+            rendered = str(label.render())
+            assert "accounts/fireworks/models/kimi-k2p6" in rendered

@@ -206,7 +206,7 @@ class TestAggregateTrials:
             for i in range(3)
         ]
         summary = run_trials.aggregate_trials(reports)
-        assert [t["trial_index"] for t in summary["trials"]] == [0, 1, 2]
+        assert [t["trial_index"] for t in summary["trials"]] == [1, 2, 3]
         assert [t["correctness"] for t in summary["trials"]] == pytest.approx([0.4, 0.45, 0.5])
 
     def test_non_numeric_metric_value_is_excluded_with_warning(
@@ -229,7 +229,7 @@ class TestAggregateTrials:
         summary = run_trials.aggregate_trials(reports)
         assert summary["metrics"]["correctness"]["n"] == 0
         captured = capsys.readouterr()
-        assert "non-numeric value for 'correctness'" in captured.err
+        assert "trial 1: non-numeric value for 'correctness'" in captured.err
 
     def test_bool_values_are_not_aggregated_as_ints(
         self, capsys: pytest.CaptureFixture[str]
@@ -250,7 +250,7 @@ class TestAggregateTrials:
         reports[0]["passed"] = True
         summary = run_trials.aggregate_trials(reports)
         assert summary["counts"]["passed"]["n"] == 0
-        assert "non-numeric value for 'passed'" in capsys.readouterr().err
+        assert "trial 1: non-numeric value for 'passed'" in capsys.readouterr().err
 
     def test_divergent_model_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
         a = _report(

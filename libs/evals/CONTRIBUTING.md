@@ -340,7 +340,7 @@ The `parallel` toggle exists to trade time for API burst pressure. Sequential mo
   },
   "trials": [
     // Per-trial records preserved in dispatch order
-    {"trial_index": 0, "passed": 81, "correctness": 0.47, "category_scores": {...}, "experiment_urls": [...]},
+    {"trial_index": 1, "passed": 81, "correctness": 0.47, "category_scores": {...}, "experiment_urls": [...]},
     ...
   ]
 }

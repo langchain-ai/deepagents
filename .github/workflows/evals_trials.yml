@@ -200,7 +200,7 @@ jobs:
                   "trial_index": i,
                   "artifact_key": f"trial-{i:03d}-{slug}",
               }
-              for i in range(n)
+              for i in range(1, n + 1)
           ]
           matrix = {"include": entries}
           max_parallel = n if parallel else 1

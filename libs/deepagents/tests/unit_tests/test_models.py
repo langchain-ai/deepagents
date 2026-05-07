@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import threading
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
@@ -1144,6 +1145,77 @@ class TestBuiltInProfiles:
             )
         }
         assert len(suffixes) == 1
+
+    def test_baseten_kimi_k2_6_has_harness_profile(self) -> None:
+        """Kimi K2.6 registers a non-empty harness profile keyed on the full Baseten spec."""
+        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        for tag in (
+            "<plan_before_mutate>",
+            "<no_redundant_reads>",
+            "<communicate_each_turn>",
+            "<respect_user_specifications>",
+            "<ground_in_provided_docs>",
+        ):
+            assert tag in profile.system_prompt_suffix
+
+    def test_baseten_kimi_k2_6_every_section_has_contrastive_examples(self) -> None:
+        """Each tagged section carries Bad:/Good: pairs per Moonshot's few-shot guidance.
+
+        Pinning this shape prevents a future rewrite from regressing the
+        suffix back to rule-only prose. Moonshot's prompt guide is
+        explicit that examples beat permutations of description for
+        behavior shaping; the v2 suffix added contrastive pairs to all
+        five sections to close that gap.
+        """
+        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+        assert profile is not None
+        suffix = profile.system_prompt_suffix
+        for tag in (
+            "plan_before_mutate",
+            "no_redundant_reads",
+            "communicate_each_turn",
+            "respect_user_specifications",
+            "ground_in_provided_docs",
+        ):
+            match = re.search(rf"<{tag}>(.*?)</{tag}>", suffix, re.DOTALL)
+            assert match is not None, f"section <{tag}> missing or unclosed"
+            body = match.group(1)
+            assert "Bad:" in body, f"section <{tag}> missing 'Bad:' example"
+            assert "Good:" in body, f"section <{tag}> missing 'Good:' example"
+
+    def test_baseten_kimi_k2_6_plan_section_is_stepwise(self) -> None:
+        """`<plan_before_mutate>` keeps numbered steps per Moonshot's step-decomposition guidance."""
+        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+        assert profile is not None
+        match = re.search(
+            r"<plan_before_mutate>(.*?)</plan_before_mutate>",
+            profile.system_prompt_suffix,
+            re.DOTALL,
+        )
+        assert match is not None
+        body = match.group(1)
+        # Require at least three numbered steps so a future edit can't quietly
+        # collapse the procedure back into a single-paragraph rule.
+        numbered_lines = re.findall(r"^\s*\d\.\s", body, re.MULTILINE)
+        assert len(numbered_lines) >= 3
+
+    def test_baseten_kimi_k2_6_overrides_compact_conversation_description(self) -> None:
+        """The profile rewrites `compact_conversation` to spell out concrete triggers."""
+        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+        assert profile is not None
+        override = profile.tool_description_overrides.get("compact_conversation")
+        assert override is not None
+        # Required-trigger language and the consequence-of-skipping nudge are
+        # the load-bearing parts of the override; pinning both keeps a future
+        # rewrite from weakening the prompt back to a "use proactively" hint.
+        assert "Required" in override
+        assert "model-call budget" in override
+
+    def test_baseten_provider_has_no_built_in_profile(self) -> None:
+        """Kimi registers per-model, not provider-wide — guards bleed-through."""
+        assert _get_harness_profile("baseten:other-model") is None
 
 
 class TestProfilePluginLoader:

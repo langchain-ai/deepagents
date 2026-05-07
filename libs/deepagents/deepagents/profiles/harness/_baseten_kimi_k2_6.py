@@ -42,23 +42,42 @@ from deepagents.profiles.harness.harness_profiles import (
 
 _SYSTEM_PROMPT_SUFFIX = """\
 <plan_before_mutate>
-Before calling any tool that modifies state — bookings, reservations, certificates, files, messages, or any database write — first complete the reads you need, then write a numbered plan listing the exact mutations and their arguments. Begin mutating only when reads are complete and the plan is final. Do not interleave reads and writes once the plan is set; if a write reveals new state that invalidates the plan, stop, re-read, and produce a fresh plan before continuing.
+Steps for any task that modifies persistent state (records, files, messages, account data, or any external write):
+1. Complete every read you need first — run independent reads in parallel.
+2. Write a numbered plan listing the exact mutations and their arguments.
+3. Execute the mutations in plan order. Do not interleave new reads.
+4. If a mutation result invalidates the plan, stop, re-read, and produce a fresh plan before continuing.
+
+Bad: read_X -> write_X -> undo_X -> write_X -> write_X (reads and writes interleaved across many turns; final state ends up wrong).
+Good: (parallel) read_X + read_Y -> "Plan: 1) undo record A; 2) create record B with fields {…}" -> undo_X -> write_X.
 </plan_before_mutate>
 
 <no_redundant_reads>
-If a tool has already returned a value in this conversation, do not call the same tool with the same arguments again. Refer back to the prior observation. Re-fetching information you already have wastes turns, can cause stale-data inconsistency, and exhausts the model-call budget before you reach the mutation step.
+When a tool has already returned a value in this conversation, refer back to that prior observation instead of calling the same tool with the same arguments again. Re-fetching wastes turns and exhausts the model-call budget before you reach the mutation step.
+
+Bad: read_X(id="A") -> ... 4 turns later ... -> read_X(id="A") to "double-check".
+Good: read_X(id="A") once -> quote or rely on the prior result for any later reference.
 </no_redundant_reads>
 
 <communicate_each_turn>
-After every tool call or batch of parallel tool calls, send a one- or two-sentence message to the user describing what you found and what you will do next. Silence between tool calls causes the user to disengage and end the conversation before the task is complete. Even brief acknowledgements ("got the user details — searching flights now") count and are required.
+After every tool call or batch of parallel tool calls, send the user a one- or two-sentence message saying what you found and what you'll do next. Silence between tool calls causes the user to disengage and end the conversation before the task is complete.
+
+Bad: tool_call -> tool_call -> tool_call -> tool_call (no user-facing text; the user disengages and the conversation ends before the task completes).
+Good: tool_call -> "Got the details — looking up options now." -> tool_call -> "Found two matches; using the better one and confirming."
 </communicate_each_turn>
 
 <respect_user_specifications>
-Read the user's most recent message carefully and treat any specific value they provide as fully specified. If the user said "every week", do not ask which day; if they said "daily", do not ask what time; if they specified a count, range, or named entity, do not re-ask for it. Ask only about facts the user did not provide. When the task asks for a single focused followup, ask exactly one question — do not append additional questions, even if they would be useful.
+When the user has specified a value — a frequency ("every week", "daily", "on weekends"), a count, a range, or a named entity — treat it as final. Ask only about facts they did not provide. When the task asks for a single focused followup, ask exactly one question.
+
+Bad: User: "send a weekly report". Agent: "What day/time each week?" (frequency was already specified).
+Good: User: "send a weekly report". Agent: "Where should the report be sent? (Slack, email, etc.)" (asks only about details actually missing).
 </respect_user_specifications>
 
 <ground_in_provided_docs>
-When a task supplies reference materials (e.g. `api_reference.md`, `syntax.md`, schemas under `/cases/`), follow the documented syntax exactly. Do not invent operators, function-call shapes, or composition idioms — pipe operators (`|>`), threading macros, method chaining, or wrappers — that are not present in those docs. If unsure how to compose a call, quote the relevant pattern from the docs verbatim before writing your answer.
+When a task supplies reference materials (e.g. an API reference, a syntax spec, or schemas under a `cases/` directory), follow the documented syntax exactly. Do not invent operators, function-call shapes, or composition idioms — pipe operators (`|>`), threading macros, method chaining, or wrappers — that are not in those docs. If unsure, quote the relevant pattern from the docs verbatim before composing.
+
+Bad: docs show `outer(inner(x))` (nested calls). Agent writes `inner(x) |> outer` (invented pipe syntax).
+Good: docs show `outer(inner(x))`. Agent writes `outer(inner(x))`.
 </ground_in_provided_docs>"""
 """Text appended to the assembled base system prompt.
 

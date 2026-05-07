@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
@@ -108,6 +108,7 @@ class MCPToolItem(Static):
         index: int,
         *,
         classes: str = "",
+        input_schema: dict[str, Any] | None = None,
     ) -> None:
         """Initialize a tool item.
 
@@ -116,10 +117,13 @@ class MCPToolItem(Static):
             description: Full tool description.
             index: Flat index of this tool in the list.
             classes: CSS classes.
+            input_schema: Raw MCP `inputSchema` dict; rendered as parameters
+                when the tool is expanded. `None` is treated as "no schema".
         """
         self.tool_name = name
         self.tool_description = description
         self.index = index
+        self._input_schema = input_schema
         self._expanded = False
         self._selected = "mcp-tool-selected" in classes
         # Pass a placeholder label — `_format_collapsed` reads `self.size`,
@@ -165,22 +169,73 @@ class MCPToolItem(Static):
     def _format_expanded(self, name: str, description: str) -> Content:
         """Build the expanded (multi-line) label.
 
+        When `input_schema` carries a non-empty `properties` dict, append
+        a `Parameters:` block listing each parameter as `name: type` with
+        `*` for required.
+
         Args:
             name: Tool name.
             description: Tool description.
 
         Returns:
-            Styled Content label with full description on next line.
+            Styled Content label with description and parameters on
+            following lines.
         """
+        style = self._desc_style()
         if description:
-            style = self._desc_style()
             template = (
                 "  [bold]$name[/bold]\n    [" + style + "]$desc[/]"
                 if style
                 else "  [bold]$name[/bold]\n    $desc"
             )
-            return Content.from_markup(template, name=name, desc=description)
-        return Content.from_markup("  [bold]$name[/bold]", name=name)
+            base = Content.from_markup(template, name=name, desc=description)
+        else:
+            base = Content.from_markup("  [bold]$name[/bold]", name=name)
+
+        params = self._format_parameters()
+        return base.append(params) if params is not None else base
+
+    def _format_parameters(self) -> Content | None:
+        """Build the parameter list rendered below the description.
+
+        Returns `None` when there is no `input_schema`, the schema is not
+        an object with non-empty `properties`, or `properties` is malformed.
+        """
+        schema = self._input_schema
+        if not schema:
+            return None
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or not properties:
+            return None
+        required = schema.get("required") or []
+        if not isinstance(required, list):
+            required = []
+        required_set = {str(item) for item in required}
+
+        style = self._desc_style()
+        line_style = style or "dim"
+        # Header line — always dim/muted to keep visual hierarchy below the
+        # tool name and description.
+        result = Content.from_markup(
+            "\n    [" + line_style + "]Parameters:[/]"
+        )
+        for prop_name, prop_schema in properties.items():
+            if isinstance(prop_schema, dict):
+                prop_type = str(prop_schema.get("type") or "any")
+            else:
+                prop_type = "any"
+            star = " *" if str(prop_name) in required_set else ""
+            # `Content.from_markup` substitution escapes user-supplied
+            # text, so a parameter named `[bold]foo[/]` cannot inject
+            # markup tags into the output.
+            line = Content.from_markup(
+                "\n      [" + line_style + "]$name: $ptype$star[/]",
+                name=str(prop_name),
+                ptype=prop_type,
+                star=star,
+            )
+            result = result.append(line)
+        return result
 
     def _rerender(self) -> None:
         """Re-render the label with the current selected/expanded state."""
@@ -511,6 +566,7 @@ class MCPViewerScreen(ModalScreen[None]):
                     description=tool.description,
                     index=flat_index,
                     classes=classes,
+                    input_schema=tool.input_schema,
                 )
                 self._tool_widgets.append(widget)
                 scroll.mount(widget)

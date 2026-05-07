@@ -351,6 +351,142 @@ class TestMCPViewerScreen:
 
             assert len(screen.query("#mcp-filter")) == 0
 
+    async def test_expanded_tool_renders_parameters(self) -> None:
+        """Expanding a tool with `input_schema` renders Parameters block."""
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(
+                        name="read_file",
+                        description="Read a file",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "encoding": {"type": "string"},
+                            },
+                            "required": ["path"],
+                        },
+                    ),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            tool_widget = screen._tool_widgets[0]
+            text = _widget_text(tool_widget)
+            assert "Parameters:" in text
+            assert "path: string *" in text
+            assert "encoding: string" in text
+            # Optional param has no asterisk on its own line.
+            assert "encoding: string *" not in text
+
+    async def test_expanded_tool_without_schema_has_no_parameters(self) -> None:
+        """Tool with `input_schema=None` shows only name + description."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            text = _widget_text(screen._tool_widgets[0])
+            assert "Parameters:" not in text
+
+    async def test_expanded_tool_with_empty_properties(self) -> None:
+        """Empty `properties` dict means no Parameters block."""
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(
+                        name="ping",
+                        description="No-op",
+                        input_schema={"type": "object", "properties": {}},
+                    ),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "Parameters:" not in _widget_text(screen._tool_widgets[0])
+
+    async def test_expanded_tool_param_missing_type_renders_any(self) -> None:
+        """Property without `type` renders as `:any`."""
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(
+                        name="run",
+                        description="Run",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"opts": {}},
+                        },
+                    ),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "opts: any" in _widget_text(screen._tool_widgets[0])
+
+    async def test_expanded_param_name_with_markup_is_safe(self) -> None:
+        """A parameter name containing markup metachars renders literally."""
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(
+                        name="weird",
+                        description="Has weird args",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"[bold]hax[/]": {"type": "string"}},
+                        },
+                    ),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+            text = _widget_text(screen._tool_widgets[0])
+            # The literal characters should be present, not consumed as markup.
+            assert "[bold]hax[/]" in text
+
     async def test_filter_param_name_match(self) -> None:
         """Param-name filter matches when input_schema.properties has the key."""
         from textual.widgets import Input

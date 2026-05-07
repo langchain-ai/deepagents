@@ -15,7 +15,7 @@
 
 name: "📊 Evals - N Trials"
 run-name: >-
-  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ inputs.eval_tiers && format(' tier:{0}', inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ inputs.eval_categories_exclude && format(' excluding {0}', inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠' || '' }}
 
 on:
   workflow_dispatch:
@@ -59,10 +59,41 @@ on:
         default: ""
         type: string
       eval_tiers:
-        description: "Comma-separated eval tiers (baseline | hillclimb). Empty = all."
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty to use eval_tiers_override instead. Defaults to all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - baseline
+          - hillclimb
+      eval_tiers_override:
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after each trial."
+        required: false
+        default: false
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
+          - "openai:gpt-5.4-mini"
+          - "openai:o4-mini"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
         description: "Pin OpenRouter to one or more providers (comma-separated allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
         required: false
@@ -112,6 +143,8 @@ jobs:
       provider: ${{ steps.build.outputs.provider }}
       slug: ${{ steps.build.outputs.slug }}
       eval_categories: ${{ steps.build.outputs.eval_categories }}
+      eval_tiers: ${{ steps.build.outputs.eval_tiers }}
+      analysis_model: ${{ steps.build.outputs.analysis_model }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -126,10 +159,15 @@ jobs:
           EVAL_CATEGORIES_OVERRIDE: ${{ inputs.eval_categories_override }}
           EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
           EVAL_TIERS: ${{ inputs.eval_tiers }}
+          EVAL_TIERS_OVERRIDE: ${{ inputs.eval_tiers_override }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
           OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
+          ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          # Default duplicates `_eval.yml`'s; resolved here once so the
+          # step-summary and the matrix forward share a single source.
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
           python3 << 'PYEOF'
           import json, os, re, sys
@@ -146,10 +184,23 @@ jobs:
 
           # Require non-empty provider AND non-empty model name; allow `/`
           # and `.` only on the model side (provider names don't use them).
-          if not re.match(r"^[a-zA-Z0-9_\-.]+:[a-zA-Z0-9_\-./]+$", model):
+          _MODEL_RE = re.compile(r"^[a-zA-Z0-9_\-.]+:[a-zA-Z0-9_\-./]+$")
+          if not _MODEL_RE.match(model):
               print(f"::error::Model must be `provider:name` with non-empty parts, got {model!r}")
               sys.exit(1)
           provider = model.split(":", 1)[0]
+
+          # `analysis_model` is forwarded into `_eval.yml` (and downstream
+          # into `init_chat_model`) without further validation; reject
+          # malformed values at dispatch time so a typo fails loud here
+          # rather than silently after eval has burned runner minutes.
+          analysis_model = os.environ["ANALYSIS_MODEL"].strip()
+          if not _MODEL_RE.match(analysis_model):
+              print(
+                  f"::error::analysis_model must be `provider:name` with non-empty parts, "
+                  f"got {analysis_model!r}"
+              )
+              sys.exit(1)
 
           try:
               n = int(trials_raw)
@@ -172,6 +223,7 @@ jobs:
               ("eval_categories_override", os.environ.get("EVAL_CATEGORIES_OVERRIDE", ""), _CSV_RE),
               ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
+              ("eval_tiers_override", os.environ.get("EVAL_TIERS_OVERRIDE", ""), _CSV_RE),
               ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _CSV_RE),
               ("repl", os.environ.get("REPL", ""), _SLUG_RE),
           ):
@@ -187,7 +239,11 @@ jobs:
               or os.environ.get("EVAL_CATEGORIES", "").strip()
           )
           eval_categories_exclude = os.environ.get("EVAL_CATEGORIES_EXCLUDE", "").strip()
-          eval_tiers = os.environ.get("EVAL_TIERS", "").strip()
+          # Override takes precedence over the dropdown (mirrors `evals.yml`).
+          eval_tiers = (
+              os.environ.get("EVAL_TIERS_OVERRIDE", "").strip()
+              or os.environ.get("EVAL_TIERS", "").strip()
+          )
           openrouter_provider = os.environ.get("OPENROUTER_PROVIDER", "").strip()
           openrouter_allow_fallbacks = (
               os.environ.get("OPENROUTER_ALLOW_FALLBACKS", "").strip().lower() == "true"
@@ -212,6 +268,8 @@ jobs:
               f.write(f"provider={provider}\n")
               f.write(f"slug={slug}\n")
               f.write(f"eval_categories={eval_categories_in}\n")
+              f.write(f"eval_tiers={eval_tiers}\n")
+              f.write(f"analysis_model={analysis_model}\n")
 
           # Resolve categories against the catalog so the dispatch summary
           # shows what will actually run after include/exclude filtering.
@@ -318,11 +376,26 @@ jobs:
                       unknown_note = f"<br>⚠️ _Not in catalog: {note}_"
                   lines.append(f"| **resolved categories** | {row_value}{unknown_note} |")
 
-              if eval_tiers:
-                  tiers_list = ", ".join(f"`{t}`" for t in _split_csv(eval_tiers))
-                  lines.append(f"| `eval_tiers` | {tiers_list} |")
+              tiers_override_val = os.environ.get("EVAL_TIERS_OVERRIDE", "").strip()
+              tiers_dropdown_val = os.environ.get("EVAL_TIERS", "").strip()
+              if tiers_override_val:
+                  lines.append(f"| `eval_tiers_override` | `{tiers_override_val}` |")
+              elif tiers_dropdown_val:
+                  lines.append(f"| `eval_tiers` | `{tiers_dropdown_val}` |")
               else:
                   lines.append("| `eval_tiers` | (all) |")
+
+              if eval_tiers:
+                  tiers_list = _split_csv(eval_tiers)
+                  if len(tiers_list) > 1:
+                      bulleted = "<br>".join(f"• <code>{t}</code>" for t in tiers_list)
+                      lines.append(f"| `eval_tiers` (expanded) | {bulleted} |")
+
+              analyze_failures = (
+                  os.environ.get("ANALYZE_FAILURES", "").strip().lower() == "true"
+              )
+              if analyze_failures:
+                  lines.append(f"| `analyze_failures` | ✅ enabled (`{analysis_model}`) |")
 
               if openrouter_provider:
                   lines.append(f"| `openrouter_provider` | `{openrouter_provider}` |")
@@ -361,8 +434,9 @@ jobs:
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ needs.prep.outputs.eval_categories }}
       eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
-      eval_tiers: ${{ inputs.eval_tiers }}
-      analyze_failures: false
+      eval_tiers: ${{ needs.prep.outputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ needs.prep.outputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}

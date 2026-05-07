@@ -561,17 +561,21 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
 
 
 def _resolve_langsmith_api_key() -> str | None:
+    from deepagents_cli.model_config import resolve_env_var
+
     return (
-        os.environ.get("LANGSMITH_API_KEY")
-        or os.environ.get("LANGCHAIN_API_KEY")
-        or os.environ.get("LANGGRAPH_HOST_API_KEY")
+        resolve_env_var("LANGSMITH_API_KEY")
+        or resolve_env_var("LANGCHAIN_API_KEY")
+        or resolve_env_var("LANGGRAPH_HOST_API_KEY")
     )
 
 
 def _resolve_langsmith_endpoint() -> str:
+    from deepagents_cli.model_config import resolve_env_var
+
     return (
-        os.environ.get("LANGSMITH_ENDPOINT")
-        or os.environ.get("LANGCHAIN_ENDPOINT")
+        resolve_env_var("LANGSMITH_ENDPOINT")
+        or resolve_env_var("LANGCHAIN_ENDPOINT")
         or "https://api.smith.langchain.com"
     ).rstrip("/")
 
@@ -614,6 +618,8 @@ def _upsert_issues_board_config(
     """Best-effort create or patch board config for a deployed agent."""
     import httpx
 
+    from deepagents_cli.model_config import resolve_env_var
+
     success_codes = {200, 201}
     http_conflict = 409
     endpoint = _resolve_langsmith_endpoint()
@@ -622,7 +628,7 @@ def _upsert_issues_board_config(
         "x-api-key": api_key,
         "Content-Type": "application/json",
     }
-    tenant_id = os.environ.get("LANGSMITH_TENANT_ID")
+    tenant_id = resolve_env_var("LANGSMITH_TENANT_ID")
     if tenant_id:
         headers["x-tenant-id"] = tenant_id
 

@@ -204,6 +204,19 @@ Tests that **pass without the profile** and **stably fail with it** (4/4 v1 tria
 
 Counterintuitively, these regress *despite* the suffix's `Output Channel` rule explicitly telling the model never to leave content empty. The larger profile prompt appears to push the model into `reasoning_content` routing on simple single-tool tasks more strongly than the rule counters. This is direct evidence that the empty-content section isn't paying for itself in the harness, even though direct API probes showed it working in isolation (8/8 vs. 1/8).
 
+#### Local A/B verification (N=5 per cell, live Fireworks API)
+
+Toggled the profile on/off via a pytest plugin that pops the GLM-5p1 entry from `_HARNESS_PROFILES` after bootstrap. Confirms the regression is real and large — not CI-run flakiness.
+
+| Condition | Test | Pass | Fail |
+|---|---|---:|---:|
+| with-profile | `test_single_tool_get_food_calories` | 1 | 4 |
+| with-profile | `test_single_tool_get_user_email` | 0 | 5 |
+| no-profile | `test_single_tool_get_food_calories` | 5 | 0 |
+| no-profile | `test_single_tool_get_user_email` | 5 | 0 |
+
+Without the profile: **10/10 pass**. With it: **1/10 pass**. Same failure mode in every case (`got: ''`). The single passing `food_calories` run with profile shows the regression is probabilistic, not deterministic — but the magnitude (≈90% failure rate vs ≈0%) is unambiguous.
+
 ### Net assessment
 
 The profile is a **modest net positive**: conversation +0.11 and summarization +0.20 (both outside v1's noise band) outweigh the 2-test regression on single-tool prompts. Headline `solve_rate` is statistically indistinguishable from no-profile, but the test sets differ enough that the headline isn't a fair comparison.

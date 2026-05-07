@@ -19,6 +19,7 @@ from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from deepagents_cli.clipboard import (
     copy_selection_to_clipboard,
+    copy_text_to_clipboard,
     logger as clipboard_logger,
 )
 from deepagents_cli.file_ops import FileOpTracker, _safe_read
@@ -166,6 +167,113 @@ class TestFileOpsExceptionHandling:
 
 class TestClipboardExceptionHandling:
     """Test exception handling in clipboard utilities."""
+
+    def test_copy_text_returns_true_when_pyperclip_succeeds(self) -> None:
+        """copy_text_to_clipboard should stop after pyperclip succeeds."""
+        mock_app = MagicMock()
+
+        with (
+            patch("pyperclip.copy") as copy,
+            patch("deepagents_cli.clipboard._copy_osc52") as osc52,
+        ):
+            result = copy_text_to_clipboard(mock_app, "hello")
+
+        assert result is True
+        copy.assert_called_once_with("hello")
+        mock_app.copy_to_clipboard.assert_not_called()
+        osc52.assert_not_called()
+
+    def test_copy_text_falls_back_to_app_clipboard(self, caplog) -> None:
+        """copy_text_to_clipboard should use app clipboard after pyperclip fails."""
+        mock_app = MagicMock()
+
+        with (
+            patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")) as copy,
+            caplog.at_level(logging.DEBUG),
+        ):
+            result = copy_text_to_clipboard(mock_app, "hello")
+
+        assert result is True
+        copy.assert_called_once_with("hello")
+        mock_app.copy_to_clipboard.assert_called_once_with("hello")
+        assert "no pyperclip" in caplog.text
+
+    def test_copy_text_falls_back_to_osc52(self, caplog) -> None:
+        """copy_text_to_clipboard should use OSC52 after native backends fail."""
+        mock_app = MagicMock()
+        mock_app.copy_to_clipboard.side_effect = OSError("no app clipboard")
+
+        with (
+            patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
+            patch("deepagents_cli.clipboard._copy_osc52") as osc52,
+            caplog.at_level(logging.DEBUG),
+        ):
+            result = copy_text_to_clipboard(mock_app, "hello")
+
+        assert result is True
+        osc52.assert_called_once_with("hello")
+        assert "no pyperclip" in caplog.text
+        assert "no app clipboard" in caplog.text
+
+    def test_copy_text_returns_false_when_all_backends_fail(self, caplog) -> None:
+        """copy_text_to_clipboard should report failure without raising."""
+        mock_app = MagicMock()
+        mock_app.copy_to_clipboard.side_effect = OSError("no app clipboard")
+
+        with (
+            patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
+            patch(
+                "deepagents_cli.clipboard._copy_osc52",
+                side_effect=OSError("no tty"),
+            ),
+            caplog.at_level(logging.DEBUG),
+        ):
+            result = copy_text_to_clipboard(mock_app, "hello")
+
+        assert result is False
+        assert "no pyperclip" in caplog.text
+        assert "no app clipboard" in caplog.text
+        assert "no tty" in caplog.text
+
+    def test_copy_selection_delegates_to_text_helper(self) -> None:
+        """Selection copy should reuse copy_text_to_clipboard for the side effect."""
+        mock_app = MagicMock()
+        selection = MagicMock(end=1)
+        widget = MagicMock()
+        widget.text_selection = selection
+        widget.get_selection.return_value = ("selected text", None)
+        mock_app.query.return_value = [widget]
+
+        with patch(
+            "deepagents_cli.clipboard.copy_text_to_clipboard",
+            return_value=True,
+        ) as copy:
+            copy_selection_to_clipboard(mock_app)
+
+        copy.assert_called_once_with(mock_app, "selected text")
+        mock_app.notify.assert_called_once()
+        assert mock_app.notify.call_args.kwargs["severity"] == "information"
+
+    def test_copy_selection_warns_when_text_helper_fails(self) -> None:
+        """Selection copy should preserve failure notification behavior."""
+        mock_app = MagicMock()
+        selection = MagicMock(end=1)
+        widget = MagicMock()
+        widget.text_selection = selection
+        widget.get_selection.return_value = ("selected text", None)
+        mock_app.query.return_value = [widget]
+
+        with patch(
+            "deepagents_cli.clipboard.copy_text_to_clipboard",
+            return_value=False,
+        ):
+            copy_selection_to_clipboard(mock_app)
+
+        mock_app.notify.assert_called_once_with(
+            "Failed to copy - no clipboard method available",
+            severity="warning",
+            timeout=3,
+        )
 
     def test_copy_handles_widget_selection_failures(self, caplog):
         """Test that copy_selection_to_clipboard handles widget failures gracefully."""

@@ -4274,7 +4274,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/offload, /editor, "
+                "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
@@ -4324,6 +4324,34 @@ class DeepAgentsApp(App):
                     pass
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
+                )
+        elif cmd == "/copy":
+            await self._mount_message(UserMessage(command))
+            content = next(
+                (
+                    message.content
+                    for message in reversed(self._message_store.get_all_messages())
+                    if message.type == MessageType.ASSISTANT
+                    and not message.is_streaming
+                    and message.content.strip()
+                ),
+                None,
+            )
+            if content is None:
+                await self._mount_message(
+                    AppMessage("No assistant message to copy yet.")
+                )
+                return
+
+            from deepagents_cli.clipboard import copy_text_to_clipboard
+
+            if copy_text_to_clipboard(self, content):
+                await self._mount_message(
+                    AppMessage("Copied latest assistant message to clipboard.")
+                )
+            else:
+                await self._mount_message(
+                    AppMessage("Failed to copy latest assistant message to clipboard.")
                 )
         elif cmd == "/editor":
             await self.action_open_editor()

@@ -91,6 +91,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset",
     ),
     SlashCommand(
+        name="/copy",
+        description="Copy latest assistant message to clipboard",
+        bypass_tier=BypassTier.QUEUED,
+    ),
+    SlashCommand(
         name="/force-clear",
         description="Interrupt active work, clear chat, and start new thread",
         bypass_tier=BypassTier.ALWAYS,

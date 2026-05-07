@@ -135,6 +135,21 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestCopyCommand:
+    """Validate the `/copy` entry specifically."""
+
+    def test_copy_registered_for_autocomplete(self) -> None:
+        copy_entry = next(entry for entry in SLASH_COMMANDS if entry.name == "/copy")
+
+        assert copy_entry.description == "Copy latest assistant message to clipboard"
+
+    def test_copy_classified_as_queue_bound(self) -> None:
+        copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
+
+        assert copy_cmd.description == "Copy latest assistant message to clipboard"
+        assert "/copy" in QUEUE_BOUND
+
+
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.
 

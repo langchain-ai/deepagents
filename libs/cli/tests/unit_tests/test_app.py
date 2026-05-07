@@ -2461,6 +2461,124 @@ class TestTraceCommand:
             assert isinstance(app.screen, AuthManagerScreen)
 
 
+class TestCopyCommand:
+    """Tests for `/copy` command behavior."""
+
+    async def test_copy_latest_assistant_message_to_clipboard(self) -> None:
+        """`/copy` copies the latest stored assistant markdown exactly."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        markdown = "# Result\n\n- keep **markdown** source"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=markdown)
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=True,
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, markdown)
+            assert any(w._content == "/copy" for w in app.query(UserMessage))
+            assert any(
+                str(w._content) == "Copied latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_skips_ineligible_newer_messages(self) -> None:
+        """`/copy` reverse-scans for the newest completed assistant text."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        expected = "older completed assistant"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=expected)
+        )
+        app._message_store.append(MessageData(type=MessageType.USER, content="thanks"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=""))
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="   ")
+        )
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+        app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=True,
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, expected)
+
+    async def test_copy_reports_empty_state_without_clipboard_call(self) -> None:
+        """`/copy` reports empty state when no assistant text is eligible."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hello"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=" "))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=True,
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                str(w._content) == "No assistant message to copy yet."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure(self) -> None:
+        """`/copy` reports failure when no clipboard backend succeeds."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=False,
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
+
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
@@ -4480,7 +4598,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/tokens"):
+            for cmd in ("/help", "/clear", "/copy", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
 
     async def test_can_bypass_queue_empty_string(self) -> None:

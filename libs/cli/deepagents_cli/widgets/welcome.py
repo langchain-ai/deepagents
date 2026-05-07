@@ -40,6 +40,7 @@ _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 2,
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
+    "Use /copy to copy the latest assistant message": 1,
     "Use /mcp to see your loaded tools and servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,

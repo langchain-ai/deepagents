@@ -1,26 +1,34 @@
 """Surface declared subagents as typed `run.subagents` handles.
 
-Pregel's `tasks` event names a child task by its parent's node name
-(typically `"tools"`) plus a Pregel-assigned task id. The actual
-`subagent_type` and the user-facing `tool_call_id` only live in the
-**parent** task's `input` payload (the list of tool calls). This
-transformer does two things:
+Each `task` tool call dispatched by `langchain.agents.create_agent`'s
+Send fan-out (`Send("tools", [tool_call])`) becomes its own pregel
+task — a per-call dispatched task whose `input` is a single-element
+list of tool-call dicts. The child subagent subgraph spawns under a
+namespace of the form ``["tools:<pregel_task_id>"]``, so the
+namespace tail's task id is the same `task.id` the per-call
+dispatched task carries.
 
-1. At parent scope, intercept `tasks` start events whose `name ==
-   "tools"` and `input` is a list containing one or more `task` tool
-   calls. For each such tool call, record
-   ``parent_task_id → (subagent_type, tool_call_id)``.
-2. When a direct-child `tasks` start fires (segment ``"tools:<id>"``),
-   look up `id` in the pending map. If it resolves to a declared
-   subagent name, build a `SubagentRunStream` (or async variant)
-   wrapping a child mini-mux and push it onto the `subagents` log.
-   The handle reports `graph_name` as the subagent's declared type
-   (e.g. ``"researcher"``) and `trigger_call_id` as the user-facing
-   tool call id (e.g. ``"call-parent-1"``).
+This transformer:
+
+1. On every `tasks` start event (anywhere in the run), inspects the
+   task's `input` for the per-call envelope. If it parses, records
+   ``task_id → {"subagent_type", "task_input"}`` keyed by the
+   pregel task id. Mirrors what
+   `langgraph.stream.transformers._TasksLifecycleBase._record_spawn_metadata`
+   does on the wire, but with a deepagents-specific dict shape so
+   we can plumb it straight into our typed handles.
+2. When `_on_started` fires for a tracked namespace, looks up the
+   pending entry by `trigger_call_id` (the parsed namespace tail).
+   If it resolves to a declared subagent name, builds a
+   `SubagentRunStream` (or async variant) wrapping a child mini-mux
+   and pushes it onto the `subagents` log.
 
 A subagent therefore shows up on **both** `run.subgraphs` (untyped,
 superset, keyed by the raw Pregel segment) and `run.subagents`
-(typed, declared-only, with user-friendly identifiers).
+(typed, declared-only). The typed handle's `cause` exposes
+`trigger_call_id` (the pregel task id) — not the model-side
+`tool_call_id`, which is no longer used for correlation because it
+conflated parallel `task` calls dispatched in the same parent step.
 """
 
 from __future__ import annotations
@@ -68,9 +76,18 @@ class SubagentRunStream(SubgraphRunStream):
 
     @property
     def cause(self) -> dict[str, str] | None:
+        """Spawn descriptor for in-process consumers.
+
+        Exposes the pregel task id under the `trigger_call_id` key
+        (not the model-side `tool_call_id`, which conflated parallel
+        `task` calls under the same parent task). The `type` tag stays
+        camelCase (`"toolCall"`) for in-process consumer compatibility;
+        the wire-side `lifecycle.started.cause` uses snake_case
+        (`"tool_call"`).
+        """
         if self.trigger_call_id is None:
             return None
-        return {"type": "toolCall", "tool_call_id": self.trigger_call_id}
+        return {"type": "toolCall", "trigger_call_id": self.trigger_call_id}
 
 
 class AsyncSubagentRunStream(AsyncSubgraphRunStream):
@@ -99,9 +116,18 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
 
     @property
     def cause(self) -> dict[str, str] | None:
+        """Spawn descriptor for in-process consumers.
+
+        Exposes the pregel task id under the `trigger_call_id` key
+        (not the model-side `tool_call_id`, which conflated parallel
+        `task` calls under the same parent task). The `type` tag stays
+        camelCase (`"toolCall"`) for in-process consumer compatibility;
+        the wire-side `lifecycle.started.cause` uses snake_case
+        (`"tool_call"`).
+        """
         if self.trigger_call_id is None:
             return None
-        return {"type": "toolCall", "tool_call_id": self.trigger_call_id}
+        return {"type": "toolCall", "trigger_call_id": self.trigger_call_id}
 
 
 class SubagentTransformer(_TasksLifecycleBase):
@@ -120,7 +146,13 @@ class SubagentTransformer(_TasksLifecycleBase):
         self._log: StreamChannel[SubagentRunStream | AsyncSubagentRunStream] = StreamChannel()
         self._handles: dict[tuple[str, ...], SubagentRunStream | AsyncSubagentRunStream] = {}
         self._mux: StreamMux | None = None
-        # parent_task_id -> {"subagent_type": ..., "tool_call_id": ...}
+        # Maps trigger_call_id (per-call dispatched task id, parsed from
+        # namespace tail) -> {"subagent_type": ..., "task_input": ...}.
+        # Mined from the per-call task's ToolCallWithContext input
+        # envelope (`{"tool_call": {"args": {"subagent_type": ...,
+        # "description": ...}}, ...}`). Each Send-dispatched call has a
+        # unique task id, so parallel `task` calls each get their own
+        # entry — no conflation.
         self._pending: dict[str, dict[str, str]] = {}
 
     def init(self) -> dict[str, Any]:
@@ -133,42 +165,47 @@ class SubagentTransformer(_TasksLifecycleBase):
         depth = len(self.scope)
         return len(ns) == depth + 1 and ns[:depth] == self.scope
 
-    def _capture_pending_from_parent(self, event: ProtocolEvent) -> None:
-        """Record subagent metadata from a parent-scope `tools`-task start.
+    def _capture_per_call_metadata(self, data: dict[str, Any]) -> None:
+        """Capture subagent metadata from a per-call dispatched task.
 
-        Pregel emits a `tasks` start at the parent ns whose `input` is
-        the list of tool calls being dispatched. Each ``task`` tool
-        call carries the user-visible ``tool_call_id``, the declared
-        ``subagent_type``, and the ``description`` we need at
-        child-task time.
+        `langchain.agents.create_agent` Send-fans out tool calls as
+        ``Send("tools", [tool_call])`` — one pregel task per call,
+        with `input` shaped as a single-element list of tool-call
+        dicts. We mine `subagent_type` and `description` off the
+        `task` tool calls inside that list and stash them keyed by
+        the per-call dispatched task's `id`. The child subgraph's
+        first lifecycle event will carry that same id as
+        `trigger_call_id` (parsed from the ``tools:<id>`` namespace
+        tail), so `_on_started` joins on it directly.
+
+        Multiple `task` calls dispatched in the same model turn each
+        produce a separate per-call task with its own unique id, so
+        keying by the pregel id disambiguates parallel calls without
+        relying on the model-side `tool_call_id` (which previously
+        conflated calls when emitted in the same batch).
         """
-        ns = tuple(event["params"]["namespace"])
-        if ns != self.scope:
+        task_id = data.get("id")
+        if not isinstance(task_id, str):
             return
-        data = event["params"]["data"]
-        if "result" in data or data.get("name") != "tools":
-            return
-        parent_task_id = data.get("id")
         tool_calls = data.get("input")
-        if not isinstance(parent_task_id, str) or not isinstance(tool_calls, list):
+        if not isinstance(tool_calls, list):
             return
         for tc in tool_calls:
             if not isinstance(tc, dict) or tc.get("name") != "task":
                 continue
-            args = tc.get("args") or {}
+            args = tc.get("args")
+            if not isinstance(args, dict):
+                continue
             subagent_type = args.get("subagent_type")
-            tool_call_id = tc.get("id")
-            task_input = args.get("description")
             if not isinstance(subagent_type, str):
                 continue
-            self._pending[parent_task_id] = {
+            if subagent_type not in self._names:
+                continue
+            description = args.get("description")
+            self._pending[task_id] = {
                 "subagent_type": subagent_type,
-                "tool_call_id": tool_call_id if isinstance(tool_call_id, str) else "",
-                "task_input": task_input if isinstance(task_input, str) else "",
+                "task_input": description if isinstance(description, str) else "",
             }
-            # First task-typed call wins; multiple `task` calls under
-            # the same parent task aren't expected in the current
-            # scheduling model.
             return
 
     def _on_started(
@@ -176,14 +213,21 @@ class SubagentTransformer(_TasksLifecycleBase):
         ns: tuple[str, ...],
         graph_name: str | None,  # noqa: ARG002
         trigger_call_id: str | None,
+        spawn_metadata: dict[str, str] | None = None,  # noqa: ARG002
     ) -> None:
+        # Pair the spawned namespace to its captured metadata via
+        # trigger_call_id (the pregel task id, parsed from the
+        # namespace tail). Each per-call dispatched task has a unique
+        # id, so parallel `task` calls under the same parent each get
+        # their own pending entry — no conflation. The
+        # `spawn_metadata` arg from the base class is unused here
+        # because we maintain our own typed handle state via
+        # `_pending`; we forward `trigger_call_id` directly to the
+        # handle constructor as the in-process correlation id.
         if trigger_call_id is None:
             return
         info = self._pending.pop(trigger_call_id, None)
         if info is None:
-            return
-        subagent_type = info["subagent_type"]
-        if subagent_type not in self._names:
             return
         if self._mux is None or ns in self._handles:
             return
@@ -195,8 +239,8 @@ class SubagentTransformer(_TasksLifecycleBase):
         handle = handle_cls(
             mux=child_mux,
             path=ns,
-            graph_name=subagent_type,
-            trigger_call_id=info["tool_call_id"] or None,
+            graph_name=info["subagent_type"],
+            trigger_call_id=trigger_call_id,
             task_input=info["task_input"] or None,
         )
         self._handles[ns] = handle
@@ -234,7 +278,9 @@ class SubagentTransformer(_TasksLifecycleBase):
 
     def process(self, event: ProtocolEvent) -> bool:
         if event.get("method") == "tasks":
-            self._capture_pending_from_parent(event)
+            data = event.get("params", {}).get("data", {})
+            if isinstance(data, dict) and "result" not in data:
+                self._capture_per_call_metadata(data)
         keep = super().process(event)
         handle = self._handle_for_event(event)
         if handle is not None:

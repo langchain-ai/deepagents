@@ -4,13 +4,18 @@ Pushes synthetic `tasks` protocol events into a `StreamMux` configured
 with `SubagentTransformer` alongside the usual native transformers.
 Mirrors the structure of langgraph's `test_stream_subgraph_transformer.py`.
 
-The realistic event sequence is:
+The realistic event sequence (post-namespace-keyed refactor):
 
-1. Parent-scope `tasks` start with ``name == "tools"`` and ``input``
-   containing ``task`` tool calls — this is how the transformer learns
-   ``parent_task_id → (subagent_type, tool_call_id)``.
+1. Per-call dispatched `tasks` start at parent ns with ``input``
+   matching the `ToolCallWithContext` envelope
+   (`{"tool_call": {"id": tc, "name": "task", "args":
+   {"subagent_type": ..., "description": ...}}}`). The task's `id`
+   is the pregel task id assigned by Send fan-out — the transformer
+   keys ``_pending`` by this id (== `trigger_call_id` parsed from
+   the child's namespace tail), so parallel `task` calls each get a
+   distinct entry.
 2. Child-scope `tasks` start at ``["tools:<parent_task_id>"]`` —
-   triggers `_on_started`, which looks up the parent mapping and
+   triggers `_on_started`, which looks up the pending entry and
    builds a `SubagentRunStream` if the type is declared.
 3. Parent-scope `tasks` result with the matching ``id`` — closes the
    child handle.
@@ -39,14 +44,27 @@ if TYPE_CHECKING:
 TS = int(time.time() * 1000)
 
 
-def _tools_start(
+def _per_call_tasks_start(
     namespace: list[str],
     *,
     parent_task_id: str,
     subagent_type: str,
     tool_call_id: str,
+    description: str | None = None,
 ) -> ProtocolEvent:
-    """A parent-scope `tools`-task start that dispatches one `task` tool call."""
+    """A per-call dispatched `tasks` start with a single-element tool-call list.
+
+    Mirrors what `langchain.agents.create_agent`'s
+    ``Send("tools", [tool_call])`` fan-out emits: one pregel task per
+    call whose `input` is a list containing a single tool-call dict.
+    `parent_task_id` is the pregel task id (the same id that becomes
+    `trigger_call_id` when parsed off the child subgraph's namespace
+    tail). `tool_call_id` is the model-side id; it travels in the
+    tool-call dict but is no longer used for correlation.
+    """
+    args: dict[str, Any] = {"subagent_type": subagent_type}
+    if description is not None:
+        args["description"] = description
     return {
         "type": "event",
         "method": "tasks",
@@ -58,9 +76,9 @@ def _tools_start(
                 "name": "tools",
                 "input": [
                     {
-                        "name": "task",
-                        "args": {"subagent_type": subagent_type},
                         "id": tool_call_id,
+                        "name": "task",
+                        "args": args,
                     }
                 ],
                 "triggers": [],
@@ -75,19 +93,25 @@ def _child_tasks_start(
     task_id: str = "child-task",
     name: str = "PatchToolCallsMiddleware.before_agent",
 ) -> ProtocolEvent:
-    """A child-scope `tasks` start (any inner node — kicks off the subagent)."""
+    """A child-scope `tasks` start (any inner node — kicks off the subagent).
+
+    No `tool_call_id` plumbing on this event anymore; correlation is
+    by `trigger_call_id` parsed from the namespace tail (which equals
+    the per-call dispatched task's `id`).
+    """
+    data: dict[str, Any] = {
+        "id": task_id,
+        "name": name,
+        "input": None,
+        "triggers": [],
+    }
     return {
         "type": "event",
         "method": "tasks",
         "params": {
             "namespace": namespace,
             "timestamp": TS,
-            "data": {
-                "id": task_id,
-                "name": name,
-                "input": None,
-                "triggers": [],
-            },
+            "data": data,
         },
     }
 
@@ -99,7 +123,7 @@ def _parent_tasks_result(
     error: str | None = None,
     interrupts: list[dict[str, Any]] | None = None,
 ) -> ProtocolEvent:
-    """A parent-scope `tools`-task result that closes the dispatched subagent."""
+    """A parent-scope `tasks` result that closes the dispatched subagent."""
     return {
         "type": "event",
         "method": "tasks",
@@ -124,18 +148,24 @@ def _spawn(
     subagent_type: str,
     tool_call_id: str,
     parent_ns: list[str] | None = None,
+    description: str | None = None,
 ) -> None:
-    """Push parent + child start events that mimic a real subagent spawn."""
+    """Push per-call + child start events that mimic a real subagent spawn."""
     parent_ns = parent_ns or []
     mux.push(
-        _tools_start(
+        _per_call_tasks_start(
             parent_ns,
             parent_task_id=parent_task_id,
             subagent_type=subagent_type,
             tool_call_id=tool_call_id,
+            description=description,
         )
     )
-    mux.push(_child_tasks_start([*parent_ns, f"tools:{parent_task_id}"]))
+    mux.push(
+        _child_tasks_start(
+            [*parent_ns, f"tools:{parent_task_id}"],
+        )
+    )
 
 
 def _values(payload: dict[str, Any], *, namespace: list[str]) -> ProtocolEvent:
@@ -220,14 +250,49 @@ class TestSubagentTransformerUnit:
             parent_task_id="abc",
             subagent_type="researcher",
             tool_call_id="tc-1",
+            description="do research",
         )
 
         handle = self._handle(transformer)
         assert isinstance(handle, SubagentRunStream)
         assert handle.path == ("tools:abc",)
         assert handle.name == "researcher"
-        assert handle.cause == {"type": "toolCall", "tool_call_id": "tc-1"}
+        # Cause now exposes `trigger_call_id` (pregel task id), not the
+        # model-side `tool_call_id`.
+        assert handle.cause == {"type": "toolCall", "trigger_call_id": "abc"}
+        assert handle.task_input == "do research"
         assert handle.status == "started"
+
+    def test_parallel_task_calls_get_distinct_handles(self) -> None:
+        """Parallel `task` calls under the same parent step don't conflate.
+
+        Each Send-dispatched per-call task has a unique pregel task id,
+        so two `_spawn` invocations with distinct `parent_task_id`s
+        produce two independent handles even though they share the
+        parent ns and overlap in time.
+        """
+        mux, transformer = self._mux()
+        _spawn(
+            mux,
+            parent_task_id="p1",
+            subagent_type="researcher",
+            tool_call_id="tc-shared",
+        )
+        _spawn(
+            mux,
+            parent_task_id="p2",
+            subagent_type="coder",
+            tool_call_id="tc-shared",
+        )
+
+        handles = [item for _stamp, item in transformer._log._items]
+        assert len(handles) == 2
+        names = sorted(h.name for h in handles)
+        assert names == ["coder", "researcher"]
+        causes = sorted(
+            h.cause["trigger_call_id"] for h in handles if h.cause is not None
+        )
+        assert causes == ["p1", "p2"]
 
     def test_status_transitions(self) -> None:
         """A parent-scope tasks-result closes the subagent and marks completed."""
@@ -305,7 +370,7 @@ class TestSubagentTransformerUnit:
         parent = self._handle(transformer)
         _pre_subscribe_handle(parent)
 
-        # Nested spawn: parent ns is the researcher's ns; same `tools`-then-child pattern.
+        # Nested spawn: parent ns is the researcher's ns.
         _spawn(
             mux,
             parent_task_id="c",

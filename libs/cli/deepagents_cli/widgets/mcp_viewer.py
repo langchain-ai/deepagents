@@ -11,15 +11,14 @@ from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from deepagents_cli.mcp_tools import MCPServerInfo, MCPServerStatus
-
 from deepagents_cli import theme
 from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
+from deepagents_cli.mcp_tools import MCPServerInfo, MCPServerStatus, MCPToolInfo
 
 
 def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
@@ -48,6 +47,55 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     if status == "unauthenticated":
         return colors.warning
     return colors.error
+
+
+def _tool_haystack(tool: MCPToolInfo) -> str:
+    """Return the searchable text for a single tool (lower-cased).
+
+    Includes the tool name, description, and any parameter names from
+    `input_schema.properties`. Param names are a small bonus signal so
+    `"path"` finds tools that accept `path: string` even when neither the
+    name nor description mentions it.
+    """
+    parts = [tool.name, tool.description or ""]
+    schema = tool.input_schema
+    if schema:
+        properties = schema.get("properties") or {}
+        if isinstance(properties, dict):
+            parts.extend(str(name) for name in properties)
+    return " ".join(parts).lower()
+
+
+def _server_haystack(server: MCPServerInfo) -> str:
+    """Return the searchable text for a server header (lower-cased)."""
+    return f"{server.name} {server.transport}".lower()
+
+
+def _visible_tools_for(
+    server: MCPServerInfo, tokens: list[str]
+) -> tuple[MCPToolInfo, ...] | None:
+    """Return the tools to render for `server` under the active filter.
+
+    - `tokens=[]` (empty filter) -> all tools (or `()` if the server has none).
+    - Server-name match across all tokens -> all tools.
+    - Otherwise -> only tools whose haystack matches every token.
+    - Returns `None` when nothing about the server matches and no tools
+      survive — the caller should skip rendering the header entirely.
+    """
+    if not tokens:
+        return server.tools
+
+    if all(token in _server_haystack(server) for token in tokens):
+        return server.tools
+
+    matching = tuple(
+        tool
+        for tool in server.tools
+        if all(token in _tool_haystack(tool) for token in tokens)
+    )
+    if matching:
+        return matching
+    return None
 
 
 class MCPToolItem(Static):
@@ -190,16 +238,21 @@ class MCPViewerScreen(ModalScreen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
-        Binding("k", "move_up", "Up", show=False, priority=True),
         Binding("shift+tab", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("j", "move_down", "Down", show=False, priority=True),
         Binding("tab", "move_down", "Down", show=False, priority=True),
         Binding("enter", "toggle_expand", "Expand", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
+    """Key bindings for navigation, expansion, and cancel.
+
+    All bindings use `priority=True` so they take precedence over the
+    embedded filter `Input`. Vim-style `j`/`k` bindings are deliberately
+    omitted because they would prevent typing those letters into the
+    always-focused filter input — same rationale as `model_selector.py`.
+    """
 
     CSS = """
     MCPViewerScreen {
@@ -220,6 +273,15 @@ class MCPViewerScreen(ModalScreen[None]):
         color: $primary;
         text-align: center;
         margin-bottom: 1;
+    }
+
+    MCPViewerScreen #mcp-filter {
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    MCPViewerScreen #mcp-filter:focus {
+        border: solid $primary;
     }
 
     MCPViewerScreen .mcp-list {
@@ -294,6 +356,7 @@ class MCPViewerScreen(ModalScreen[None]):
         self._connecting = connecting
         self._tool_widgets: list[MCPToolItem] = []
         self._selected_index = 0
+        self._query: str = ""
 
     def refresh_server_info(self, server_info: list[MCPServerInfo]) -> None:
         """Replace the displayed server list; typically after server startup.
@@ -308,6 +371,21 @@ class MCPViewerScreen(ModalScreen[None]):
         self._tool_widgets = []
         self._selected_index = 0
         self._mount_body(body)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Rebuild the visible tool list whenever the filter input changes.
+
+        Only the scroll's children are torn down — the title, filter Input,
+        and help footer stay mounted so focus is preserved across keystrokes.
+        """
+        if event.input.id != "mcp-filter":
+            return
+        self._query = event.value
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        scroll.remove_children()
+        self._tool_widgets = []
+        self._selected_index = 0
+        self._populate_scroll(scroll, self._query)
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual requires an instance method
         """Compose the screen layout.
@@ -327,7 +405,12 @@ class MCPViewerScreen(ModalScreen[None]):
         self._mount_body(self.query_one(Vertical))
 
     def _mount_body(self, container: Vertical) -> None:
-        """Populate `container` with the title, list, and help footer."""
+        """Populate `container` with the title, filter input, list, and help footer.
+
+        The filter Input and scroll container are mounted once. Subsequent
+        filter rebuilds replace only the scroll's children via
+        `_populate_scroll`, keeping the Input focused across keystrokes.
+        """
         glyphs = get_glyphs()
         total_servers = len(self._server_info)
         total_tools = sum(len(s.tools) for s in self._server_info)
@@ -343,8 +426,37 @@ class MCPViewerScreen(ModalScreen[None]):
             title = "MCP Servers"
         container.mount(Static(title, classes="mcp-viewer-title"))
 
+        # Suppress the filter Input while the connecting placeholder is
+        # showing — there's nothing to filter yet.
+        if self._server_info:
+            container.mount(
+                Input(
+                    id="mcp-filter",
+                    placeholder="Filter tools...",
+                    value=self._query,
+                )
+            )
+
         scroll = VerticalScroll(classes="mcp-list")
         container.mount(scroll)
+        self._populate_scroll(scroll, self._query)
+
+        help_text = (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
+            f" {glyphs.bullet} Enter expand/collapse"
+            f" {glyphs.bullet} Type to filter"
+            f" {glyphs.bullet} Esc close"
+        )
+        container.mount(Static(help_text, classes="mcp-viewer-help"))
+
+    def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
+        """Mount filtered server headers + tool items into `scroll`.
+
+        Empty `query` shows everything; otherwise multi-token AND matching
+        across server names, transport, tool names, descriptions, and
+        parameter names.
+        """
+        glyphs = get_glyphs()
 
         if not self._server_info:
             placeholder = (
@@ -353,54 +465,60 @@ class MCPViewerScreen(ModalScreen[None]):
                 else ("No MCP servers configured.\nUse `--mcp-config` to load servers.")
             )
             scroll.mount(Static(placeholder, classes="mcp-empty"))
-        else:
-            colors = theme.get_theme_colors(self)
-            flat_index = 0
-            for server in self._server_info:
-                tool_count = len(server.tools)
-                t_label = "tool" if tool_count == 1 else "tools"
-                indicator_color = _status_color(server.status, colors)
-                indicator_glyph = _status_glyph(server.status, glyphs)
-                if server.status == "ok":
-                    header_content = Content.assemble(
-                        (f"{indicator_glyph} ", indicator_color),
-                        (server.name, "bold"),
-                        (
-                            f" {server.transport} {glyphs.bullet}"
-                            f" {tool_count} {t_label}",
-                            "dim",
-                        ),
-                    )
-                else:
-                    error_text = server.error or ""
-                    header_content = Content.assemble(
-                        (f"{indicator_glyph} ", indicator_color),
-                        (server.name, "bold"),
-                        (f" {server.transport}", "dim"),
-                        (f" {glyphs.bullet} {server.status}", indicator_color),
-                        (f" — {error_text}", "dim") if error_text else "",
-                    )
-                scroll.mount(Static(header_content, classes="mcp-server-header"))
-                for tool in server.tools:
-                    classes = "mcp-tool-item"
-                    if flat_index == 0:
-                        classes += " mcp-tool-selected"
-                    widget = MCPToolItem(
-                        name=tool.name,
-                        description=tool.description,
-                        index=flat_index,
-                        classes=classes,
-                    )
-                    self._tool_widgets.append(widget)
-                    scroll.mount(widget)
-                    flat_index += 1
+            return
 
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
-            f" {glyphs.bullet} Enter expand/collapse"
-            f" {glyphs.bullet} Esc close"
-        )
-        container.mount(Static(help_text, classes="mcp-viewer-help"))
+        tokens = [tok for tok in query.lower().split() if tok]
+        colors = theme.get_theme_colors(self)
+        flat_index = 0
+        rendered_any_tool = False
+
+        for server in self._server_info:
+            visible_tools = _visible_tools_for(server, tokens)
+            if visible_tools is None:
+                # Server filtered out entirely.
+                continue
+
+            tool_count = len(visible_tools)
+            t_label = "tool" if tool_count == 1 else "tools"
+            indicator_color = _status_color(server.status, colors)
+            indicator_glyph = _status_glyph(server.status, glyphs)
+            if server.status == "ok":
+                header_content = Content.assemble(
+                    (f"{indicator_glyph} ", indicator_color),
+                    (server.name, "bold"),
+                    (
+                        f" {server.transport} {glyphs.bullet}"
+                        f" {tool_count} {t_label}",
+                        "dim",
+                    ),
+                )
+            else:
+                error_text = server.error or ""
+                header_content = Content.assemble(
+                    (f"{indicator_glyph} ", indicator_color),
+                    (server.name, "bold"),
+                    (f" {server.transport}", "dim"),
+                    (f" {glyphs.bullet} {server.status}", indicator_color),
+                    (f" — {error_text}", "dim") if error_text else "",
+                )
+            scroll.mount(Static(header_content, classes="mcp-server-header"))
+            for tool in visible_tools:
+                classes = "mcp-tool-item"
+                if flat_index == 0:
+                    classes += " mcp-tool-selected"
+                widget = MCPToolItem(
+                    name=tool.name,
+                    description=tool.description,
+                    index=flat_index,
+                    classes=classes,
+                )
+                self._tool_widgets.append(widget)
+                scroll.mount(widget)
+                flat_index += 1
+                rendered_any_tool = True
+
+        if tokens and not self._tool_widgets and not rendered_any_tool:
+            scroll.mount(Static("No matching tools.", classes="mcp-empty"))
 
     def _move_to(self, index: int) -> None:
         """Move selection to the given index.

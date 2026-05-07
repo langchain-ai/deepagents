@@ -141,7 +141,13 @@ class TestMCPViewerScreen:
             assert "1 tool)" in text
 
     async def test_keyboard_navigation(self) -> None:
-        """Up/down keys move selection between tools."""
+        """Arrow / Tab navigation moves selection between tools.
+
+        Vim-style `j`/`k` bindings are intentionally absent so they can be
+        typed into the filter Input — see `test_letter_keys_type_into_filter`.
+        """
+        from textual.widgets import Input
+
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_sample_info())
@@ -159,8 +165,9 @@ class TestMCPViewerScreen:
             assert screen._tool_widgets[1].has_class("mcp-tool-selected")
             assert not screen._tool_widgets[0].has_class("mcp-tool-selected")
 
-            # Move down again
-            await pilot.press("j")
+            # Down again still moves selection (priority binding wins
+            # over the filter Input even when it has focus)
+            await pilot.press("down")
             await pilot.pause()
             assert screen._selected_index == 2
 
@@ -178,6 +185,34 @@ class TestMCPViewerScreen:
             await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 0
+
+            # The filter Input exists and is the focused widget
+            filter_input = screen.query_one("#mcp-filter", Input)
+            assert filter_input.has_focus
+
+    async def test_letter_keys_type_into_filter(self) -> None:
+        """`j` and `k` are accepted by the filter Input, not navigation."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            assert filter_input.has_focus
+
+            # Selection starts at 0; j/k must not move it.
+            assert screen._selected_index == 0
+
+            await pilot.press("j")
+            await pilot.pause()
+            assert "j" in filter_input.value
+
+            await pilot.press("k")
+            await pilot.pause()
+            assert "k" in filter_input.value
 
     async def test_enter_toggles_expand(self) -> None:
         """Enter key expands and collapses tool description."""
@@ -203,6 +238,152 @@ class TestMCPViewerScreen:
             await pilot.press("enter")
             await pilot.pause()
             assert not widget._expanded
+
+    async def test_filter_narrows_tool_list(self) -> None:
+        """Typing into the filter Input reduces the visible tool set."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert len(screen._tool_widgets) == 3
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "search"
+            await pilot.pause()
+
+            visible = [w.tool_name for w in screen._tool_widgets]
+            assert visible == ["search"]
+
+    async def test_filter_clearing_restores_all(self) -> None:
+        """Clearing the filter restores the full tool list."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "search"
+            await pilot.pause()
+            assert len(screen._tool_widgets) == 1
+
+            filter_input.value = ""
+            await pilot.pause()
+            assert len(screen._tool_widgets) == 3
+
+    async def test_filter_server_name_match_shows_all_tools(self) -> None:
+        """Matching the server name surfaces every tool on that server."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "filesystem"
+            await pilot.pause()
+
+            visible = sorted(w.tool_name for w in screen._tool_widgets)
+            assert visible == ["read_file", "write_file"]
+
+    async def test_filter_multi_token_and(self) -> None:
+        """Multi-token filter requires every token to match."""
+        from textual.widgets import Input
+
+        info = [
+            MCPServerInfo(
+                name="store",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="search_orders", description="Search orders"),
+                    MCPToolInfo(name="search_users", description="Search users"),
+                    MCPToolInfo(name="list_orders", description="List orders"),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "search orders"
+            await pilot.pause()
+
+            visible = [w.tool_name for w in screen._tool_widgets]
+            assert visible == ["search_orders"]
+
+    async def test_filter_no_matches_renders_empty_state(self) -> None:
+        """An unmatched filter renders the 'No matching tools.' message."""
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "asdfghjkl"
+            await pilot.pause()
+
+            assert screen._tool_widgets == []
+            empty_states = list(screen.query(".mcp-empty"))
+            assert len(empty_states) == 1
+            assert "No matching tools" in _widget_text(empty_states[0])
+
+    async def test_filter_input_suppressed_while_connecting(self) -> None:
+        """The filter Input is not mounted while the connecting placeholder shows."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert len(screen.query("#mcp-filter")) == 0
+
+    async def test_filter_param_name_match(self) -> None:
+        """Param-name filter matches when input_schema.properties has the key."""
+        from textual.widgets import Input
+
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(
+                        name="run",
+                        description="Run something",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"target_path": {"type": "string"}},
+                        },
+                    ),
+                    MCPToolInfo(name="reset", description="Reset state"),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            filter_input.value = "target_path"
+            await pilot.pause()
+
+            visible = [w.tool_name for w in screen._tool_widgets]
+            assert visible == ["run"]
 
     async def test_three_state_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line."""

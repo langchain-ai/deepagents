@@ -1,8 +1,8 @@
 """Built-in Fireworks GLM-5p1 harness profile.
 
 Registers a `HarnessProfile` for `fireworks:accounts/fireworks/models/glm-5p1`
-that targets the three largest model-fault clusters surfaced by the
-deep-agents eval suite on this model:
+that targets two model-fault clusters surfaced by the deep-agents
+eval suite on this model:
 
 - *Plan / stop discipline* — the model loops on read-only calls, drops
   required final mutations, or repeats a successful mutation. Most
@@ -13,13 +13,23 @@ deep-agents eval suite on this model:
   empty/defaulted string parameter. Most visible on tau2 db-state
   mismatches, BFCL state mismatches, and HITL tests asserting on
   specific tool-call arguments.
-- *Output channel routing* — when `tools` are bound and the model
-  produces a very short final answer without calling a tool, GLM-5p1
-  served via Fireworks routes the answer into the `reasoning_content`
-  field with empty `content`. Reproduces deterministically against the
-  raw chat-completions endpoint, independent of the SDK adapter. A
-  hard rule in the suffix is sufficient to keep the answer in
-  `content` (8/8 vs. 1/8 in direct API probes).
+
+A third cluster — *output channel routing*, where GLM-5p1 routes
+short final answers into `additional_kwargs.reasoning_content` with
+empty `content` — is **not** addressed in this suffix. An earlier
+revision included an "Output Channel" section that explicitly told the
+model never to leave `content` empty. A local A/B / ablation study
+(`/tmp/ablation_results.tsv`, N=5 per cell, 7 variants, 2 tests, 70
+runs) showed that section was the *sole* cause of stable regressions on
+`test_single_tool_get_food_calories` and `test_single_tool_get_user_email`
+(0/10 with the rule, 10/10 without it). The rule appears to prime the
+model to bifurcate its output into reasoning vs content channels and
+land the answer in the wrong one — the opposite of its intent. The
+direct-API success it showed in isolation (8/8) does not transfer to
+the deepagents harness's longer prompt. Cluster E should be closed at
+the integration layer (a middleware that copies `reasoning_content` →
+`content` when content is empty and there are no tool calls), not at
+the prompt layer.
 
 The suffix is appended to whatever `base_system_prompt` is ultimately
 assembled for the agent, so it layers cleanly on top of user- or
@@ -79,17 +89,7 @@ outcome to the user. Stop the turn when these hold.
 calls accumulate side effects on the underlying system.
 - Before finishing, write a brief confirmation of what changed (or \
 what did not change) so the user does not have to re-derive it from \
-the tool trace.
-
-## Output Channel
-
-- Your assistant message content MUST NEVER be empty. Always emit the \
-user-visible answer in the content field of your reply. The reasoning \
-channel is for internal thoughts only and must not contain the final \
-answer.
-- If your final answer would be a short answer (e.g. "4", "Paris", \
-"yes"), wrap it in a short sentence so content is non-empty — for \
-example: "The answer is 4."."""
+the tool trace."""
 """Text appended to the assembled base system prompt."""
 
 

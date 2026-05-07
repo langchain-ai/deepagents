@@ -15,6 +15,36 @@ const routes: RouteRecordRaw[] = [
     path: '/tasks',
     name: 'Tasks',
     component: () => import('../views/Tasks.vue')
+  },
+  {
+    path: '/workflow/:taskId',
+    name: 'Workflow',
+    component: () => import('../views/Workflow.vue')
+  },
+  {
+    path: '/elements',
+    name: 'Elements',
+    component: () => import('../views/Elements.vue')
+  },
+  {
+    path: '/scheduled-tasks',
+    name: 'ScheduledTasks',
+    component: () => import('../views/ScheduledTasks.vue')
+  },
+  {
+    path: '/data',
+    name: 'Data',
+    component: () => import('../views/Data.vue')
+  },
+  {
+    path: '/orders',
+    name: 'Orders',
+    component: () => import('../views/Orders.vue')
+  },
+  {
+    path: '/products',
+    name: 'Products',
+    component: () => import('../views/Products.vue')
   }
 ]
 

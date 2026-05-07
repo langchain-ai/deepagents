@@ -1181,7 +1181,7 @@ class TestBuiltInProfiles:
         }
         assert len(suffixes) == 1
 
-    def test_baseten_kimi_k2_6_drops_communicate_and_respect_sections(self) -> None:
+    def test_kimi_k2_6_drops_communicate_and_respect_sections(self) -> None:
         """Sections retired in v3 must stay out.
 
         `<communicate_each_turn>` correlated with the v2 conversation
@@ -1197,7 +1197,7 @@ class TestBuiltInProfiles:
         assert "<communicate_each_turn>" not in profile.system_prompt_suffix
         assert "<respect_user_specifications>" not in profile.system_prompt_suffix
 
-    def test_baseten_kimi_k2_6_every_section_has_contrastive_examples(self) -> None:
+    def test_kimi_k2_6_every_section_has_contrastive_examples(self) -> None:
         """Each tagged section carries Bad:/Good: pairs per Moonshot's few-shot guidance.
 
         Pinning this shape prevents a future rewrite from regressing the
@@ -1220,7 +1220,7 @@ class TestBuiltInProfiles:
             assert "Bad:" in body, f"section <{tag}> missing 'Bad:' example"
             assert "Good:" in body, f"section <{tag}> missing 'Good:' example"
 
-    def test_baseten_kimi_k2_6_plan_section_is_stepwise(self) -> None:
+    def test_kimi_k2_6_plan_section_is_stepwise(self) -> None:
         """`<plan_before_mutate>` keeps numbered steps per Moonshot's step-decomposition guidance."""
         profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
         assert profile is not None
@@ -1236,7 +1236,7 @@ class TestBuiltInProfiles:
         numbered_lines = re.findall(r"^\s*\d\.\s", body, re.MULTILINE)
         assert len(numbered_lines) >= 3
 
-    def test_baseten_kimi_k2_6_overrides_compact_conversation_description(self) -> None:
+    def test_kimi_k2_6_overrides_compact_conversation_description(self) -> None:
         """The profile rewrites `compact_conversation` to spell out concrete triggers."""
         profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
         assert profile is not None

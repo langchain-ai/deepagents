@@ -228,3 +228,42 @@ The profile is a **modest net positive**: conversation +0.11 and summarization +
 2. **Investigate the single-tool regressions before any further suffix edits.** If the suffix is causing the empty-content routing on these tests, that's the same cluster-E mechanism the rule was meant to fix — confirming it can't be solved at the prompt layer in this harness.
 3. **Promote `_FireworksReasoningContentMiddleware` from "deferred" to "next."** It's the deterministic close on cluster E and would also fix the profile-induced regressions on the 2 single-tool tests, turning the profile from a net positive into a clean win.
 4. Run a full 5-trial no-profile baseline at some point to firm up the conversation lift estimate (currently N=1, so ±0.11 is a point estimate, not a band). Match the test-set composition to the v1 N-trials run — exclude `memory` — so the comparison is apples-to-apples.
+
+---
+
+## Section ablation (local, live API) — Output Channel removed
+
+Triggered by the verified single-tool regression: ran a 7-variant ablation against the live Fireworks API to identify which section was responsible. Each variant drops one section from the v1 4-section suffix, plus two controls (`ted-only` keeping only Tool Execution Discipline, `off` removing the profile entirely). N=5 per cell × 7 variants × 2 tests = 70 runs.
+
+### Results
+
+| Variant | `food_calories` | `user_email` | Total pass rate |
+|---|---:|---:|---:|
+| `v1-full` (TED + Parallel + Stop + Output) | 0/5 | 0/5 | 0/10 (0%) |
+| **`no-output`** (drop Output Channel only) | **5/5** | **5/5** | **10/10 (100%)** |
+| `no-stop` | 0/5 | 0/5 | 0/10 (0%) |
+| `no-parallel` | 0/5 | 0/5 | 0/10 (0%) |
+| `no-ted` | 0/5 | 0/5 | 0/10 (0%) |
+| `ted-only` | 5/5 | 5/5 | 10/10 (100%) |
+| `off` (no profile) | 5/5 | 5/5 | 10/10 (100%) |
+
+### Interpretation
+
+**`Output Channel` is the sole cause.** Every variant that retains the section fails 100%; every variant that drops it passes 100%. The other three sections do not contribute to the regression — `no-stop`, `no-parallel`, and `no-ted` all still fail at 0/10 because Output Channel is still present.
+
+The "MUST NEVER be empty" rule appears to *cause* the very behavior it tried to prevent. Plausible mechanism: by explicitly naming the reasoning vs. content channel split and giving rules about which goes where, the suffix primes the model to treat the channels as distinct and route short final answers into the wrong one. The 8/8 success in direct API probes (small prompt, no tools bound) does not transfer to the deepagents harness's longer prompt with tools bound.
+
+### Action taken
+
+`_fireworks_glm_5p1.py` is now a 3-section profile (TED + Parallel + Stop). Output Channel is removed. Module docstring records the ablation. Unit test `test_fireworks_glm_5p1_has_harness_profile` asserts `## Output Channel` is *not* in the suffix, with a comment that reintroducing it requires fresh ablation data.
+
+### Post-ablation verification (live API)
+
+Confirmed the new 3-section profile against the same 2 tests:
+
+| Test | Pass rate |
+|---|---:|
+| `test_single_tool_get_food_calories` | 5/5 |
+| `test_single_tool_get_user_email` | 5/5 |
+
+Cluster E (the original problem Output Channel was meant to solve — `test_avoid_unnecessary_tool_calls`, etc.) remains open and is the target of a separate `_FireworksReasoningContentMiddleware` change.

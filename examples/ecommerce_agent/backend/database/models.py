@@ -153,7 +153,7 @@ class KnowledgeItem(Base):
     type = Column(String(50), nullable=False, comment="类型：product/rule/template")
     title = Column(String(255), nullable=False, comment="标题")
     content = Column(Text, nullable=False, comment="内容")
-    metadata = Column(JSON, comment="元数据")
+    extra_data = Column(JSON, comment="元数据")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -167,7 +167,7 @@ class ExperienceItem(Base):
     scenario = Column(String(100), comment="场景")
     content = Column(Text, nullable=False, comment="经验内容")
     is_success = Column(Boolean, default=True, comment="是否成功案例")
-    metadata = Column(JSON, comment="元数据")
+    extra_data = Column(JSON, comment="元数据")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

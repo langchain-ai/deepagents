@@ -5,7 +5,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.orm import Session
 from backend.database.models import ScheduledTask, Task, Store
-from backend.agent.core import ECommerceAgent
+try:
+    from backend.agent.core import ECommerceAgent
+except ImportError:
+    ECommerceAgent = None
 
 
 class TaskScheduler:

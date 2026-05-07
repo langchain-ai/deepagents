@@ -102,7 +102,7 @@ class ConfigExporter:
                     "type": item.type,
                     "title": item.title,
                     "content": item.content,
-                    "metadata": item.metadata
+                    "metadata": item.extra_data
                 }
                 for item in items
             ]
@@ -122,7 +122,7 @@ class ConfigExporter:
                     "scenario": item.scenario,
                     "content": item.content,
                     "is_success": item.is_success,
-                    "metadata": item.metadata
+                    "metadata": item.extra_data
                 }
                 for item in items
             ]

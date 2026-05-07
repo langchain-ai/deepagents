@@ -595,11 +595,14 @@ def _resolve_tracer_session_id_by_project_name(
         except LangSmithNotFoundError as exc:
             last_error = exc
             continue
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_error = exc
             continue
     if last_error is not None:
-        print(f"Warning: Failed to resolve tracing project '{project_name}': {last_error}")
+        print(
+            f"Warning: Failed to resolve tracing project '{project_name}': "
+            f"{last_error}"
+        )
     return None
 
 
@@ -612,6 +615,8 @@ def _upsert_issues_board_config(
     """Best-effort create or patch board config for a deployed agent."""
     import httpx
 
+    success_codes = {200, 201}
+    http_conflict = 409
     endpoint = _resolve_langsmith_endpoint()
     url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
     headers = {
@@ -632,19 +637,19 @@ def _upsert_issues_board_config(
     try:
         with httpx.Client(timeout=20.0) as client:
             create_resp = client.post(url, headers=headers, json=create_payload)
-            if create_resp.status_code in (200, 201):
+            if create_resp.status_code in success_codes:
                 print(
                     f"Issues board auto-wired for tracing project {session_id} "
                     f"({context_hub_identifier})."
                 )
                 return
-            if create_resp.status_code == 409:
+            if create_resp.status_code == http_conflict:
                 patch_resp = client.patch(
                     url,
                     headers=headers,
                     json={"context_hub_identifier": context_hub_identifier},
                 )
-                if patch_resp.status_code in (200, 201):
+                if patch_resp.status_code in success_codes:
                     print(
                         f"Issues board already existed; updated context hub "
                         f"identifier to {context_hub_identifier}."
@@ -659,7 +664,7 @@ def _upsert_issues_board_config(
                 "Warning: Failed to create issues board config: "
                 f"HTTP {create_resp.status_code} — {create_resp.text[:300]}"
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"Warning: Issues board auto-wire failed: {exc}")
 
 
@@ -672,7 +677,8 @@ def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
     api_key = _resolve_langsmith_api_key()
     if api_key is None:
         print(
-            "Warning: LANGSMITH/LANGCHAIN API key not found; skipping issues board auto-wire."
+            "Warning: LANGSMITH/LANGCHAIN API key not found; "
+            "skipping issues board auto-wire."
         )
         return
 

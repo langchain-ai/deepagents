@@ -41,7 +41,7 @@ _TIPS: dict[str, int] = {
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
-    "Use /mcp to see your loaded tools and servers": 1,
+    "Use /mcp to search your MCP servers and inspect tool parameters": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Press ctrl+x to compose prompts in your external editor": 1,

@@ -512,9 +512,10 @@ class MCPViewerScreen(ModalScreen[None]):
         self._populate_scroll(scroll, self._query)
 
         help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
-            f" {glyphs.bullet} Enter expand/collapse"
-            f" {glyphs.bullet} Type to filter"
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
+            f" {glyphs.bullet} Enter expand"
+            f" {glyphs.bullet} Ctrl+E expand all"
+            f" {glyphs.bullet} type to filter"
             f" {glyphs.bullet} Esc close"
         )
         container.mount(Static(help_text, classes="mcp-viewer-help"))

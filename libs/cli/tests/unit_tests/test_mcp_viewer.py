@@ -622,6 +622,23 @@ class TestMCPViewerScreen:
             # the rebuilt widget list starts collapsed again.
             assert all(not w._expanded for w in screen._tool_widgets)
 
+    async def test_help_text_lists_all_keybindings(self) -> None:
+        """Footer mentions navigate, expand, expand all, filter, and close."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widgets = list(screen.query(".mcp-viewer-help"))
+            assert len(help_widgets) == 1
+            text = _widget_text(help_widgets[0]).lower()
+            assert "navigate" in text
+            assert "enter" in text
+            assert "ctrl+e" in text
+            assert "filter" in text
+            assert "esc" in text
+
     async def test_three_state_status_indicators_render(self) -> None:
         """Each `MCPServerStatus` produces a visually distinct header line."""
         from deepagents_cli import theme

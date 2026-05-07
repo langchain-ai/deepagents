@@ -1,8 +1,11 @@
 import asyncio
+import os
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from sqlalchemy.orm import Session
 from deepagents import create_deep_agent
+from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.backends.filesystem import FilesystemBackend
 from backend.config import settings
 from backend.database.models import Store, Task, OperationLog
 from backend.browser.manager import get_browser_manager
@@ -25,6 +28,9 @@ class ECommerceAgent:
     async def initialize(self):
         """初始化 Agent"""
         # 创建 DeepAgents Agent
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        skills_dir = os.path.join(project_root, "skills")
+        
         self.agent = create_deep_agent(
             system_prompt=self._get_system_prompt(),
             tools=[
@@ -36,7 +42,9 @@ class ECommerceAgent:
                 self._log_operation,
                 self._search_knowledge,
                 self._search_experience,
-            ]
+            ],
+            skills=[skills_dir],
+            backend=FilesystemBackend(root_dir=project_root)
         )
         # 启动浏览器
         await self.browser_manager.start()
@@ -60,6 +68,7 @@ class ECommerceAgent:
 - 操作前先搜索知识库和经验库，参考历史经验
 - 每个操作都要记录日志，关键步骤截图
 - 遇到异常及时暂停，等待人工介入
+- 优先使用技能系统中的专业技能完成任务
 
 可用工具：
 - get_element: 获取页面元素
@@ -70,6 +79,18 @@ class ECommerceAgent:
 - log_operation: 记录操作日志
 - search_knowledge: 搜索知识库
 - search_experience: 搜索经验库
+
+技能系统：
+你拥有专业的电商技能库，在执行任务时：
+1. 首先检查是否有相关技能
+2. 阅读技能的完整说明
+3. 按照技能指导完成任务
+4. 使用技能推荐的工具
+
+可用技能包括：
+- product-publish: 商品发布
+- good-review: 好评管理
+- data-collection: 数据采集
 """
     
     async def execute_task(self, task: Task) -> Dict[str, Any]:

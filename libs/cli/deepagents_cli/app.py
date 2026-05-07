@@ -1110,6 +1110,9 @@ class DeepAgentsApp(App):
         """Re-entry guard for `/threads` switches; blocks message handling
         until the new thread's history finishes loading."""
 
+        self._times_up_active = False
+        """Terminal lock set when an external or timer-driven time limit expires."""
+
         self._model_switching = False
         """Re-entry guard for `/model` switches while the new model is being
         resolved."""
@@ -1262,6 +1265,9 @@ class DeepAgentsApp(App):
         self._timer_prior_sub_title: str | None = None
         """`App.sub_title` snapshot captured before a timer started, restored
         when the timer is cancelled or replaced."""
+
+        self._timer_mounted_header = False
+        """Whether `/timer` mounted the optional header on demand."""
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -3308,6 +3314,8 @@ class DeepAgentsApp(App):
         startup command before any user-facing agent work guarantees the
         agent never observes input until the command has completed.
         """
+        if self._times_up_active:
+            return
         if self._launch_init_requested:
             self._ensure_launch_init_task()
         launch_init_task = self._launch_init_task
@@ -3337,6 +3345,8 @@ class DeepAgentsApp(App):
             self._startup_sequence_running = False
 
         if self._agent_running or self._shell_running:
+            return
+        if self._times_up_active:
             return
 
         try:
@@ -3752,6 +3762,17 @@ class DeepAgentsApp(App):
             await self._process_message(value, mode)
             return
 
+        if self._times_up_active:
+            from deepagents_cli.widgets.times_up import TIME_UP_INPUT_DISABLED_MESSAGE
+
+            self.notify(
+                TIME_UP_INPUT_DISABLED_MESSAGE,
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -3834,6 +3855,8 @@ class DeepAgentsApp(App):
             self.action_interrupt()
         elif signal_name == "force-clear":
             await self._submit_input("/force-clear", "command", force_bypass=True)
+        elif signal_name == "times-up":
+            self._handle_times_up()
         else:
             logger.warning("Ignoring unknown external signal %r", payload)
 
@@ -3988,10 +4011,13 @@ class DeepAgentsApp(App):
         self._shell_process = None
         self._shell_running = False
         self._shell_worker = None
-        if was_interrupted:
+        if was_interrupted and not self._times_up_active:
             await self._mount_message(AppMessage("Command interrupted"))
         if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
+            if self._times_up_active:
+                self._chat_input.set_disabled(disabled=True)
+            else:
+                self._chat_input.set_cursor_active(active=True)
         if refresh_git_branch:
             # A `!` command may have changed git state (e.g. `git checkout`);
             # re-resolve so the footer reflects the new branch.
@@ -4244,6 +4270,7 @@ class DeepAgentsApp(App):
         elif cmd in {"/clear", "/force-clear"}:
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+                await self._reset_times_up_state()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
@@ -4568,8 +4595,7 @@ class DeepAgentsApp(App):
             if self._timer_handle is not None:
                 self._timer_handle.stop()
                 self._timer_handle = None
-            self.notify("Timer finished.", title="⏱ Timer", markup=False)
-            self.bell()
+            self._handle_times_up()
             return
         self._render_timer_sub_title()
 
@@ -4605,6 +4631,7 @@ class DeepAgentsApp(App):
         # if the layout state somehow rejects the new widget.
         try:
             await self.mount(_StaticHeader(id="app-header"))
+            self._timer_mounted_header = True
         except Exception:
             logger.warning("Failed to mount header for /timer", exc_info=True)
 
@@ -5004,6 +5031,9 @@ class DeepAgentsApp(App):
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
         """
+        if self._times_up_active:
+            return
+
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
@@ -5101,6 +5131,10 @@ class DeepAgentsApp(App):
         Dequeues and processes the next pending message in FIFO order.
         Uses the `_processing_pending` flag to prevent reentrant execution.
         """
+        if self._times_up_active:
+            self._discard_queue()
+            return
+
         if self._processing_pending or not self._pending_messages or self._exit:
             return
 
@@ -5138,7 +5172,10 @@ class DeepAgentsApp(App):
         await self._set_spinner(None)
 
         if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
+            if self._times_up_active:
+                self._chat_input.set_disabled(disabled=True)
+            else:
+                self._chat_input.set_cursor_active(active=True)
 
         # Ensure token display is restored (in case of early cancellation).
         # Pass the cached approximate flag so an interrupted "+" isn't clobbered.
@@ -5801,6 +5838,68 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
         self._discard_queue()
+
+    def _handle_times_up(self) -> None:
+        """Enter the terminal time-limit state for this session."""
+        if self._times_up_active:
+            return
+
+        self._times_up_active = True
+        if self._ui_adapter:
+            self._ui_adapter.set_interrupt_reason(
+                message=None,
+                system_message=(
+                    "[SYSTEM] Time limit reached. Previous operation was cancelled."
+                ),
+            )
+        self._force_interrupt_active_work()
+
+        if self._timer_handle is not None:
+            self._timer_handle.stop()
+            self._timer_handle = None
+        self._timer_seconds_remaining = 0
+        self._render_timer_sub_title()
+
+        if self._chat_input:
+            self._chat_input.set_disabled(disabled=True)
+
+        self.bell()
+        try:
+            self._show_times_up_modal()
+        except (RuntimeError, ScreenStackError):
+            logger.debug("Deferring time-limit modal until next refresh", exc_info=True)
+            self.call_after_refresh(self._show_times_up_modal)
+
+    def _show_times_up_modal(self) -> None:
+        """Push the blocking time-limit modal if it is not already visible."""
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
+        if isinstance(self.screen, TimesUpScreen):
+            return
+        self.push_screen(TimesUpScreen())
+
+    async def _reset_times_up_state(self) -> None:
+        """Leave the terminal time-limit state after `/force-clear`."""
+        from deepagents_cli._env_vars import SHOW_HEADER, is_env_truthy
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
+        self._times_up_active = False
+        if self._ui_adapter:
+            self._ui_adapter.reset_interrupt_reason()
+
+        self._stop_timer()
+        if self._timer_mounted_header or not is_env_truthy(SHOW_HEADER):
+            with suppress(Exception, NoMatches):
+                await self.query_one("#app-header", _StaticHeader).remove()
+            self._timer_mounted_header = False
+
+        if self._chat_input:
+            self._chat_input.set_disabled(disabled=False)
+            self._chat_input.set_cursor_active(active=True)
+
+        if isinstance(self.screen, TimesUpScreen):
+            with suppress(Exception):
+                self.screen.dismiss(None)
 
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.

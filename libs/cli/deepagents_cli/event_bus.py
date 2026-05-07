@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 ExternalEventKind = Literal["command", "prompt", "signal"]
 """Top-level event kinds carried by the wire protocol."""
 
-ExternalSignal = Literal["interrupt", "force-clear"]
+ExternalSignal = Literal["interrupt", "force-clear", "times-up"]
 """Closed vocabulary of `kind="signal"` payloads accepted by the listener."""
 
 EventSink = "Callable[[ExternalEvent], Awaitable[None]]"

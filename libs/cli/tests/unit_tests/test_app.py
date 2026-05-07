@@ -4001,6 +4001,28 @@ class TestSlashCommandBypass:
             pm.assert_called_once_with("/force-clear", "command")
             assert len(app._pending_messages) == 0
 
+    async def test_external_force_clear_bypasses_times_up_lock(self) -> None:
+        """/force-clear remains available through the terminal input lock."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._times_up_active = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(
+                    ExternalInput(
+                        ExternalEvent(
+                            kind="command",
+                            payload="/force-clear",
+                            source="test",
+                        )
+                    )
+                )
+                await pilot.pause()
+
+            pm.assert_called_once_with("/force-clear", "command")
+            assert len(app._pending_messages) == 0
+
     async def test_external_prompt_queues_when_agent_running(self) -> None:
         """External prompt events should queue while the agent is busy."""
         app = DeepAgentsApp()
@@ -7032,15 +7054,20 @@ class TestTimerCommand:
             app._stop_timer()
 
     async def test_timer_expiry_stops_handle(self) -> None:
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._handle_command("/timer 1")
             app._timer_seconds_remaining = 1
             app._tick_timer()
+            await pilot.pause()
             assert app._timer_handle is None
             assert app._timer_seconds_remaining == 0
             assert app.sub_title == "⏱ Time's up"
+            assert app._times_up_active is True
+            assert isinstance(app.screen, TimesUpScreen)
 
     async def test_timer_mounts_header_when_hidden(
         self, monkeypatch: pytest.MonkeyPatch
@@ -7077,6 +7104,14 @@ class TestHandleExternalSignal:
             with patch.object(app, "_submit_input", new_callable=AsyncMock) as submit:
                 await app._handle_external_signal("force-clear")
             submit.assert_called_once_with("/force-clear", "command", force_bypass=True)
+
+    async def test_times_up_signal_enters_time_limit_state(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_handle_times_up") as handler:
+                await app._handle_external_signal("times-up")
+            handler.assert_called_once_with()
 
     async def test_unknown_signal_is_no_op(self) -> None:
         app = DeepAgentsApp()
@@ -7223,6 +7258,110 @@ class TestForceInterruptActiveWork:
             app._pending_approval_widget = widget
             # Must not raise: best-effort interruption.
             app._force_interrupt_active_work()
+
+
+class TestTimesUpState:
+    """Verify the terminal time-limit lock."""
+
+    async def test_cancels_work_and_disables_input(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            app._agent_worker = worker
+
+            app._handle_times_up()
+            await pilot.pause()
+
+            worker.cancel.assert_called_once()
+            assert app._times_up_active is True
+            assert app._chat_input is not None
+            assert app._chat_input.input_widget is not None
+            assert app._chat_input.input_widget.disabled is True
+
+    async def test_blocks_later_submissions(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._times_up_active = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                await app._submit_input("hello", "normal")
+
+            pm.assert_not_awaited()
+
+    async def test_modal_is_not_dismissed_by_escape(self) -> None:
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._handle_times_up()
+            await pilot.pause()
+
+            app.action_interrupt()
+            await pilot.pause()
+
+            assert isinstance(app.screen, TimesUpScreen)
+
+    async def test_force_clear_resets_times_up_state_and_hides_timer_header(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """External `/force-clear` should return the UI to an unlocked state."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/timer 1")
+            app._timer_seconds_remaining = 1
+            app._tick_timer()
+            await pilot.pause()
+
+            assert app._times_up_active is True
+            assert isinstance(app.screen, TimesUpScreen)
+            assert len(app.query(Header)) == 1
+            assert app._chat_input is not None
+            assert app._chat_input.input_widget is not None
+            assert app._chat_input.input_widget.disabled is True
+
+            await app._handle_command("/force-clear")
+            await pilot.pause()
+
+            assert app._times_up_active is False
+            assert app.sub_title == ""
+            assert not app.query(Header)
+            assert app._chat_input.input_widget.disabled is False
+            assert not isinstance(app.screen, TimesUpScreen)
+
+    async def test_force_clear_hides_untracked_timer_header(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Force-clear removes timer headers even if tracking state was lost."""
+        monkeypatch.delenv("DEEPAGENTS_CLI_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._ensure_header_mounted()
+            app._timer_mounted_header = False
+            app._times_up_active = True
+            app.sub_title = "⏱ Time's up"
+            assert len(app.query(Header)) == 1
+
+            await app._handle_command("/force-clear")
+            await pilot.pause()
+
+            assert app._times_up_active is False
+            assert app.sub_title == ""
+            assert not app.query(Header)
 
 
 class TestExternalBypassFieldHonored:

@@ -218,6 +218,48 @@ class TestInterruptCleanup:
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
+    async def test_custom_interrupt_reason_can_suppress_user_visible_message(
+        self,
+    ) -> None:
+        """Time-limit cancellation should not say the user interrupted execution."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            mounted.append(widget)
+            await asyncio.sleep(0)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter.set_interrupt_reason(
+            message=None,
+            system_message="[SYSTEM] Time limit reached. Previous operation stopped.",
+        )
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        turn_stats = SessionStats()
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,  # type: ignore[arg-type]
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=turn_stats,
+            start_time=100.0,
+        )
+
+        assert mounted == []
+        cancellation_payload = agent.aupdate_state.await_args.args[1]
+        cancellation_msg = cancellation_payload["messages"][0]
+        assert cancellation_msg.content == (
+            "[SYSTEM] Time limit reached. Previous operation stopped."
+        )
+
 
 class TestBuildStreamConfig:
     """Tests for `build_stream_config` metadata construction."""

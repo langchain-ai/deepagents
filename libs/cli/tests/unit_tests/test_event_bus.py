@@ -54,6 +54,10 @@ class TestExternalEventInvariants:
         event = ExternalEvent(kind="signal", payload="force-clear", source="t")
         assert event.payload == "force-clear"
 
+    def test_accepts_times_up_signal(self) -> None:
+        event = ExternalEvent(kind="signal", payload="times-up", source="t")
+        assert event.payload == "times-up"
+
 
 class TestDecodeExternalEvent:
     """Validate the JSON-lines external event envelope."""
@@ -128,6 +132,14 @@ class TestDecodeExternalEvent:
         )
         assert event.kind == "signal"
         assert event.payload == "interrupt"
+
+    def test_accepts_times_up_signal(self) -> None:
+        event = decode_external_event(
+            b'{"kind":"signal","payload":"times-up"}\n',
+            source="t",
+        )
+        assert event.kind == "signal"
+        assert event.payload == "times-up"
 
 
 class TestDefaultUnixSocketPath:

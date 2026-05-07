@@ -272,6 +272,14 @@ class TextualUIAdapter:
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs to their message widgets."""
 
+        self._interrupt_message: str | None = "Interrupted by user"
+        """User-visible message mounted when cancellation cleanup runs."""
+
+        self._interrupt_system_message = (
+            "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+        )
+        """State message added to the graph when cancellation cleanup runs."""
+
         # Token display callbacks (set by the app after construction)
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
@@ -281,6 +289,30 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+    def set_interrupt_reason(
+        self,
+        *,
+        message: str | None,
+        system_message: str,
+    ) -> None:
+        """Override cancellation cleanup wording for the current turn.
+
+        Args:
+            message: User-visible transcript message, or `None` to suppress it.
+            system_message: Graph state message explaining why execution stopped.
+        """
+        self._interrupt_message = message
+        self._interrupt_system_message = system_message
+
+    def reset_interrupt_reason(self) -> None:
+        """Restore the default user-initiated cancellation wording."""
+        self.set_interrupt_reason(
+            message="Interrupted by user",
+            system_message=(
+                "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+            ),
+        )
 
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
@@ -1254,7 +1286,8 @@ async def _handle_interrupt_cleanup(
     if adapter._set_spinner:
         await adapter._set_spinner(None)
 
-    await adapter._mount_message(AppMessage("Interrupted by user"))
+    if adapter._interrupt_message is not None:
+        await adapter._mount_message(AppMessage(adapter._interrupt_message))
 
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
@@ -1267,10 +1300,7 @@ async def _handle_interrupt_cleanup(
         if interrupted_msg:
             await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
-        cancellation_msg = HumanMessage(
-            content="[SYSTEM] Task interrupted by user. "
-            "Previous operation was cancelled."
-        )
+        cancellation_msg = HumanMessage(content=adapter._interrupt_system_message)
         await agent.aupdate_state(config, {"messages": [cancellation_msg]})
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)

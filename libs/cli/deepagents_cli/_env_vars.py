@@ -33,6 +33,9 @@ import os
 AUTO_UPDATE = "DEEPAGENTS_CLI_AUTO_UPDATE"
 """Enable automatic CLI updates ('1', 'true', or 'yes')."""
 
+COMPETITION_WAIT_FOR_START = "DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START"
+"""Show the launch-init waiting modal until a controller event starts the round."""
+
 DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
     "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
 )
@@ -88,14 +91,20 @@ HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
 HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING"
 """Hide LangSmith tracing project/thread info in the startup splash when enabled."""
 
-HIDE_SPLASH_TIPS = "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS"
-"""Hide rotating tips in the startup splash when enabled."""
-
 HIDE_NEW_THREAD_MESSAGE = "DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE"
 """Hide the `/clear` confirmation message that includes the new thread id."""
 
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS"
+"""Hide rotating tips in the startup splash when enabled."""
+
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
+
+HIDE_STARTUP_COMMAND_TEXT = "DEEPAGENTS_CLI_HIDE_STARTUP_COMMAND_TEXT"
+"""Hide the transcript/status line printed before a `--startup-cmd` runs."""
+
+HOOKS_PATH = "DEEPAGENTS_CLI_HOOKS_PATH"
+"""Override the JSON hooks config path."""
 
 KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""

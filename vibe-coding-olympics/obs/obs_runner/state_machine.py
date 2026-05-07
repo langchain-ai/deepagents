@@ -41,10 +41,12 @@ class Event(StrEnum):
 
     START = "start"
     END = "end"
+    READY = "ready"
     RESET = "reset"
 
 
 _TRANSITIONS: dict[tuple[Phase, Event], Phase] = {
+    (Phase.IDLE, Event.READY): Phase.IDLE,
     (Phase.IDLE, Event.START): Phase.CODING,
     # `start` from SCOREBOARD rolls straight into the next round — a
     # producer rarely wants to park in IDLE between rounds. `start`
@@ -130,7 +132,9 @@ class StateMachine:
             raise InvalidTransitionError(msg)
 
         target = _TRANSITIONS[key]
-        if target is Phase.CODING:
+        if event is Event.READY:
+            self._enter_ready(payload)
+        elif target is Phase.CODING:
             self._enter_coding(payload)
         elif target is Phase.SCOREBOARD:
             self._enter_scoreboard(payload)
@@ -172,6 +176,14 @@ class StateMachine:
         self._compositor.set_scene(cfg.scenes[Phase.IDLE])
         self._compositor.set_text(cfg.text_prompt, "")
         self._write_contestant_slots([], None)
+
+    def _enter_ready(self, payload: dict[str, Any]) -> None:
+        """Render ready player names while waiting in the idle scene."""
+        contestants = list(payload.get("contestants") or [])
+        self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
+        cfg = self._config
+        self._compositor.set_scene(cfg.scenes[Phase.IDLE])
+        self._write_contestant_slots(contestants, None)
 
     def _enter_coding(self, payload: dict[str, Any]) -> None:
         """Switch to the coding scene and write round metadata."""

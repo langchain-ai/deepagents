@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 vibe-control = "control_server.main:main"
+vibe-player-hook = "control_server.hook:main"
 vibe-players = "control_server.cli:main"
 
 [build-system]

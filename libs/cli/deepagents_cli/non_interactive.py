@@ -785,7 +785,9 @@ async def _run_startup_command(
     import asyncio
     import sys
 
-    if not quiet:
+    from deepagents_cli._env_vars import HIDE_STARTUP_COMMAND_TEXT, is_env_truthy
+
+    if not quiet and not is_env_truthy(HIDE_STARTUP_COMMAND_TEXT):
         console.print(Text(f"Running startup command: {command}", style="dim"))
 
     try:

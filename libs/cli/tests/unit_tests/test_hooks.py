@@ -51,6 +51,21 @@ class TestLoadHooks:
 
         assert result == config["hooks"]
 
+    def test_env_path_overrides_default_config_dir(self, tmp_path, monkeypatch):
+        """Loads hooks from `DEEPAGENTS_CLI_HOOKS_PATH` when provided."""
+        default_dir = tmp_path / "default"
+        default_dir.mkdir()
+        (default_dir / "hooks.json").write_text(json.dumps({"hooks": []}))
+        override = tmp_path / "round-hooks.json"
+        config = {"hooks": [{"command": ["vibe-player-hook"]}]}
+        override.write_text(json.dumps(config))
+
+        monkeypatch.setenv("DEEPAGENTS_CLI_HOOKS_PATH", str(override))
+        with patch("deepagents_cli.model_config.DEFAULT_CONFIG_DIR", default_dir):
+            result = hooks_mod._load_hooks()
+
+        assert result == config["hooks"]
+
     def test_malformed_json(self, tmp_path):
         """Returns empty list and logs warning on invalid JSON."""
         (tmp_path / "hooks.json").write_text("{not json!!")

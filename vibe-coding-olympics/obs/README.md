@@ -1,6 +1,6 @@
 # `obs/` — Vibe Coding Olympics game state machine + OBS compositor
 
-MVP runner. Three-phase FSM (`IDLE` → `CODING` → `SCOREBOARD` → `IDLE`) plus a minimal compositor interface to OBS (scene switch + text updates). One-shot commands over HTTP. Pub/sub and per-contestant CLI client hooks are deferred.
+MVP runner. Three-phase FSM (`IDLE` → `CODING` → `SCOREBOARD` → `IDLE`) plus a minimal compositor interface to OBS (scene switch + text updates). One-shot commands over HTTP.
 
 ```
 producer  ──POST /transition──▶  FastAPI  ──obs-websocket──▶  OBS
@@ -44,6 +44,11 @@ On startup the runner connects to OBS, primes the idle scene, and clears all fou
 ### `POST /transition`
 
 ```bash
+# Player names submitted before the round
+curl -sS -X POST localhost:8765/transition \
+  -H 'content-type: application/json' \
+  -d '{"event":"ready","payload":{"contestants":["Alice","Bob"]}}'
+
 # Start round
 curl -sS -X POST localhost:8765/transition \
   -H 'content-type: application/json' \
@@ -91,6 +96,7 @@ All env-driven. Defaults shown.
 ## Transitions
 
 ```
+IDLE  ──ready──▶  IDLE        # writes: scene=Idle, Contestant{n}Name per slot
 IDLE  ──start──▶  CODING      # writes: scene=Coding, PromptText,
                               #         Contestant{n}Name per slot, clears unused
 CODING ──end──▶  SCOREBOARD   # writes: scene=Scoreboard, Contestant{n}Score per
@@ -104,7 +110,7 @@ Slot ordering is stable across a round: contestant `i` from the `start` payload 
 
 ## Out of scope for this MVP
 
-- Pub/sub fanout to per-contestant CLI agents (separate PR)
+- Pub/sub fanout beyond the control panel's one-shot player commands
 - Browser-source URL rotation (e.g. swapping a live dev-server preview)
 - Recording/streaming control
 - LangSmith / event-log persistence

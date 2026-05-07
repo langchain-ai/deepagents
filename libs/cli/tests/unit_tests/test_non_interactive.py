@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_cli._env_vars import HIDE_STARTUP_COMMAND_TEXT
 from deepagents_cli.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_cli.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -1443,6 +1444,18 @@ class TestRunStartupCommand:
         console = Console(file=buf, width=200, highlight=False)
 
         await _run_startup_command("echo hi", console, quiet=True)
+
+        output = buf.getvalue()
+        assert "Running startup command" not in output
+        assert "hi" in output
+
+    async def test_env_suppresses_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The env var hides only the startup header, not command output."""
+        monkeypatch.setenv(HIDE_STARTUP_COMMAND_TEXT, "1")
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        await _run_startup_command("echo hi", console, quiet=False)
 
         output = buf.getvalue()
         assert "Running startup command" not in output

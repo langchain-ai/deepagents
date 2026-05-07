@@ -14,6 +14,8 @@ class TransitionRequest(BaseModel):
 
     The API intentionally mirrors the state machine's shape: one event,
     one payload. Payload schema is per-event, validated downstream.
+    `ready` accepts `{"contestants": [...]}` to render submitted player names
+    before a round starts.
     """
 
     event: Event

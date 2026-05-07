@@ -3,7 +3,8 @@
 Two entry points backed by the same iTerm2 discovery logic:
 
 - `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
-- `vibe-players` — CLI for scripting / SSH: `vibe-players list|clear|reset`.
+- `vibe-players` — CLI for scripting / SSH: `vibe-players list|prompt|times-up|clear|reset`.
+- `vibe-player-hook` — Deep Agents hook adapter. Reports player names from `user.name.set` into the control panel.
 
 ```
 browser ──POST /api/…──▶ vibe-control ──POST /transition──▶ obs runner ──▶ OBS
@@ -45,11 +46,19 @@ Same venv, different entry point. Runs one-shot and exits:
 ```bash
 cd control
 uv run vibe-players list
+uv run vibe-players prompt "a website for a taco truck" --all
+uv run vibe-players times-up --all
 uv run vibe-players clear --port 3001
 uv run vibe-players clear --all
 uv run vibe-players reset --port 3001
 uv run vibe-players reset --all
 ```
+
+In normal event flow, run `../play.sh <port>` once per player computer at the
+start of the day. It starts the Vite server, opens the browser preview once,
+and leaves the CLI waiting for controller prompts. Use `clear` between rounds;
+it resets the CLI thread/readiness state without restarting Vite or reopening
+the browser.
 
 ## Endpoints
 
@@ -61,7 +70,10 @@ uv run vibe-players reset --all
 | `/api/round/end` | POST | `{scores: {name: float}}` | Fires `end` on the FSM |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM |
 | `/api/players` | GET | — | Lists active player ports |
-| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends a socket `force-clear` signal to player CLI(s) |
+| `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and forwards ready names to OBS |
+| `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
+| `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |
+| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends a socket `force-clear` signal and clears controller readiness for the targeted player CLI(s) |
 | `/api/players/reset` | POST | `{port?: str, all?: bool}` | Quits + relaunches player CLI(s) |
 
 ## Configuration
@@ -71,6 +83,38 @@ uv run vibe-players reset --all
 | `VIBE_OBS_API` | `http://localhost:8765` | URL of the OBS runner |
 | `VIBE_CONTROL_HOST` | `127.0.0.1` | Bind host for the control panel |
 | `VIBE_CONTROL_PORT` | `8766` | Bind port for the control panel |
+| `VIBE_CONTROL_API` | `http://localhost:8766` | URL used by `vibe-player-hook` from player machines |
+
+## Player readiness hook
+
+Deep Agents CLI already emits `user.name.set` after the player submits their
+name during launch setup. `../play.sh` now writes a round-local hook config
+and points the launched CLI at it automatically, so normal event laptops do
+not need to edit `~/.deepagents/hooks.json`.
+
+For manual launches, configure the hook on each player laptop:
+
+```json
+{
+  "hooks": [
+    {
+      "events": ["user.name.set"],
+      "command": [
+        "uv",
+        "run",
+        "--project",
+        "/Users/mdrxy/oss/deepagents/vibe-coding-olympics/control",
+        "vibe-player-hook"
+      ]
+    }
+  ]
+}
+```
+
+Write that to `~/.deepagents/hooks.json` and set `VIBE_CONTROL_API` before
+launching if the control panel is not on localhost from the player's point of
+view. When using `play.sh`, set `VIBE_CONTROL_API` before running the script;
+the value is exported into the player terminal.
 
 ## Session-discovery contract
 

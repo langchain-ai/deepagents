@@ -87,6 +87,30 @@ def test_illegal_transition_rejected(config: Config) -> None:
         machine.dispatch(Event.END, {})
 
 
+def test_ready_players_render_in_idle_scene(config: Config) -> None:
+    comp = FakeCompositor()
+    machine = StateMachine(comp, config)
+    machine.prime()
+
+    machine.dispatch(Event.READY, {"contestants": ["Alice", "Bob"]})
+
+    assert machine.snapshot.phase is Phase.IDLE
+    assert machine.snapshot.contestants == ["Alice", "Bob"]
+    assert comp.scenes == ["Idle", "Idle"]
+    assert comp.last_text("Contestant1Name") == "Alice"
+    assert comp.last_text("Contestant2Name") == "Bob"
+    assert comp.last_text("Contestant1Score") == ""
+    assert comp.last_text("Contestant2Score") == ""
+
+
+def test_ready_rejected_during_coding(config: Config) -> None:
+    machine = StateMachine(FakeCompositor(), config)
+    machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A"]})
+
+    with pytest.raises(InvalidTransitionError):
+        machine.dispatch(Event.READY, {"contestants": ["B"]})
+
+
 def test_start_from_scoreboard_rolls_next_round(config: Config) -> None:
     """A producer should not need an explicit reset between rounds."""
     comp = FakeCompositor()

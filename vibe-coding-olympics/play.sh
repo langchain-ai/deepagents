@@ -2,7 +2,8 @@
 # Launch a fresh player round in a new iTerm2 window.
 #
 # Layout:
-#   tab 1 — Deep Agents CLI, auto-invoking the web-vibe skill with PROMPT
+#   tab 1 — starts the Vite dev server once, then launches Deep Agents CLI
+#           waiting for the controller or auto-invoking web-vibe with PROMPT
 #   tab 2 — tail -f of the Vite log, so server activity is visible
 #
 # Requires (one-time per laptop):
@@ -11,26 +12,44 @@
 #   - `pip install iterm2` on the python3 that runs this script
 #
 # Usage:
-#   ./play.sh PROMPT [PORT]
+#   ./play.sh [PORT]
+#   ./play.sh --prompt PROMPT [PORT]
 #
-#   PROMPT  required; the creative brief for the round. Queued as the first
-#           message via /skill:web-vibe.
+#   Default behavior launches the player CLI and waits for the controller to
+#   inject the prompt after both players are ready.
+#   --prompt  creative brief for standalone smoke tests. Queued as the first
+#             message via /skill:web-vibe.
 #   PORT    optional; defaults to 3001.
 
 set -euo pipefail
 
-if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
-  echo "usage: $0 PROMPT [PORT]" >&2
-  echo "  PROMPT is required -- e.g. \"a website for a taco truck\"" >&2
-  exit 64
+WAIT_FOR_CONTROLLER=1
+PROMPT=""
+PORT="3001"
+
+if [ "${1:-}" = "--prompt" ]; then
+  WAIT_FOR_CONTROLLER=0
+  if [ -z "${2:-}" ]; then
+    echo "usage: $0 [PORT] | $0 --prompt PROMPT [PORT]" >&2
+    exit 64
+  fi
+  PROMPT="$2"
+  PORT="${3:-3001}"
+elif [ $# -ge 1 ] && [ -n "${1:-}" ]; then
+  PROMPT="$1"
+  if [[ "$PROMPT" =~ ^[0-9]+$ ]]; then
+    PORT="$PROMPT"
+    PROMPT=""
+  else
+    WAIT_FOR_CONTROLLER=0
+    PORT="${2:-3001}"
+  fi
 fi
 
-PROMPT="$1"
-PORT="${2:-3001}"
-
 DIR=$(mktemp -d -t "vibe-player-${PORT}-XXXX")
-LOG="/tmp/vite.log"
+LOG="/tmp/vite-${PORT}.log"
 EVENT_SOCKET="/tmp/deepagents-vibe-${PORT}.sock"
+HOOKS_FILE="$DIR/hooks.json"
 : > "$LOG"   # ensure tail -f has a file to open even on first-ever run
 
 # Expose the repo's .deepagents/ (skills, configs) to the fresh round dir so
@@ -39,6 +58,8 @@ EVENT_SOCKET="/tmp/deepagents-vibe-${PORT}.sock"
 # drop an empty `.git/` marker — that's the signal that anchors the project
 # and activates the `<project>/.deepagents/skills/` lookup.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONTROL_DIR="$SCRIPT_DIR/control"
+CONTROL_API="${VIBE_CONTROL_API:-http://localhost:8766}"
 REPO_DEEPAGENTS="$(cd "$SCRIPT_DIR/.." && pwd)/.deepagents"
 if [ -d "$REPO_DEEPAGENTS" ]; then
   ln -s "$REPO_DEEPAGENTS" "$DIR/.deepagents"
@@ -47,13 +68,47 @@ else
   echo "warning: $REPO_DEEPAGENTS not found; web-vibe skill will be missing" >&2
 fi
 
+python3 - "$HOOKS_FILE" "$CONTROL_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+hooks_file = Path(sys.argv[1])
+control_dir = sys.argv[2]
+hooks_file.write_text(
+    json.dumps(
+        {
+            "hooks": [
+                {
+                    "events": ["competition.player.ready", "user.name.set"],
+                    "command": [
+                        "uv",
+                        "run",
+                        "--project",
+                        control_dir,
+                        "vibe-player-hook",
+                    ],
+                }
+            ]
+        }
+    )
+)
+PY
+
 echo "Player dir: $DIR"
 echo "Port:       $PORT"
 echo "Log:        $LOG"
 echo "Socket:     $EVENT_SOCKET"
+echo "Hooks:      $HOOKS_FILE"
+echo "Control:    $CONTROL_API"
+if [ "$WAIT_FOR_CONTROLLER" -eq 1 ]; then
+  echo "Mode:       waiting for controller prompt"
+fi
 
 export VIBE_PORT="$PORT" VIBE_DIR="$DIR" VIBE_PROMPT="$PROMPT" VIBE_LOG="$LOG"
 export VIBE_EVENT_SOCKET="$EVENT_SOCKET"
+export DEEPAGENTS_CLI_HOOKS_PATH="$HOOKS_FILE" VIBE_CONTROL_API="$CONTROL_API"
+export VIBE_WAIT_FOR_CONTROLLER="$WAIT_FOR_CONTROLLER"
 
 # Free the port up front so the poller below can't race a zombie Vite from a
 # previous round. Without this, the poller's first curl would succeed against
@@ -108,10 +163,15 @@ DIR = os.environ["VIBE_DIR"]
 PROMPT = os.environ["VIBE_PROMPT"].strip()
 LOG = os.environ["VIBE_LOG"]
 EVENT_SOCKET = os.environ["VIBE_EVENT_SOCKET"]
-STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026\n\nReady to vibecode!"
-
-if not PROMPT:
-    raise SystemExit("VIBE_PROMPT is empty; play.sh must pass a non-empty prompt")
+WAIT_FOR_CONTROLLER = os.environ["VIBE_WAIT_FOR_CONTROLLER"] == "1"
+if WAIT_FOR_CONTROLLER:
+    STARTUP_SUBHEADER = (
+        "Welcome to LangChain Interrupt 2026\n\nWaiting for the prompt..."
+    )
+elif PROMPT:
+    STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026\n\nReady to vibecode!"
+else:
+    raise SystemExit("VIBE_PROMPT is empty; pass a non-empty --prompt value")
 
 
 async def main(connection):
@@ -143,6 +203,9 @@ async def main(connection):
         f"VIBE_DIR={shlex.quote(DIR)} "
         f"VIBE_LOG={shlex.quote(LOG)} "
         f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
+        f"VIBE_CONTROL_API={shlex.quote(os.environ['VIBE_CONTROL_API'])} "
+        "DEEPAGENTS_CLI_HOOKS_PATH="
+        f"{shlex.quote(os.environ['DEEPAGENTS_CLI_HOOKS_PATH'])} "
         "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION=1 "
         "DEEPAGENTS_CLI_HIDE_GIT_BRANCH=1 "
         "DEEPAGENTS_CLI_HIDE_CWD=1 "
@@ -151,22 +214,23 @@ async def main(connection):
         f"DEEPAGENTS_CLI_THEME={shlex.quote('langchain dark')} "
         "DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE=1 "
         "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS=1 "
+        "DEEPAGENTS_CLI_HIDE_STARTUP_COMMAND_TEXT=1 "
         "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET=1 "
         f"DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH={shlex.quote(EVENT_SOCKET)} "
+        f"DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START={int(WAIT_FOR_CONTROLLER)} "
         "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER="
         f"{shlex.quote(STARTUP_SUBHEADER)}\n"
     )
     await top.async_send_text(f"cd {shlex.quote(DIR)}\n")
 
-    # Prime the dev server before the first agent turn. `--startup-cmd` runs
-    # the idempotent start-server.sh before the skill begins, so the agent
-    # can spend its round on building the site instead of scaffolding.
+    # Start the browser preview once at player launch. Later controller rounds
+    # reuse this server and browser tab; force-clear only resets the CLI state.
     startup_cmd = 'bash "$VIBE_DIR/.deepagents/skills/web-vibe/start-server.sh"'
-    cli_cmd = (
-        "deepagents -y --skill web-vibe "
-        f"--startup-cmd {shlex.quote(startup_cmd)} "
-        f"-m {shlex.quote(PROMPT)}"
-    )
+    if WAIT_FOR_CONTROLLER:
+        deepagents_cmd = "deepagents -y"
+    else:
+        deepagents_cmd = f"deepagents -y --skill web-vibe -m {shlex.quote(PROMPT)}"
+    cli_cmd = f"{startup_cmd} && {deepagents_cmd}"
     await top.async_send_text(cli_cmd + "\n")
 
     # Second tab follows the Vite log so a crash is visible by switching tabs.

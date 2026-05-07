@@ -148,6 +148,9 @@ Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished launch-init modal forever.
 """
 
+_COMPETITION_START_COUNTDOWN_SECONDS = 5
+"""Countdown shown after the controller starts a competition round."""
+
 
 def _write_iterm_escape(sequence: str) -> None:
     """Write an iTerm2 escape sequence to stderr.
@@ -1268,6 +1271,14 @@ class DeepAgentsApp(App):
 
         self._timer_mounted_header = False
         """Whether `/timer` mounted the optional header on demand."""
+
+        self._competition_wait_future: asyncio.Future[ExternalEvent | None] | None = (
+            None
+        )
+        """Controller start event awaited by the launch competition gate."""
+
+        self._competition_players_ready = False
+        """Whether the controller has reported both competition players ready."""
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -3401,14 +3412,19 @@ class DeepAgentsApp(App):
             CancelledError: If the worker is cancelled (e.g. Esc/Ctrl+C);
                 re-raised so `_run_shell_task`'s finally can clean up.
         """
-        try:
-            await self._mount_message(
-                AppMessage(
-                    Content.from_markup("Running startup command: $cmd", cmd=command)
+        from deepagents_cli._env_vars import HIDE_STARTUP_COMMAND_TEXT, is_env_truthy
+
+        if not is_env_truthy(HIDE_STARTUP_COMMAND_TEXT):
+            try:
+                await self._mount_message(
+                    AppMessage(
+                        Content.from_markup(
+                            "Running startup command: $cmd", cmd=command
+                        )
+                    )
                 )
-            )
-        except Exception:
-            logger.warning("Failed to mount startup-command header", exc_info=True)
+            except Exception:
+                logger.warning("Failed to mount startup-command header", exc_info=True)
 
         self._shell_running = True
         if self._chat_input:
@@ -3604,8 +3620,11 @@ class DeepAgentsApp(App):
                     severity="error",
                     markup=False,
                 )
+            start_event = await self._maybe_wait_for_competition_start()
             await self._await_launch_name_memory(name_memory_task)
             await self._finish_launch_init(name=name)
+            if start_event is not None:
+                await self._start_competition_from_event(start_event)
         except Exception:
             # Last-resort guard: surface unexpected failures and best-effort
             # mark onboarding complete so the user is not trapped re-running
@@ -3625,6 +3644,116 @@ class DeepAgentsApp(App):
             self._launch_init_running = False
             if self._chat_input:
                 self._chat_input.focus_input()
+
+    async def _maybe_wait_for_competition_start(self) -> ExternalEvent | None:
+        """Show the competition waiting modal until the controller starts.
+
+        Returns:
+            The controller event that started the round, or `None` when the
+                competition gate is disabled or dismissed.
+        """
+        from deepagents_cli._env_vars import (
+            COMPETITION_WAIT_FOR_START,
+            is_env_truthy,
+        )
+
+        if not is_env_truthy(COMPETITION_WAIT_FOR_START):
+            return None
+
+        from deepagents_cli.hooks import dispatch_hook
+        from deepagents_cli.widgets.launch_init import LaunchWaitingScreen
+
+        self._competition_players_ready = False
+        await dispatch_hook("competition.player.ready", {})
+        future = self._push_screen_result_future(
+            LaunchWaitingScreen(ready_to_start=self._competition_players_ready)
+        )
+        loop = asyncio.get_running_loop()
+        start_future: asyncio.Future[ExternalEvent | None] = loop.create_future()
+        self._competition_wait_future = start_future
+        try:
+            done, _pending = await asyncio.wait(
+                {future, start_future},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if start_future in done:
+                with suppress(Exception):
+                    self.screen.dismiss(None)
+                return start_future.result()
+            return None
+        finally:
+            self._competition_wait_future = None
+
+    async def _start_competition_from_event(self, event: ExternalEvent) -> None:
+        """Start timer and submit the controller-provided prompt event."""
+        self._set_competition_prompt_title(event.payload)
+        await self._run_competition_start_countdown()
+        if self._startup_cmd:
+            cmd = self._startup_cmd
+            self._startup_cmd = None
+            await self._run_startup_command(cmd)
+        await self._start_timer(self._TIMER_DEFAULT_MINUTES)
+        if event.kind == "signal":
+            await self._handle_external_signal(event.payload)
+            return
+        mode: InputMode = "command" if event.kind == "command" else "normal"
+        await self._submit_input(event.payload, mode)
+
+    async def _run_competition_start_countdown(self) -> None:
+        """Show the controller-start countdown before beginning the round."""
+        from deepagents_cli.widgets.launch_init import LaunchCountdownScreen
+
+        screen = LaunchCountdownScreen(_COMPETITION_START_COUNTDOWN_SECONDS)
+        self.push_screen(screen)
+        try:
+            for seconds in range(
+                _COMPETITION_START_COUNTDOWN_SECONDS,
+                0,
+                -1,
+            ):
+                screen.set_seconds(seconds)
+                await asyncio.sleep(1)
+        finally:
+            with suppress(Exception):
+                screen.dismiss(None)
+
+    def _show_competition_ready_to_start(self) -> None:
+        """Update the competition waiting modal after both players are ready."""
+        from deepagents_cli.widgets.launch_init import LaunchWaitingScreen
+
+        self._competition_players_ready = True
+        if isinstance(self.screen, LaunchWaitingScreen):
+            self.screen.mark_ready_to_start()
+
+    def _set_competition_prompt_title(self, payload: str) -> None:
+        """Render the controller-provided prompt in the header title.
+
+        Args:
+            payload: External event payload sent by the controller.
+        """
+        prompt = self._extract_competition_prompt(payload)
+        if prompt:
+            self.title = f"Prompt: {prompt}"
+
+    @staticmethod
+    def _extract_competition_prompt(payload: str) -> str:
+        """Extract a display prompt from a controller start payload.
+
+        Args:
+            payload: External event payload sent by the controller.
+
+        Returns:
+            Prompt text with controller command wrappers removed.
+        """
+        text = payload.strip()
+        if text.startswith("/skill:"):
+            parts = text.split(maxsplit=1)
+            text = parts[1].strip() if len(parts) > 1 else ""
+        for prefix in ("Prompt:", "Your prompt is:"):
+            if text.lower().startswith(prefix.lower()):
+                text = text[len(prefix) :].strip()
+                break
+        return text
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.
@@ -3835,6 +3964,22 @@ class DeepAgentsApp(App):
         from deepagents_cli.command_registry import BypassTier
 
         external = event.event
+        if (
+            self._competition_wait_future is not None
+            and not self._competition_wait_future.done()
+            and external.kind == "signal"
+            and external.payload.strip().lower() == "players-ready"
+        ):
+            self._show_competition_ready_to_start()
+            return
+        if (
+            self._competition_wait_future is not None
+            and not self._competition_wait_future.done()
+            and external.kind in {"command", "prompt"}
+        ):
+            self._competition_wait_future.set_result(external)
+            return
+
         if external.kind == "signal":
             await self._handle_external_signal(external.payload)
             return
@@ -3857,6 +4002,8 @@ class DeepAgentsApp(App):
             await self._submit_input("/force-clear", "command", force_bypass=True)
         elif signal_name == "times-up":
             self._handle_times_up()
+        elif signal_name == "players-ready":
+            self._show_competition_ready_to_start()
         else:
             logger.warning("Ignoring unknown external signal %r", payload)
 

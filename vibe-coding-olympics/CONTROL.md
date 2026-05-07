@@ -34,10 +34,16 @@ Run commands from `vibe-coding-olympics/control/` unless noted.
 From `vibe-coding-olympics/`:
 
 ```bash
-./play.sh "a website for a taco truck" 3001
+./play.sh 3001
 ```
 
-Expect: a new iTerm2 window, tab 1 running the CLI (splash → skill → first turn), tab 2 running `tail -f /tmp/vite.log`. iTerm2's title bar for tab 1 should read **`vibe-player-3001`** and the launch shell should print a socket path like `/tmp/deepagents-vibe-3001.sock`. If the title tag is missing, every command below will miss; if the socket path is missing, `clear` cannot reach the CLI.
+Expect: a new iTerm2 window, tab 1 starts the Vite server once and then runs
+the CLI waiting for the controller prompt, tab 2 runs
+`tail -f /tmp/vite-3001.log`, and the browser opens `http://localhost:3001`
+once. iTerm2's title bar for tab 1 should read **`vibe-player-3001`** and the
+launch shell should print a socket path like `/tmp/deepagents-vibe-3001.sock`.
+If the title tag is missing, every command below will miss; if the socket path
+is missing, player commands cannot reach the CLI.
 
 ## 2. Confirm discovery
 
@@ -54,13 +60,28 @@ vibe-player-3001
 Launch a second player on another port and rerun `list` to confirm both show up:
 
 ```bash
-./play.sh "a minimalist timer" 3002
+./play.sh 3002
 uv run vibe-players list
 # vibe-player-3001
 # vibe-player-3002
 ```
 
-## 3. Test socket `clear`
+## 3. Test prompt injection
+
+```bash
+uv run vibe-players prompt "a website for a taco truck" --all
+```
+
+Expect both player CLIs to receive a socket event that invokes:
+
+```txt
+/skill:web-vibe Prompt: a website for a taco truck
+```
+
+This is the live-round path: players sit in the post-setup waiting state until
+the controller starts the round, then the same prompt is sent to each CLI.
+
+## 4. Test socket `clear`
 
 Let the CLI on port 3001 build up a few turns of conversation first, then:
 
@@ -73,7 +94,8 @@ Expect in that iTerm2 tab:
 - No slash command is typed into the input.
 - The controller sends a `force-clear` signal over the player's
   `DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH`.
-- The CLI resets to a fresh thread.
+- The CLI resets to a fresh thread/readiness flow.
+- Vite keeps running and the browser tab is not reopened.
 - The 3002 session is untouched.
 
 Stdout on the controlling shell:
@@ -90,7 +112,18 @@ uv run vibe-players clear --all
 # cleared vibe-player-3002
 ```
 
-## 4. Test `reset`
+## 5. Test `times-up`
+
+```bash
+uv run vibe-players times-up --all
+```
+
+Expect both CLIs to show the existing "Time's up" state.
+
+## 6. Test `reset` fallback
+
+`clear` is the normal between-round reset. Use `reset` only when a player CLI
+must be quit and relaunched.
 
 ```bash
 uv run vibe-players reset --port 3001
@@ -113,7 +146,7 @@ Re-verify with `list` — the session still shows up (the shell still owns the t
 
 Fan-out variant: `reset --all`.
 
-## 5. Failure / edge cases to spot-check
+## 7. Failure / edge cases to spot-check
 
 | Scenario | Command | Expected |
 | --- | --- | --- |
@@ -122,10 +155,10 @@ Fan-out variant: `reset --all`.
 | `reset` while the CLI is mid-turn | `vibe-players reset --port 3001` | `/quit` still works (ALWAYS-bypass tier) |
 | Close the player window manually, rerun `list` | — | It disappears from the output |
 
-## 6. Cleanup
+## 8. Cleanup
 
 ```bash
-uv run vibe-players reset --all   # optional
+uv run vibe-players reset --all   # optional hard cleanup
 # then close the iTerm2 windows by hand
 ```
 

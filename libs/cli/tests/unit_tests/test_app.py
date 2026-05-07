@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Iterator
+    from collections.abc import Awaitable, Coroutine, Iterator
     from pathlib import Path
 
     from deepagents_cli.notifications import PendingNotification
@@ -30,6 +30,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_cli._env_vars import HIDE_STARTUP_COMMAND_TEXT
 from deepagents_cli.app import (
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
@@ -363,6 +364,42 @@ class TestStartupSequence:
         assert observed_cmd == ["echo hi"]
         assert observed_attr_during_run == [None]
         assert app._startup_cmd is None
+
+    async def test_startup_command_header_hidden_by_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup command worker is still scheduled when the header is hidden."""
+        monkeypatch.setenv(HIDE_STARTUP_COMMAND_TEXT, "1")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        mounted: list[object] = []
+        scheduled: list[Coroutine[Any, Any, None]] = []
+
+        async def capture_message(message: object) -> None:  # noqa: RUF029
+            mounted.append(message)
+
+        async def fake_shell(command: str) -> None:  # noqa: RUF029
+            assert command == "echo hi"
+
+        class FakeWorker:
+            async def wait(self) -> None:
+                return None
+
+        def fake_run_worker(
+            coro: Coroutine[Any, Any, None], *, exclusive: bool
+        ) -> FakeWorker:
+            assert exclusive is False
+            scheduled.append(coro)
+            coro.close()
+            return FakeWorker()
+
+        app._mount_message = capture_message  # type: ignore[assignment]
+        app._run_shell_task = fake_shell  # type: ignore[assignment]
+        app.run_worker = fake_run_worker  # type: ignore[assignment]
+
+        await app._run_startup_command("echo hi")
+
+        assert mounted == []
+        assert len(scheduled) == 1
 
     async def test_launch_init_runs_before_initial_submission(self) -> None:
         """`--init` setup should complete before the startup prompt is submitted."""
@@ -885,6 +922,7 @@ class TestStartupSequence:
         await app._handle_command("/clear")
 
         mount_message_mock.assert_awaited_once()
+        assert mount_message_mock.await_args is not None
         message = mount_message_mock.await_args.args[0]
         assert str(message._content).startswith("Started new thread: ")
 
@@ -7113,6 +7151,23 @@ class TestHandleExternalSignal:
                 await app._handle_external_signal("times-up")
             handler.assert_called_once_with()
 
+    async def test_players_ready_signal_updates_waiting_modal(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_show_competition_ready_to_start") as handler:
+                await app._handle_external_signal("players-ready")
+            handler.assert_called_once_with()
+
+    async def test_players_ready_signal_is_remembered_for_late_modal(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_external_signal("players-ready")
+
+            assert app._competition_players_ready is True
+
     async def test_unknown_signal_is_no_op(self) -> None:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -7386,6 +7441,64 @@ class TestExternalBypassFieldHonored:
                 await pilot.pause()
             pm.assert_called_once_with("urgent", "normal")
             assert len(app._pending_messages) == 0
+
+
+class TestCompetitionPromptHeader:
+    """Controller start events should render the prompt in the header title."""
+
+    def test_extracts_prompt_from_skill_command_payload(self) -> None:
+        payload = "/skill:web-vibe Prompt: A website for a taco truck"
+
+        assert (
+            DeepAgentsApp._extract_competition_prompt(payload)
+            == "A website for a taco truck"
+        )
+
+    async def test_start_event_sets_title_before_submission(self) -> None:
+        app = DeepAgentsApp()
+        app._startup_cmd = None
+        event = ExternalEvent(
+            kind="command",
+            payload="/skill:web-vibe Prompt: A website for a taco truck",
+            source="test",
+        )
+
+        with (
+            patch.object(
+                app,
+                "_run_competition_start_countdown",
+                new_callable=AsyncMock,
+            ) as countdown,
+            patch.object(app, "_start_timer", new_callable=AsyncMock) as start_timer,
+            patch.object(app, "_submit_input", new_callable=AsyncMock) as submit,
+        ):
+            await app._start_competition_from_event(event)
+
+        assert app.title == "Prompt: A website for a taco truck"
+        countdown.assert_awaited_once_with()
+        start_timer.assert_awaited_once_with(app._TIMER_DEFAULT_MINUTES)
+        submit.assert_awaited_once_with(event.payload, "command")
+
+    async def test_start_countdown_counts_down_before_dismiss(self) -> None:
+        app = DeepAgentsApp()
+        screen = MagicMock()
+
+        with (
+            patch("deepagents_cli.app._COMPETITION_START_COUNTDOWN_SECONDS", 2),
+            patch(
+                "deepagents_cli.widgets.launch_init.LaunchCountdownScreen",
+                return_value=screen,
+            ) as screen_cls,
+            patch.object(app, "push_screen") as push_screen,
+            patch("deepagents_cli.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
+        ):
+            await app._run_competition_start_countdown()
+
+        screen_cls.assert_called_once_with(2)
+        push_screen.assert_called_once_with(screen)
+        assert screen.set_seconds.call_args_list == [call(2), call(1)]
+        assert sleep.await_args_list == [call(1), call(1)]
+        screen.dismiss.assert_called_once_with(None)
 
 
 # Local import for BypassTier in TestExternalBypassFieldHonored.

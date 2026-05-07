@@ -22,6 +22,9 @@ SOCKET_TIMEOUT_SECS = 2.0
 
 logger = logging.getLogger(__name__)
 
+_connection: iterm2.Connection | None = None
+_connection_lock: asyncio.Lock | None = None
+
 # `/quit` is a QUEUED slash command; give the CLI a beat to tear down
 # the Textual app before piping `deepagents -y` back in.
 RESET_QUIT_GRACE_SECS = 1.0
@@ -30,6 +33,30 @@ RESET_QUIT_GRACE_SECS = 1.0
 # iTerm2 flushes the whole buffer at once and Textual's `Input` submits
 # before the trailing chars are ingested, truncating the command.
 SUBMIT_GRACE_SECS = 0.05
+
+
+async def _get_connection() -> iterm2.Connection:
+    """Return a shared iTerm2 API connection for the control server.
+
+    `Connection.async_create()` authenticates by spawning an iTerm2 helper
+    subprocess. The web control page polls `/api/players`, so creating a new
+    connection per request can exhaust the process file-descriptor limit.
+    """
+    global _connection, _connection_lock  # noqa: PLW0603
+    if _connection is not None:
+        return _connection
+    if _connection_lock is None:
+        _connection_lock = asyncio.Lock()
+    async with _connection_lock:
+        if _connection is None:
+            _connection = await iterm2.Connection.async_create()
+        return _connection
+
+
+def _drop_connection() -> None:
+    """Forget the shared iTerm2 connection after a transport failure."""
+    global _connection  # noqa: PLW0603
+    _connection = None
 
 
 async def _submit_slash(session: iterm2.Session, command: str) -> None:
@@ -50,10 +77,6 @@ async def matching_sessions(
 ) -> list[tuple[str, iterm2.Session]]:
     """Return `(port, session)` pairs for vibe-player sessions.
 
-    Opens a fresh iTerm2 connection each call; short-lived requests
-    don't benefit from pooling and a shared connection would have to
-    survive the FastAPI reload cycle.
-
     Args:
         ports: Only return sessions whose port is in this list. `None`
             returns every player session across all iTerm2 windows.
@@ -62,8 +85,13 @@ async def matching_sessions(
         List of `(port, session)` pairs; empty if iTerm2 is not running
         or no player sessions match.
     """
-    connection = await iterm2.Connection.async_create()
-    app = await iterm2.async_get_app(connection)
+    connection = await _get_connection()
+    try:
+        app = await iterm2.async_get_app(connection)
+    except Exception:
+        _drop_connection()
+        connection = await _get_connection()
+        app = await iterm2.async_get_app(connection)
     if app is None:
         return []
     out: list[tuple[str, iterm2.Session]] = []
@@ -106,10 +134,39 @@ async def _send_force_clear(socket_path: Path) -> None:
         TimeoutError: If the CLI does not acknowledge the event in time.
         RuntimeError: If the CLI returns a negative acknowledgement.
     """
-    correlation_id = f"vibe-clear-{uuid4().hex}"
+    await _send_socket_event(
+        socket_path,
+        kind="signal",
+        payload="force-clear",
+        correlation_prefix="vibe-clear",
+    )
+
+
+async def _send_socket_event(
+    socket_path: Path,
+    *,
+    kind: str,
+    payload: str,
+    correlation_prefix: str,
+) -> None:
+    """Send one JSON-lines external event to a player CLI socket.
+
+    Args:
+        socket_path: Unix-domain socket path exported by the player CLI.
+        kind: External event kind accepted by the CLI event bus.
+        payload: External event payload.
+        correlation_prefix: Prefix used for the ACK correlation id.
+
+    Raises:
+        OSError: If the socket cannot be reached.
+        TimeoutError: If the CLI does not acknowledge the event in time.
+        RuntimeError: If the CLI returns a negative acknowledgement.
+        json.JSONDecodeError: If the CLI returns malformed JSON.
+    """
+    correlation_id = f"{correlation_prefix}-{uuid4().hex}"
     envelope = {
-        "kind": "signal",
-        "payload": "force-clear",
+        "kind": kind,
+        "payload": payload,
         "correlation_id": correlation_id,
     }
     reader, writer = await asyncio.wait_for(
@@ -133,7 +190,7 @@ async def _send_force_clear(socket_path: Path) -> None:
         raise RuntimeError(msg)
     if response.get("ok") is not True:
         error = response.get("error", "unknown error")
-        msg = f"External event socket {socket_path} rejected force-clear: {error}"
+        msg = f"External event socket {socket_path} rejected {kind}: {error}"
         raise RuntimeError(msg)
 
 
@@ -164,6 +221,111 @@ async def clear_players(ports: list[str] | None) -> list[str]:
             continue
         cleared.append(port)
     return cleared
+
+
+async def send_prompt_to_players(ports: list[str] | None, prompt: str) -> list[str]:
+    """Inject the round prompt into targeted player CLIs.
+
+    Args:
+        ports: Ports to target. `None` targets every active session.
+        prompt: Creative prompt selected by the controller.
+
+    Returns:
+        List of ports that received the prompt.
+    """
+    sent: list[str] = []
+    message = f"/skill:web-vibe Prompt: {prompt}"
+    for port, session in await matching_sessions(ports):
+        socket_path = await _event_socket_for_session(session)
+        if socket_path is None:
+            logger.warning("Player %s has no %s variable", port, SOCKET_VARIABLE)
+            continue
+        try:
+            await _send_socket_event(
+                socket_path,
+                kind="command",
+                payload=message,
+                correlation_prefix="vibe-prompt",
+            )
+        except (OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to send prompt to player %s via external event socket %s: %s",
+                port,
+                socket_path,
+                exc,
+            )
+            continue
+        sent.append(port)
+    return sent
+
+
+async def times_up_players(ports: list[str] | None) -> list[str]:
+    """Send a `times-up` signal to targeted player CLIs.
+
+    Args:
+        ports: Ports to target. `None` targets every active session.
+
+    Returns:
+        List of ports that received the signal.
+    """
+    sent: list[str] = []
+    for port, session in await matching_sessions(ports):
+        socket_path = await _event_socket_for_session(session)
+        if socket_path is None:
+            logger.warning("Player %s has no %s variable", port, SOCKET_VARIABLE)
+            continue
+        try:
+            await _send_socket_event(
+                socket_path,
+                kind="signal",
+                payload="times-up",
+                correlation_prefix="vibe-times-up",
+            )
+        except (OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to send times-up to player %s via external event socket %s: %s",
+                port,
+                socket_path,
+                exc,
+            )
+            continue
+        sent.append(port)
+    return sent
+
+
+async def players_ready(ports: list[str] | None) -> list[str]:
+    """Notify targeted player CLIs that both players are ready to start.
+
+    Args:
+        ports: Ports to target. `None` targets every active session.
+
+    Returns:
+        List of ports that received the signal.
+    """
+    sent: list[str] = []
+    for port, session in await matching_sessions(ports):
+        socket_path = await _event_socket_for_session(session)
+        if socket_path is None:
+            logger.warning("Player %s has no %s variable", port, SOCKET_VARIABLE)
+            continue
+        try:
+            await _send_socket_event(
+                socket_path,
+                kind="signal",
+                payload="players-ready",
+                correlation_prefix="vibe-players-ready",
+            )
+        except (OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to send players-ready to player %s via external event "
+                "socket %s: %s",
+                port,
+                socket_path,
+                exc,
+            )
+            continue
+        sent.append(port)
+    return sent
 
 
 async def reset_players(ports: list[str] | None) -> list[str]:

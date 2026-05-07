@@ -22,8 +22,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess  # noqa: S404
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -46,9 +48,15 @@ def _load_hooks() -> list[dict[str, Any]]:
     if _hooks_config is not None:
         return _hooks_config
 
+    from deepagents_cli._env_vars import HOOKS_PATH
     from deepagents_cli.model_config import DEFAULT_CONFIG_DIR
 
-    hooks_path = DEFAULT_CONFIG_DIR / "hooks.json"
+    configured_path = os.environ.get(HOOKS_PATH, "").strip()
+    hooks_path = (
+        Path(configured_path).expanduser()
+        if configured_path
+        else DEFAULT_CONFIG_DIR / "hooks.json"
+    )
 
     if not hooks_path.is_file():
         _hooks_config = []

@@ -58,6 +58,10 @@ class TestExternalEventInvariants:
         event = ExternalEvent(kind="signal", payload="times-up", source="t")
         assert event.payload == "times-up"
 
+    def test_accepts_players_ready_signal(self) -> None:
+        event = ExternalEvent(kind="signal", payload="players-ready", source="t")
+        assert event.payload == "players-ready"
+
 
 class TestDecodeExternalEvent:
     """Validate the JSON-lines external event envelope."""

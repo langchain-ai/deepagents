@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from textual.containers import Vertical
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -146,3 +148,188 @@ class LaunchNameScreen(ModalScreen[str | None]):
             timeout=3,
             markup=False,
         )
+
+
+class LaunchWaitingScreen(ModalScreen[None]):
+    """Blocking launch screen shown until the controller starts the round."""
+
+    CSS = """
+    LaunchWaitingScreen {
+        align: center middle;
+    }
+
+    LaunchWaitingScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    LaunchWaitingScreen .launch-wait-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchWaitingScreen .launch-wait-copy {
+        height: auto;
+        color: $text;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, *, ready_to_start: bool = False) -> None:
+        """Create the launch waiting screen.
+
+        Args:
+            ready_to_start: Whether both players have already selected a model.
+        """
+        super().__init__()
+        self._ready_to_start = ready_to_start
+
+    def compose(self) -> ComposeResult:
+        """Compose the waiting screen.
+
+        Yields:
+            Widgets for the modal content.
+        """
+        title, copy = self._content()
+        with Vertical():
+            yield Static(
+                title,
+                classes="launch-wait-title",
+                id="launch-wait-title",
+            )
+            yield Static(
+                Content.assemble(copy),
+                classes="launch-wait-copy",
+                id="launch-wait-copy",
+            )
+
+    def on_mount(self) -> None:
+        """Apply ASCII border styling when requested."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def action_cancel(self) -> None:
+        """Keep the modal open until the controller sends the start event."""
+        self.notify(
+            "Waiting for the round to start.",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def mark_ready_to_start(self) -> None:
+        """Update the modal after both players have selected a model."""
+        self._ready_to_start = True
+        title, copy = self._content()
+        try:
+            self.query_one("#launch-wait-title", Static).update(title)
+            self.query_one("#launch-wait-copy", Static).update(Content.assemble(copy))
+        except NoMatches:
+            return
+
+    def _content(self) -> tuple[str, str]:
+        """Return copy for the current waiting state."""
+        if self._ready_to_start:
+            return "Waiting to start...", "The controller will start the round."
+        return (
+            "Waiting for other player...",
+            "Waiting for both players to choose a model.",
+        )
+
+
+class LaunchCountdownScreen(ModalScreen[None]):
+    """Blocking launch screen shown after the controller starts the round."""
+
+    CSS = """
+    LaunchCountdownScreen {
+        align: center middle;
+    }
+
+    LaunchCountdownScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    LaunchCountdownScreen .launch-countdown-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchCountdownScreen #launch-countdown-value {
+        height: auto;
+        color: $text;
+        text-style: bold;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, seconds: int) -> None:
+        """Create the countdown screen.
+
+        Args:
+            seconds: Initial countdown value.
+        """
+        super().__init__()
+        self._seconds = seconds
+
+    def compose(self) -> ComposeResult:
+        """Compose the countdown screen.
+
+        Yields:
+            Widgets for the modal content.
+        """
+        with Vertical():
+            yield Static(
+                "Starting round",
+                classes="launch-countdown-title",
+            )
+            yield Static(
+                self._format_seconds(),
+                id="launch-countdown-value",
+            )
+
+    def on_mount(self) -> None:
+        """Apply ASCII border styling when requested."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.success)
+
+    def action_cancel(self) -> None:
+        """Keep the countdown open until the round starts."""
+        self.notify(
+            "The round is starting.",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def set_seconds(self, seconds: int) -> None:
+        """Update the visible countdown value.
+
+        Args:
+            seconds: Countdown value to display.
+        """
+        self._seconds = seconds
+        with suppress(NoMatches):
+            self.query_one("#launch-countdown-value", Static).update(
+                self._format_seconds()
+            )
+
+    def _format_seconds(self) -> str:
+        """Return the visible countdown text."""
+        return f"{self._seconds}..."

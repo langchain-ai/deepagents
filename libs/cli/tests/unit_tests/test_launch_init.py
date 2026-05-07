@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
-from deepagents_cli.widgets.launch_init import LaunchNameScreen, _normalize_name
+from deepagents_cli.widgets.launch_init import (
+    LaunchCountdownScreen,
+    LaunchNameScreen,
+    LaunchWaitingScreen,
+    _normalize_name,
+)
 
 
 class LaunchNameTestApp(App[None]):
@@ -30,6 +35,16 @@ class LaunchNameTestApp(App[None]):
             self.dismissed = True
 
         self.push_screen(LaunchNameScreen(), handle_result)
+
+    def show_waiting_screen(self, *, ready_to_start: bool = False) -> None:
+        """Open the launch waiting screen."""
+        self.push_screen(LaunchWaitingScreen(ready_to_start=ready_to_start))
+
+    def show_countdown_screen(self, seconds: int) -> LaunchCountdownScreen:
+        """Open the launch countdown screen."""
+        screen = LaunchCountdownScreen(seconds)
+        self.push_screen(screen)
+        return screen
 
 
 class TestLaunchNameScreen:
@@ -97,6 +112,42 @@ class TestLaunchNameScreen:
 
             assert app.dismissed is False
             assert isinstance(app.screen, LaunchNameScreen)
+
+
+class TestLaunchWaitingScreen:
+    """Tests for launch waiting copy."""
+
+    async def test_ready_to_start_initial_state(self) -> None:
+        """The modal can open directly in the post-model-ready state."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_waiting_screen(ready_to_start=True)
+            await pilot.pause()
+
+            title = app.screen.query_one("#launch-wait-title", Static)
+            copy = app.screen.query_one("#launch-wait-copy", Static)
+
+            assert str(title.render()) == "Waiting to start..."
+            assert str(copy.render()) == "The controller will start the round."
+
+
+class TestLaunchCountdownScreen:
+    """Tests for launch countdown copy."""
+
+    async def test_countdown_value_updates(self) -> None:
+        """The modal should render and update the visible countdown value."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            screen = app.show_countdown_screen(5)
+            await pilot.pause()
+
+            value = app.screen.query_one("#launch-countdown-value", Static)
+            assert str(value.render()) == "5..."
+
+            screen.set_seconds(4)
+            await pilot.pause()
+
+            assert str(value.render()) == "4..."
 
 
 class TestNormalizeName:

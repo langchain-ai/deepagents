@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from pydantic import BaseModel
 from quickjs_rs import UNDEFINED
 
 if TYPE_CHECKING:
@@ -126,6 +127,11 @@ def _coerce_for_marshal(value: Any) -> Any:
         return {str(k): _coerce_for_marshal(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_coerce_for_marshal(v) for v in value]
+    # Pydantic models are dumped to a plain dict so the JS side sees the
+    # field shape its return-type signature advertises (rather than
+    # ``str(model)``). Nested models / datetimes are handled by recursion.
+    if isinstance(value, BaseModel):
+        return _coerce_for_marshal(value.model_dump())
     return str(value)
 
 

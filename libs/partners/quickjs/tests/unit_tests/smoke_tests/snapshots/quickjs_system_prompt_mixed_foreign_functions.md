@@ -149,7 +149,7 @@ console.log({ city, normalized });
 /** Find users with the given name. */
 async function findUsersByName(input: {
   name: string;
-}): Promise<UserLookup[]>
+}): Promise<unknown[]>
 
 /** Get the location id for a user. */
 async function getUserLocation(input: {
@@ -170,13 +170,4 @@ async function normalizeName(input: {
 async function fetchWeather(input: {
   city: string;
 }): Promise<string>
-```
-
-Referenced types:
-
-```typescript
-type UserLookup = {
-  id: number;
-  name: string;
-}
 ```

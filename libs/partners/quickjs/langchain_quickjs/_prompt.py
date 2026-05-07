@@ -6,10 +6,12 @@ import contextlib
 import inspect
 import json
 import re
-from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, get_type_hints
+
+from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from langchain_core.tools import BaseTool
 
@@ -81,15 +83,6 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         )
         blocks.append(f"/** {description} */\n{signature}")
     body = "\n\n".join(blocks)
-    referenced_types = _collect_referenced_typed_dicts(tools)
-    referenced_block = ""
-    if referenced_types:
-        type_definitions = "\n\n".join(
-            _render_typed_dict_definition(t) for t in referenced_types
-        )
-        referenced_block = (
-            f"\n\nReferenced types:\n\n```typescript\n{type_definitions}\n```"
-        )
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -131,7 +124,6 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "```typescript\n"
         f"{body}\n"
         "```"
-        f"{referenced_block}"
     )
 
 
@@ -174,159 +166,32 @@ def _render_signature(
     return f"async function {fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
-# ---------------------------------------------------------------------------
-# Return-type rendering
-#
-# Inputs come from the tool's args_schema (Pydantic JSON Schema) so we get
-# Field descriptions and required/optional handling. Return types do NOT have
-# a JSON Schema source — only the function's Python annotation — so we render
-# them directly. Intentionally narrow scope: primitives, list[T], dict[str, V],
-# Optional[T], Literal[...], TypedDict (via referenced-type block), and bare
-# class names. Anything richer (Union, generics, BaseModel field expansion)
-# renders as ``unknown``.
-# ---------------------------------------------------------------------------
-
-
-def _is_typed_dict(annotation: Any) -> bool:
-    return (
-        isinstance(annotation, type)
-        and hasattr(annotation, "__annotations__")
-        and hasattr(annotation, "__required_keys__")
-    )
-
-
-def _is_optional_union(origin: Any, args: tuple[Any, ...]) -> bool:
-    """Return whether *origin*/*args* describe ``T | None`` exactly."""
-    origin_name = getattr(origin, "__name__", None)
-    if origin_name not in {"Union", "UnionType"}:
-        return False
-    non_none = [a for a in args if a is not type(None)]
-    return len(non_none) == 1 and len(args) == len(non_none) + 1
-
-
-def _format_return_annotation(annotation: Any) -> str:  # noqa: C901, PLR0912 — flat dispatch over a small fixed set of annotation shapes; splitting hurts readability
-    """Render a Python return annotation as a compact TS-ish string."""
-    dict_arg_count = 2
-    # Empty / Any → unknown.
-    if annotation is inspect.Signature.empty or annotation is Any:
-        return "unknown"
-
-    # Primitives.
-    if annotation is type(None):
-        return "null"
-    if annotation in (int, float):
-        return "number"
-    if annotation is str:
-        return "string"
-    if annotation is bool:
-        return "boolean"
-    # Bare ``dict`` / ``list`` (no parameters) render as their parameterised
-    # equivalents so the model sees standard TS types instead of "dict"/"list".
-    if annotation is dict:
-        return "Record<string, unknown>"
-    if annotation is list:
-        return "unknown[]"
-
-    origin = get_origin(annotation)
-    args = get_args(annotation)
-
-    # Optional[T] / T | None — render as ``T | null``. Other unions → unknown.
-    if _is_optional_union(origin, args):
-        non_none = next(a for a in args if a is not type(None))
-        return f"{_format_return_annotation(non_none)} | null"
-
-    # Literal["a", "b", 1] — quoted union of literal values.
-    if origin is Literal:
-        return " | ".join(json.dumps(arg) for arg in args)
-
-    # Containers: list[T], dict[str, V]. Other generics → unknown.
-    if origin in (list, set, frozenset):
-        inner = _format_return_annotation(args[0]) if args else "unknown"
-        return f"{inner}[]"
-    if origin is dict:
-        if len(args) == dict_arg_count and args[0] is str:
-            return f"Record<string, {_format_return_annotation(args[1])}>"
-        return "unknown"
-
-    # TypedDicts get their own name (definitions are emitted separately by
-    # `_collect_referenced_typed_dicts`). Subclasses of the standard
-    # containers render as the equivalent TS shape. Everything else
-    # (Pydantic models, dataclasses, custom classes) hits ``str(value)`` at
-    # the bridge, so advertise it as ``string`` — the historical default
-    # before native marshaling, and an honest description of what arrives.
-    if _is_typed_dict(annotation):
-        return annotation.__name__
-    if isinstance(annotation, type):
-        if issubclass(annotation, dict):
-            return "Record<string, unknown>"
-        if issubclass(annotation, (list, tuple)):
-            return "unknown[]"
-        return "string"
-
-    return "unknown"
-
-
-def _get_tool_doc_target(tool: BaseTool) -> Callable[..., Any] | None:
-    target = getattr(tool, "func", None)
-    if callable(target):
-        return target
-    target = getattr(tool, "coroutine", None)
-    if callable(target):
-        return target
-    return None
-
-
-def _get_return_annotation(target: Callable[..., Any]) -> Any:
-    """Resolve the return annotation for a callable, ``Signature.empty`` if absent."""
-    with contextlib.suppress(TypeError, ValueError, NameError):
-        signature = inspect.signature(target)
-        resolved = get_type_hints(target)
-        return resolved.get("return", signature.return_annotation)
-    return inspect.Signature.empty
+# Return types come from the tool's underlying function annotation. We feed
+# the annotation through ``pydantic.TypeAdapter`` to get a JSON Schema and
+# render it through the same ``_json_schema_to_ts`` we use for input args.
+# Compound shapes (TypedDict, BaseModel, recursive types) end up as ``$ref``
+# in the schema and currently render as ``unknown`` — same behaviour as
+# nested-model input args. Until that path resolves ``$ref`` / ``$defs``,
+# the simpler unified renderer is the right trade-off here.
 
 
 def _render_return_type(tool: BaseTool) -> str:
-    target = _get_tool_doc_target(tool)
+    """Render the return annotation as a TS type, defaulting to ``unknown``."""
+    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
     if target is None:
         return "unknown"
-    return _format_return_annotation(_get_return_annotation(target))
-
-
-def _render_typed_dict_definition(annotation: type[Any]) -> str:
-    optional_keys = frozenset(getattr(annotation, "__optional_keys__", frozenset()))
+    annotation = inspect.Signature.empty
+    with contextlib.suppress(TypeError, ValueError, NameError):
+        signature = inspect.signature(target)
+        resolved = get_type_hints(target)
+        annotation = resolved.get("return", signature.return_annotation)
+    if annotation is inspect.Signature.empty or annotation is Any:
+        return "unknown"
     try:
-        field_types = get_type_hints(annotation)
-    except (TypeError, NameError):
-        field_types = getattr(annotation, "__annotations__", {})
-    lines = [f"type {annotation.__name__} = {{"]
-    for key, value in field_types.items():
-        field_name = f"{key}?" if key in optional_keys else key
-        lines.append(f"  {field_name}: {_format_return_annotation(value)};")
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _collect_referenced_typed_dicts(tools: Sequence[BaseTool]) -> list[type[Any]]:
-    """Return TypedDicts referenced by tools' return types, first-seen order."""
-    collected: list[type[Any]] = []
-    seen: set[type[Any]] = set()
-    for tool in tools:
-        target = _get_tool_doc_target(tool)
-        if target is None:
-            continue
-        annotation = _get_return_annotation(target)
-        # Surface the inner element of a one-level container: e.g.
-        # ``list[ServiceSearchResult]`` should pull ServiceSearchResult.
-        origin = get_origin(annotation)
-        if origin in (list, set, frozenset):
-            inner = get_args(annotation)
-            if inner:
-                annotation = inner[0]
-        if not _is_typed_dict(annotation) or annotation in seen:
-            continue
-        seen.add(annotation)
-        collected.append(annotation)
-    return collected
+        schema = TypeAdapter(annotation).json_schema()
+    except Exception:  # noqa: BLE001 — schema generation is best-effort
+        return "unknown"
+    return _json_schema_to_ts(schema)
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:

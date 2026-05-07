@@ -613,7 +613,7 @@ def _upsert_issues_board_config(
     *,
     session_id: str,
     api_key: str,
-    context_hub_id: str,
+    context_hub_repo_handle: str,
 ) -> None:
     """Best-effort create or patch board config for a deployed agent."""
     import httpx
@@ -636,7 +636,7 @@ def _upsert_issues_board_config(
         "cron_schedule": "0 */6 * * *",
         "heavy_model": "anthropic:issues-agent-heavy",
         "light_model": "anthropic:issues-agent-light",
-        "context_hub_id": context_hub_id,
+        "context_hub_repo_handle": context_hub_repo_handle,
     }
 
     try:
@@ -645,19 +645,19 @@ def _upsert_issues_board_config(
             if create_resp.status_code in success_codes:
                 print(
                     f"Issues board auto-wired for tracing project {session_id} "
-                    f"({context_hub_id})."
+                    f"({context_hub_repo_handle})."
                 )
                 return
             if create_resp.status_code == http_conflict:
                 patch_resp = client.patch(
                     url,
                     headers=headers,
-                    json={"context_hub_id": context_hub_id},
+                    json={"context_hub_repo_handle": context_hub_repo_handle},
                 )
                 if patch_resp.status_code in success_codes:
                     print(
                         "Issues board already existed; updated context hub id "
-                        f"to {context_hub_id}."
+                        f"to {context_hub_repo_handle}."
                     )
                     return
                 print(
@@ -678,7 +678,7 @@ def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
     if getattr(config.memories, "backend", "") != "hub":
         return
 
-    context_hub_id = config.memories.identifier or f"-/{config.agent.name}"
+    context_hub_repo_handle = config.memories.identifier or f"-/{config.agent.name}"
     api_key = _resolve_langsmith_api_key()
     if api_key is None:
         print(
@@ -701,5 +701,5 @@ def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
     _upsert_issues_board_config(
         session_id=session_id,
         api_key=api_key,
-        context_hub_id=context_hub_id,
+        context_hub_repo_handle=context_hub_repo_handle,
     )

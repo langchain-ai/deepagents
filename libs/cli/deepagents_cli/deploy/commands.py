@@ -600,8 +600,7 @@ def _resolve_tracer_session_id_by_project_name(
             continue
     if last_error is not None:
         print(
-            f"Warning: Failed to resolve tracing project '{project_name}': "
-            f"{last_error}"
+            f"Warning: Failed to resolve tracing project '{project_name}': {last_error}"
         )
     return None
 

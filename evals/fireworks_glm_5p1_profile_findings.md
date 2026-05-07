@@ -175,3 +175,42 @@ The current v1 profile is the best-tested iteration. v3 only makes sense when th
 3. An N-trials run on the candidate before declaring it better.
 
 For now: do not edit the suffix. Route any further wins through middleware.
+
+---
+
+## No-profile baseline (partial — trial 0 only)
+
+GHA run [25473519302](https://github.com/langchain-ai/deepagents/actions/runs/25473519302) on `main` (no profile registered). 5 trials dispatched, cancelled after trial 0 finished (~5h). Trial 0 alone gives N=1 — useful but not a noise band.
+
+**Test-set caveat**: profile-branch v1 N-trials excluded the `memory` category (110 tests). Main ran with default categories including memory (168 tests). So `correctness` (0.67 vs 0.82), `passed`, `failed`, and totals are not directly comparable. Per-category *rates* are.
+
+### Category rates — v1 (N=4) vs no-profile (N=1)
+
+| Category | v1 mean ± sd | v1 range | No-profile | Verdict |
+|---|---:|---|---:|---|
+| **conversation** | **0.490 ± 0.020** | 0.48–0.52 | **0.380** | **−0.11 BELOW band — profile helps** |
+| **summarization** | **0.800 ± 0.000** | — | **0.600** | **−0.20 BELOW band — profile helps clearly** |
+| file_operations | 0.940 ± 0.040 | 0.92–1.00 | 0.920 | IN band — no effect |
+| retrieval | 1.000 | — | 1.000 | tied |
+| tool_use | 0.875 ± 0.019 | 0.85–0.89 | 0.890 | IN band — no effect |
+| `solve_rate` | 0.386 ± 0.046 | 0.330–0.442 | 0.403 | IN band (test sets differ — not load-bearing) |
+
+### Per-test profile cost — 2 stable regressions
+
+Tests that **pass without the profile** and **stably fail with it** (4/4 v1 trials):
+
+- `test_single_tool_get_food_calories` — empty `content`, answer routed into `reasoning_content`
+- `test_single_tool_get_user_email` — same pattern
+
+Counterintuitively, these regress *despite* the suffix's `Output Channel` rule explicitly telling the model never to leave content empty. The larger profile prompt appears to push the model into `reasoning_content` routing on simple single-tool tasks more strongly than the rule counters. This is direct evidence that the empty-content section isn't paying for itself in the harness, even though direct API probes showed it working in isolation (8/8 vs. 1/8).
+
+### Net assessment
+
+The profile is a **modest net positive**: conversation +0.11 and summarization +0.20 (both outside v1's noise band) outweigh the 2-test regression on single-tool prompts. Headline `solve_rate` is statistically indistinguishable from no-profile, but the test sets differ enough that the headline isn't a fair comparison.
+
+### Refined action items
+
+1. **Keep v1 in place** — it pays for itself on the categories that change.
+2. **Investigate the single-tool regressions before any further suffix edits.** If the suffix is causing the empty-content routing on these tests, that's the same cluster-E mechanism the rule was meant to fix — confirming it can't be solved at the prompt layer in this harness.
+3. **Promote `_FireworksReasoningContentMiddleware` from "deferred" to "next."** It's the deterministic close on cluster E and would also fix the profile-induced regressions on the 2 single-tool tests, turning the profile from a net positive into a clean win.
+4. Run a full 5-trial no-profile baseline at some point to firm up the conversation lift estimate (currently N=1, so ±0.11 is a point estimate, not a band). Match the test-set composition to the v1 N-trials run — exclude `memory` — so the comparison is apples-to-apples.

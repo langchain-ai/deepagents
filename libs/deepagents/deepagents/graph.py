@@ -26,12 +26,12 @@ from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
-from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._excluded_middleware import (
     _apply_excluded_middleware,
     _validate_excluded_middleware_config,
     _verify_excluded_middleware_coverage,
 )
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
 from deepagents._subagent_transformer import SubagentTransformer
 from deepagents._tools import _apply_tool_description_overrides
@@ -61,7 +61,6 @@ class _DeepAgentState(AgentState):
     """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
-
 
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.

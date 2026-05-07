@@ -24,9 +24,7 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 
-def _messages_delta_reducer(
-    state: list[AnyMessage], writes: list[list[AnyMessage]]
-) -> list[AnyMessage]:
+def _messages_delta_reducer(state: list[AnyMessage], writes: list[list[AnyMessage]]) -> list[AnyMessage]:  # noqa: C901, PLR0912
     """**Experimental.** Batch reducer for use with `DeltaChannel`.
 
     Provides full `add_messages` parity: dedup by ID, `RemoveMessage`
@@ -56,18 +54,12 @@ def _messages_delta_reducer(
     else:
         state_msgs = cast(
             "list[AnyMessage]",
-            [
-                message_chunk_to_message(cast(BaseMessageChunk, m))
-                for m in convert_to_messages(state)
-            ],
+            [message_chunk_to_message(cast("BaseMessageChunk", m)) for m in convert_to_messages(state)],
         )
     # Coerce chunks to full messages — streaming nodes can emit BaseMessageChunk.
     msgs = cast(
         "list[AnyMessage]",
-        [
-            message_chunk_to_message(cast(BaseMessageChunk, m))
-            for m in convert_to_messages(flat)
-        ],
+        [message_chunk_to_message(cast("BaseMessageChunk", m)) for m in convert_to_messages(flat)],
     )
 
     # REMOVE_ALL_MESSAGES resets everything; find the last sentinel and

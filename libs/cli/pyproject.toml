@@ -172,7 +172,6 @@ langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
 langgraph-api = { git = "https://github.com/langchain-ai/langgraph-api", rev = "35231f7a2effd50b0a78e91da3423bb7fba63748", subdirectory = "api" }
-langgraph = { git = "https://github.com/langchain-ai/langgraph", rev = "e8c6d9cc3", subdirectory = "libs/langgraph" }
 
 [tool.ty.environment]
 python-version = "3.11"

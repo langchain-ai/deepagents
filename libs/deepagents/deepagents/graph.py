@@ -20,13 +20,13 @@ from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
-from langgraph.graph.message import _messages_delta_reducer
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
 from deepagents._api.deprecation import deprecated, warn_deprecated
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._excluded_middleware import (
     _apply_excluded_middleware,
     _validate_excluded_middleware_config,

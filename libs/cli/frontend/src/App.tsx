@@ -373,11 +373,21 @@ function NewChatApp({
     const text = input.trim();
     if (!text || isLoading || uploadingFiles) return;
 
-    // Capture the first-message text before we submit. If the thread is
-    // brand new (threadId is null), handleThreadId will write this as the
-    // title once the SDK assigns the id.
-    if (threadId == null) {
-      pendingTitleRef.current = text.slice(0, 60);
+    // Capture the first-message text before we submit so the picker shows
+    // the question instead of a UUID. The thread may already exist if the
+    // user uploaded a file first (uploadFiles → ensureThreadId creates it
+    // up-front so the upload has somewhere to land); in that case write
+    // the title directly. Otherwise stash it for handleThreadId to write
+    // once the SDK assigns the id on stream.submit.
+    if (messages.length === 0) {
+      const title = text.slice(0, 60);
+      if (threadId == null) {
+        pendingTitleRef.current = title;
+      } else {
+        client.threads.update(threadId, { metadata: { title } }).catch((err) => {
+          console.warn("Failed to write thread title", err);
+        });
+      }
     }
 
     const record =
@@ -405,7 +415,7 @@ function NewChatApp({
           : undefined,
       },
     );
-  }, [ensureSandbox, input, isLoading, stream, threadId, uploadingFiles]);
+  }, [client, ensureSandbox, input, isLoading, messages.length, stream, threadId, uploadingFiles]);
 
   const threadPicker = (
     <ThreadPicker

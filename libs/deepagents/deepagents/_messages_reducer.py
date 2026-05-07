@@ -1,11 +1,11 @@
-"""Local copy of `_messages_delta_reducer` from langgraph PR #7729.
+"""Local `DeltaChannel` reducer for the messages key.
 
-Vendored so that deepagents can pin to the latest published langgraph alpha
-without waiting for the PR to merge and ship. Drop this module and switch
-`graph.py` back to `from langgraph.graph.message import _messages_delta_reducer`
-once the upstream release contains the fix.
-
-Source: https://github.com/langchain-ai/langgraph/pull/7729
+Adapted from langgraph's `_messages_delta_reducer` (PR #7729). The upstream
+version coerces `BaseMessageChunk` writes to full messages for parity with
+`add_messages`. Deepagents never writes chunks to the messages channel —
+`langchain.agents.create_agent` appends full `AIMessage` objects, and
+streaming via `astream_events` operates on the output side, not the state
+side — so we skip the per-message coercion.
 """
 
 from __future__ import annotations
@@ -16,26 +16,24 @@ from typing import Any, cast
 from langchain_core.messages import (
     AnyMessage,
     BaseMessage,
-    BaseMessageChunk,
     RemoveMessage,
     convert_to_messages,
-    message_chunk_to_message,
 )
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 
-def _messages_delta_reducer(state: list[AnyMessage], writes: list[list[AnyMessage]]) -> list[AnyMessage]:  # noqa: C901, PLR0912
-    """**Experimental.** Batch reducer for use with `DeltaChannel`.
+def _messages_delta_reducer(  # noqa: C901, PLR0912
+    state: list[AnyMessage], writes: list[list[AnyMessage]]
+) -> list[AnyMessage]:
+    """Batch reducer for use with `DeltaChannel` on the messages key.
 
-    Provides full `add_messages` parity: dedup by ID, `RemoveMessage`
-    tombstoning, `REMOVE_ALL_MESSAGES` reset, `BaseMessageChunk` coercion,
-    and UUID assignment for ID-less messages — all in a single batched pass.
-
-    This reducer is batching-invariant, as required by `DeltaChannel`:
+    Dedups by ID, tombstones via `RemoveMessage`, resets on
+    `REMOVE_ALL_MESSAGES`, and assigns UUIDs to ID-less messages in a single
+    batched pass. Batching-invariant as required by `DeltaChannel`:
     `reducer(reducer(state, xs), ys) == reducer(state, xs + ys)`.
 
-    Raw dict / string / tuple inputs are coerced to typed `BaseMessage`
-    objects so that HTTP-driven graphs work without a separate coercion step.
+    Raw dict / string / tuple inputs are coerced to typed `BaseMessage` so
+    HTTP-driven graphs work without a separate coercion step.
     """
     # Each write is either a list of message-likes or a single message-like
     # (BaseMessage / dict / str / tuple). Only lists flatten; everything
@@ -46,21 +44,11 @@ def _messages_delta_reducer(state: list[AnyMessage], writes: list[list[AnyMessag
             flat.extend(w)
         else:
             flat.append(w)
-    # Steady state: the reducer's own output is already typed BaseMessages
-    # (never chunks), so skip convert_to_messages on the fast path.
-    # Only raw input (initial dicts, deserialized blobs) hits the slow path.
-    if state and isinstance(state[0], BaseMessage):
-        state_msgs = state
-    else:
-        state_msgs = cast(
-            "list[AnyMessage]",
-            [message_chunk_to_message(cast("BaseMessageChunk", m)) for m in convert_to_messages(state)],
-        )
-    # Coerce chunks to full messages — streaming nodes can emit BaseMessageChunk.
-    msgs = cast(
-        "list[AnyMessage]",
-        [message_chunk_to_message(cast("BaseMessageChunk", m)) for m in convert_to_messages(flat)],
-    )
+    # Steady state: the reducer's own output is already typed BaseMessages,
+    # so skip convert_to_messages on the fast path. Only raw input (initial
+    # dicts, deserialized blobs) hits the slow path.
+    state_msgs = state if state and isinstance(state[0], BaseMessage) else cast("list[AnyMessage]", convert_to_messages(state))
+    msgs = cast("list[AnyMessage]", convert_to_messages(flat))
 
     # REMOVE_ALL_MESSAGES resets everything; find the last sentinel and
     # discard all state plus all writes before it.
@@ -73,7 +61,7 @@ def _messages_delta_reducer(state: list[AnyMessage], writes: list[list[AnyMessag
         msgs = msgs[remove_all_idx + 1 :]
 
     # Build index and assign missing IDs in one pass (parity with add_messages
-    # so that eviction and RemoveMessage tombstoning work on ID-less messages).
+    # so eviction and RemoveMessage tombstoning work on ID-less messages).
     index: dict[str, int] = {}
     for i, m in enumerate(state_msgs):
         if m.id is None:

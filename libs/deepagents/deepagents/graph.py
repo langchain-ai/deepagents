@@ -728,11 +728,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
         return SubagentTransformer(scope, subagent_names=subagent_names)
 
-    agent = create_agent(
+    return create_agent(
         model,
         system_prompt=final_system_prompt,
         tools=_tools,
-        state_schema=_DeepAgentState,
         middleware=deepagent_middleware,
         response_format=response_format,
         context_schema=context_schema,
@@ -741,9 +740,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
+        state_schema=_DeepAgentState,
         transformers=[_subagent_factory],
-    )
-    return agent.with_config(
+    ).with_config(
         {
             "recursion_limit": 9_999,
             "metadata": {

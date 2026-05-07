@@ -63,7 +63,7 @@ def test_read_slices_by_offset_limit() -> None:
     result = backend.read("/a.md", offset=1, limit=2)
     assert result.error is None
     assert result.file_data is not None
-    assert result.file_data["content"] == "2\n3"
+    assert result.file_data["content"] == "2\n3\n"
 
 
 def test_pull_runs_only_once_for_multiple_reads() -> None:

@@ -554,10 +554,17 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
         agent_writable = memories_data.get("agent_writable", False)
         if not isinstance(agent_writable, bool):
-            msg = f"[memories].agent_writable must be a boolean, got {type(agent_writable).__name__}"
+            msg = (
+                "[memories].agent_writable must be a boolean, "
+                f"got {type(agent_writable).__name__}"
+            )
             raise ValueError(msg)
 
-        memories = MemoriesConfig(backend=backend, identifier=identifier, agent_writable=agent_writable)
+        memories = MemoriesConfig(
+            backend=backend,
+            identifier=identifier,
+            agent_writable=agent_writable,
+        )
 
     frontend: FrontendConfig | None = None
     frontend_data = data.get("frontend")

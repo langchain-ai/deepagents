@@ -1,8 +1,12 @@
-"""Built-in Moonshot Kimi K2.6 (via Baseten) harness profile.
+"""Built-in Moonshot Kimi K2.6 harness profile.
 
 Layers a system-prompt suffix and a `compact_conversation` description
-override onto `baseten:moonshotai/Kimi-K2.6` to counter the failure
-modes observed in the
+override onto every provider that serves Kimi K2.6 in this repo
+(currently Baseten and OpenRouter). The same trained model exhibits the
+same failure modes regardless of who hosts it, so a single suffix is
+registered under each provider's canonical spec rather than duplicated.
+
+The profile counters the failure modes observed in the
 [GHA evals run](https://github.com/langchain-ai/deepagents/actions/runs/25403883357):
 
 - Multi-turn execution discipline (planning, no redundant reads,
@@ -120,12 +124,27 @@ _TOOL_DESCRIPTION_OVERRIDES = MappingProxyType(
 """Per-tool description replacements applied to this profile."""
 
 
+_KIMI_K2_6_MODEL_SPECS: tuple[str, ...] = (
+    "baseten:moonshotai/Kimi-K2.6",
+    "openrouter:moonshotai/kimi-k2.6",
+)
+"""Provider-prefixed specs that serve Moonshot Kimi K2.6.
+
+The same trained model is reached through each entry, so they share a
+single profile. Provider naming conventions differ on case
+(`Kimi-K2.6` on Baseten, lowercase `kimi-k2.6` on OpenRouter) — the
+specs are stored verbatim per each integration's published identifier.
+Add a new spec here when another provider is wired up; otherwise a
+profile keyed only on one provider would silently miss the others
+because lookup is by exact `provider:model` string.
+"""
+
+
 def register() -> None:
-    """Register the built-in Kimi K2.6 harness profile."""
-    _register_harness_profile_impl(
-        "baseten:moonshotai/Kimi-K2.6",
-        HarnessProfile(
-            system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-            tool_description_overrides=_TOOL_DESCRIPTION_OVERRIDES,
-        ),
+    """Register the built-in Kimi K2.6 harness profile under every supported spec."""
+    profile = HarnessProfile(
+        system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
+        tool_description_overrides=_TOOL_DESCRIPTION_OVERRIDES,
     )
+    for spec in _KIMI_K2_6_MODEL_SPECS:
+        _register_harness_profile_impl(spec, profile)

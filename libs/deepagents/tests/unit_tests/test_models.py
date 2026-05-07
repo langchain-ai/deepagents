@@ -1146,9 +1146,16 @@ class TestBuiltInProfiles:
         }
         assert len(suffixes) == 1
 
-    def test_baseten_kimi_k2_6_has_harness_profile(self) -> None:
-        """Kimi K2.6 registers a non-empty harness profile keyed on the full Baseten spec."""
-        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "baseten:moonshotai/Kimi-K2.6",
+            "openrouter:moonshotai/kimi-k2.6",
+        ],
+    )
+    def test_kimi_k2_6_has_harness_profile(self, model_key: str) -> None:
+        """Kimi K2.6 registers the same profile under every supported provider spec."""
+        profile = _get_harness_profile(model_key)
         assert profile is not None
         assert profile.system_prompt_suffix
         for tag in (
@@ -1157,6 +1164,22 @@ class TestBuiltInProfiles:
             "<ground_in_provided_docs>",
         ):
             assert tag in profile.system_prompt_suffix
+
+    def test_kimi_k2_6_suffix_is_identical_across_providers(self) -> None:
+        """All Kimi K2.6 specs share the same suffix from a single profile.
+
+        Guards against drift: if a future edit tunes Baseten only and
+        forgets OpenRouter (or vice versa), this test surfaces the
+        divergence at unit-test time rather than after eval cycles.
+        """
+        suffixes = {
+            _get_harness_profile(spec).system_prompt_suffix  # type: ignore[union-attr]
+            for spec in (
+                "baseten:moonshotai/Kimi-K2.6",
+                "openrouter:moonshotai/kimi-k2.6",
+            )
+        }
+        assert len(suffixes) == 1
 
     def test_baseten_kimi_k2_6_drops_communicate_and_respect_sections(self) -> None:
         """Sections retired in v3 must stay out.
@@ -1225,9 +1248,20 @@ class TestBuiltInProfiles:
         assert "Required" in override
         assert "model-call budget" in override
 
-    def test_baseten_provider_has_no_built_in_profile(self) -> None:
-        """Kimi registers per-model, not provider-wide — guards bleed-through."""
+    def test_kimi_providers_have_no_built_in_profile_for_other_models(self) -> None:
+        """Kimi registers per-model on each provider — guards bleed-through.
+
+        OpenRouter has its own provider-wide profile (see Codex/MiniMax-style
+        registrations elsewhere) so the no-bleed-through assertion targets a
+        spec that should not match any Kimi-specific override.
+        """
         assert _get_harness_profile("baseten:other-model") is None
+        # OpenRouter's bare provider key may resolve to a different built-in
+        # profile (e.g. its own provider-wide overrides), but a non-Kimi
+        # OpenRouter model must not pick up the Kimi-specific suffix.
+        other = _get_harness_profile("openrouter:moonshotai/some-other-model")
+        if other is not None:
+            assert "<plan_before_mutate>" not in (other.system_prompt_suffix or "")
 
 
 class TestProfilePluginLoader:

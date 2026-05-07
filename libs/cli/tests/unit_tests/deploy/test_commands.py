@@ -161,4 +161,4 @@ class TestAutoWireIssuesBoard:
 
         assert observed["session_id"] == "session-123"
         assert observed["api_key"] == "test-key"
-        assert observed["context_hub_identifier"] == "-/my-agent"
+        assert observed["context_hub_id"] == "-/my-agent"

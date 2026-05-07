@@ -1145,8 +1145,15 @@ class TestBuiltInProfiles:
         }
         assert len(suffixes) == 1
 
-    def test_fireworks_glm_5p1_has_harness_profile(self) -> None:
-        """Fireworks GLM-5p1 registers a non-empty three-section profile.
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "fireworks:accounts/fireworks/models/glm-5p1",
+            "openrouter:z-ai/glm-5.1",
+        ],
+    )
+    def test_glm_5p1_has_harness_profile(self, model_key: str) -> None:
+        """GLM-5p1 registers the same three-section profile under both providers.
 
         Section set + order: `Tool Execution Discipline` → `Parallel
         Tool Use` → `Stop Conditions`. An earlier "Output Channel"
@@ -1158,7 +1165,7 @@ class TestBuiltInProfiles:
         closed in middleware, not the suffix. See
         `evals/fireworks_glm_5p1_profile_findings.md`.
         """
-        profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
+        profile = _get_harness_profile(model_key)
         assert profile is not None
         assert profile.system_prompt_suffix
         assert "## Tool Execution Discipline" in profile.system_prompt_suffix
@@ -1168,7 +1175,18 @@ class TestBuiltInProfiles:
             "Output Channel was removed after ablation showed it caused regressions on single-tool tests; reintroducing requires fresh ablation data."
         )
 
-    def test_fireworks_glm_5p1_section_order(self) -> None:
+    def test_glm_5p1_suffix_is_identical_across_providers(self) -> None:
+        """Both Fireworks and OpenRouter receive the exact same suffix."""
+        suffixes = {
+            _get_harness_profile(spec).system_prompt_suffix  # type: ignore[union-attr]
+            for spec in (
+                "fireworks:accounts/fireworks/models/glm-5p1",
+                "openrouter:z-ai/glm-5.1",
+            )
+        }
+        assert len(suffixes) == 1
+
+    def test_glm_5p1_section_order(self) -> None:
         """Section order: TED → Parallel → Stop. Regression guard.
 
         Reordering or reintroducing sections needs a fresh A/B run
@@ -1187,10 +1205,17 @@ class TestBuiltInProfiles:
         assert positions == sorted(positions), "Profile section order changed; re-run A/B before merging."
 
     def test_fireworks_provider_has_no_built_in_profile(self) -> None:
-        """GLM-5p1 registers per-model, not provider-wide — guards bleed-through."""
+        """GLM-5p1 registers per-model, not provider-wide — guards bleed-through.
+
+        Other Fireworks-served models must not pick up GLM-5p1's suffix.
+        """
         assert _get_harness_profile("fireworks:other-model") is None
 
-    def test_fireworks_glm_5p1_only_sets_system_prompt_suffix(self) -> None:
+    def test_openrouter_provider_has_no_built_in_profile(self) -> None:
+        """Same guard for OpenRouter — only `z-ai/glm-5.1` should match."""
+        assert _get_harness_profile("openrouter:other/model") is None
+
+    def test_glm_5p1_only_sets_system_prompt_suffix(self) -> None:
         """The profile is suffix-only — no tool/middleware exclusions yet."""
         profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
         assert profile is not None

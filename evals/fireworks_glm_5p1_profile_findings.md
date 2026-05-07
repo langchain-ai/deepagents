@@ -1,6 +1,6 @@
 # Fireworks GLM-5p1 — harness profile findings
 
-Working notes from iterating on `_fireworks_glm_5p1.py`. Logged so future
+Working notes from iterating on `_glm_5p1.py`. Logged so future
 iterations start from data, not memory.
 
 **TL;DR — current state: 3-section profile** (Tool Execution Discipline →
@@ -255,7 +255,7 @@ The "MUST NEVER be empty" rule appears to *cause* the very behavior it tried to 
 
 ### Action taken
 
-`_fireworks_glm_5p1.py` is now a 3-section profile (TED + Parallel + Stop). Output Channel is removed. Module docstring records the ablation. Unit test `test_fireworks_glm_5p1_has_harness_profile` asserts `## Output Channel` is *not* in the suffix, with a comment that reintroducing it requires fresh ablation data.
+`_glm_5p1.py` is now a 3-section profile (TED + Parallel + Stop). Output Channel is removed. Module docstring records the ablation. Unit test `test_glm_5p1_has_harness_profile` asserts `## Output Channel` is *not* in the suffix, with a comment that reintroducing it requires fresh ablation data.
 
 ### Post-ablation verification (live API)
 

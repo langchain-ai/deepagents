@@ -1,8 +1,20 @@
-"""Built-in Fireworks GLM-5p1 harness profile.
+"""Built-in GLM-5p1 harness profile (Fireworks + OpenRouter).
 
-Registers a `HarnessProfile` for `fireworks:accounts/fireworks/models/glm-5p1`
-that targets two model-fault clusters surfaced by the deep-agents
-eval suite on this model:
+Registers the same `HarnessProfile` for every spec that resolves to
+the GLM-5p1 model, regardless of provider:
+
+- `fireworks:accounts/fireworks/models/glm-5p1` (Fireworks-hosted)
+- `openrouter:z-ai/glm-5.1` (OpenRouter, upstream Z.AI weights)
+
+The model identity (and therefore its training-derived response
+behavior) is the same across providers; only the inference engine and
+sampling defaults differ. Behavioral findings used to tune this suffix
+were collected on both providers, so the suffix is registered under
+both keys. If a future provider is added, append its spec to
+`_GLM_5P1_MODEL_SPECS` rather than registering separately.
+
+The suffix targets two model-fault clusters surfaced by the
+deep-agents eval suite on this model:
 
 - *Plan / stop discipline* — the model loops on read-only calls, drops
   required final mutations, or repeats a successful mutation. Most
@@ -47,13 +59,21 @@ from deepagents.profiles.harness.harness_profiles import (
     _register_harness_profile_impl,
 )
 
-_GLM_5P1_MODEL_SPEC: str = "fireworks:accounts/fireworks/models/glm-5p1"
-"""Exact `init_chat_model` spec for the Fireworks GLM-5p1 hosted model.
+_GLM_5P1_MODEL_SPECS: tuple[str, ...] = (
+    "fireworks:accounts/fireworks/models/glm-5p1",
+    "openrouter:z-ai/glm-5.1",
+)
+"""All `init_chat_model` specs that resolve to the GLM-5p1 model.
 
-Matches both registry lookup paths in `_harness_profile_for_model`: the
-caller-provided spec string and the `provider:identifier` key derived
-from a pre-built `ChatFireworks` instance whose `model_name` is
-`accounts/fireworks/models/glm-5p1`.
+Each entry matches both registry lookup paths in
+`_harness_profile_for_model`: the caller-provided spec string and the
+`provider:identifier` key derived from a pre-built chat-model instance.
+For Fireworks, identifier is `accounts/fireworks/models/glm-5p1`; for
+OpenRouter, `z-ai/glm-5.1`.
+
+Add new specs here when GLM-5p1 surfaces on a new provider — do not
+register the same suffix from a sibling module, since that would
+fork the source of truth.
 """
 
 _SYSTEM_PROMPT_SUFFIX: str = """\
@@ -94,8 +114,7 @@ the tool trace."""
 
 
 def register() -> None:
-    """Register the built-in Fireworks GLM-5p1 harness profile."""
-    _register_harness_profile_impl(
-        _GLM_5P1_MODEL_SPEC,
-        HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX),
-    )
+    """Register the built-in GLM-5p1 harness profile under every known spec."""
+    profile = HarnessProfile(system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX)
+    for spec in _GLM_5P1_MODEL_SPECS:
+        _register_harness_profile_impl(spec, profile)

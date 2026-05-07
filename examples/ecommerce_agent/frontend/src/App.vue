@@ -25,6 +25,10 @@
           <el-icon><component :is="icons.Document" /></el-icon>
           <span>元素管理</span>
         </el-menu-item>
+        <el-menu-item index="/skills">
+          <el-icon><component :is="icons.Tools" /></el-icon>
+          <span>技能管理</span>
+        </el-menu-item>
         <el-menu-item index="/orders">
           <el-icon><component :is="icons.ShoppingCart" /></el-icon>
           <span>订单管理</span>
@@ -70,6 +74,7 @@ const pageTitleMap: Record<string, string> = {
   '/tasks': '任务管理',
   '/workflow': '工作流',
   '/elements': 'DOM元素管理',
+  '/skills': '技能管理',
   '/scheduled-tasks': '定时任务',
   '/data': '数据分析',
   '/orders': '订单管理',

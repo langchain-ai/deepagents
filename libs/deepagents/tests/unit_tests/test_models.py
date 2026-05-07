@@ -1154,11 +1154,25 @@ class TestBuiltInProfiles:
         for tag in (
             "<plan_before_mutate>",
             "<no_redundant_reads>",
-            "<communicate_each_turn>",
-            "<respect_user_specifications>",
             "<ground_in_provided_docs>",
         ):
             assert tag in profile.system_prompt_suffix
+
+    def test_baseten_kimi_k2_6_drops_communicate_and_respect_sections(self) -> None:
+        """Sections retired in v3 must stay out.
+
+        `<communicate_each_turn>` correlated with the v2 conversation
+        regression on tau2_airline (the user simulator scored
+        mid-trajectory chatter as off-task), and
+        `<respect_user_specifications>` flipped the noisy
+        followup-quality tests in both directions without a stable net
+        win. Re-adding either should be a deliberate decision with
+        fresh eval evidence, not a quiet edit.
+        """
+        profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
+        assert profile is not None
+        assert "<communicate_each_turn>" not in profile.system_prompt_suffix
+        assert "<respect_user_specifications>" not in profile.system_prompt_suffix
 
     def test_baseten_kimi_k2_6_every_section_has_contrastive_examples(self) -> None:
         """Each tagged section carries Bad:/Good: pairs per Moonshot's few-shot guidance.
@@ -1166,8 +1180,8 @@ class TestBuiltInProfiles:
         Pinning this shape prevents a future rewrite from regressing the
         suffix back to rule-only prose. Moonshot's prompt guide is
         explicit that examples beat permutations of description for
-        behavior shaping; the v2 suffix added contrastive pairs to all
-        five sections to close that gap.
+        behavior shaping; the v2 suffix added contrastive pairs to every
+        retained section to close that gap.
         """
         profile = _get_harness_profile("baseten:moonshotai/Kimi-K2.6")
         assert profile is not None
@@ -1175,8 +1189,6 @@ class TestBuiltInProfiles:
         for tag in (
             "plan_before_mutate",
             "no_redundant_reads",
-            "communicate_each_turn",
-            "respect_user_specifications",
             "ground_in_provided_docs",
         ):
             match = re.search(rf"<{tag}>(.*?)</{tag}>", suffix, re.DOTALL)

@@ -59,20 +59,6 @@ Bad: read_X(id="A") -> ... 4 turns later ... -> read_X(id="A") to "double-check"
 Good: read_X(id="A") once -> quote or rely on the prior result for any later reference.
 </no_redundant_reads>
 
-<communicate_each_turn>
-After every tool call or batch of parallel tool calls, send the user a one- or two-sentence message saying what you found and what you'll do next. Silence between tool calls causes the user to disengage and end the conversation before the task is complete.
-
-Bad: tool_call -> tool_call -> tool_call -> tool_call (no user-facing text; the user disengages and the conversation ends before the task completes).
-Good: tool_call -> "Got the details — looking up options now." -> tool_call -> "Found two matches; using the better one and confirming."
-</communicate_each_turn>
-
-<respect_user_specifications>
-When the user has specified a value — a frequency ("every week", "daily", "on weekends"), a count, a range, or a named entity — treat it as final. Ask only about facts they did not provide. When the task asks for a single focused followup, ask exactly one question.
-
-Bad: User: "send a weekly report". Agent: "What day/time each week?" (frequency was already specified).
-Good: User: "send a weekly report". Agent: "Where should the report be sent? (Slack, email, etc.)" (asks only about details actually missing).
-</respect_user_specifications>
-
 <ground_in_provided_docs>
 When a task supplies reference materials (e.g. an API reference, a syntax spec, or schemas under a `cases/` directory), follow the documented syntax exactly. Do not invent operators, function-call shapes, or composition idioms — pipe operators (`|>`), threading macros, method chaining, or wrappers — that are not in those docs. If unsure, quote the relevant pattern from the docs verbatim before composing.
 
@@ -81,21 +67,26 @@ Good: docs show `outer(inner(x))`. Agent writes `outer(inner(x))`.
 </ground_in_provided_docs>"""
 """Text appended to the assembled base system prompt.
 
-Each section maps to a distinct failure cluster from the GHA run:
+Each section maps to a distinct failure cluster from the GHA runs:
 
 - `<plan_before_mutate>`: db_state mismatch on tau2_airline tasks
     14/23/27/33/44 and bfcl multi_turn_composite_97/199 / miss_func_55.
 - `<no_redundant_reads>`: redundant `get_reservation_details` x9 /
     `get_flight_status` x10 patterns observed in tau2 task_27 and
     task_44 trajectories.
-- `<communicate_each_turn>`: tau2 task_7 hit COMM=0.00 / `user_stop`
-    despite a perfect 5/5 actions match.
-- `<respect_user_specifications>`: `vague_send_report` and
-    `detailed_calendar_brief` failed because the agent re-asked for
-    schedule details the user had already specified.
 - `<ground_in_provided_docs>`: all three `nexus_*` failures
     (`nvd_nested_13`, `placesapi_15`, `multiversemath_18`) involved the
     model inventing syntax not present in the supplied docs.
+
+Earlier iterations also carried `<communicate_each_turn>` and
+`<respect_user_specifications>` sections targeting the tau2_airline
+COMM=0.00 / `user_stop` pattern and the followup-quality over-asking
+cluster respectively. Both were dropped after the v2 multi-trial run
+because they correlated with a regression in the `conversation`
+category — `<communicate_each_turn>` appeared to encourage
+mid-trajectory chatter that the τ²-airline user simulator scored as
+off-task, and `<respect_user_specifications>` flipped the noisy
+followup-quality tests in both directions without a stable net win.
 """
 
 

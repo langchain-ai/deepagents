@@ -859,13 +859,22 @@ class TestGetMCPTools:
                 "transport": "stdio",
             }
         ]
+        empty_schema: dict[str, Any] = {"type": "object", "properties": {}}
         assert server_infos == [
             MCPServerInfo(
                 name="srv",
                 transport="stdio",
                 tools=(
-                    MCPToolInfo(name="srv_read_file", description="Read a file"),
-                    MCPToolInfo(name="srv_write_file", description="Write a file"),
+                    MCPToolInfo(
+                        name="srv_read_file",
+                        description="Read a file",
+                        input_schema=empty_schema,
+                    ),
+                    MCPToolInfo(
+                        name="srv_write_file",
+                        description="Write a file",
+                        input_schema=empty_schema,
+                    ),
                 ),
             )
         ]
@@ -958,6 +967,114 @@ class TestGetMCPTools:
 
         await _load_tools_from_config(config)
         assert recorded[0]["env"] is None
+
+    async def test_input_schema_is_carried_into_mcp_tool_info(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Per-tool `inputSchema` lands on `MCPToolInfo.input_schema`."""
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
+        )
+        session, _recorded = fake_create_session
+        rich_schema = {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "depth": {"type": "integer"},
+            },
+            "required": ["path"],
+        }
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [
+                    _make_mcp_tool("read_file", "Read a file", input_schema=rich_schema),
+                ]
+            )
+        )
+
+        _tools, manager, server_infos = await get_mcp_tools(path)
+
+        assert server_infos[0].tools[0].input_schema == rich_schema
+        await manager.cleanup()  # type: ignore[union-attr]
+
+    async def test_input_schema_extraction_survives_attribute_error(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """If `mcp_tool.inputSchema` access raises, schema falls back to `None`.
+
+        The downstream LangChain conversion still needs `inputSchema`, so we
+        give the tool a minimal valid schema there but use a custom property
+        to make `getattr` raise during the schema-extraction path.
+        """
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
+        )
+        session, _recorded = fake_create_session
+
+        class _ExplodingSchemaTool:
+            name = "read_file"
+            description = "Read a file"
+            annotations = None
+            meta = None
+            _access_count = 0
+
+            @property
+            def inputSchema(self) -> dict[str, Any]:  # noqa: N802 - matches MCP spec
+                self._access_count += 1
+                if self._access_count == 1:
+                    # Allow LangChain conversion to succeed first.
+                    return {"type": "object", "properties": {}}
+                msg = "metadata access failed"
+                raise RuntimeError(msg)
+
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page([_ExplodingSchemaTool()])
+        )
+
+        _tools, manager, server_infos = await get_mcp_tools(path)
+
+        assert server_infos[0].tools[0].input_schema is None
+        await manager.cleanup()  # type: ignore[union-attr]
+
+    async def test_input_schema_paired_to_post_filter_tools(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """When `disabledTools` filters out a tool, surviving tools keep schemas."""
+        path = write_config(
+            {
+                "mcpServers": {
+                    "srv": {
+                        "command": "node",
+                        "args": ["server.js"],
+                        "disabledTools": ["write_file"],
+                    }
+                }
+            }
+        )
+        session, _recorded = fake_create_session
+        read_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+        write_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [
+                    _make_mcp_tool("read_file", "Read", input_schema=read_schema),
+                    _make_mcp_tool("write_file", "Write", input_schema=write_schema),
+                ]
+            )
+        )
+
+        _tools, manager, server_infos = await get_mcp_tools(path)
+
+        names = [t.name for t in server_infos[0].tools]
+        assert names == ["srv_read_file"]
+        assert server_infos[0].tools[0].input_schema == read_schema
+        await manager.cleanup()  # type: ignore[union-attr]
 
 
 @pytest.mark.usefixtures("fake_home")

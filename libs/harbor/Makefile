@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-langsmith-sandbox-smoke run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop format_unsafe
 
 .DEFAULT_GOAL := help
 
@@ -24,6 +24,10 @@ test_watch: ## Run tests in watch mode
 run-hello-world: ## Run hello-world job
 	@mkdir -p jobs/hello-world
 	harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper --dataset hello-world --task-name hello-world -n 1 --jobs-dir tmp/hello-world --env docker
+
+run-langsmith-sandbox-smoke: ## Run smoke task on LangSmith prod sandboxes
+	@mkdir -p jobs/langsmith-sandbox
+	uv run harbor run --config examples/langsmith-sandbox-smoke.yaml
 
 run-terminal-bench-modal: ## Run terminal-bench on Modal
 	@mkdir -p jobs/terminal-bench

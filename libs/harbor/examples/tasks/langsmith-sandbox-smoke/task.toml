@@ -1,0 +1,14 @@
+version = "1.0"
+
+[environment]
+docker_image = "python:3.12-slim"
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+allow_internet = true
+
+[agent]
+timeout_sec = 300.0
+
+[verifier]
+timeout_sec = 120.0

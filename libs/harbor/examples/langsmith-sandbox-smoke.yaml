@@ -1,0 +1,17 @@
+job_name: langsmith-sandbox-smoke
+jobs_dir: jobs/langsmith-sandbox
+n_attempts: 1
+timeout_multiplier: 1.0
+orchestrator:
+  type: local
+  n_concurrent_trials: 1
+environment:
+  import_path: deepagents_harbor:LangSmithSandboxEnvironment
+  delete: true
+  kwargs:
+    idle_ttl_seconds: 0
+    delete_after_stop_seconds: 7200
+agents:
+  - import_path: deepagents_harbor:DeepAgentsWrapper
+tasks:
+  - path: examples/tasks/langsmith-sandbox-smoke

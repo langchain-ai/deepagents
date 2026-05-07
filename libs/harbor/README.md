@@ -61,6 +61,37 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
   --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
 ```
 
+### Run on LangSmith Production Sandboxes
+
+This package includes a Harbor environment adapter for LangSmith sandbox boxes:
+`deepagents_harbor:LangSmithSandboxEnvironment`.
+
+The adapter uses the LangSmith SDK client for auth and requests. It can
+authenticate from `LANGSMITH_PROFILE=prod`, `LANGSMITH_API_KEY`, or an explicit
+`environment.kwargs.api_key`. Do not put production API keys in config files.
+
+```bash
+export LANGSMITH_PROFILE=prod
+export LANGSMITH_TRACING_V2=true
+export ANTHROPIC_API_KEY="..."  # Required by the default DeepAgents model
+
+make run-langsmith-sandbox-smoke
+```
+
+If you are not using a LangSmith profile, export `LANGSMITH_API_KEY` and
+optionally `LANGSMITH_ENDPOINT` instead.
+
+The smoke job lives at `examples/langsmith-sandbox-smoke.yaml`. It creates or
+reuses a sandbox snapshot from the task's `[environment].docker_image`, claims a
+box, runs DeepAgents, verifies the result, and deletes the box at teardown.
+
+Current scope:
+
+- Supported: task configs with `[environment].docker_image`.
+- Supported: pre-created snapshots via `environment.kwargs.snapshot_name`.
+- Not yet supported: building/pushing a Harbor `environment/Dockerfile` before
+  snapshot creation.
+
 ## LangSmith Integration
 
 LangSmith provides tracing and observability for agent runs. The workflow:
@@ -147,6 +178,8 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 - `daytona` - Daytona cloud sandboxes (requires DAYTONA_API_KEY)
 - `modal` - Modal cloud compute
 - `runloop` - Runloop sandboxes
+- `deepagents_harbor:LangSmithSandboxEnvironment` - LangSmith production
+  sandboxes via a Harbor config file with `environment.import_path`
 
 Makefile shortcuts are available for common workflows:
 
@@ -154,6 +187,8 @@ Makefile shortcuts are available for common workflows:
 - `make run-terminal-bench-daytona` - Run 10 tasks on Daytona
 - `make run-terminal-bench-modal` - Run 4 tasks on Modal
 - `make run-terminal-bench-runloop` - Run 10 tasks on Runloop
+- `make run-langsmith-sandbox-smoke` - Run the smoke task on LangSmith prod
+  sandboxes
 
 ## Resources
 

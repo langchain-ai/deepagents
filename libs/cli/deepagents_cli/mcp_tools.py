@@ -1345,22 +1345,12 @@ async def _load_tools_from_config(
         all_tools.extend(server_tools)
 
         prefix = f"{server_name}_"
-        schema_by_original_name: dict[str, dict[str, Any] | None] = {}
+        schemas: dict[str, dict[str, Any] | None] = {}
         for mcp_tool in mcp_tools:
             try:
-                schema_by_original_name[mcp_tool.name] = getattr(
-                    mcp_tool, "inputSchema", None
-                )
+                schemas[mcp_tool.name] = getattr(mcp_tool, "inputSchema", None)
             except Exception:  # noqa: BLE001 - tool metadata may be malformed; degrade gracefully
-                schema_by_original_name[mcp_tool.name] = None
-
-        def _schema_for(lc_tool_name: str) -> dict[str, Any] | None:
-            original = (
-                lc_tool_name[len(prefix) :]
-                if lc_tool_name.startswith(prefix)
-                else lc_tool_name
-            )
-            return schema_by_original_name.get(original)
+                schemas[mcp_tool.name] = None
 
         server_infos.append(
             MCPServerInfo(
@@ -1370,7 +1360,7 @@ async def _load_tools_from_config(
                     MCPToolInfo(
                         name=tool.name,
                         description=tool.description or "",
-                        input_schema=_schema_for(tool.name),
+                        input_schema=schemas.get(tool.name.removeprefix(prefix)),
                     )
                     for tool in server_tools
                 ),

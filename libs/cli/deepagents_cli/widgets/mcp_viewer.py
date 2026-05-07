@@ -16,9 +16,10 @@ from textual.widgets import Input, Static
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+    from deepagents_cli.mcp_tools import MCPServerInfo, MCPServerStatus, MCPToolInfo
+
 from deepagents_cli import theme
 from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
-from deepagents_cli.mcp_tools import MCPServerInfo, MCPServerStatus, MCPToolInfo
 
 
 def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
@@ -26,6 +27,9 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
 
     Maps onto the existing `Glyphs` set so ASCII fallback is automatic
     (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
+
+    Returns:
+        The unicode or ASCII glyph character matching `status`.
     """
     if status == "ok":
         return glyphs.checkmark
@@ -41,6 +45,9 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     `error` -> error (red). Returning the theme's hex string lets callers
     pass the value to `Content.styled()` or `Content.assemble()` so a
     theme switch recolors the indicator without code changes.
+
+    Returns:
+        Hex color string from the active theme.
     """
     if status == "ok":
         return colors.success
@@ -198,8 +205,10 @@ class MCPToolItem(Static):
     def _format_parameters(self) -> Content | None:
         """Build the parameter list rendered below the description.
 
-        Returns `None` when there is no `input_schema`, the schema is not
-        an object with non-empty `properties`, or `properties` is malformed.
+        Returns:
+            A `Content` block with one line per parameter, or `None` when
+            there is no `input_schema`, the schema is not an object with
+            non-empty `properties`, or `properties` is malformed.
         """
         schema = self._input_schema
         if not schema:
@@ -216,9 +225,7 @@ class MCPToolItem(Static):
         line_style = style or "dim"
         # Header line — always dim/muted to keep visual hierarchy below the
         # tool name and description.
-        result = Content.from_markup(
-            "\n    [" + line_style + "]Parameters:[/]"
-        )
+        result = Content.from_markup("\n    [" + line_style + "]Parameters:[/]")
         for prop_name, prop_schema in properties.items():
             if isinstance(prop_schema, dict):
                 prop_type = str(prop_schema.get("type") or "any")
@@ -554,14 +561,11 @@ class MCPViewerScreen(ModalScreen[None]):
             indicator_color = _status_color(server.status, colors)
             indicator_glyph = _status_glyph(server.status, glyphs)
             if server.status == "ok":
+                summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
                 header_content = Content.assemble(
                     (f"{indicator_glyph} ", indicator_color),
                     (server.name, "bold"),
-                    (
-                        f" {server.transport} {glyphs.bullet}"
-                        f" {tool_count} {t_label}",
-                        "dim",
-                    ),
+                    (summary, "dim"),
                 )
             else:
                 error_text = server.error or ""

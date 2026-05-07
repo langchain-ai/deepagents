@@ -989,7 +989,9 @@ class TestGetMCPTools:
         session.list_tools = AsyncMock(
             return_value=_make_tool_page(
                 [
-                    _make_mcp_tool("read_file", "Read a file", input_schema=rich_schema),
+                    _make_mcp_tool(
+                        "read_file", "Read a file", input_schema=rich_schema
+                    ),
                 ]
             )
         )
@@ -1032,7 +1034,9 @@ class TestGetMCPTools:
                 raise RuntimeError(msg)
 
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page([_ExplodingSchemaTool()])
+            return_value=_make_tool_page(
+                [_ExplodingSchemaTool()]  # type: ignore[list-item]
+            )
         )
 
         _tools, manager, server_infos = await get_mcp_tools(path)

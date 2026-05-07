@@ -52,6 +52,9 @@ _COUNT_FIELDS = ("passed", "failed", "skipped", "total")
 _MIN_SAMPLES_FOR_STDEV = 2
 """`statistics.stdev` requires at least two samples; below that we report None."""
 
+_MODEL_ENV_VAR = "DEEPAGENTS_EVALS_MODEL"
+"""When set, used as the default value for `--model` if the flag is omitted."""
+
 
 def _warn(message: str) -> None:
     """Emit a warning to stderr, prefixed with `::warning::` under GitHub Actions.
@@ -467,7 +470,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=False,
-        help="Model identifier, e.g. openai:gpt-5.5 (passed through to pytest). Required unless --aggregate-only is set.",
+        default=os.environ.get(_MODEL_ENV_VAR),
+        help=(
+            "Model identifier, e.g. openai:gpt-5.5 (passed through to pytest). "
+            f"Required unless --aggregate-only is set. Defaults to ${_MODEL_ENV_VAR} when set."
+        ),
     )
     parser.add_argument(
         "--trials",
@@ -521,6 +528,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Where per-trial reports and the summary are written (default: {_DEFAULT_OUT_DIR}).",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help=(
+            "Emit the aggregated summary as compact JSON on stdout (in addition "
+            "to writing trials_summary.json). Useful for downstream agents."
+        ),
+    )
+    parser.add_argument(
         "pytest_extra",
         nargs=argparse.REMAINDER,
         help="Extra args to forward to pytest (use `--` to separate).",
@@ -529,7 +545,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.aggregate_only is None:
         if not args.model:
-            parser.error("--model is required (unless --aggregate-only is set)")
+            parser.error(
+                f"--model is required (unless --aggregate-only is set). "
+                f"Set ${_MODEL_ENV_VAR} or pass --model. "
+                f"Run `deepagents-evals list models` for known specs."
+            )
         if args.trials is None:
             parser.error("--trials is required (unless --aggregate-only is set)")
         if not 1 <= args.trials <= _MAX_TRIALS:
@@ -603,8 +623,15 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = args.summary_out or (out_dir / "trials_summary.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    _print_summary(summary)
-    print(f"\nwrote {summary_path}")
+    if args.json:
+        # Compact single-line JSON keeps stdout machine-parseable; the human
+        # summary still goes to the on-disk `trials_summary.json` and to
+        # stderr below for terminal users.
+        print(json.dumps(summary, sort_keys=True))
+        print(f"wrote {summary_path}", file=sys.stderr)
+    else:
+        _print_summary(summary)
+        print(f"\nwrote {summary_path}")
     return 0
 
 

@@ -18,7 +18,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon revenue">
-            <el-icon><component :is="icons.Wallet" /></el-icon>
+            <el-icon><component :is="icons.WalletFilled" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">¥{{ summary.revenue }}</div>
@@ -54,7 +54,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon conversion">
-            <el-icon><component :is="icons.Percentage" /></el-icon>
+            <el-icon><component :is="icons.PieChart" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ summary.conversion_rate }}%</div>
@@ -123,7 +123,7 @@
           <div class="real-time-data">
             <div class="data-item">
               <div class="data-icon">
-                <el-icon><component :is="icons.Activity" /></el-icon>
+                <el-icon><component :is="icons.Operation" /></el-icon>
               </div>
               <div class="data-info">
                 <div class="data-value">{{ realtime.active_users }}</div>
@@ -150,7 +150,7 @@
             </div>
             <div class="data-item">
               <div class="data-icon">
-                <el-icon><component :is="icons.TrendingUp" /></el-icon>
+                <el-icon><component :is="icons.TrendCharts" /></el-icon>
               </div>
               <div class="data-info">
                 <div class="data-value">{{ realtime.conversion_rate }}%</div>

@@ -27,7 +27,7 @@
         }"
       >
         <div class="step-icon">
-          <el-icon v-if="index < currentStep"><component :is="icons.CheckCircle" /></el-icon>
+          <el-icon v-if="index < currentStep"><component :is="icons.CircleCheck" /></el-icon>
           <el-icon v-else-if="index === currentStep"><component :is="icons.Loading" /></el-icon>
           <span v-else>{{ index + 1 }}</span>
         </div>

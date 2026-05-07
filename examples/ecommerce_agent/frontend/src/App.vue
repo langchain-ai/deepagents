@@ -6,15 +6,15 @@
       </div>
       <el-menu :default-active="activeMenu" class="sidebar-menu" router>
         <el-menu-item index="/">
-          <el-icon><component :is="icons.Dashboard" /></el-icon>
+          <el-icon><component :is="icons.HomeFilled" /></el-icon>
           <span>控制台</span>
         </el-menu-item>
         <el-menu-item index="/stores">
-          <el-icon><component :is="icons.Store" /></el-icon>
+          <el-icon><component :is="icons.OfficeBuilding" /></el-icon>
           <span>店铺管理</span>
         </el-menu-item>
         <el-menu-item index="/tasks">
-          <el-icon><component :is="icons.Task" /></el-icon>
+          <el-icon><component :is="icons.List" /></el-icon>
           <span>任务管理</span>
         </el-menu-item>
         <el-menu-item index="/scheduled-tasks">
@@ -22,7 +22,7 @@
           <span>定时任务</span>
         </el-menu-item>
         <el-menu-item index="/elements">
-          <el-icon><component :is="icons.Code" /></el-icon>
+          <el-icon><component :is="icons.Document" /></el-icon>
           <span>元素管理</span>
         </el-menu-item>
         <el-menu-item index="/orders">
@@ -30,11 +30,11 @@
           <span>订单管理</span>
         </el-menu-item>
         <el-menu-item index="/products">
-          <el-icon><component :is="icons.Package" /></el-icon>
+          <el-icon><component :is="icons.Goods" /></el-icon>
           <span>商品管理</span>
         </el-menu-item>
         <el-menu-item index="/data">
-          <el-icon><component :is="icons.BarChart" /></el-icon>
+          <el-icon><component :is="icons.DataAnalysis" /></el-icon>
           <span>数据分析</span>
         </el-menu-item>
       </el-menu>

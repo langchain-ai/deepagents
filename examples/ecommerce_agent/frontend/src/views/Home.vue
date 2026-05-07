@@ -4,7 +4,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon tasks">
-            <el-icon><component :is="icons.Task" /></el-icon>
+            <el-icon><component :is="icons.List" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ stats.tasks }}</div>
@@ -15,7 +15,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon success">
-            <el-icon><component :is="icons.CheckCircle" /></el-icon>
+            <el-icon><component :is="icons.CircleCheck" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ stats.success }}</div>
@@ -26,7 +26,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon stores">
-            <el-icon><component :is="icons.Store" /></el-icon>
+            <el-icon><component :is="icons.OfficeBuilding" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ stats.stores }}</div>
@@ -37,7 +37,7 @@
       <el-col :span="6">
         <el-card class="stat-card">
           <div class="stat-icon alerts">
-            <el-icon><component :is="icons.Bell" /></el-icon>
+            <el-icon><component :is="icons.BellFilled" /></el-icon>
           </div>
           <div class="stat-content">
             <div class="stat-value">{{ stats.alerts }}</div>

@@ -183,7 +183,8 @@ class RemoteAgent:
     ) -> Any:  # noqa: ANN401
         """Get the current state of a thread.
 
-        Returns `None` when the thread does not exist on the server (404).
+        Returns `None` when the thread does not exist on the server (404) or
+        when the thread exists but has no checkpoint yet (new/empty thread).
         All other errors (network, auth, 500) are logged at WARNING and
         re-raised so callers can handle them.
 
@@ -196,10 +197,11 @@ class RemoteAgent:
 
         Returns:
             Thread state object with `values` and `next` attributes, or `None`
-                if the thread is not found.
+                if the thread is not found or has no checkpoint.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
+            TypeError: If the server returns an unexpected state shape.
         """  # noqa: DOC502 — raised by _require_thread_id
         from langgraph_sdk.errors import NotFoundError
 
@@ -211,6 +213,20 @@ class RemoteAgent:
         except NotFoundError:
             logger.debug("Thread %s not found on server", thread_id)
             return None
+        except TypeError as e:
+            # langgraph SDK bug: _create_state_snapshot does
+            # state["checkpoint"]["thread_id"], but the server returns
+            # checkpoint=null for threads with no checkpoint yet (new threads,
+            # or threads registered via aensure_thread before any run).
+            if "subscriptable" in str(e).lower():
+                logger.debug(
+                    "Thread %s has no checkpoint yet; treating as empty", thread_id
+                )
+                return None
+            logger.warning(
+                "Failed to get state for thread %s", thread_id, exc_info=True
+            )
+            raise
         except Exception:
             logger.warning(
                 "Failed to get state for thread %s", thread_id, exc_info=True

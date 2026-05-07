@@ -20,7 +20,6 @@ from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
-from langgraph.graph.message import _messages_delta_reducer
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -32,6 +31,7 @@ from deepagents._excluded_middleware import (
     _validate_excluded_middleware_config,
     _verify_excluded_middleware_coverage,
 )
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
 from deepagents._subagent_transformer import SubagentTransformer
 from deepagents._tools import _apply_tool_description_overrides
@@ -733,7 +733,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         system_prompt=final_system_prompt,
         tools=_tools,
         middleware=deepagent_middleware,
-        state_schema=_DeepAgentState,
         response_format=response_format,
         context_schema=context_schema,
         checkpointer=checkpointer,
@@ -741,6 +740,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
+        state_schema=_DeepAgentState,
         transformers=[_subagent_factory],
     ).with_config(
         {

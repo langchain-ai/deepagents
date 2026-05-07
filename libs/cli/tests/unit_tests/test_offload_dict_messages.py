@@ -1,7 +1,7 @@
 """Tests for #2741 fix: `perform_offload()` handles serialized state payloads.
 
-Remote HTTP state snapshots and checkpointer fallbacks may surface messages as
-raw dicts rather than `BaseMessage` objects. `perform_offload()` must
+Remote HTTP state snapshots may surface messages as raw dicts rather than
+`BaseMessage` objects. `perform_offload()` must
 normalize these before passing them to middleware helpers like
 `get_buffer_string()`.
 """
@@ -18,8 +18,7 @@ from deepagents_cli.offload import OffloadResult, perform_offload
 if TYPE_CHECKING:
     from deepagents.middleware.summarization import SummarizationEvent
 
-# Raw dict messages — what remote state snapshots and checkpoint fallbacks
-# may return before deserialization.
+# Raw dict messages — what remote state snapshots may return before deserialization.
 _DICT_MESSAGES: list[dict[str, Any]] = [
     {
         "content": "Hi!",

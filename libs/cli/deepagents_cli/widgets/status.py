@@ -24,12 +24,12 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
 
-# Some providers (e.g. Fireworks) require fully-qualified IDs like
-# `accounts/fireworks/models/...` that crowd out the rest of the status bar;
-# strip the registered prefixes before display.
 PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
     "fireworks": ("accounts/fireworks/models/",),
 }
+"""Some providers (e.g. Fireworks) require fully-qualified IDs like
+`accounts/fireworks/models/...` that crowd out the rest of the status bar;
+strip the registered prefixes before display."""
 
 
 class ModelLabel(Widget):

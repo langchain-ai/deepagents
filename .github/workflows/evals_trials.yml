@@ -246,9 +246,12 @@ jobs:
           # Defense in depth: these flow through to `_eval.yml` as shell
           # arguments. Reject anything outside a comma-separated identifier
           # list before we hand them off. `openrouter_provider` accepts a
-          # comma-separated allowlist (e.g. `MiniMax,Fireworks`) so it uses
-          # the CSV pattern; `repl` is single-valued so it stays on SLUG.
+          # comma-separated allowlist (e.g. `MiniMax,Fireworks`, plus
+          # variant-suffixed forms like `siliconflow/fp8`) so it uses the
+          # looser provider CSV pattern that also permits `/` and `.`;
+          # `repl` is single-valued so it stays on SLUG.
           _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
+          _PROVIDER_CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,./]*$")
           _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
           for name, value, pattern in (
               ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
@@ -256,7 +259,7 @@ jobs:
               ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
               ("eval_tiers_override", os.environ.get("EVAL_TIERS_OVERRIDE", ""), _CSV_RE),
-              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _CSV_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _PROVIDER_CSV_RE),
               ("repl", os.environ.get("REPL", ""), _SLUG_RE),
           ):
               if not pattern.match(value):

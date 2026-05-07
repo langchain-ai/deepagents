@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 
 from deepagents._models import (
     get_model_identifier,
@@ -1190,8 +1191,13 @@ class TestBuiltInProfiles:
         """GLM-5p1 registers per-model, not provider-wide — guards bleed-through."""
         assert _get_harness_profile("fireworks:other-model") is None
 
-    def test_fireworks_glm_5p1_only_sets_system_prompt_suffix(self) -> None:
-        """The profile is suffix-only — no tool/middleware exclusions yet."""
+    def test_fireworks_glm_5p1_only_sets_documented_fields(self) -> None:
+        """Profile sets only `system_prompt_suffix` and `extra_middleware`.
+
+        Other fields stay at their defaults; this test pins that so a
+        future addition (a new exclusion, a tool override, a custom GP
+        subagent profile) is a deliberate change and not a slip.
+        """
         profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
         assert profile is not None
         assert profile.base_system_prompt is None
@@ -1199,6 +1205,93 @@ class TestBuiltInProfiles:
         assert not profile.excluded_middleware
         assert not profile.tool_description_overrides
         assert profile.general_purpose_subagent is None
+
+    def test_fireworks_glm_5p1_extra_middleware_is_reasoning_content(self) -> None:
+        """The profile attaches `FireworksReasoningContentMiddleware` only.
+
+        Cluster E (`reasoning_content` routing) is closed via this
+        middleware, not the suffix, after the ablation showed an
+        equivalent prompt rule caused stable single-tool regressions.
+        """
+        from deepagents.profiles.harness._fireworks_glm_5p1 import (  # noqa: PLC0415
+            FireworksReasoningContentMiddleware,
+        )
+
+        profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p1")
+        assert profile is not None
+        instances = list(profile.extra_middleware) if not callable(profile.extra_middleware) else list(profile.extra_middleware())
+        assert len(instances) == 1
+        assert isinstance(instances[0], FireworksReasoningContentMiddleware)
+
+
+class TestFireworksReasoningContentMiddleware:
+    """Behavior tests for `FireworksReasoningContentMiddleware`.
+
+    The middleware rewrites an `AIMessage` only when all of:
+
+    - `content` is falsy (empty string or empty list),
+    - `tool_calls` is empty,
+    - `additional_kwargs["reasoning_content"]` is a non-empty string.
+
+    Anything else passes through unchanged.
+    """
+
+    @staticmethod
+    def _rewrite(msg: AIMessage) -> AIMessage:
+        from deepagents.profiles.harness._fireworks_glm_5p1 import (  # noqa: PLC0415
+            FireworksReasoningContentMiddleware,
+        )
+
+        return FireworksReasoningContentMiddleware._rewrite_message(msg)
+
+    def test_rewrites_when_trigger_condition_holds(self) -> None:
+        """Empty content + no tool calls + non-empty reasoning_content → rewrite."""
+        msg = AIMessage(
+            content="",
+            additional_kwargs={"reasoning_content": "4"},
+            id="test-msg-1",
+        )
+        out = self._rewrite(msg)
+        assert out.content == "4"
+        assert out.id == "test-msg-1"
+        assert out.additional_kwargs.get("reasoning_content") == "4"
+
+    def test_passthrough_when_content_already_present(self) -> None:
+        """Content present → pass through; do not overwrite the user-visible answer."""
+        msg = AIMessage(
+            content="The answer is 4.",
+            additional_kwargs={"reasoning_content": "internal scratch"},
+            id="test-msg-2",
+        )
+        out = self._rewrite(msg)
+        assert out is msg
+        assert out.content == "The answer is 4."
+
+    def test_passthrough_when_tool_calls_present(self) -> None:
+        """Tool-call responses legitimately have empty content; do not rewrite."""
+        msg = AIMessage(
+            content="",
+            tool_calls=[{"name": "ls", "args": {"path": "/"}, "id": "call_1", "type": "tool_call"}],
+            additional_kwargs={"reasoning_content": "calling ls"},
+            id="test-msg-3",
+        )
+        out = self._rewrite(msg)
+        assert out is msg
+        assert out.content == ""
+        assert out.tool_calls
+
+    def test_passthrough_when_reasoning_content_absent(self) -> None:
+        """No reasoning_content → pass through unchanged."""
+        for ak in (
+            {},
+            {"reasoning_content": ""},
+            {"reasoning_content": "   "},
+            {"reasoning_content": None},
+            {"reasoning_content": ["nested"]},
+        ):
+            msg = AIMessage(content="", additional_kwargs=ak, id="t")
+            out = self._rewrite(msg)
+            assert out is msg, f"unexpected rewrite for additional_kwargs={ak!r}"
 
 
 class TestProfilePluginLoader:

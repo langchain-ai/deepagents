@@ -3,7 +3,7 @@
 Each `task` tool call dispatched by `langchain.agents.create_agent`'s
 Send fan-out (`Send("tools", [tool_call])`) becomes its own pregel
 task — a per-call dispatched task whose `input` is a single-element
-list of tool-call dicts. The child subagent subgraph spawns under a
+list of tool-call dicts. The child subagent subgraph starts under a
 namespace of the form ``["tools:<pregel_task_id>"]``, so the
 namespace tail's task id is the same `task.id` the per-call
 dispatched task carries.
@@ -14,7 +14,7 @@ This transformer:
    task's `input` for the per-call envelope. If it parses, records
    ``task_id → {"subagent_type", "task_input"}`` keyed by the
    pregel task id. Mirrors what
-   `langgraph.stream.transformers._TasksLifecycleBase._record_spawn_metadata`
+   `langgraph.stream.transformers._TasksLifecycleBase._record_invocation_metadata`
    does on the wire, but with a deepagents-specific dict shape so
    we can plumb it straight into our typed handles.
 2. When `_on_started` fires for a tracked namespace, looks up the
@@ -213,14 +213,14 @@ class SubagentTransformer(_TasksLifecycleBase):
         ns: tuple[str, ...],
         graph_name: str | None,  # noqa: ARG002
         trigger_call_id: str | None,
-        spawn_metadata: dict[str, str] | None = None,  # noqa: ARG002
+        invocation_metadata: dict[str, str] | None = None,  # noqa: ARG002
     ) -> None:
-        # Pair the spawned namespace to its captured metadata via
+        # Pair the started namespace to its captured metadata via
         # trigger_call_id (the pregel task id, parsed from the
         # namespace tail). Each per-call dispatched task has a unique
         # id, so parallel `task` calls under the same parent each get
         # their own pending entry — no conflation. The
-        # `spawn_metadata` arg from the base class is unused here
+        # `invocation_metadata` arg from the base class is unused here
         # because we maintain our own typed handle state via
         # `_pending`; we forward `trigger_call_id` directly to the
         # handle constructor as the in-process correlation id.

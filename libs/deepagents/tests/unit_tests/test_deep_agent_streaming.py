@@ -195,7 +195,7 @@ class TestCreateDeepAgentAstreamV2:
         assert sub.name == "researcher"
         assert sub.task_input == "look something up"
         # `cause` exposes the pregel `trigger_call_id` (parsed from the
-        # spawned subgraph's namespace tail), not the model-side
+        # started subgraph's namespace tail), not the model-side
         # `tool_call_id`. We don't predict the pregel id here; just
         # assert the shape and that it matches the handle's path tail.
         assert sub.cause is not None

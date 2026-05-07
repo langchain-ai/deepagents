@@ -150,7 +150,7 @@ def _spawn(
     parent_ns: list[str] | None = None,
     description: str | None = None,
 ) -> None:
-    """Push per-call + child start events that mimic a real subagent spawn."""
+    """Push per-call + child start events that mimic a real subagent invocation."""
     parent_ns = parent_ns or []
     mux.push(
         _per_call_tasks_start(
@@ -370,7 +370,7 @@ class TestSubagentTransformerUnit:
         parent = self._handle(transformer)
         _pre_subscribe_handle(parent)
 
-        # Nested spawn: parent ns is the researcher's ns.
+        # Nested invocation: parent ns is the researcher's ns.
         _spawn(
             mux,
             parent_task_id="c",

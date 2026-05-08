@@ -682,7 +682,7 @@ def _resolve_context_hub_repo_handle_for_issues_board(
 ) -> str | None:
     identifier = _resolve_context_hub_identifier(config)
     owner, sep, repo_handle = identifier.partition("/")
-    if sep == "" or not owner or not repo_handle:
+    if not sep or not owner or not repo_handle:
         print(
             "Warning: Invalid memories identifier for hub-backed deploy: "
             f"{identifier!r}; skipping issues board auto-wire."

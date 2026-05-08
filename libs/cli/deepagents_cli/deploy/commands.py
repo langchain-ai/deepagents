@@ -565,7 +565,6 @@ def _resolve_langsmith_api_key() -> str | None:
     return (
         resolve_env_var("LANGSMITH_API_KEY")
         or resolve_env_var("LANGCHAIN_API_KEY")
-        or resolve_env_var("LANGGRAPH_HOST_API_KEY")
     )
 
 

@@ -162,7 +162,7 @@ def get_default_model() -> ChatAnthropic:
 
     Used as a fallback when `model=None` is passed to `create_deep_agent`.
 
-    Requires `ANTHROPIC_API_KEY` to be set in the environment if used.
+    Requires `ANTHROPIC_API_KEY` to be set in the environment.
 
     Returns:
         `ChatAnthropic` instance configured with `claude-sonnet-4-6`.
@@ -320,9 +320,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `AgentMiddleware.name` exactly (e.g. `"SummarizationMiddleware"`
             drops the summarization middleware via its public alias).
             Entries that match nothing in the assembled stack raise
-            `ValueError`, as does excluding scaffolding classes
-            ([`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware],
-            [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]).
+            `ValueError`, as does excluding any class in the harness's
+            protected scaffolding set (e.g.,
+            [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            or [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]).
 
             To run without the `task` tool, set
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
@@ -445,8 +446,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
         ValueError: If the active `HarnessProfile.excluded_middleware`
-            references required scaffolding
-            ([`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware],
+            references a class in the harness's protected scaffolding set
+            (e.g.,
+            [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            or
             [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]),
             uses a private (underscore-prefixed) name, collides with multiple
             distinct middleware classes, or matches no entry in the assembled

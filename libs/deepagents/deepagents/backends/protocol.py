@@ -199,6 +199,7 @@ def _normalize_files_update(
 
     # `stacklevel=3` lifts attribution past `__init__` and this helper to the
     # user's `WriteResult(...)` / `EditResult(...)` call site.
+    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/deepagents/issues/3220  # noqa: FIX002
     warn_deprecated(
         since="0.5.0",
         removal="0.7.0",

@@ -56,20 +56,11 @@ Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
 
 
 class AskUserTextArea(TextArea):
-    """Multi-line text input for free-form ask-user questions.
+    """Soft-wrapping text input for free-form ask-user questions.
 
-    Enter submits the answer; Shift/Alt/Ctrl+Enter and Ctrl+J insert a newline.
+    Long answers wrap visually and the widget grows up to its CSS `max-height`.
+    Enter submits; the input remains a single logical line (no newline insertion).
     """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(
-            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
-            "insert_newline",
-            "New Line",
-            show=False,
-            priority=True,
-        ),
-    ]
 
     class Submitted(Message):
         """Posted when the user presses Enter to submit the answer."""
@@ -83,10 +74,7 @@ class AskUserTextArea(TextArea):
         """Initialize the ask-user text area."""
         super().__init__(**kwargs)
         self.show_line_numbers = False
-
-    def action_insert_newline(self) -> None:
-        """Insert a newline at the cursor."""
-        self.insert("\n")
+        self.soft_wrap = True
 
     async def _on_key(self, event: events.Key) -> None:
         if event.key == "enter":
@@ -95,20 +83,15 @@ class AskUserTextArea(TextArea):
             self.post_message(self.Submitted(self, self.text))
             return
         if event.key in {"up", "down"}:
-            row, _ = self.cursor_location
-            lines = self.text.split("\n")
-            at_top = row == 0
-            at_bottom = row == len(lines) - 1
-            if (event.key == "up" and at_top) or (event.key == "down" and at_bottom):
-                question = self._find_question_widget()
-                if question is not None and question._q_type == "multiple_choice":
-                    event.prevent_default()
-                    event.stop()
-                    if event.key == "up":
-                        question.action_move_up()
-                    else:
-                        question.action_move_down()
-                    return
+            question = self._find_question_widget()
+            if question is not None and question._q_type == "multiple_choice":
+                event.prevent_default()
+                event.stop()
+                if event.key == "up":
+                    question.action_move_up()
+                else:
+                    question.action_move_down()
+                return
 
     def _find_question_widget(self) -> _QuestionWidget | None:
         """Walk up to find the enclosing `_QuestionWidget`, if any.
@@ -191,7 +174,6 @@ class AskUserMenu(Container):
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
-            "Shift+Enter for newline",
         ]
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")

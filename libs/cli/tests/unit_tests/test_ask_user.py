@@ -185,8 +185,18 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
-    async def test_text_question_accepts_multiline_answer(self) -> None:
-        """Shift+Enter inserts a newline; Enter submits multi-line answer."""
+    async def test_text_input_soft_wraps_long_answers(self) -> None:
+        """Soft-wrap is enabled so long answers wrap visually without newlines."""
+        app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            assert text_input.soft_wrap is True
+
+    async def test_enter_submits_without_inserting_newline(self) -> None:
+        """Enter submits the answer instead of inserting a newline."""
         app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
 
         async with app.run_test() as pilot:
@@ -198,20 +208,14 @@ class TestAskUserMenu:
 
             await pilot.pause()
             text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hi"
             text_input.focus()
             await pilot.pause()
-
-            await pilot.press("a")
-            await pilot.press("shift+enter")
-            await pilot.press("b")
-            await pilot.pause()
-            assert text_input.text == "a\nb"
-
             await pilot.press("enter")
             await pilot.pause()
 
             assert future.done()
-            assert future.result() == {"type": "answered", "answers": ["a\nb"]}
+            assert future.result() == {"type": "answered", "answers": ["hi"]}
 
     async def test_escape_cancels_and_resolves_future(self) -> None:
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])

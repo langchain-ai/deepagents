@@ -570,6 +570,23 @@ async def execute_task_textual(
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user
                                         )
+                                        tool_id = validated_ask_user["tool_call_id"]
+                                        if tool_id not in displayed_tool_ids:
+                                            displayed_tool_ids.add(tool_id)
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+                                            tool_msg = ToolCallMessage(
+                                                "ask_user",
+                                                {
+                                                    "questions": validated_ask_user[
+                                                        "questions"
+                                                    ]
+                                                },
+                                            )
+                                            await adapter._mount_message(tool_msg)
+                                            adapter._current_tool_messages[tool_id] = (
+                                                tool_msg
+                                            )
                                         interrupt_occurred = True
                                         await dispatch_hook("input.required", {})
                                     except ValidationError:
@@ -1006,11 +1023,11 @@ async def execute_task_textual(
                                 }
 
                         result_type = result.get("type")
+                        tool_id = ask_req["tool_call_id"]
                         if result_type == "answered":
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                tool_id = ask_req["tool_call_id"]
                                 if tool_id in adapter._current_tool_messages:
                                     tool_msg = adapter._current_tool_messages[tool_id]
                                     tool_msg.set_success("User answered")
@@ -1027,12 +1044,22 @@ async def execute_task_textual(
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
+                                if tool_id in adapter._current_tool_messages:
+                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                    tool_msg.set_error(
+                                        "invalid ask_user answers payload"
+                                    )
+                                    adapter._current_tool_messages.pop(tool_id, None)
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            if tool_id in adapter._current_tool_messages:
+                                tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg.set_rejected()
+                                adapter._current_tool_messages.pop(tool_id, None)
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1043,6 +1070,10 @@ async def execute_task_textual(
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            if tool_id in adapter._current_tool_messages:
+                                tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg.set_error(error_text)
+                                adapter._current_tool_messages.pop(tool_id, None)
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1053,6 +1084,11 @@ async def execute_task_textual(
                             "error": "ask_user not supported by this UI",
                             "answers": ["" for _ in questions],
                         }
+                        tool_id = ask_req["tool_call_id"]
+                        if tool_id in adapter._current_tool_messages:
+                            tool_msg = adapter._current_tool_messages[tool_id]
+                            tool_msg.set_error("ask_user not supported by this UI")
+                            adapter._current_tool_messages.pop(tool_id, None)
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]

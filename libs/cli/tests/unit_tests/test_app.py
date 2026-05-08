@@ -2104,6 +2104,19 @@ class TestMessageQueue:
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
 
+    def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
+        """App-level Ctrl+O should toggle the active ask_user tool row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = MagicMock()
+        tool = MagicMock()
+        tool._tool_name = "ask_user"
+        tool.has_expandable_args = True
+
+        with patch.object(app, "query", return_value=[tool]):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
         app = DeepAgentsApp()

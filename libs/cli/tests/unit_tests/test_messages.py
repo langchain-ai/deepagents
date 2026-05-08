@@ -320,6 +320,32 @@ class TestToolCallMessageMarkupSafety:
         assert "[foo]" in content.plain
         assert "[/dim]" in content.plain
 
+    def test_ask_user_args_are_collapsed_by_default(self) -> None:
+        """`ask_user` should show compact header without inline raw args."""
+        msg = ToolCallMessage(
+            "ask_user",
+            {
+                "questions": [
+                    {
+                        "question": 'Your prompt is just "hi" - what should I build?',
+                        "type": "text",
+                    }
+                    for _ in range(4)
+                ]
+            },
+        )
+
+        widgets = list(msg.compose())
+        visible = []
+        for widget in widgets[:3]:
+            content = widget._Static__content  # type: ignore[attr-defined]
+            visible.append(content.plain if isinstance(content, Content) else content)
+        visible_plain = "\n".join(visible)
+
+        assert "ask_user(4 questions)" in visible_plain
+        assert "Your prompt is just" not in visible_plain
+        assert msg.has_expandable_args is True
+
 
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.

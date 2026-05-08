@@ -6080,6 +6080,17 @@ class DeepAgentsApp(App):
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
+        if self._pending_ask_user_widget is not None:
+            with suppress(NoMatches):
+                tool_messages = list(self.query(ToolCallMessage))
+                for tool_msg in reversed(tool_messages):
+                    if (
+                        tool_msg._tool_name == "ask_user"
+                        and tool_msg.has_expandable_args
+                    ):
+                        tool_msg.toggle_args()
+                        return
+
         # Try skill messages first (most recent collapsible content)
         with suppress(NoMatches):
             skill_messages = list(self.query(SkillMessage))
@@ -6091,7 +6102,7 @@ class DeepAgentsApp(App):
         with suppress(NoMatches):
             tool_messages = list(self.query(ToolCallMessage))
             for tool_msg in reversed(tool_messages):
-                if tool_msg.has_output:
+                if tool_msg.has_output or tool_msg.has_expandable_args:
                     tool_msg.toggle_output()
                     return
 

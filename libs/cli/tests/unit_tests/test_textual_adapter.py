@@ -29,7 +29,7 @@ from deepagents_cli.textual_adapter import (
     format_token_count,
     print_usage_table,
 )
-from deepagents_cli.widgets.messages import SummarizationMessage
+from deepagents_cli.widgets.messages import SummarizationMessage, ToolCallMessage
 
 
 async def _mock_mount(widget: object) -> None:
@@ -1078,6 +1078,59 @@ class TestExecuteTaskTextualTextThenToolSpinner:
 
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
+
+    async def test_ask_user_interrupt_mounts_tool_call_row(self) -> None:
+        """ask_user interrupts should mount the tool row before the prompt."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_rows = [
+            widget for widget in mounted if isinstance(widget, ToolCallMessage)
+        ]
+        assert len(tool_rows) == 1
+        tool_row = tool_rows[0]
+        assert tool_row._tool_name == "ask_user"
+        assert tool_row.has_expandable_args is True
 
     async def test_request_ask_user_returning_none_is_reported_as_error(self) -> None:
         """A `None` callback result should resume with explicit error status."""

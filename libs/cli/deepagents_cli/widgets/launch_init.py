@@ -115,7 +115,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
             yield Static(
                 Content.assemble(
                     "What should Deep Agents call you? This is optional and "
-                    "can be remembered for future sessions."
+                    "will be remembered for future sessions."
                 ),
                 classes="launch-init-copy",
             )

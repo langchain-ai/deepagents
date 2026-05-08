@@ -33,6 +33,11 @@ import os
 AUTO_UPDATE = "DEEPAGENTS_CLI_AUTO_UPDATE"
 """Enable automatic CLI updates ('1', 'true', or 'yes')."""
 
+DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
+    "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
+)
+"""Override the startup splash subheader text when set."""
+
 DEBUG = "DEEPAGENTS_CLI_DEBUG"
 """Enable verbose debug logging and preserve the server subprocess log.
 
@@ -59,8 +64,32 @@ at launch so the update-available flow can be exercised without waiting for a
 real PyPI release. Any non-empty value enables the flag (including `"0"` or
 `"false"`)."""
 
+EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET"
+"""Enable the local Unix-socket external event listener.
+
+Parsed by `is_env_truthy`; off by default. Wire format and behavior are
+considered experimental until the listener is documented in the CLI README."""
+
+EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH"
+"""Override the default Unix-socket path for the external event listener."""
+
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
+
+HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
+"""Hide local path displays in the TUI footer and startup splash when enabled."""
+
+HIDE_GIT_BRANCH = "DEEPAGENTS_CLI_HIDE_GIT_BRANCH"
+"""Hide the current git branch in the TUI footer when enabled."""
+
+HIDE_LANGSMITH_TRACING = "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING"
+"""Hide LangSmith tracing project/thread info in the startup splash when enabled."""
+
+HIDE_SPLASH_TIPS = "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS"
+"""Hide rotating tips in the startup splash when enabled."""
+
+HIDE_SPLASH_VERSION = "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION"
+"""Hide version and local-install details in the splash screen when enabled."""
 
 KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
@@ -76,6 +105,12 @@ SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
+
+SHOW_HEADER = "DEEPAGENTS_CLI_SHOW_HEADER"
+"""Show Textual's native header bar at the top of the TUI when enabled."""
+
+THEME = "DEEPAGENTS_CLI_THEME"
+"""Force the CLI to launch with this theme name when set."""
 
 USER_ID = "DEEPAGENTS_CLI_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""

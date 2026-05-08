@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts"))
 
 from analyze_eval_failures import (  # ty: ignore[unresolved-import]
+    _DEFAULT_MODEL,
     _format_markdown,
     analyze_one,
     main,
@@ -147,6 +148,29 @@ class TestRun:
         # Verify stdout
         out = capsys.readouterr().out
         assert "Failure analysis" in out
+
+    async def test_empty_analysis_model_env_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Empty `ANALYSIS_MODEL` (e.g. unset workflow input) must use `_DEFAULT_MODEL`.
+
+        `os.environ.get("ANALYSIS_MODEL", _DEFAULT_MODEL)` only falls back when the
+        key is missing; an empty string is present-but-falsy and previously slipped
+        through, causing `init_chat_model("")` to return a configurable model that
+        crashed at invoke time with `_init_chat_model_helper() missing ... 'model'`.
+        """
+        report = {"passed": 0, "failed": 1, "failures": [_SAMPLE_FAILURE]}
+        report_path = tmp_path / "evals_report.json"
+        report_path.write_text(json.dumps(report))
+
+        monkeypatch.setenv("ANALYSIS_MODEL", "")
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+        mock_model = AsyncMock()
+        mock_model.ainvoke.return_value = AsyncMock(text="analysis")
+
+        with patch("langchain.chat_models.init_chat_model", return_value=mock_model) as mock_init:
+            await run(report_path)
+
+        mock_init.assert_called_once_with(_DEFAULT_MODEL)
 
     async def test_success_path_without_summary_env(self, tmp_path, capsys, monkeypatch):
         report = {"passed": 0, "failed": 1, "failures": [_SAMPLE_FAILURE]}

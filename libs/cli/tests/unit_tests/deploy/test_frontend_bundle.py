@@ -232,6 +232,7 @@ app_name = "My App"
     )
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
     monkeypatch.setenv("SUPABASE_PUBLISHABLE_DEFAULT_KEY", "k")
 
@@ -277,6 +278,7 @@ def test_deploy_dry_run_anonymous_prints_warning(tmp_path, monkeypatch, capsys):
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     _write_anonymous_project(tmp_path / "proj")
 
     _deploy(config_path=str(tmp_path / "proj" / "deepagents.toml"), dry_run=True)
@@ -294,6 +296,7 @@ def test_deploy_default_summary_label(tmp_path, monkeypatch, capsys):
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     project = tmp_path / "proj"
     project.mkdir()
     (project / "AGENTS.md").write_text("prompt", encoding="utf-8")
@@ -320,6 +323,7 @@ def test_deploy_anonymous_dry_run_skips_confirmation(tmp_path, monkeypatch):
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     _write_anonymous_project(tmp_path / "proj")
 
     def _no_input(_prompt: str) -> str:
@@ -338,6 +342,7 @@ def test_deploy_anonymous_aborts_on_no(tmp_path, monkeypatch, capsys):
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     _write_anonymous_project(tmp_path / "proj")
     monkeypatch.setattr("builtins.input", lambda _prompt: "n")
 
@@ -355,6 +360,7 @@ def test_deploy_anonymous_aborts_on_eof(tmp_path, monkeypatch, capsys):
     from deepagents_cli.deploy.commands import _deploy
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "test-langsmith-key")
     _write_anonymous_project(tmp_path / "proj")
 
     def _raises_eof(_prompt: str) -> str:

@@ -29,7 +29,7 @@ from deepagents_cli.textual_adapter import (
     format_token_count,
     print_usage_table,
 )
-from deepagents_cli.widgets.messages import SummarizationMessage
+from deepagents_cli.widgets.messages import SummarizationMessage, ToolCallMessage
 
 
 async def _mock_mount(widget: object) -> None:
@@ -1078,6 +1078,320 @@ class TestExecuteTaskTextualTextThenToolSpinner:
 
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
+
+    async def test_ask_user_interrupt_mounts_tool_call_row(self) -> None:
+        """ask_user interrupts should mount the tool row before the prompt."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_rows = [
+            widget for widget in mounted if isinstance(widget, ToolCallMessage)
+        ]
+        assert len(tool_rows) == 1
+        tool_row = tool_rows[0]
+        assert tool_row.tool_name == "ask_user"
+        assert tool_row.has_expandable_args is True
+        # Answered cleanup pops the row from `_current_tool_messages`.
+        assert "tool-1" not in adapter._current_tool_messages
+
+    async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
+        """Mount failure should not poison `displayed_tool_ids` on the adapter."""
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+            msg = "mount failed"
+            raise RuntimeError(msg)
+
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        # The flow continued, resumed with the answer, and never registered the
+        # broken tool row.
+        assert "tool-1" not in adapter._current_tool_messages
+
+    async def test_ask_user_duplicate_interrupt_only_mounts_once(self) -> None:
+        """Re-emitting the same `tool_call_id` should not double-mount."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        payload = {
+            "type": "ask_user",
+            "questions": [{"question": "Name?", "type": "text"}],
+            "tool_call_id": "tool-dedup",
+        }
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(payload),
+                    _ask_user_interrupt_chunk(payload),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_rows) == 1
+
+    async def test_ask_user_cancelled_marks_row_rejected(self) -> None:
+        """Cancelled result should call `set_rejected` and pop the tool row."""
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "cancelled"})
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["status"] == "cancelled"
+        assert "tool-1" not in adapter._current_tool_messages
+
+    async def test_ask_user_invalid_answers_payload_marks_row_error(self) -> None:
+        """Non-list answers should mark row as error and pop it."""
+        mounted: list[ToolCallMessage] = []
+        error_calls: list[str] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": "not-a-list"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                original = widget.set_error
+
+                def _capture(error: str) -> None:
+                    error_calls.append(error)
+                    original(error)
+
+                widget.set_error = _capture  # type: ignore[method-assign]
+                mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Any],
+        ) -> asyncio.Future[object] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["status"] == "error"
+        assert (
+            resume_payload["interrupt-1"]["error"] == "invalid ask_user answers payload"
+        )
+        assert len(mounted) == 1
+        assert "invalid ask_user answers payload" in error_calls
+        assert "tool-1" not in adapter._current_tool_messages
+
+    async def test_ask_user_unsupported_marks_row_error(self) -> None:
+        """When no callback is registered, the mounted row gets an error."""
+        mounted: list[ToolCallMessage] = []
+        error_calls: list[str] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                original = widget.set_error
+
+                def _capture(error: str) -> None:
+                    error_calls.append(error)
+                    original(error)
+
+                widget.set_error = _capture  # type: ignore[method-assign]
+                mounted.append(widget)
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(mounted) == 1
+        assert "ask_user not supported by this UI" in error_calls
+        assert "tool-1" not in adapter._current_tool_messages
 
     async def test_request_ask_user_returning_none_is_reported_as_error(self) -> None:
         """A `None` callback result should resume with explicit error status."""

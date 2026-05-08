@@ -18,15 +18,27 @@
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
-name: "📊 Evals - GHA"
+name: "📊 Evals"
 run-name: >-
-  📊 Evals - GHA — ${{ inputs.models_override && (contains(inputs.models_override, ',') && 'custom models' || inputs.models_override) || inputs.models || 'all' }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format(' [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{ (inputs.eval_tiers_override || inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override || inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}
+  📊 Evals — ${{ inputs.models_override && (contains(inputs.models_override,
+  ',') && 'custom models' || inputs.models_override) || inputs.models || 'all'
+  }}${{ (inputs.eval_categories_override || inputs.eval_categories) && format('
+  [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{
+  inputs.eval_categories_exclude && format(' excluding {0}',
+  inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override ||
+  inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override ||
+  inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format('
+  reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl &&
+  format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠'
+  || '' }}
 
 on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to evaluate. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        description: "Model set to evaluate. Set definitions:
+          libs/evals/MODEL_GROUPS.md. Leave empty to use models_override
+          instead. Defaults to all models if both are empty."
         required: false
         default: ""
         type: choice
@@ -40,6 +52,7 @@ on:
           - mega
           - fast
           - open
+          - open-fireworks
           - docs
           - anthropic
           - baseten
@@ -51,11 +64,9 @@ on:
           - ollama
           - openrouter
           - xai
-          - "anthropic:claude-haiku-4-5-20251001"
           - "anthropic:claude-haiku-4-5"
           - "anthropic:claude-sonnet-4-5-20250929"
           - "anthropic:claude-sonnet-4-6"
-          - "anthropic:claude-opus-4-1"
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
           - "anthropic:claude-opus-4-7"
@@ -65,13 +76,18 @@ on:
           - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
-          - "fireworks:fireworks/deepseek-v3p2"
-          - "fireworks:fireworks/deepseek-v3-0324"
-          - "fireworks:fireworks/qwen3-vl-235b-a22b-thinking"
-          - "fireworks:fireworks/minimax-m2p1"
-          - "fireworks:fireworks/kimi-k2p5"
-          - "fireworks:fireworks/glm-5"
-          - "fireworks:fireworks/minimax-m2p5"
+          - "fireworks:accounts/fireworks/models/deepseek-v3p2"
+          - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
+          - "fireworks:accounts/fireworks/models/deepseek-v4-pro"
+          - "fireworks:accounts/fireworks/models/kimi-k2p5"
+          - "fireworks:accounts/fireworks/models/kimi-k2p6"
+          - "fireworks:accounts/fireworks/models/glm-5"
+          - "fireworks:accounts/fireworks/models/glm-5p1"
+          - "fireworks:accounts/fireworks/models/minimax-m2p5"
+          - "fireworks:accounts/fireworks/models/minimax-m2p7"
+          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a\
+            12b-fp8"
+          - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"
           - "google_genai:gemini-3-flash-preview"
@@ -80,46 +96,40 @@ on:
           - "groq:qwen/qwen3-32b"
           - "groq:moonshotai/kimi-k2-instruct"
           - "nvidia:nvidia/nemotron-3-super-120b-a12b"
-          - "ollama:glm-5"
-          - "ollama:glm-5.1"
-          - "ollama:minimax-m2.5"
+          - "ollama:glm-5:cloud"
+          - "ollama:glm-5.1:cloud"
+          - "ollama:minimax-m2.5:cloud"
           - "ollama:minimax-m2.7:cloud"
-          - "ollama:qwen3.5:397b-cloud"
-          - "ollama:nemotron-3-nano:30b"
-          - "ollama:nemotron-3-super"
-          - "ollama:cogito-2.1:671b"
-          - "ollama:devstral-2:123b"
-          - "ollama:ministral-3:14b"
-          - "ollama:qwen3-next:80b"
-          - "ollama:qwen3-coder:480b-cloud"
-          - "ollama:deepseek-v3.2:cloud"
-          - "openai:gpt-4o"
-          - "openai:gpt-4o-mini"
+          - "ollama:qwen3.5:cloud"
+          - "ollama:nemotron-3-super:cloud"
           - "openai:gpt-4.1"
-          - "openai:o3"
-          - "openai:o4-mini"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
           - "openai:gpt-5.3-codex"
           - "openai:gpt-5.4"
+          - "openai:gpt-5.4-mini"
           - "openai:gpt-5.5"
           - "openai:gpt-5.5-pro"
-          - "openai:gpt-5.4-mini"
           - "openrouter:minimax/minimax-m2.7"
           - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
           - "openrouter:z-ai/glm-5.1"
-          - "openrouter:deepseek/deepseek-v4-pro"
           - "openrouter:nvidia/nemotron-3-super-120b-a12b"
+          - "openrouter:deepseek/deepseek-v4-pro"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Custom model list (overrides dropdown). Comma-separated 'provider:model' specs, e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the preset selection above."
+        description: "Custom model list (overrides dropdown). Comma-separated
+          'provider:model' specs, e.g.
+          'openai:gpt-4.1,anthropic:claude-sonnet-4-6'. Leave empty to use the
+          preset selection above."
         required: false
         default: ""
         type: string
       eval_categories:
-        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md. Leave empty to use eval_categories_override instead. Defaults to all if both are empty."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md.
+          Leave empty to use eval_categories_override instead. Defaults to all
+          if both are empty."
         required: false
         default: ""
         type: choice
@@ -133,12 +143,22 @@ on:
           - tool_use
           - unit_test
       eval_categories_override:
-        description: "Custom category list (overrides dropdown). Comma-separated, e.g. 'memory,tool_use,retrieval'. Leave empty to use the preset selection above."
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g.
+          'memory,tool_use,retrieval'. Leave empty to use the preset selection
+          above."
+        required: false
+        default: ""
+        type: string
+      eval_categories_exclude:
+        description: "Category list to skip; takes precedence over the include filter on
+          conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'.
+          Empty = skip none."
         required: false
         default: ""
         type: string
       eval_tiers:
-        description: "Eval tier to run (baseline = regression gate, hillclimb = progress tracking). Leave empty for all."
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress
+          tracking). Leave empty for all."
         required: false
         default: ""
         type: choice
@@ -147,7 +167,8 @@ on:
           - baseline
           - hillclimb
       eval_tiers_override:
-        description: "Custom tier list (overrides dropdown). Comma-separated, e.g. 'baseline,hillclimb'."
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g.
+          'baseline,hillclimb'."
         required: false
         default: ""
         type: string
@@ -157,7 +178,8 @@ on:
         default: false
         type: boolean
       analysis_model:
-        description: "Model for failure analysis. Only used when analyze_failures is true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        description: "Model for failure analysis. Only used when analyze_failures is
+          true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
         required: false
         default: ""
         type: choice
@@ -174,12 +196,22 @@ on:
           - "google_genai:gemini-3-flash-preview"
           - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
-        description: "Pin OpenRouter to a single provider (solo routing). E.g. 'MiniMax'. Only applies to openrouter: models."
+        description: "Pin OpenRouter to one or more providers (comma-separated
+          allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to
+          openrouter: models."
         required: false
         default: ""
         type: string
+      openrouter_allow_fallbacks:
+        description: "Soft allowlist: prefer the providers in `openrouter_provider` but
+          allow OpenRouter to fall back to any other provider hosting the model.
+          Off (default) = strict pin."
+        required: false
+        default: false
+        type: boolean
       openai_reasoning_effort:
-        description: "Reasoning effort for OpenAI models (applied as the `reasoning_effort` model kwarg). Only applies to openai: models."
+        description: "Reasoning effort for OpenAI models (applied as the
+          `reasoning_effort` model kwarg). Only applies to openai: models."
         required: false
         default: ""
         type: choice
@@ -190,6 +222,23 @@ on:
           - medium
           - high
           - xhigh
+      repl:
+        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty =
+          bind tools directly (native tool calling)."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - quickjs
+          - langchain
+      notes:
+        description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
+          retry reason). Shown on the run summary; does not affect eval
+          behavior."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -227,18 +276,32 @@ jobs:
       other_matrix: ${{ steps.set-matrix.outputs.other_matrix }}
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
         env:
           MODELS: ${{ inputs.models }}
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
-          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories || '(all)' }}
+          EVAL_CATEGORIES: ${{ inputs.eval_categories_override || inputs.eval_categories
+            || '(all)' }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude || '(none)' }}
           EVAL_TIERS: ${{ inputs.eval_tiers_override || inputs.eval_tiers || '(all)' }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
           OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
+          REPL: ${{ inputs.repl }}
           ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
           ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
+          NOTES: ${{ inputs.notes }}
         run: |
+          {
+            echo "### 🌳 Source tree"
+            echo ""
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on [\`${GITHUB_REF_NAME}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF})."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "### 📊 Eval dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
@@ -272,6 +335,104 @@ jobs:
               echo "| \`eval_categories\` (expanded) | ${bulleted} |" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+          # Show excluded eval categories
+          if [ "${EVAL_CATEGORIES_EXCLUDE}" = "(none)" ]; then
+            echo "| \`eval_categories_exclude\` | (none) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            IFS=',' read -ra cats <<< "${EVAL_CATEGORIES_EXCLUDE}"
+            comma_list=""
+            for cat in "${cats[@]}"; do
+              cat=$(echo "$cat" | xargs)
+              [ -n "$comma_list" ] && comma_list="${comma_list}, "
+              comma_list="${comma_list}\`${cat}\`"
+            done
+            echo "| \`eval_categories_exclude\` | ${comma_list} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # Resolved category list = (selected) - (excluded). The catalog at
+          # `libs/evals/deepagents_evals/categories.json` enumerates `(all)`
+          # for this summary; runtime category filtering is performed by
+          # pytest against `@pytest.mark.eval_category(...)` markers in
+          # `libs/evals/tests/evals/conftest.py`, so the JSON and the markers
+          # can drift. Names that don't appear in the JSON are surfaced as
+          # warnings here, but pytest is the final arbiter.
+          CATEGORIES_JSON="libs/evals/deepagents_evals/categories.json"
+          catalog=()
+          catalog_error=""
+          if [ ! -f "${CATEGORIES_JSON}" ]; then
+            catalog_error="catalog file missing: \`${CATEGORIES_JSON}\`"
+          elif catalog_raw=$(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["categories"]))' "${CATEGORIES_JSON}" 2>/dev/null); then
+            mapfile -t catalog <<< "${catalog_raw}"
+          else
+            catalog_error="catalog parse failed"
+          fi
+          if [ -n "${catalog_error}" ]; then
+            echo "| **resolved categories** | _(${catalog_error})_ |" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Could not compute resolved eval categories: ${catalog_error}"
+          else
+            unknowns=()
+            if [ "${EVAL_CATEGORIES}" = "(all)" ]; then
+              selected=("${catalog[@]}")
+            else
+              IFS=',' read -ra raw <<< "${EVAL_CATEGORIES}"
+              selected=()
+              for cat in "${raw[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -z "$cat" ] && continue
+                selected+=("$cat")
+                in_catalog=0
+                for known in "${catalog[@]}"; do
+                  [ "$cat" = "$known" ] && in_catalog=1 && break
+                done
+                [ "$in_catalog" -eq 0 ] && unknowns+=("$cat")
+              done
+            fi
+            excluded=()
+            if [ "${EVAL_CATEGORIES_EXCLUDE}" != "(none)" ]; then
+              IFS=',' read -ra raw <<< "${EVAL_CATEGORIES_EXCLUDE}"
+              for cat in "${raw[@]}"; do
+                cat=$(echo "$cat" | xargs)
+                [ -z "$cat" ] && continue
+                excluded+=("$cat")
+                in_catalog=0
+                for known in "${catalog[@]}"; do
+                  [ "$cat" = "$known" ] && in_catalog=1 && break
+                done
+                [ "$in_catalog" -eq 0 ] && unknowns+=("$cat")
+              done
+            fi
+            resolved=()
+            for cat in "${selected[@]}"; do
+              skip=0
+              for ex in "${excluded[@]}"; do
+                if [ "$cat" = "$ex" ]; then
+                  skip=1
+                  break
+                fi
+              done
+              [ $skip -eq 0 ] && resolved+=("$cat")
+            done
+            if [ ${#resolved[@]} -eq 0 ]; then
+              row_value="_(none — exclusion removed every selected category)_"
+            else
+              comma_list=""
+              for cat in "${resolved[@]}"; do
+                [ -n "$comma_list" ] && comma_list="${comma_list}, "
+                comma_list="${comma_list}\`${cat}\`"
+              done
+              row_value="${comma_list}"
+            fi
+            unknown_note=""
+            if [ ${#unknowns[@]} -gt 0 ]; then
+              note=""
+              for cat in "${unknowns[@]}"; do
+                [ -n "$note" ] && note="${note}, "
+                note="${note}\`${cat}\`"
+                echo "::warning::Eval category '${cat}' is not in ${CATEGORIES_JSON}; possible typo or missing catalog entry."
+              done
+              unknown_note="<br>⚠️ _Not in catalog: ${note}_"
+            fi
+            echo "| **resolved categories** | ${row_value}${unknown_note} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           # Show eval tiers
           if [ "${EVAL_TIERS}" = "(all)" ]; then
             echo "| \`eval_tiers\` | (all) |" >> "$GITHUB_STEP_SUMMARY"
@@ -287,20 +448,85 @@ jobs:
           fi
           if [ -n "${OPENROUTER_PROVIDER}" ]; then
             echo "| \`openrouter_provider\` | \`${OPENROUTER_PROVIDER}\` |" >> "$GITHUB_STEP_SUMMARY"
+            # Mirror `_eval.yml` boolean parsing: accept the GitHub-typed
+            # lowercase `true`/`false` plus common variants so a non-typed
+            # caller can't silently render the wrong badge here.
+            case "${OPENROUTER_ALLOW_FALLBACKS,,}" in
+              true|1|yes)
+                echo "| \`openrouter_allow_fallbacks\` | ✅ soft (preferred + fallback) |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              false|0|no|"")
+                echo "| \`openrouter_allow_fallbacks\` | 🔒 strict (no fallback) |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              *)
+                echo "::error::Unrecognized openrouter_allow_fallbacks=${OPENROUTER_ALLOW_FALLBACKS}; expected true/false."
+                exit 1
+                ;;
+            esac
           fi
           if [ -n "${OPENAI_REASONING_EFFORT}" ]; then
             echo "| \`openai_reasoning_effort\` | \`${OPENAI_REASONING_EFFORT}\` |" >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -n "${REPL}" ]; then
+            echo "| \`repl\` | \`${REPL}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "${ANALYZE_FAILURES}" = "true" ]; then
             echo "| \`analyze_failures\` | ✅ enabled (\`${ANALYSIS_MODEL}\`) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          trimmed_notes="${NOTES#"${NOTES%%[![:space:]]*}"}"
+          trimmed_notes="${trimmed_notes%"${trimmed_notes##*[![:space:]]}"}"
+          if [ -n "${trimmed_notes}" ]; then
+            # GitHub Step Summary renders as GFM; pipes break table cells and raw newlines end the row.
+            escaped_notes="${trimmed_notes//|/\\|}"
+            escaped_notes="${escaped_notes//$'\r\n'/<br>}"
+            escaped_notes="${escaped_notes//$'\n'/<br>}"
+            echo "| \`notes\` | ${escaped_notes} |" >> "$GITHUB_STEP_SUMMARY"
           fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: "🛡️ Validate dispatch inputs"
+        # Defense in depth: these flow through to `_eval.yml` as shell
+        # arguments. Reject anything outside the per-field allowlist before
+        # we hand them off. `openrouter_provider` accepts a comma-separated
+        # allowlist (e.g. `MiniMax,Fireworks`, plus variant-suffixed forms
+        # like `siliconflow/fp8`) so it uses the looser provider CSV pattern
+        # that also permits `/` and `.`; `repl` is single-valued so it stays
+        # on SLUG. Models are validated downstream by
+        # `_SAFE_SPEC_RE` in `.github/scripts/models.py`.
+        # Keep in parity with the equivalent block in `evals_trials.yml`.
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+          EVAL_CATEGORIES_OVERRIDE: ${{ inputs.eval_categories_override }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
+          EVAL_TIERS: ${{ inputs.eval_tiers }}
+          EVAL_TIERS_OVERRIDE: ${{ inputs.eval_tiers_override }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          REPL: ${{ inputs.repl }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import re
+          import sys
+
+          _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
+          _PROVIDER_CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,./]*$")
+          _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
+          for name, value, pattern in (
+              ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
+              ("eval_categories_override", os.environ.get("EVAL_CATEGORIES_OVERRIDE", ""), _CSV_RE),
+              ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
+              ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
+              ("eval_tiers_override", os.environ.get("EVAL_TIERS_OVERRIDE", ""), _CSV_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _PROVIDER_CSV_RE),
+              ("repl", os.environ.get("REPL", ""), _SLUG_RE),
+          ):
+              if not pattern.match(value):
+                  print(f"::error::Unsafe `{name}` value: {value!r}")
+                  sys.exit(1)
+          PYEOF
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
@@ -308,6 +534,36 @@ jobs:
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
+      - name: "🔖 Record resolved versions"
+        # Versions are identical for every per-model job (same lockfile, same
+        # Python), so we resolve them once here instead of repeating the dump
+        # in each `_eval.yml` matrix job. Read `uv.lock` directly to avoid
+        # paying for a `uv sync` just for `pip list`.
+        run: |
+          {
+            echo "<details>"
+            echo "<summary>🔖 Resolved package versions (click to expand)</summary>"
+            echo ""
+            echo '```'
+            python3 - <<'PYEOF'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          lock = tomllib.loads(Path("libs/evals/uv.lock").read_text())
+          pattern = re.compile(r"^(langchain|langgraph|langsmith|deepagents)(-[a-z0-9_]+)*$")
+          rows = sorted(
+              (p["name"], p["version"])
+              for p in lock.get("package", [])
+              if pattern.match(p["name"])
+          )
+          for name, version in rows:
+              print(f"{name}=={version}")
+          PYEOF
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Per-provider serialization: each provider runs as its own matrix job with
   # max-parallel: 1 so calls to a single provider queue rather than fan out
@@ -315,8 +571,15 @@ jobs:
   # GHA has no built-in "queue per matrix value", so the partition is encoded
   # as separate jobs whose matrices come from `prep`'s per-provider outputs;
   # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/models.py for the source set.
+  #
+  # Each per-provider `name:` below is intentionally a static string. GHA does
+  # not evaluate `name:` expressions for jobs skipped via `if:`, so any
+  # `${{ matrix.* }}` or `${{ inputs.* }}` references would render as raw
+  # template text in the UI for skipped providers. Per-run detail (model,
+  # categories, tiers) lives on the inner `_eval.yml` job name, which only
+  # renders when the job actually runs.
   eval-anthropic:
-    name: "📊 Eval Anthropic (${{ matrix.model }})"
+    name: "📊 Anthropic"
     needs: prep
     if: ${{ needs.prep.outputs.anthropic_has_models == 'true' }}
     strategy:
@@ -329,15 +592,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-baseten:
-    name: "📊 Eval Baseten (${{ matrix.model }})"
+    name: "📊 Baseten"
     needs: prep
     if: ${{ needs.prep.outputs.baseten_has_models == 'true' }}
     strategy:
@@ -350,15 +616,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-fireworks:
-    name: "📊 Eval Fireworks (${{ matrix.model }})"
+    name: "📊 Fireworks"
     needs: prep
     if: ${{ needs.prep.outputs.fireworks_has_models == 'true' }}
     strategy:
@@ -371,15 +640,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-google-genai:
-    name: "📊 Eval Google GenAI (${{ matrix.model }})"
+    name: "📊 Google GenAI"
     needs: prep
     if: ${{ needs.prep.outputs.google_genai_has_models == 'true' }}
     strategy:
@@ -392,15 +664,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-groq:
-    name: "📊 Eval Groq (${{ matrix.model }})"
+    name: "📊 Groq"
     needs: prep
     if: ${{ needs.prep.outputs.groq_has_models == 'true' }}
     strategy:
@@ -413,15 +688,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-nvidia:
-    name: "📊 Eval NVIDIA (${{ matrix.model }})"
+    name: "📊 NVIDIA"
     needs: prep
     if: ${{ needs.prep.outputs.nvidia_has_models == 'true' }}
     strategy:
@@ -434,15 +712,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-ollama:
-    name: "📊 Eval Ollama (${{ matrix.model }})"
+    name: "📊 Ollama"
     needs: prep
     if: ${{ needs.prep.outputs.ollama_has_models == 'true' }}
     strategy:
@@ -455,15 +736,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-openai:
-    name: "📊 Eval OpenAI (${{ matrix.model }})"
+    name: "📊 OpenAI"
     needs: prep
     if: ${{ needs.prep.outputs.openai_has_models == 'true' }}
     strategy:
@@ -476,15 +760,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-openrouter:
-    name: "📊 Eval OpenRouter (${{ matrix.model }})"
+    name: "📊 OpenRouter"
     needs: prep
     if: ${{ needs.prep.outputs.openrouter_has_models == 'true' }}
     strategy:
@@ -497,15 +784,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-xai:
-    name: "📊 Eval xAI (${{ matrix.model }})"
+    name: "📊 xAI"
     needs: prep
     if: ${{ needs.prep.outputs.xai_has_models == 'true' }}
     strategy:
@@ -518,15 +808,18 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   eval-other:
-    name: "📊 Eval Other (${{ matrix.model }})"
+    name: "📊 Other"
     needs: prep
     if: ${{ needs.prep.outputs.other_has_models == 'true' }}
     strategy:
@@ -539,11 +832,14 @@ jobs:
       provider: ${{ matrix.provider }}
       artifact_key: ${{ matrix.artifact_key }}
       eval_categories: ${{ inputs.eval_categories_override || inputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
       eval_tiers: ${{ inputs.eval_tiers_override || inputs.eval_tiers }}
       analyze_failures: ${{ inputs.analyze_failures }}
       analysis_model: ${{ inputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
+      openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
+      repl: ${{ inputs.repl }}
     secrets: inherit
 
   aggregate:
@@ -585,11 +881,14 @@ jobs:
         id: install-evals
         if: hashFiles('evals_summary.json') != ''
         working-directory: libs/evals
+        # `UV_FROZEN=true` already enforces lockfile use; uv 0.11 rejects
+        # combining that environment variable with `--locked`.
         run: uv sync --extra charts
 
       - name: "📊 Generate radar chart"
         id: radar-chart
-        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome == 'success'
+        if: hashFiles('evals_summary.json') != '' && steps.install-evals.outcome ==
+          'success'
         continue-on-error: true
         working-directory: libs/evals
         env:
@@ -620,11 +919,15 @@ jobs:
                  || needs.eval-xai.result == 'cancelled'
                  || needs.eval-other.result == 'cancelled') && 'cancelled'
             || 'success' }}
-        run: uv run --extra charts python scripts/generate_radar.py --summary ../../evals_summary.json -o ../../charts/radar.png --individual-dir ../../charts/individual --title "Deep Agents Eval Results"
+        run: uv run --extra charts python scripts/generate_radar.py --summary
+          ../../evals_summary.json -o ../../charts/radar.png --individual-dir
+          ../../charts/individual --title "Deep Agents Eval Results"
 
       - name: "⚠️ Note radar chart failure"
         if: steps.radar-chart.outcome == 'failure'
-        run: echo "::warning::Radar chart generation failed; see the 'Generate radar chart' step logs. Subsequent chart upload/publish steps will be skipped."
+        run: echo "::warning::Radar chart generation failed; see the 'Generate radar
+          chart' step logs. Subsequent chart upload/publish steps will be
+          skipped."
 
       - name: "📤 Upload JSON summary"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

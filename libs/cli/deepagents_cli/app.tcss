@@ -11,6 +11,14 @@ Screen {
     scrollbar-size-vertical: 1;
 }
 
+/* Hide the Header's clickable ⭘ icon. It opens the command palette by default,
+   but ENABLE_COMMAND_PALETTE = False on the app, so it's already inert. We use
+   `visibility: hidden` (not `display: none`) so the 8-cell gutter is preserved
+   and balances the clock-space gutter on the right, keeping the title centered. */
+#app-header HeaderIcon {
+    visibility: hidden;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */

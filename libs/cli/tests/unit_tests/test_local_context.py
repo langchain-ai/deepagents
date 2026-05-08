@@ -1054,6 +1054,27 @@ class TestSectionGit:
         out = _run_section(_section_git(), tmp_path, with_header=True)
         assert "Current branch `feat-x`" in out
 
+    def test_detached_head_includes_commit_hash(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "checkout", "--detach", "HEAD"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert f"Detached HEAD at `{commit}`" in out
+        assert "Current branch `HEAD`" not in out
+
     def test_main_branch_listed(self, tmp_path: Path) -> None:
         _git_init_commit(tmp_path, branch="main")
         out = _run_section(_section_git(), tmp_path, with_header=True)

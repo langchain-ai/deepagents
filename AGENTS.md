@@ -355,6 +355,10 @@ See `.github/RELEASING.md` for the full workflow (version bumping, pre-releases,
 
 See [Overriding a Merged Commit's Changelog Entry](.github/RELEASING.md#overriding-a-merged-commits-changelog-entry) in `RELEASING.md` for the workflow (when to use it, the block format, and the squash-merge caveats).
 
+#### Reverting a merged-but-unreleased PR
+
+See [Reverting a Merged-but-Unreleased PR](.github/RELEASING.md#reverting-a-merged-but-unreleased-pr) in `RELEASING.md` when a PR has landed on `main` but its `release(<component>): X.Y.Z` PR has not yet shipped. Covers the quiet path (override to `chore` + `chore` revert, so the entry never appears in the changelog) and the `revert:` audit-trail path.
+
 ### PR labeling and linting
 
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles

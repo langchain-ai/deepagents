@@ -238,7 +238,7 @@ mkdir -p "$(dirname {safe_path})" 2>/dev/null
             return WriteResult(error=f"Failed to write file '{file_path}': {error}")
         finally:
             try:
-                tmp_path.unlink()
+                await asyncio.to_thread(tmp_path.unlink)
             except OSError:
                 logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
 
@@ -520,7 +520,7 @@ done
                 results.append(FileUploadResponse(path=path, error=error))
             finally:
                 try:
-                    tmp_path.unlink()
+                    await asyncio.to_thread(tmp_path.unlink)
                 except OSError:
                     logger.warning("Failed to clean up temp file %s", tmp_path, exc_info=True)
         return results

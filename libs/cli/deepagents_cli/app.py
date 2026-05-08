@@ -18,17 +18,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
+from textual import on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.theme import Theme
-from textual.widgets import Static
+from textual.widgets import Header, Static
 from textual.widgets._toast import (
     Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
 )
@@ -97,12 +99,13 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste
+    from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_cli.event_bus import EventSource, ExternalEvent
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
@@ -182,11 +185,32 @@ if _IS_ITERM:
 
 
 def _load_theme_preference() -> str:
-    """Load the saved theme name from config, or return the default.
+    """Load the forced or saved theme name, or return the default.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
     """
+    from deepagents_cli._env_vars import THEME
+
+    env_name = os.environ.get(THEME)
+    if env_name is not None:
+        name = env_name.strip()
+        registry = theme.get_registry()
+        if name in registry:
+            return name
+        for registered, entry in registry.items():
+            if (
+                registered.casefold() == name.casefold()
+                or entry.label.casefold() == name.casefold()
+            ):
+                return registered
+        logger.warning(
+            "Unknown theme '%s' in %s; falling back to default",
+            env_name,
+            THEME,
+        )
+        return theme.DEFAULT_THEME
+
     import tomllib
 
     try:
@@ -398,6 +422,19 @@ class QueuedMessage:
     """The input mode that determines message routing."""
 
 
+class ExternalInput(Message):
+    """Textual message carrying an external prompt or command."""
+
+    def __init__(self, event: ExternalEvent) -> None:
+        """Create an external input message.
+
+        Args:
+            event: Transport-independent external event.
+        """
+        super().__init__()
+        self.event = event
+
+
 DeferredActionKind = Literal[
     "model_switch",
     "thread_switch",
@@ -472,6 +509,30 @@ def _log_task_exception(task: asyncio.Task[Any]) -> None:
         pass
     except Exception:
         logger.warning("Background task failed unexpectedly", exc_info=True)
+
+
+def _build_model_switch_error_body(exc: BaseException) -> str | Content:
+    """Format a model-switch failure for `ErrorMessage`.
+
+    Args:
+        exc: Exception raised by `create_model`.
+
+    Returns:
+        A `Content` with the docs URL as a clickable span when `exc` is
+        `UnknownProviderError`; a plain string otherwise.
+    """
+    from deepagents_cli.model_config import UnknownProviderError
+
+    if isinstance(exc, UnknownProviderError):
+        return Content.assemble(
+            "Failed to switch model: unable to infer a provider for ",
+            (exc.model_spec, TStyle(bold=True)),
+            ".\n\nSpecify one explicitly (e.g. ",
+            (f"anthropic:{exc.model_spec}", TStyle(italic=True)),
+            ") or see the provider reference: ",
+            (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
+        )
+    return f"Failed to switch model: {exc}"
 
 
 def _format_startup_error(error: BaseException) -> str:
@@ -570,6 +631,23 @@ def _toast_identity(
             _toast_internals_warned[0] = True
         return None
     return getattr(notif, "identity", None)
+
+
+class _StaticHeader(Header):
+    """`Header` variant that doesn't toggle tall mode on click.
+
+    Textual's default `Header._on_click` toggles a `-tall` class to expand the
+    header from 1 to 3 lines. Subclassing alone isn't enough: Textual's message
+    dispatch walks the full MRO and invokes every matching handler, so the
+    parent's `_on_click` still fires unless we call `event.prevent_default()`,
+    which sets `_no_default_action` and breaks the MRO walk
+    (see `MessagePump._get_dispatch_methods`).
+    """
+
+    @on(Click)
+    def _suppress_header_click(self, event: Click) -> None:  # noqa: PLR6301
+        event.prevent_default()
+        event.stop()
 
 
 class DeepAgentsApp(App):
@@ -684,6 +762,8 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        title: str | None = None,
+        sub_title: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -734,9 +814,25 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            title: Override the Textual `App.title` shown in the optional
+                header bar.
+
+                When `None`, the class-level `TITLE` is used.
+
+                Reassigning `app.title` at runtime updates the header live.
+            sub_title: Override the Textual `App.sub_title` shown in the
+                optional header bar.
+
+                When `None`, the parent default is used.
+
+                Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        if title is not None:
+            self.title = title
+        if sub_title is not None:
+            self.sub_title = sub_title
 
         self._register_custom_themes()
 
@@ -804,6 +900,11 @@ class DeepAgentsApp(App):
         Resolved into a concrete `_lc_thread_id` by `_resolve_resume_thread`
         during background startup.
         """
+
+        self._resume_thread_resolved_event = asyncio.Event()
+        """Set once `-r` resume resolution has completed or is unnecessary."""
+        if resume_thread is None:
+            self._resume_thread_resolved_event.set()
 
         self._initial_prompt = initial_prompt
         """Prompt to auto-submit after first paint (from `-m`)."""
@@ -1077,6 +1178,16 @@ class DeepAgentsApp(App):
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._external_event_source: EventSource | None = None
+        """External event source created when its env var is enabled.
+
+        Cleared back to `None` if the listener fails to start so callers can
+        distinguish a configured-and-running listener from a no-op.
+        """
+
+        self._external_event_source_task: asyncio.Task[None] | None = None
+        """Lifecycle task for `_external_event_source`; cleared together."""
+
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
@@ -1214,6 +1325,10 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
+        from deepagents_cli._env_vars import SHOW_HEADER, is_env_truthy
+
+        if is_env_truthy(SHOW_HEADER):
+            yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
@@ -1225,6 +1340,7 @@ class DeepAgentsApp(App):
                 connecting=self._connecting,
                 resuming=self._resume_thread_intent is not None,
                 local_server=self._server_kwargs is not None,
+                defer_connecting_display=self._connecting,
                 id="welcome-banner",
             )
             yield Container(id="messages")
@@ -1310,6 +1426,63 @@ class DeepAgentsApp(App):
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
+        self._maybe_start_external_event_source()
+
+    def _maybe_start_external_event_source(self) -> None:
+        """Start the external event listener when explicitly enabled."""
+        from deepagents_cli._env_vars import (
+            EXTERNAL_EVENT_SOCKET,
+            EXTERNAL_EVENT_SOCKET_PATH,
+            is_env_truthy,
+        )
+
+        if not is_env_truthy(EXTERNAL_EVENT_SOCKET):
+            return
+
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        raw_path = os.environ.get(EXTERNAL_EVENT_SOCKET_PATH)
+        path = Path(raw_path).expanduser() if raw_path else None
+        source = UnixSocketEventSource(path)
+        self._external_event_source = source
+        self._external_event_source_task = asyncio.create_task(
+            self._run_external_event_source(source)
+        )
+
+    async def _run_external_event_source(self, source: EventSource) -> None:
+        """Drive `source` from start to shutdown, surfacing failures to the user.
+
+        Args:
+            source: External event source whose lifecycle this task owns.
+
+        Raises:
+            asyncio.CancelledError: Re-raised when the task is cancelled
+                during app shutdown so the cleanup path runs to completion.
+        """
+
+        async def sink(event: ExternalEvent) -> None:  # noqa: RUF029  # protocol requires async callable; post_message is sync
+            self.post_message(ExternalInput(event))
+
+        try:
+            await source.start(sink)
+            await source.serve_forever()
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.exception("External event source failed to start")
+            self._external_event_source = None
+            with suppress(Exception):
+                self.notify(
+                    f"External event listener failed: {exc}",
+                    severity="error",
+                    timeout=8,
+                    markup=False,
+                )
+        finally:
+            try:
+                await source.stop()
+            except Exception:
+                logger.exception("Error while stopping external event source")
 
     async def _refresh_git_branch(self) -> None:
         """Resolve the current git branch and update the status bar.
@@ -1606,7 +1779,7 @@ class DeepAgentsApp(App):
                     timeout=15,
                 )
 
-    async def _discover_skills(self) -> None:
+    async def _discover_skills(self) -> bool:
         """Discover skills, cache metadata, and update autocomplete.
 
         Caches the full `ExtendedSkillMetadata` list and pre-resolved
@@ -1614,29 +1787,22 @@ class DeepAgentsApp(App):
         re-walking every skill directory.
 
         Runs filesystem I/O in a thread to avoid blocking the event loop.
+
+        On failure, prior cache is preserved so a transient error (e.g.,
+        a single unreadable subdir) doesn't wipe a known-good skill list.
+        Callers that need to distinguish "no skills" from "discovery
+        failed" can check the return value.
+
+        Returns:
+            `True` on success, `False` if discovery raised. Callers that
+            don't care (fire-and-forget startup/agent-switch workers)
+            simply ignore the result.
         """
         from deepagents_cli.command_registry import SLASH_COMMANDS, build_skill_commands
 
         try:
             skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
-            self._discovered_skills = skills
-            self._skill_allowed_roots = roots
-            if skills:
-                skill_commands = build_skill_commands(skills)
-                if self._chat_input:
-                    merged = list(SLASH_COMMANDS) + skill_commands
-                    self._chat_input.update_slash_commands(merged)
-                else:
-                    logger.debug(
-                        "Skill discovery completed (%d skills) but chat input "
-                        "not yet mounted; autocomplete deferred",
-                        len(skills),
-                    )
         except OSError:
-            # Clear stale cache so /reload failures don't silently
-            # leave old data in place.
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
             logger.warning(
                 "Filesystem error during skill discovery",
                 exc_info=True,
@@ -1648,9 +1814,8 @@ class DeepAgentsApp(App):
                 timeout=6,
                 markup=False,
             )
+            return False
         except Exception:
-            self._discovered_skills = []
-            self._skill_allowed_roots = []
             logger.exception("Unexpected error during skill discovery")
             self.notify(
                 "Skill discovery failed unexpectedly. "
@@ -1659,6 +1824,22 @@ class DeepAgentsApp(App):
                 timeout=8,
                 markup=False,
             )
+            return False
+
+        self._discovered_skills = skills
+        self._skill_allowed_roots = roots
+        if skills:
+            skill_commands = build_skill_commands(skills)
+            if self._chat_input:
+                merged = list(SLASH_COMMANDS) + skill_commands
+                self._chat_input.update_slash_commands(merged)
+            else:
+                logger.debug(
+                    "Skill discovery completed (%d skills) but chat input "
+                    "not yet mounted; autocomplete deferred",
+                    len(skills),
+                )
+        return True
 
     def _discover_skills_and_roots(
         self,
@@ -1695,15 +1876,15 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resume = self._resume_thread_intent
-        self._resume_thread_intent = None  # consumed
-
-        if not resume:
-            return
-
-        default_agent = DEFAULT_ASSISTANT_ID
-
         try:
+            resume = self._resume_thread_intent
+            self._resume_thread_intent = None  # consumed
+
+            if not resume:
+                return
+
+            default_agent = DEFAULT_ASSISTANT_ID
+
             if resume == "__MOST_RECENT__":
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
@@ -1746,6 +1927,8 @@ class DeepAgentsApp(App):
                 "Could not look up thread history. Starting new session.",
                 severity="warning",
             )
+        finally:
+            self._resume_thread_resolved_event.set()
 
         # Update session state if ready (may still be initializing in a
         # concurrent worker)
@@ -1766,6 +1949,37 @@ class DeepAgentsApp(App):
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
+        # Persist the user-chosen default so a later bare `deepagents`
+        # relaunch brings the user back to it. See
+        # `_restart_server_for_agent_swap` for why one-off resumes don't
+        # mutate `_default_assistant_id` and why the persisted default
+        # is decoupled from the per-session `_assistant_id`.
+        # Runs BEFORE deferred model creation so a `ModelConfigError`
+        # (e.g., missing API key) doesn't prevent the recent-agent write
+        # — the user's intent to use this agent shouldn't depend on
+        # whether their credentials happened to be valid this launch.
+        if self._default_assistant_id:
+            from deepagents_cli.model_config import save_recent_agent
+
+            saved = await asyncio.to_thread(
+                save_recent_agent, self._default_assistant_id
+            )
+            if not saved:
+                logger.warning(
+                    "Could not persist recent agent %r to config at startup",
+                    self._default_assistant_id,
+                )
+                # Mirror the visibility of the picker-swap path: if the
+                # write fails here, the user has no way to know unless
+                # we surface it. Toast severity matches the swap path.
+                self.notify(
+                    "Could not save recent agent to config at startup; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+
         if self._model_kwargs is not None:
             # Block on prewarm before re-entering the import graph; see
             # `_await_prewarm_imports` for the deadlock rationale.
@@ -1782,21 +1996,6 @@ class DeepAgentsApp(App):
             result.apply_to_settings()
             save_recent_model(f"{result.provider}:{result.model_name}")
             self._model_kwargs = None  # consumed
-
-        # Persist the user-chosen default so a later bare `deepagents`
-        # relaunch brings the user back to it. See `_default_assistant_id`
-        # for why this is decoupled from `_assistant_id`.
-        if self._default_assistant_id:
-            from deepagents_cli.model_config import save_recent_agent
-
-            saved = await asyncio.to_thread(
-                save_recent_agent, self._default_assistant_id
-            )
-            if not saved:
-                logger.warning(
-                    "Could not persist recent agent %r to config at startup",
-                    self._default_assistant_id,
-                )
 
         from deepagents_cli.server_manager import start_server_and_get_agent
 
@@ -1974,8 +2173,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: run `/model <provider>:<model>` to retry "
-                "startup with a provider you have credentials for."
+                "\n\nHint: run `/auth` to add a key for this provider, then "
+                "`/model <provider>:<model>` to retry startup. Or pick a "
+                "different provider directly with `/model`."
             )
 
         async def _mount_failure() -> None:
@@ -2012,15 +2212,24 @@ class DeepAgentsApp(App):
         LangChain from the event-loop thread while it's still running can
         race on partially-initialized module locks.
 
-        `CancelledError` propagates so app shutdown isn't silently absorbed.
+        `asyncio.CancelledError` propagates so app shutdown isn't silently
+        absorbed. `WorkerCancelled` and `WorkerFailed` (both `Exception`
+        subclasses, distinct from `CancelledError`) are caught: prewarm is a
+        cache optimization, so a cancelled or failed worker just means the
+        next inline import is a cold load instead of a dict lookup.
         """
-        from textual.worker import WorkerFailed
+        from textual.worker import WorkerCancelled, WorkerFailed
 
         worker = self._prewarm_worker
         if worker is None:
             return
         try:
             await worker.wait()
+        except WorkerCancelled:
+            # Cancellation is benign here: app shutdown or another exclusive
+            # worker in the same group displaced the prewarm. The subsequent
+            # inline imports will still succeed — just without the warm-up.
+            logger.debug("Import prewarm worker was cancelled", exc_info=True)
         except WorkerFailed:
             # Prewarm body best-efforts third-party imports and already
             # warns; logging at WARNING here surfaces unexpected failures
@@ -3019,7 +3228,7 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
             self.call_after_refresh(menu.focus_active)
         except Exception as e:
             logger.exception(
@@ -3031,6 +3240,19 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
+
+    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
+        """Scroll mounted ask_user prompts into view.
+
+        Oversized prompts should start at the top of the viewport so the first
+        question and menu border are visible, instead of only exposing the
+        bottom edge of the widget.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if menu.outer_size.height > chat.size.height:
+            menu.scroll_visible(animate=False, top=True)
+            return
+        menu.scroll_visible()
 
     async def on_ask_user_menu_answered(
         self,
@@ -3423,6 +3645,24 @@ class DeepAgentsApp(App):
             AppMessage(Content.from_markup("Welcome, $name.", name=name))
         )
 
+    @staticmethod
+    def _dispatch_launch_name_hook(name: str, assistant_id: str) -> None:
+        """Fire the onboarding name hook for external integrations.
+
+        Args:
+            name: Submitted user name.
+            assistant_id: Agent identifier associated with the submitted name.
+        """
+        from deepagents_cli.hooks import dispatch_hook_fire_and_forget
+
+        dispatch_hook_fire_and_forget(
+            "user.name.set",
+            {
+                "name": name,
+                "assistant_id": assistant_id,
+            },
+        )
+
     async def _mark_onboarding_complete(self) -> None:
         """Persist that first-run onboarding should not be shown again.
 
@@ -3444,12 +3684,14 @@ class DeepAgentsApp(App):
         """Persist the optional onboarding name into agent memory.
 
         Surfaces a user-visible toast when the memory write fails so the
-        promise made in `LaunchNameScreen` ("can be remembered for future
+        promise made in `LaunchNameScreen` ("will be remembered for future
         sessions") does not silently break.
         """
         from deepagents_cli.onboarding import write_onboarding_name_memory
 
+        await self._resume_thread_resolved_event.wait()
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
+        self._dispatch_launch_name_hook(name, assistant_id)
         ok = await asyncio.to_thread(write_onboarding_name_memory, name, assistant_id)
         if not ok:
             self.notify(
@@ -3556,23 +3798,33 @@ class DeepAgentsApp(App):
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
-    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        """Handle submitted input from ChatInput widget."""
-        value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+    async def _submit_input(
+        self,
+        value: str,
+        mode: InputMode,
+        *,
+        force_bypass: bool = False,
+    ) -> None:
+        """Submit input, fast-pathing always-immediate commands.
 
-        # Reset quit pending state on any input
-        self._quit_pending = False
+        For commands in `ALWAYS_IMMEDIATE` (or whenever `force_bypass` is set
+        by an external caller), the value is processed directly. Otherwise
+        the standard queue and per-tier bypass policy applies.
 
-        from deepagents_cli.hooks import dispatch_hook
-
-        await dispatch_hook("user.prompt", {})
-
-        # /quit and /q always execute immediately, even mid-thread-switch.
+        Args:
+            value: Raw text submitted by the user or external source.
+            mode: Input routing mode.
+            force_bypass: When `True`, skip queueing and process the value
+                immediately. External callers use this to mirror the
+                `ALWAYS_IMMEDIATE` fast path for commands they classify as
+                urgent.
+        """
         from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
 
-        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
-            self.exit()
+        if force_bypass or (
+            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+        ):
+            await self._process_message(value, mode)
             return
 
         # Prevent message handling while a thread switch is in-flight.
@@ -3603,9 +3855,62 @@ class DeepAgentsApp(App):
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
             await self._mount_message(queued_widget)
+            if self._connecting:
+                with suppress(NoMatches):
+                    self.query_one(
+                        "#welcome-banner", WelcomeBanner
+                    ).reveal_connecting_footer()
             return
 
         await self._process_message(value, mode)
+
+    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        """Handle submitted input from ChatInput widget."""
+        value = event.value
+        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+
+        # Reset quit pending state on any input
+        self._quit_pending = False
+
+        from deepagents_cli.hooks import dispatch_hook
+
+        await dispatch_hook("user.prompt", {})
+
+        await self._submit_input(value, mode)
+
+    async def on_external_input(self, event: ExternalInput) -> None:
+        """Route external prompt and command events through the app queue.
+
+        Honors `event.bypass`: when an external caller supplies any tier
+        other than `QUEUED`, the event skips the queue regardless of normal
+        per-command policy. This is the documented escape hatch for
+        scripted callers that need to inject high-priority work.
+        """
+        from deepagents_cli.command_registry import BypassTier
+
+        external = event.event
+        if external.kind == "signal":
+            await self._handle_external_signal(external.payload)
+            return
+
+        mode: InputMode = "command" if external.kind == "command" else "normal"
+        force_bypass = external.bypass is not BypassTier.QUEUED
+        await self._submit_input(external.payload, mode, force_bypass=force_bypass)
+
+    async def _handle_external_signal(self, payload: str) -> None:
+        """Dispatch an external signal payload to the corresponding action.
+
+        The wire-protocol decoder rejects unknown signal names before they
+        reach this method, so the `else` branch only fires when callers
+        construct an `ExternalEvent` directly with an unvalidated payload.
+        """
+        signal_name = payload.strip().lower()
+        if signal_name == "interrupt":
+            self.action_interrupt()
+        elif signal_name == "force-clear":
+            await self._submit_input("/force-clear", "command", force_bypass=True)
+        else:
+            logger.warning("Ignoring unknown external signal %r", payload)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
@@ -3981,10 +4286,11 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /clear, /offload, /editor, /mcp, "
-                "/model [--model-params JSON] [--default], /notifications, "
-                "/reload, /skill:<name>, /remember, /skill-creator, /theme, "
-                "/tokens, /threads, /trace, "
+                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
+                "/offload, /editor, "
+                "/mcp, /model [--model-params JSON] [--default], "
+                "/notifications, /reload, /skill:<name>, /remember, "
+                "/skill-creator, /theme, /tokens, /threads, /trace, "
                 "/update, /auto-update, /changelog, /docs, /feedback, /help\n\n"
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
@@ -4010,7 +4316,9 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd == "/clear":
+        elif cmd in {"/clear", "/force-clear"}:
+            if cmd == "/force-clear":
+                self._force_interrupt_active_work()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
@@ -4113,6 +4421,8 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd == "/auth":
+            await self._show_auth_manager()
         elif cmd == "/theme":
             await self._show_theme_selector()
         elif cmd == "/notifications":
@@ -4164,6 +4474,10 @@ class DeepAgentsApp(App):
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
+
+            # Snapshot pre-reload skill names so the report can show diff.
+            old_skill_names = {s["name"] for s in self._discovered_skills}
+
             try:
                 changes = settings.reload_from_environment()
 
@@ -4190,6 +4504,22 @@ class DeepAgentsApp(App):
                 theme_reload_ok = False
                 logger.warning("Failed to reload user themes", exc_info=True)
 
+            # Re-discover skills so autocomplete reflects any new/removed
+            # skills. Run via the same exclusive-group worker used at
+            # startup so any in-flight startup discovery is cancelled
+            # rather than racing this one, then await its completion so
+            # the report can include the diff.
+            skill_worker = self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="startup-skill-discovery",
+            )
+            await skill_worker.wait()
+            discovery_ok = skill_worker.result is True
+            new_skill_names = {s["name"] for s in self._discovered_skills}
+            added_skills = sorted(new_skill_names - old_skill_names)
+            removed_skills = sorted(old_skill_names - new_skill_names)
+
             if changes:
                 report = "Configuration reloaded. Changes:\n" + "\n".join(
                     f"  - {change}" for change in changes
@@ -4203,14 +4533,21 @@ class DeepAgentsApp(App):
                 report += (
                     "\nTheme registry reload failed. Check config.toml for errors."
                 )
+            if not discovery_ok:
+                # Diff is meaningless when discovery failed: prior cache
+                # was preserved, so old vs. new is identical and
+                # `Skills reloaded. No changes detected.` would be a lie.
+                report += (
+                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                )
+            elif added_skills or removed_skills:
+                skill_lines = []
+                if added_skills:
+                    skill_lines.append(f"  - Added: {', '.join(added_skills)}")
+                if removed_skills:
+                    skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
+                report += "\nSkills updated:\n" + "\n".join(skill_lines)
             await self._mount_message(AppMessage(report))
-
-            # Re-discover skills so autocomplete reflects any new/removed skills
-            self.run_worker(
-                self._discover_skills(),
-                exclusive=True,
-                group="startup-skill-discovery",
-            )
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
@@ -5353,6 +5690,42 @@ class DeepAgentsApp(App):
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)
 
+    def _cleanup_external_event_source_sync(self) -> None:
+        """Synchronously close the external event listener and unlink its socket.
+
+        Called from `exit()` because the event loop is about to be torn
+        down and the task's async `finally` would never complete. Close
+        the asyncio server (releases the file descriptor) and unlink the
+        socket path so we never leave stale entries on disk.
+        """
+        source = self._external_event_source
+        if source is None:
+            return
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        if isinstance(source, UnixSocketEventSource):
+            server = source._server  # synchronous teardown peer
+            source._server = None
+            if server is not None:
+                with suppress(Exception):
+                    server.close()
+            with suppress(FileNotFoundError):
+                from deepagents_cli.event_bus import _unlink_existing_socket
+
+                try:
+                    _unlink_existing_socket(source.path)
+                except FileExistsError:
+                    logger.warning(
+                        "Leaving non-socket entry at %s during exit",
+                        source.path,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to unlink event socket %s: %s",
+                        source.path,
+                        exc,
+                    )
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -5360,6 +5733,32 @@ class DeepAgentsApp(App):
             w.remove()
         self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    def _force_interrupt_active_work(self) -> None:
+        """Cancel in-flight work before the standard `/clear` path runs.
+
+        Rejects pending approvals, cancels pending ask-user prompts, kills
+        the shell worker, kills the agent worker, and drops the queued
+        message backlog. UI clearing itself happens in the calling
+        `/clear` handler. Each widget interaction is best-effort: a torn-
+        down widget should not abort the interrupt sequence, but the
+        underlying error is logged so regressions are visible.
+        """
+        if self._pending_approval_widget:
+            try:
+                self._pending_approval_widget.action_select_reject()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to reject pending approval")
+        if self._pending_ask_user_widget:
+            try:
+                self._pending_ask_user_widget.action_cancel()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to cancel pending ask-user")
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+        self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.
@@ -5541,6 +5940,10 @@ class DeepAgentsApp(App):
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
+        from deepagents_cli.widgets.auth import (
+            AuthPromptScreen,
+            DeleteCredentialConfirmScreen,
+        )
         from deepagents_cli.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
@@ -5549,7 +5952,13 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_delete_thread()
             return
-        if isinstance(self.screen, DeleteThreadConfirmScreen):
+        if isinstance(self.screen, AuthPromptScreen):
+            self.screen.action_delete_stored()
+            return
+        if isinstance(
+            self.screen,
+            (DeleteThreadConfirmScreen, DeleteCredentialConfirmScreen),
+        ):
             if self._quit_pending:
                 self.exit()
                 return
@@ -5599,6 +6008,15 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        if self._external_event_source_task is not None:
+            self._external_event_source_task.cancel()
+        # Cancellation alone is not enough: the task's `finally` block runs
+        # asynchronously, and the event loop is about to be torn down by
+        # `super().exit()`. Synchronously close the server and unlink the
+        # socket file so we never leave a stale entry on disk.
+        if self._external_event_source is not None:
+            self._cleanup_external_event_source_sync()
+            self._external_event_source = None
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
@@ -5625,6 +6043,7 @@ class DeepAgentsApp(App):
         bar indicator and session state.
         """
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
+        from deepagents_cli.widgets.auth import AuthManagerScreen
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
         from deepagents_cli.widgets.notification_center import (
             NotificationCenterScreen,
@@ -5640,7 +6059,10 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ThreadSelectorScreen):
             self.screen.action_focus_previous_filter()
             return
-        if isinstance(self.screen, (ThemeSelectorScreen, AgentSelectorScreen)):
+        if isinstance(
+            self.screen,
+            (ThemeSelectorScreen, AgentSelectorScreen, AuthManagerScreen),
+        ):
             self.screen.action_cursor_up()
             return
         if isinstance(self.screen, NotificationSettingsScreen):
@@ -5671,20 +6093,39 @@ class DeepAgentsApp(App):
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
-        # Try skill messages first (most recent collapsible content)
-        with suppress(NoMatches):
-            skill_messages = list(self.query(SkillMessage))
-            for skill_msg in reversed(skill_messages):
-                if skill_msg._stripped_body.strip():
-                    skill_msg.toggle_body()
-                    return
-        # Fall back to tool messages with output
-        with suppress(NoMatches):
-            tool_messages = list(self.query(ToolCallMessage))
+        # Pending ask_user takes precedence so Ctrl+O toggles the question card.
+        if self._pending_ask_user_widget is not None:
+            try:
+                tool_messages = list(self.query(ToolCallMessage))
+            except NoMatches:
+                tool_messages = []
             for tool_msg in reversed(tool_messages):
-                if tool_msg.has_output:
-                    tool_msg.toggle_output()
+                if tool_msg.has_expandable_args:
+                    tool_msg.toggle_args()
                     return
+
+        # Try skill messages first (most recent collapsible content)
+        try:
+            skill_messages = list(self.query(SkillMessage))
+        except NoMatches:
+            skill_messages = []
+        for skill_msg in reversed(skill_messages):
+            if skill_msg._stripped_body.strip():
+                skill_msg.toggle_body()
+                return
+
+        # Fall back to tool messages with output or expandable args
+        try:
+            tool_messages = list(self.query(ToolCallMessage))
+        except NoMatches:
+            tool_messages = []
+        for tool_msg in reversed(tool_messages):
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
+                return
+            if tool_msg.has_expandable_args:
+                tool_msg.toggle_args()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -6023,9 +6464,13 @@ class DeepAgentsApp(App):
     async def _show_agent_selector(self) -> None:
         """Show the interactive agent selector modal."""
         from deepagents_cli.agent import get_available_agent_names
+        from deepagents_cli.model_config import load_default_agent
         from deepagents_cli.widgets.agent_selector import AgentSelectorScreen
 
-        agent_names = await asyncio.to_thread(get_available_agent_names)
+        agent_names, default_agent = await asyncio.gather(
+            asyncio.to_thread(get_available_agent_names),
+            asyncio.to_thread(load_default_agent),
+        )
 
         def handle_result(result: str | None) -> None:
             """Handle the agent selector result."""
@@ -6037,8 +6482,24 @@ class DeepAgentsApp(App):
         screen = AgentSelectorScreen(
             current_agent=self._assistant_id,
             agent_names=agent_names,
+            default_agent=default_agent,
         )
         self.push_screen(screen, handle_result)
+
+    async def _show_auth_manager(self) -> None:
+        """Show the `/auth` credential manager modal.
+
+        State changes persist via `auth_store`; the manager refreshes its
+        own option labels after each save/delete, so this caller only needs
+        to refocus the chat input on close.
+        """
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        def handle_result(_result: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(AuthManagerScreen(), handle_result)
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -6353,11 +6814,28 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
 
+            # Mount the "Switched to X" confirmation BEFORE surfacing any
+            # save-failure toast. Otherwise the toast hovers next to a
+            # success line that scrolls past, which makes the causality
+            # confusing — the user reads success while the toast warns.
             confirmation = Content.from_markup(
                 "Switched to $name. New thread started.",
                 name=agent_name,
             )
             await self._mount_message(AppMessage(confirmation))
+
+            if not saved:
+                # Surface the failure visibly — silent logger.warnings
+                # leave users wondering why their picker selection didn't
+                # stick across launches. See `model_config.save_recent_agent`
+                # for the underlying I/O codepath.
+                self.notify(
+                    "Could not save recent agent to config; "
+                    "next bare launch will not return to it.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
 
             # Surface a resume command for the previous session so the
             # previous thread isn't stranded out of reach. `-r <thread>`
@@ -7071,8 +7549,8 @@ class DeepAgentsApp(App):
         from deepagents_cli.config import create_model, detect_provider, settings
         from deepagents_cli.model_config import (
             ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
+            ProviderAuthState,
+            get_provider_auth_status,
             save_recent_model,
         )
 
@@ -7134,23 +7612,20 @@ class DeepAgentsApp(App):
                 provider = detect_provider(model_spec)
 
             # Check credentials
-            has_creds = has_provider_credentials(provider) if provider else None
-            if has_creds is False and provider is not None:
-                env_var = get_credential_env_var(provider)
-                detail = (
-                    f"{env_var} is not set or is empty"
-                    if env_var
-                    else (
-                        f"provider '{provider}' is not recognized. "
-                        "Add it to ~/.deepagents/config.toml with an "
-                        "api_key_env field"
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                        f"Run `/auth` for the '{auth_status.provider}' provider, then "
+                        f"re-issue `/model {model_spec}`."
                     )
                 )
-                await self._mount_message(
-                    ErrorMessage(f"Missing credentials: {detail}")
-                )
                 return
-            if has_creds is None and provider:
+            if (
+                auth_status is not None
+                and auth_status.state is ProviderAuthState.UNKNOWN
+            ):
                 logger.debug(
                     "Credentials for provider '%s' cannot be verified;"
                     " proceeding anyway",
@@ -7192,7 +7667,7 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
-                    ErrorMessage(f"Failed to switch model: {exc}")
+                    ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
 
@@ -7250,11 +7725,7 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
         from deepagents_cli.config import detect_provider
-        from deepagents_cli.model_config import (
-            ModelSpec,
-            get_credential_env_var,
-            has_provider_credentials,
-        )
+        from deepagents_cli.model_config import ModelSpec, get_provider_auth_status
 
         if self._server_kwargs is None:
             await self._mount_message(
@@ -7270,22 +7741,14 @@ class DeepAgentsApp(App):
             model_name = model_spec
             provider = detect_provider(model_spec)
 
-        # Tri-state credentials check (`None` = unknown provider, treated as
-        # proceed); bail early so retrying with still-missing creds doesn't
+        # Tri-state credentials check (`UNKNOWN` = unknown provider, treated
+        # as proceed); bail early so retrying with still-missing creds doesn't
         # loop right back into the same `MissingCredentialsError`.
-        has_creds = has_provider_credentials(provider) if provider else None
-        if has_creds is False and provider is not None:
-            env_var = get_credential_env_var(provider)
-            detail = (
-                f"{env_var} is not set or is empty"
-                if env_var
-                else (
-                    f"provider '{provider}' is not recognized. "
-                    "Add it to ~/.deepagents/config.toml with an "
-                    "api_key_env field"
-                )
+        auth_status = get_provider_auth_status(provider) if provider else None
+        if auth_status is not None and auth_status.blocks_start:
+            await self._mount_message(
+                ErrorMessage(f"Missing credentials: {auth_status.missing_detail()}")
             )
-            await self._mount_message(ErrorMessage(f"Missing credentials: {detail}"))
             return
 
         display = model_spec
@@ -7423,6 +7886,8 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    title: str | None = None,
+    sub_title: str | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -7466,6 +7931,11 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        title: Override the Textual `App.title` shown in the optional header
+            bar (gated on `DEEPAGENTS_CLI_SHOW_HEADER`). When `None`, the
+            default `"Deep Agents"` is used.
+        sub_title: Override the Textual `App.sub_title` shown in the optional
+            header bar.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -7488,6 +7958,8 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        title=title,
+        sub_title=sub_title,
     )
     try:
         await app.run_async()

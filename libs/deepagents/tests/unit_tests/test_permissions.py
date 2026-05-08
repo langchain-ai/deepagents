@@ -3,12 +3,14 @@
 import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
@@ -16,6 +18,7 @@ from deepagents.middleware.filesystem import (
     _check_fs_permission,
     _filter_paths_by_permission,
 )
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 
 def _runtime(tool_call_id: str = "") -> ToolRuntime:
@@ -886,3 +889,53 @@ class TestAsyncFilesystemMiddlewarePermissions:
         rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
         result = await _ainvoke_with_permissions(ls_tool, {"path": "/"}, rules)
         assert "/secrets/b.txt" not in result
+
+
+def _filesystem_permissions_for(agent, subagent_name: str | None = None):
+    """Walk a compiled deep agent to fetch a `FilesystemMiddleware._permissions`.
+
+    When `subagent_name` is None, returns the main agent's permissions.
+    Otherwise descends into the named subagent registered on the `task` tool.
+    """
+    if subagent_name is not None:
+        task_tool = agent.nodes["tools"].bound._tools_by_name["task"]
+        agents_dict = next(
+            cell.cell_contents for cell in task_tool.func.__closure__ if isinstance(cell.cell_contents, dict) and subagent_name in cell.cell_contents
+        )
+        agent = agents_dict[subagent_name]
+
+    read_tool = agent.nodes["tools"].bound._tools_by_name["read_file"]
+    fs = next(cell.cell_contents for cell in read_tool.func.__closure__ if isinstance(cell.cell_contents, FilesystemMiddleware))
+    return fs._permissions
+
+
+class TestGeneralPurposeSubagentPermissionInheritance:
+    """Regression tests: auto-added GP subagent must inherit parent permissions."""
+
+    def test_auto_added_gp_subagent_inherits_parent_permissions(self):
+        parent_perms = [
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+        ]
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            permissions=parent_perms,
+        )
+
+        assert _filesystem_permissions_for(agent) == parent_perms
+        assert _filesystem_permissions_for(agent, "general-purpose") == parent_perms
+
+    def test_explicit_gp_subagent_permissions_override_parent(self):
+        parent_perms = [
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+        ]
+        override_perms = [
+            FilesystemPermission(operations=["read"], paths=["/foo/**"], mode="deny"),
+        ]
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            permissions=parent_perms,
+            subagents=[{**GENERAL_PURPOSE_SUBAGENT, "permissions": override_perms}],
+        )
+
+        assert _filesystem_permissions_for(agent) == parent_perms
+        assert _filesystem_permissions_for(agent, "general-purpose") == override_perms

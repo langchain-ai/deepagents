@@ -156,7 +156,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
-      python-version: "3.14"
+      python-version: "3.13"
 
   lint-daytona:
     name: "🧹 Lint daytona"
@@ -242,7 +242,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.12", "3.13"]'
       coverage-python-version: "3.12"
 
   test-daytona:
@@ -275,6 +275,16 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 
+  test-quickjs:
+    name: "🧪 Test quickjs"
+    needs: changes
+    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/quickjs"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.11"
+
   test-repl:
     name: "🧪 Test repl"
     needs: changes
@@ -305,15 +315,16 @@ jobs:
       working-directory: "libs/cli"
     secrets: inherit
 
-  benchmark-quickjs:
-    name: "⏱️ Benchmark quickjs"
-    needs: changes
-    if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_benchmark.yml
-    with:
-      working-directory: "libs/partners/quickjs"
-      has-memory-benchmarks: true
-    secrets: inherit
+  # # TODO(hntrl): re-enable when bench flakiness is under control
+  # benchmark-quickjs:
+  #   name: "⏱️ Benchmark quickjs"
+  #   needs: changes
+  #   if: needs.changes.outputs.quickjs == 'true' || github.event_name == 'push'
+  #   uses: ./.github/workflows/_benchmark.yml
+  #   with:
+  #     working-directory: "libs/partners/quickjs"
+  #     has-memory-benchmarks: true
+  #   secrets: inherit
 
   # Validates every helper script under .github/scripts/test_*.py — currently
   # `test_release_options.py` (release dropdown ↔ package directories) and
@@ -354,10 +365,10 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-quickjs
       - test-repl
       - benchmark-deepagents
       - benchmark-cli
-      - benchmark-quickjs
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

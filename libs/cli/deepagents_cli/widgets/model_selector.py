@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
@@ -27,10 +27,13 @@ from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_cli.model_config import (
     ModelConfig,
     ModelProfileEntry,
+    ProviderAuthState,
+    ProviderAuthStatus,
     clear_default_model,
     get_available_models,
+    get_credential_env_var,
     get_model_profiles,
-    has_provider_credentials,
+    get_provider_auth_status,
     save_default_model,
 )
 
@@ -40,9 +43,18 @@ _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "baseten:moonshotai/Kimi-K2.6",
         "google_genai:gemini-3.1-pro-preview",
+        "ollama:deepseek-v4-pro:cloud",
+        "ollama:glm-5.1:cloud",
+        "ollama:kimi-k2.6:cloud",
+        "ollama:minimax-m2.7:cloud",
         "openai:gpt-5.4",
         "openai:gpt-5.5",
+        "openrouter:deepseek/deepseek-v4-pro",
+        "openrouter:minimax/minimax-m2.7",
+        "openrouter:moonshotai/kimi-k2.6",
+        "openrouter:z-ai/glm-5.1",
     }
 )
 """Curated frontier-tier models shown in the onboarding picker."""
@@ -58,7 +70,7 @@ class ModelOption(Static):
         provider: str,
         index: int,
         *,
-        has_creds: bool | None = True,
+        auth_status: ProviderAuthStatus | None = None,
         classes: str = "",
     ) -> None:
         """Initialize a model option.
@@ -69,15 +81,22 @@ class ModelOption(Static):
             model_spec: The model specification (provider:model format).
             provider: The provider name.
             index: The index of this option in the filtered list.
-            has_creds: Whether the provider has valid credentials. True if
-                confirmed, False if missing, None if unknown.
+            auth_status: Provider auth/readiness status.
             classes: CSS classes for styling.
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
-        self.provider = provider
         self.index = index
-        self.has_creds = has_creds
+        self.auth_status = auth_status or ProviderAuthStatus(
+            state=ProviderAuthState.UNKNOWN,
+            provider=provider,
+            detail="credentials unknown",
+        )
+
+    @property
+    def provider(self) -> str:
+        """Provider name, derived from the embedded auth status."""
+        return self.auth_status.provider
 
     class Clicked(Message):
         """Message sent when a model option is clicked."""
@@ -156,6 +175,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-selector-description {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    ModelSelectorScreen .model-selector-info {
         height: auto;
         color: $text-muted;
         margin-bottom: 1;
@@ -323,6 +348,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     classes="model-selector-description",
                 )
 
+            if not self._curated:
+                yield Static(
+                    Content.styled(
+                        "Showing models from installed providers.",
+                    ),
+                    classes="model-selector-info",
+                    id="model-selector-info",
+                )
+
             # Search input
             yield Input(
                 placeholder="Type to filter or enter provider:model...",
@@ -483,7 +517,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             event: The click event with model info.
         """
         self._selected_index = event.index
-        self._dismiss_with_result((event.model_spec, event.provider))
+        self._select_with_auth_check(event.model_spec, event.provider)
 
     def _update_filtered_list(self) -> None:
         """Update the filtered models based on search text using fuzzy matching.
@@ -593,33 +627,30 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
 
-        # Resolve credentials upfront so the widget-building loop
+        # Resolve provider auth upfront so the widget-building loop
         # stays focused on layout
-        creds = {p: has_provider_credentials(p) for p in by_provider}
+        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
 
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
 
         for provider, model_entries in by_provider.items():
-            # Provider header with credential indicator
-            has_creds = creds[provider]
-            if has_creds is True:
-                cred_indicator = glyphs.checkmark
-            elif has_creds is False:
-                cred_indicator = f"{glyphs.warning} missing credentials"
-            else:
-                cred_indicator = f"{glyphs.question} credentials unknown"
-            all_widgets.append(
-                Static(
-                    Content.from_markup(
-                        "[bold]$provider[/bold] [dim]$cred[/dim]",
-                        provider=provider,
-                        cred=cred_indicator,
-                    ),
-                    classes="model-provider-header",
+            # Provider header; auth/readiness indicator appended only when non-empty.
+            auth_status = auth_statuses[provider]
+            auth_indicator = self._format_auth_indicator(auth_status, glyphs)
+            if auth_indicator:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold] [dim]$auth[/dim]",
+                    provider=provider,
+                    auth=auth_indicator,
                 )
-            )
+            else:
+                header_content = Content.from_markup(
+                    "[bold]$provider[/bold]",
+                    provider=provider,
+                )
+            all_widgets.append(Static(header_content, classes="model-provider-header"))
 
             for model_spec, _prov in model_entries:
                 is_current = model_spec == current_spec
@@ -635,7 +666,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     model_spec,
                     selected=is_selected,
                     current=is_current,
-                    has_creds=has_creds,
+                    auth_status=auth_status,
                     is_default=model_spec == self._default_spec,
                     status=self._get_model_status(model_spec),
                 )
@@ -644,7 +675,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     model_spec=model_spec,
                     provider=provider,
                     index=flat_index,
-                    has_creds=has_creds,
+                    auth_status=auth_status,
                     classes=classes,
                 )
                 all_widgets.append(widget)
@@ -670,12 +701,47 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._update_footer()
 
     @staticmethod
+    def _format_auth_indicator(
+        auth_status: ProviderAuthStatus,
+        glyphs: Glyphs,
+    ) -> str:
+        """Build the provider header auth indicator.
+
+        Args:
+            auth_status: Provider auth/readiness status.
+            glyphs: Glyph table for the active terminal mode.
+
+        Returns:
+            Text shown next to the provider name, or an empty string when no
+                indicator should be rendered (e.g., `CONFIGURED`).
+        """
+        state = auth_status.state
+        match state:
+            case ProviderAuthState.CONFIGURED:
+                return ""
+            case ProviderAuthState.MISSING:
+                if auth_status.env_var:
+                    return f"{glyphs.warning} missing {auth_status.env_var}"
+                return f"{glyphs.warning} missing credentials"
+            case ProviderAuthState.NOT_REQUIRED:
+                return auth_status.detail or "no API key required"
+            case ProviderAuthState.IMPLICIT:
+                return auth_status.detail or "implicit auth"
+            case ProviderAuthState.MANAGED:
+                return auth_status.detail or "custom auth"
+            case ProviderAuthState.UNKNOWN:
+                detail = auth_status.detail or "credentials unknown"
+                return f"{glyphs.question} {detail}"
+            case _:
+                assert_never(state)
+
+    @staticmethod
     def _format_option_label(
         model_spec: str,
         *,
         selected: bool,
         current: bool,
-        has_creds: bool | None,
+        auth_status: ProviderAuthStatus,
         is_default: bool = False,
         status: str | None = None,
     ) -> Content:
@@ -685,7 +751,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             model_spec: The `provider:model` string.
             selected: Whether this option is currently highlighted.
             current: Whether this is the active model.
-            has_creds: Credential status (True/False/None).
+            auth_status: Provider auth/readiness status.
             is_default: Whether this is the configured default model.
             status: Model status from profile (e.g., `'deprecated'`,
                 `'beta'`, `'alpha'`). `'deprecated'` renders in red;
@@ -700,7 +766,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # When selected, skip the inline primary color — CSS already flips the
         # row to ($primary bg, $background fg). Keep `bold` so the default
         # emphasis survives both states.
-        if not has_creds:
+        if auth_status.blocks_start:
             spec = Content.styled(model_spec, colors.warning)
         elif is_default and selected:
             spec = Content.styled(model_spec, "bold")
@@ -894,7 +960,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 old_widget.model_spec,
                 selected=False,
                 current=old_widget.model_spec == self._current_spec,
-                has_creds=old_widget.has_creds,
+                auth_status=old_widget.auth_status,
                 is_default=old_widget.model_spec == self._default_spec,
                 status=self._get_model_status(old_widget.model_spec),
             )
@@ -908,7 +974,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 new_widget.model_spec,
                 selected=True,
                 current=new_widget.model_spec == self._current_spec,
-                has_creds=new_widget.has_creds,
+                auth_status=new_widget.auth_status,
                 is_default=new_widget.model_spec == self._default_spec,
                 status=self._get_model_status(new_widget.model_spec),
             )
@@ -991,7 +1057,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # If there are filtered results, always select the highlighted model
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
-            self._dismiss_with_result((model_spec, provider))
+            self._select_with_auth_check(model_spec, provider)
             return
 
         # No matches - check if user typed a custom provider:model spec
@@ -1000,9 +1066,47 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
-            self._dismiss_with_result((custom_input, provider))
+            self._select_with_auth_check(custom_input, provider)
         elif custom_input:
             self._dismiss_with_result((custom_input, ""))
+
+    def _select_with_auth_check(self, model_spec: str, provider: str) -> None:
+        """Either dismiss with the selection, or prompt for credentials first.
+
+        When the highlighted provider has `blocks_start` auth (typically a
+        missing API key), open the in-TUI auth prompt instead of dismissing.
+        On save, dismiss with the originally-selected model. On cancel, stay
+        on the selector and refresh the credential indicator so the user can
+        try again or pick a different provider.
+        """
+        if not provider:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        status = get_provider_auth_status(provider)
+        if not status.blocks_start:
+            self._dismiss_with_result((model_spec, provider))
+            return
+        env_var = status.env_var or get_credential_env_var(provider)
+
+        from deepagents_cli.widgets.auth import AuthPromptScreen, AuthResult
+
+        def _on_auth_done(result: AuthResult | None) -> None:
+            if result is AuthResult.SAVED:
+                self._dismiss_with_result((model_spec, provider))
+                return
+            # On DELETED or CANCELLED the user explicitly chose not to
+            # provide a key; refresh the credential indicator and stay on
+            # the selector so they can pick a different provider.
+            self.call_after_refresh(self._update_display)
+
+        self.app.push_screen(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=f"Required to use {model_spec}",
+            ),
+            _on_auth_done,
+        )
 
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the default.

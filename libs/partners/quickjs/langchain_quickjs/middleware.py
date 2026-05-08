@@ -22,6 +22,7 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import BaseTool, ToolRuntime
+from langchain_core._api import beta
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
@@ -89,6 +90,7 @@ def _resolve_thread_id(fallback: str) -> str:
     return fallback
 
 
+@beta()
 class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a persistent JS REPL to the agent.
 

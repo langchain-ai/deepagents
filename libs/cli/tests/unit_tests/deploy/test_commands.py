@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -17,6 +17,8 @@ from deepagents_cli.deploy.config import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from deepagents_cli.deploy.commands import DeployConfig
 
 
 class TestInitProject:
@@ -97,7 +99,7 @@ class TestAutoWireIssuesBoard:
             memories=SimpleNamespace(backend="store", identifier=""),
         )
 
-        _auto_wire_issues_board_if_hub(cfg)
+        _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
         assert called["upsert"] is False
 
     def test_skips_when_api_key_missing(
@@ -125,7 +127,7 @@ class TestAutoWireIssuesBoard:
             memories=SimpleNamespace(backend="hub", identifier=""),
         )
 
-        _auto_wire_issues_board_if_hub(cfg)
+        _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
         assert called["lookup"] is False
 
     def test_hub_wires_board_with_default_identifier(
@@ -157,7 +159,7 @@ class TestAutoWireIssuesBoard:
             memories=SimpleNamespace(backend="hub", identifier=""),
         )
 
-        _auto_wire_issues_board_if_hub(cfg)
+        _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
 
         assert observed["session_id"] == "session-123"
         assert observed["api_key"] == "test-key"
@@ -192,6 +194,6 @@ class TestAutoWireIssuesBoard:
             memories=SimpleNamespace(backend="hub", identifier="acme/custom-agent"),
         )
 
-        _auto_wire_issues_board_if_hub(cfg)
+        _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
 
         assert observed["context_hub_repo_handle"] == "custom-agent"

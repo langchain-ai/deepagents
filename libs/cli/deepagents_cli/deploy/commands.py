@@ -562,10 +562,7 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
 def _resolve_langsmith_api_key() -> str | None:
     from deepagents_cli.model_config import resolve_env_var
 
-    return (
-        resolve_env_var("LANGSMITH_API_KEY")
-        or resolve_env_var("LANGCHAIN_API_KEY")
-    )
+    return resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
 
 
 def _resolve_langsmith_endpoint() -> str:
@@ -591,13 +588,9 @@ def _resolve_tracer_session_id_by_project_name(
         project = client.read_project(project_name=project_name)
         return str(project.id)
     except LangSmithNotFoundError as exc:
-        print(
-            f"Warning: Failed to resolve tracing project '{project_name}': {exc}"
-        )
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
     except Exception as exc:
-        print(
-            f"Warning: Failed to resolve tracing project '{project_name}': {exc}"
-        )
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
     return None
 
 

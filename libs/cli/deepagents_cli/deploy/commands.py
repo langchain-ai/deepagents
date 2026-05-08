@@ -328,6 +328,7 @@ def _deploy(
 
         # Deploy via langgraph CLI.
         _run_langgraph_deploy(build_dir, name=config.agent.name)
+        _auto_wire_issues_board_if_hub(config)
     finally:
         if not dry_run:
             import shutil
@@ -556,3 +557,154 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
         raise SystemExit(result.returncode)
 
     print("\nDeployment complete!")
+
+
+def _resolve_langsmith_api_key() -> str | None:
+    from deepagents_cli.model_config import resolve_env_var
+
+    return resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
+
+
+def _resolve_langsmith_endpoint() -> str:
+    from deepagents_cli.model_config import resolve_env_var
+
+    return (
+        resolve_env_var("LANGSMITH_ENDPOINT")
+        or resolve_env_var("LANGCHAIN_ENDPOINT")
+        or "https://api.smith.langchain.com"
+    ).rstrip("/")
+
+
+def _resolve_tracer_session_id_by_project_name(
+    *, project_name: str, api_key: str
+) -> str | None:
+    """Resolve tracing project id (session id) by name."""
+    from langsmith import Client
+    from langsmith.utils import LangSmithNotFoundError
+
+    api_url = _resolve_langsmith_endpoint()
+    try:
+        client = Client(api_url=api_url, api_key=api_key)
+        project = client.read_project(project_name=project_name)
+        return str(project.id)
+    except LangSmithNotFoundError as exc:
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
+    except Exception as exc:
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
+    return None
+
+
+def _upsert_issues_board_config(
+    *,
+    session_id: str,
+    api_key: str,
+    context_hub_repo_handle: str,
+) -> None:
+    """Best-effort create or patch board config for a deployed agent."""
+    import httpx
+
+    from deepagents_cli.model_config import resolve_env_var
+
+    success_codes = {200, 201}
+    http_conflict = 409
+    endpoint = _resolve_langsmith_endpoint()
+    url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    tenant_id = resolve_env_var("LANGSMITH_TENANT_ID")
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+
+    create_payload = {
+        "cron_schedule": "0 */6 * * *",
+        "heavy_model": "anthropic:issues-agent-heavy",
+        "light_model": "anthropic:issues-agent-light",
+        "context_hub_repo_handle": context_hub_repo_handle,
+    }
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            create_resp = client.post(url, headers=headers, json=create_payload)
+            if create_resp.status_code in success_codes:
+                print(
+                    f"Issues board auto-wired for tracing project {session_id} "
+                    f"({context_hub_repo_handle})."
+                )
+                return
+            if create_resp.status_code == http_conflict:
+                patch_resp = client.patch(
+                    url,
+                    headers=headers,
+                    json={"context_hub_repo_handle": context_hub_repo_handle},
+                )
+                if patch_resp.status_code in success_codes:
+                    print(
+                        "Issues board already existed; updated context hub id "
+                        f"to {context_hub_repo_handle}."
+                    )
+                    return
+                print(
+                    "Warning: Failed to patch existing issues board: "
+                    f"HTTP {patch_resp.status_code} — {patch_resp.text[:300]}"
+                )
+                return
+            print(
+                "Warning: Failed to create issues board config: "
+                f"HTTP {create_resp.status_code} — {create_resp.text[:300]}"
+            )
+    except Exception as exc:
+        print(f"Warning: Issues board auto-wire failed: {exc}")
+
+
+def _resolve_context_hub_identifier(config: DeployConfig) -> str:
+    return config.memories.identifier or f"-/{config.agent.name}"
+
+
+def _resolve_context_hub_repo_handle_for_issues_board(
+    config: DeployConfig,
+) -> str | None:
+    identifier = _resolve_context_hub_identifier(config)
+    owner, sep, repo_handle = identifier.partition("/")
+    if not sep or not owner or not repo_handle:
+        print(
+            "Warning: Invalid memories identifier for hub-backed deploy: "
+            f"{identifier!r}; skipping issues board auto-wire."
+        )
+        return None
+    return repo_handle
+
+
+def _auto_wire_issues_board_if_hub(config: DeployConfig) -> None:
+    """Best-effort issues-board wiring after deploy for hub-backed memories."""
+    if config.memories.backend != "hub":
+        return
+
+    context_hub_repo_handle = _resolve_context_hub_repo_handle_for_issues_board(config)
+    if context_hub_repo_handle is None:
+        return
+    api_key = _resolve_langsmith_api_key()
+    if api_key is None:
+        print(
+            "Warning: LANGSMITH/LANGCHAIN API key not found; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    session_id = _resolve_tracer_session_id_by_project_name(
+        project_name=config.agent.name,
+        api_key=api_key,
+    )
+    if session_id is None:
+        print(
+            "Warning: Could not resolve tracing project after deploy; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    _upsert_issues_board_config(
+        session_id=session_id,
+        api_key=api_key,
+        context_hub_repo_handle=context_hub_repo_handle,
+    )

@@ -1,8 +1,8 @@
 """Primary graph assembly module for Deep Agents.
 
-Provides `create_deep_agent`, the main entry point for constructing a fully
-configured deep agent with planning, filesystem, subagent, and summarization
-middleware.
+Provides [`create_deep_agent`][deepagents.graph.create_deep_agent], the main entry
+point for constructing a fully configured deep agent with planning, filesystem,
+subagent, and summarization middleware.
 """
 
 import logging
@@ -231,15 +231,25 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     - `execute`: run shell commands
     - `task`: call subagents
 
-    The `execute` tool allows running shell commands if the backend implements `SandboxBackendProtocol`.
+    The `execute` tool allows running shell commands if the backend implements
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
     For non-sandbox backends, the `execute` tool will return an error message.
 
     Args:
         model: The model to use.
 
-            Defaults to `claude-sonnet-4-6`.
+            !!! deprecated
 
-            Accepts a `provider:model` string (e.g., `openai:gpt-5`); see
+                Specify a model explicitly.
+
+                Passing `model=None` (relying on the default
+                `claude-sonnet-4-6`) is deprecated since `0.5.3` and will
+                be removed in `deepagents==1.0.0`. The parameter type
+                will change from `BaseChatModel | str | None` to
+                `BaseChatModel | str`. See
+                [Models](https://docs.langchain.com/oss/python/deepagents/models).
+
+            Accepts a `provider:model` string (e.g., `openai:gpt-5.5`); see
             [`init_chat_model`][langchain.chat_models.init_chat_model(model_provider)]
             for supported values. You can also pass a pre-initialized
             [`BaseChatModel`][langchain.chat_models.BaseChatModel] instance directly.
@@ -281,13 +291,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Base stack:
 
-            - `TodoListMiddleware`
-            - `SkillsMiddleware` (if `skills` is provided)
-            - `FilesystemMiddleware`
-            - `SubAgentMiddleware` (if any inline subagents — declarative `SubAgent` or `CompiledSubAgent` — are available)
-            - `SummarizationMiddleware`
-            - `PatchToolCallsMiddleware`
-            - `AsyncSubAgentMiddleware` (if async `subagents` are provided)
+            - [`TodoListMiddleware`][langchain.agents.middleware.TodoListMiddleware]
+            - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
+            - [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            - [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]
+                (if any inline subagents — declarative
+                [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
+                [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
+                — are available)
+            - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
+            - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 
@@ -295,10 +309,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             - Harness profile `extra_middleware` (if any)
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
-            - `AnthropicPromptCachingMiddleware` (unconditional; no-ops for
+            - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
                 non-Anthropic models)
-            - `MemoryMiddleware` (if `memory` is provided)
-            - `HumanInTheLoopMiddleware` (if `interrupt_on` is provided)
+            - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
+            - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -306,8 +320,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `AgentMiddleware.name` exactly (e.g. `"SummarizationMiddleware"`
             drops the summarization middleware via its public alias).
             Entries that match nothing in the assembled stack raise
-            `ValueError`, as does excluding scaffolding classes
-            (`FilesystemMiddleware`, `SubAgentMiddleware`).
+            `ValueError`, as does excluding any class in the harness's
+            protected scaffolding set (e.g.,
+            [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            or [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]).
 
             To run without the `task` tool, set
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
@@ -378,7 +394,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Pass a `Backend` instance (e.g. `StateBackend()`).
 
             For execution support, use a backend that
-            implements `SandboxBackendProtocol`.
+            implements [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
         interrupt_on: Mapping of tool names to interrupt configs.
 
             Pass to pause agent execution at specified tool calls for human
@@ -429,6 +445,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     Raises:
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
+        ValueError: If the active `HarnessProfile.excluded_middleware`
+            references a class in the harness's protected scaffolding set
+            (e.g.,
+            [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
+            or
+            [`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware]),
+            uses a private (underscore-prefixed) name, collides with multiple
+            distinct middleware classes, or matches no entry in the assembled
+            stack.
     """
     _model_spec: str | None = model if isinstance(model, str) else None
 

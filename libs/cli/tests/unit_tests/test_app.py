@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import io
 import os
 import signal
 import time
 import webbrowser
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -32,15 +32,12 @@ from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli._env_vars import HIDE_STARTUP_COMMAND_TEXT
 from deepagents_cli.app import (
-    _ITERM_CURSOR_GUIDE_OFF,
-    _ITERM_CURSOR_GUIDE_ON,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
     ExternalInput,
     QueuedMessage,
     TextualSessionState,
-    _write_iterm_escape,
 )
 from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -1085,119 +1082,6 @@ class TestAppBindings:
         assert "ctrl+e" not in bindings_by_key
 
 
-class TestITerm2CursorGuide:
-    """Test iTerm2 cursor guide handling."""
-
-    def test_escape_sequences_are_valid(self) -> None:
-        """Escape sequences should be properly formatted OSC 1337 commands.
-
-        Format: OSC (ESC ]) + "1337;" + command + ST (ESC backslash)
-        """
-        assert _ITERM_CURSOR_GUIDE_OFF.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_OFF.endswith("\x1b\\")
-        assert "HighlightCursorLine=no" in _ITERM_CURSOR_GUIDE_OFF
-
-        assert _ITERM_CURSOR_GUIDE_ON.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_ON.endswith("\x1b\\")
-        assert "HighlightCursorLine=yes" in _ITERM_CURSOR_GUIDE_ON
-
-    def test_write_iterm_escape_does_nothing_when_not_iterm(self) -> None:
-        """_write_iterm_escape should no-op when _IS_ITERM is False."""
-        mock_stderr = MagicMock()
-        with (
-            patch("deepagents_cli.app._IS_ITERM", False),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            mock_stderr.write.assert_not_called()
-
-    def test_write_iterm_escape_writes_sequence_when_iterm(self) -> None:
-        """_write_iterm_escape should write sequence when in iTerm2."""
-        mock_stderr = io.StringIO()
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            assert mock_stderr.getvalue() == _ITERM_CURSOR_GUIDE_ON
-
-    def test_write_iterm_escape_handles_oserror_gracefully(self) -> None:
-        """_write_iterm_escape should not raise on OSError."""
-        mock_stderr = MagicMock()
-        mock_stderr.write.side_effect = OSError("Broken pipe")
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    def test_write_iterm_escape_handles_none_stderr(self) -> None:
-        """_write_iterm_escape should handle None __stderr__ gracefully."""
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", None),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-
-class TestITerm2Detection:
-    """Test iTerm2 detection logic."""
-
-    def test_detection_requires_tty(self) -> None:
-        """_IS_ITERM should check that stderr is a TTY.
-
-        Detection happens at module load, so we test the logic pattern directly.
-        """
-        with (
-            patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False),
-            patch("os.isatty", return_value=False),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is False
-
-    def test_detection_via_lc_terminal(self) -> None:
-        """Detection should match LC_TERMINAL=iTerm2."""
-        with (
-            patch.dict(
-                os.environ, {"LC_TERMINAL": "iTerm2", "TERM_PROGRAM": ""}, clear=False
-            ),
-            patch("os.isatty", return_value=True),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is True
-
-    def test_detection_via_term_program(self) -> None:
-        """Detection should match TERM_PROGRAM=iTerm.app."""
-        env = {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}
-        with (
-            patch.dict(os.environ, env, clear=False),
-            patch("os.isatty", return_value=True),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is True
-
-
 class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
 
@@ -2179,6 +2063,100 @@ class TestMessageQueue:
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
 
+    def test_tall_ask_user_scrolls_to_widget_top(self) -> None:
+        """Tall ask_user menus should align their top border with the viewport."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=30)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with(animate=False, top=True)
+
+    def test_short_ask_user_uses_default_scroll_visible(self) -> None:
+        """Short ask_user menus should keep the existing scroll behavior."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=10)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with()
+
+    def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
+        """App-level Ctrl+O should toggle the active ask_user tool row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = MagicMock()
+        tool = MagicMock()
+        tool.has_expandable_args = True
+
+        with patch.object(app, "query", return_value=[tool]):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+
+    def test_ctrl_o_falls_back_to_tool_with_expandable_args(self) -> None:
+        """When no ask_user is pending, Ctrl+O still expands an ask_user-like row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock()
+        tool.has_output = False
+        tool.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [tool]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
+    def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
+        """Tool with real output wins over a later one with only expandable args."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        older = MagicMock()
+        older.has_output = True
+        older.has_expandable_args = False
+        newer = MagicMock()
+        newer.has_output = False
+        newer.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [older, newer]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        # Iterates in reverse, so newer (expandable args) is hit first.
+        newer.toggle_args.assert_called_once_with()
+        older.toggle_output.assert_not_called()
+
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
         app = DeepAgentsApp()
@@ -2661,6 +2639,84 @@ class TestAppFocusRestoresChatInput:
                 app.on_app_focus()
 
             mock_focus.assert_not_called()
+
+    async def test_app_focus_resumes_blink_with_modal_open(self) -> None:
+        """Blink should resume on focus regain even when a modal blocks refocus."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+            app.push_screen(ThreadSelectorScreen(current_thread=None))
+            await pilot.pause()
+            assert isinstance(app.screen, ModalScreen)
+
+            app._chat_input._text_area.cursor_blink = False
+            app.on_app_focus()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is True
+
+    async def test_app_focus_resumes_blink_with_approval_pending(self) -> None:
+        """Blink should resume on focus regain even when an approval is pending."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            app._pending_approval_widget = MagicMock()
+            app._chat_input._text_area.cursor_blink = False
+
+            app.on_app_focus()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is True
+
+
+class TestAppBlurPausesCursorBlink:
+    """Test `on_app_blur` pauses cursor blink without changing widget focus."""
+
+    async def test_app_blur_pauses_blink(self) -> None:
+        """Losing terminal focus should pause the chat input cursor blink."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+            assert app._chat_input._text_area.cursor_blink is True
+
+            app.on_app_blur()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is False
+
+    async def test_app_blur_preserves_widget_focus(self) -> None:
+        """Pausing blink must not blur the chat input widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+            app._chat_input._text_area.focus()
+            await pilot.pause()
+
+            app.on_app_blur()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.has_focus is True
+
+    async def test_app_blur_noop_before_mount(self) -> None:
+        """`on_app_blur` should silently ignore blur events before mount."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._chat_input = None
+
+            app.on_app_blur()
 
 
 class TestPasteRouting:

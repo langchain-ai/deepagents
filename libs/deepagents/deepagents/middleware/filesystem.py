@@ -453,8 +453,10 @@ Use this tool to run commands, scripts, tests, builds, and other shell operation
 def supports_execution(backend: BackendProtocol) -> bool:
     """Check if a backend supports command execution.
 
-    For CompositeBackend, checks if the default backend supports execution.
-    For other backends, checks if they implement SandboxBackendProtocol.
+    For [`CompositeBackend`][deepagents.backends.composite.CompositeBackend],
+    checks if the default backend supports execution.
+    For other backends, checks if they implement
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Args:
         backend: The backend to check.
@@ -645,10 +647,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     This middleware adds filesystem tools to the agent: `ls`, `read_file`, `write_file`,
     `edit_file`, `glob`, and `grep`.
 
-    Files can be stored using any backend that implements the `BackendProtocol`.
+    Files can be stored using any backend that implements the
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol].
 
-    If the backend implements `SandboxBackendProtocol`, an `execute` tool is also added
-    for running shell commands.
+    If the backend implements
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol],
+    an `execute` tool is also added for running shell commands.
 
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
@@ -656,11 +660,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     Args:
         backend: Backend for file storage and optional execution.
 
-            If not provided, defaults to `StateBackend` (ephemeral storage in agent state).
+            If not provided, defaults to
+            [`StateBackend`][deepagents.backends.state.StateBackend]
+            (ephemeral storage in agent state).
 
-            For persistent storage or hybrid setups, use `CompositeBackend` with custom routes.
+            For persistent storage or hybrid setups, use
+            [`CompositeBackend`][deepagents.backends.composite.CompositeBackend]
+            with custom routes.
 
-            For execution support, use a backend that implements `SandboxBackendProtocol`.
+            For execution support, use a backend that implements
+            [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
         system_prompt: Optional custom system prompt override.
         custom_tool_descriptions: Optional custom tool descriptions override.
         tool_token_limit_before_evict: Token limit before evicting a tool result to the

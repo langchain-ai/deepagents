@@ -58,6 +58,7 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_cli.notifications import (
     ActionId,
     MissingDepPayload,
@@ -116,31 +117,6 @@ if TYPE_CHECKING:
     from deepagents_cli.widgets.ask_user import AskUserMenu
     from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
 
-# iTerm2 Cursor Guide Workaround
-# ===============================
-# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
-# Textual takes over the terminal in alternate screen mode. We disable it at
-# module load and restore on exit. Both atexit and exit() override are used
-# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
-# exceptions), while exit() ensures restoration before Textual's cleanup.
-
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI)
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
-
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
-
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during launch-init model switch.
 
@@ -150,42 +126,6 @@ backend cannot trap the user inside a finished launch-init modal forever.
 
 _COMPETITION_START_COUNTDOWN_SECONDS = 5
 """Countdown shown after the controller starts a competition round."""
-
-
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
-
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
-    """
-    if not _IS_ITERM:
-        return
-    try:
-        import sys
-
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe)
-        pass
-
-
-# Disable cursor guide at module load (before Textual takes over)
-_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
-
-if _IS_ITERM:
-    import atexit
-
-    def _restore_cursor_guide() -> None:
-        """Restore iTerm2 cursor guide on exit.
-
-        Registered with atexit to ensure the cursor guide is re-enabled
-        when the CLI exits, regardless of how the exit occurs.
-        """
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    atexit.register(_restore_cursor_guide)
 
 
 def _load_theme_preference() -> str:
@@ -3256,7 +3196,7 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
             self.call_after_refresh(menu.focus_active)
         except Exception as e:
             logger.exception(
@@ -3268,6 +3208,19 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
+
+    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
+        """Scroll mounted ask_user prompts into view.
+
+        Oversized prompts should start at the top of the viewport so the first
+        question and menu border are visible, instead of only exposing the
+        bottom edge of the widget.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if menu.outer_size.height > chat.size.height:
+            menu.scroll_visible(animate=False, top=True)
+            return
+        menu.scroll_visible()
 
     async def on_ask_user_menu_answered(
         self,
@@ -6260,11 +6213,7 @@ class DeepAgentsApp(App):
         return_code: int = 0,
         message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
-        """Exit the app, restoring iTerm2 cursor guide if applicable.
-
-        Overrides parent to restore iTerm2's cursor guide before Textual's
-        cleanup. The atexit handler serves as a fallback for abnormal
-        termination.
+        """Exit the app after shutting down background resources.
 
         Args:
             result: Return value passed to the app runner.
@@ -6320,7 +6269,7 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
@@ -6381,20 +6330,39 @@ class DeepAgentsApp(App):
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
-        # Try skill messages first (most recent collapsible content)
-        with suppress(NoMatches):
-            skill_messages = list(self.query(SkillMessage))
-            for skill_msg in reversed(skill_messages):
-                if skill_msg._stripped_body.strip():
-                    skill_msg.toggle_body()
-                    return
-        # Fall back to tool messages with output
-        with suppress(NoMatches):
-            tool_messages = list(self.query(ToolCallMessage))
+        # Pending ask_user takes precedence so Ctrl+O toggles the question card.
+        if self._pending_ask_user_widget is not None:
+            try:
+                tool_messages = list(self.query(ToolCallMessage))
+            except NoMatches:
+                tool_messages = []
             for tool_msg in reversed(tool_messages):
-                if tool_msg.has_output:
-                    tool_msg.toggle_output()
+                if tool_msg.has_expandable_args:
+                    tool_msg.toggle_args()
                     return
+
+        # Try skill messages first (most recent collapsible content)
+        try:
+            skill_messages = list(self.query(SkillMessage))
+        except NoMatches:
+            skill_messages = []
+        for skill_msg in reversed(skill_messages):
+            if skill_msg._stripped_body.strip():
+                skill_msg.toggle_body()
+                return
+
+        # Fall back to tool messages with output or expandable args
+        try:
+            tool_messages = list(self.query(ToolCallMessage))
+        except NoMatches:
+            tool_messages = []
+        for tool_msg in reversed(tool_messages):
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
+                return
+            if tool_msg.has_expandable_args:
+                tool_msg.toggle_args()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -6498,20 +6466,32 @@ class DeepAgentsApp(App):
             event.stop()
 
     def on_app_focus(self) -> None:
-        """Restore chat input focus when the terminal regains OS focus.
+        """Restore chat input focus and resume cursor blink on terminal focus regain.
 
         When the user opens a link via `webbrowser.open`, OS focus shifts to
         the browser. On returning to the terminal, Textual fires `AppFocus`
         (requires a terminal that supports FocusIn events). Re-focusing the chat
         input here keeps it ready for typing.
         """
-        if not self._chat_input:
+        if self._chat_input is None:
             return
+        self._chat_input.set_cursor_blink(blink=True)
         if isinstance(self.screen, ModalScreen):
             return
         if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
+
+    def on_app_blur(self) -> None:
+        """Pause the chat input cursor blink when the terminal loses OS focus.
+
+        `TextArea` pauses its own blink when its `has_focus` flips, but
+        `AppBlur` does not change widget focus, so we toggle `cursor_blink`
+        manually.
+        """
+        if self._chat_input is None:
+            return
+        self._chat_input.set_cursor_blink(blink=False)
 
     def on_click(self, event: Click) -> None:
         """Handle clicks anywhere in the terminal.

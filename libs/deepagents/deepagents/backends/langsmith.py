@@ -46,7 +46,7 @@ def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
 
 
 class LangSmithSandbox(BaseSandbox):
-    """LangSmith sandbox implementation conforming to `SandboxBackendProtocol`."""
+    """LangSmith sandbox implementation conforming to [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]."""
 
     def __init__(self, sandbox: Sandbox) -> None:
         """Create a backend wrapping an existing LangSmith sandbox.

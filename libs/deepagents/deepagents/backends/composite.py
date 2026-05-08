@@ -557,7 +557,8 @@ class CompositeBackend(BackendProtocol):
 
         Raises:
             NotImplementedError: If the default backend is not a
-                `SandboxBackendProtocol` (i.e., it doesn't support execution).
+                [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]
+                (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self.default)):

@@ -194,13 +194,16 @@ class TestCreateDeepAgentAstreamV2:
         (sub,) = handles
         assert sub.name == "researcher"
         assert sub.task_input == "look something up"
-        # `cause` exposes the pregel `trigger_call_id` (parsed from the
-        # started subgraph's namespace tail), not the model-side
-        # `tool_call_id`. We don't predict the pregel id here; just
-        # assert the shape and that it matches the handle's path tail.
+        # `cause` carries both correlation ids: `trigger_call_id` is
+        # the pregel task id (parsed from the started subgraph's
+        # namespace tail; we don't predict it, just match the path
+        # tail), and `tool_call_id` is the model-side id from the
+        # originating AI message (predicted — the scripted parent
+        # emits "call-parent-1").
         assert sub.cause is not None
         assert sub.cause["type"] == "toolCall"
         assert sub.cause["trigger_call_id"] == sub.path[0].removeprefix("tools:")
+        assert sub.cause.get("tool_call_id") == "call-parent-1"
         assert sub.status == "completed"
         # path is ("tools:<pregel_task_id>",) — the tool node hosting the subagent.
         assert len(sub.path) == 1

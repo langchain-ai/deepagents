@@ -3,20 +3,24 @@
 Each `task` tool call dispatched by `langchain.agents.create_agent`'s
 Send fan-out (`Send("tools", [tool_call])`) becomes its own pregel
 task — a per-call dispatched task whose `input` is a single-element
-list of tool-call dicts. The child subagent subgraph starts under a
-namespace of the form ``["tools:<pregel_task_id>"]``, so the
-namespace tail's task id is the same `task.id` the per-call
-dispatched task carries.
+list containing one tool-call dict
+(``[{"id": ..., "name": "task", "args": {...}}]``). The child subagent
+subgraph starts under a namespace of the form
+``["tools:<pregel_task_id>"]``, so the namespace tail's task id is the
+same `task.id` the per-call dispatched task carries.
 
 This transformer:
 
-1. On every `tasks` start event (anywhere in the run), inspects the
-   task's `input` for the per-call envelope. If it parses, records
-   ``task_id → {"subagent_type", "task_input"}`` keyed by the
-   pregel task id. Mirrors what
+1. On `tasks` start events at the transformer's own scope, inspects
+   the task's `input` for the per-call envelope. If it parses (single
+   tool-call dict named ``"task"`` with a declared `subagent_type`),
+   records ``task_id → {"subagent_type", ...}`` keyed by the pregel
+   task id. Mirrors what
    `langgraph.stream.transformers._TasksLifecycleBase._record_invocation_metadata`
-   does on the wire, but with a deepagents-specific dict shape so
-   we can plumb it straight into our typed handles.
+   does on the wire, but with a deepagents-specific dict shape so we
+   can plumb it straight into our typed handles. Scoped capture keeps
+   `_pending` from absorbing per-call tasks dispatched by inner
+   subagents under deeper namespaces.
 2. When `_on_started` fires for a tracked namespace, looks up the
    pending entry by `trigger_call_id` (the parsed namespace tail).
    If it resolves to a declared subagent name, builds a
@@ -39,7 +43,8 @@ to the originating AI message tool call.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NotRequired, TypedDict
 
 from langgraph.stream.run_stream import (
     AsyncSubgraphRunStream,
@@ -54,6 +59,22 @@ from langgraph.stream.transformers import (
 if TYPE_CHECKING:
     from langgraph.stream._mux import StreamMux
     from langgraph.stream._types import ProtocolEvent
+
+logger = logging.getLogger(__name__)
+
+
+class SubagentCause(TypedDict):
+    """In-process invocation descriptor for a subagent run handle.
+
+    The `type` tag stays camelCase (`"toolCall"`) for in-process consumer
+    compatibility; the wire-side `lifecycle.started.cause` uses snake_case
+    (`"tool_call"`). Anyone matching this dict against a value pulled from
+    JSON logs should compare the wire form, not this one.
+    """
+
+    type: Literal["toolCall"]
+    trigger_call_id: str
+    tool_call_id: NotRequired[str]
 
 
 class SubagentRunStream(SubgraphRunStream):
@@ -83,7 +104,7 @@ class SubagentRunStream(SubgraphRunStream):
         return self.graph_name
 
     @property
-    def cause(self) -> dict[str, str] | None:
+    def cause(self) -> SubagentCause | None:
         """Invocation descriptor for in-process consumers.
 
         `trigger_call_id` is the pregel task id (identity-level
@@ -91,13 +112,11 @@ class SubagentRunStream(SubgraphRunStream):
         present, is the model-side id of the originating tool call —
         1:1 with `trigger_call_id` under the per-call Send fan-out, used
         by UI consumers to anchor the invocation back to the AI message.
-        The `type` tag stays camelCase (`"toolCall"`) for in-process
-        consumer compatibility; the wire-side `lifecycle.started.cause`
-        uses snake_case (`"tool_call"`).
+        See `SubagentCause` for the camelCase/snake_case wire divergence.
         """
         if self.trigger_call_id is None:
             return None
-        result: dict[str, str] = {
+        result: SubagentCause = {
             "type": "toolCall",
             "trigger_call_id": self.trigger_call_id,
         }
@@ -133,7 +152,7 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
         return self.graph_name
 
     @property
-    def cause(self) -> dict[str, str] | None:
+    def cause(self) -> SubagentCause | None:
         """Invocation descriptor for in-process consumers.
 
         `trigger_call_id` is the pregel task id (identity-level
@@ -141,13 +160,11 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
         present, is the model-side id of the originating tool call —
         1:1 with `trigger_call_id` under the per-call Send fan-out, used
         by UI consumers to anchor the invocation back to the AI message.
-        The `type` tag stays camelCase (`"toolCall"`) for in-process
-        consumer compatibility; the wire-side `lifecycle.started.cause`
-        uses snake_case (`"tool_call"`).
+        See `SubagentCause` for the camelCase/snake_case wire divergence.
         """
         if self.trigger_call_id is None:
             return None
-        result: dict[str, str] = {
+        result: SubagentCause = {
             "type": "toolCall",
             "trigger_call_id": self.trigger_call_id,
         }
@@ -173,11 +190,14 @@ class SubagentTransformer(_TasksLifecycleBase):
         self._handles: dict[tuple[str, ...], SubagentRunStream | AsyncSubagentRunStream] = {}
         self._mux: StreamMux | None = None
         # Maps trigger_call_id (per-call dispatched task id, parsed from
-        # namespace tail) -> {"subagent_type": ..., "task_input": ...}.
-        # Mined from the per-call task's ToolCallWithContext input
-        # envelope (`{"tool_call": {"args": {"subagent_type": ...,
-        # "description": ...}}, ...}`). Each Send-dispatched call has a
-        # unique task id, so parallel `task` calls each get their own
+        # namespace tail) -> {"subagent_type", optionally "task_input",
+        # optionally "tool_call_id"}. Mined from the per-call task's
+        # `input` — a single-element list shaped
+        # ``[{"id": <tool_call_id>, "name": "task", "args":
+        # {"subagent_type": ..., "description": ...}}]`` (the shape
+        # `langchain.agents.create_agent` v1 emits via
+        # ``Send("tools", [tool_call])``). Each Send-dispatched call has
+        # a unique task id, so parallel `task` calls each get their own
         # entry — no conflation.
         self._pending: dict[str, dict[str, str]] = {}
 
@@ -197,15 +217,16 @@ class SubagentTransformer(_TasksLifecycleBase):
         `langchain.agents.create_agent` Send-fans out tool calls as
         ``Send("tools", [tool_call])`` — one pregel task per call —
         so the per-call dispatched task's `input` is always a
-        single-element list of one tool-call dict
-        (``Send("tools", [tool_call])`` shape). Anything else is not
-        a per-call envelope we recognise and is ignored. We mine
-        `subagent_type`, `description`, and `tool_call_id` off that
-        single `task` tool call and stash them keyed by the per-call
-        dispatched task's `id`. The child subgraph's first lifecycle
-        event will carry that same id as `trigger_call_id` (parsed from
-        the ``tools:<id>`` namespace tail), so `_on_started` joins on
-        it directly.
+        single-element list containing one tool-call dict shaped
+        ``{"id": <tool_call_id>, "name": "task", "args":
+        {"subagent_type": ..., "description": ...}}``. Anything else is
+        not a per-call envelope we recognise and is ignored. We mine
+        `subagent_type`, `description`, and the model-side
+        `tool_call_id` off that single tool-call dict and stash them
+        keyed by the per-call dispatched task's `id`. The child
+        subgraph's first lifecycle event will carry that same id as
+        `trigger_call_id` (parsed from the ``tools:<id>`` namespace
+        tail), so `_on_started` joins on it directly.
 
         Identity-level correlation across lifecycle events still uses
         `trigger_call_id` (the pregel task id, unique per-call). The
@@ -219,29 +240,37 @@ class SubagentTransformer(_TasksLifecycleBase):
         if not isinstance(task_id, str):
             return
         payload = data.get("input")
-        if isinstance(payload, list):
-            if len(payload) != 1:
-                return
-            tool_call = payload[0]
-            if not isinstance(tool_call, dict) or tool_call.get("name") != "task":
-                return
-            args = tool_call.get("args")
-            if not isinstance(args, dict):
-                return
-            subagent_type = args.get("subagent_type")
-            if not isinstance(subagent_type, str):
-                return
-            if subagent_type not in self._names:
-                return
-            description = args.get("description")
-            entry: dict[str, str] = {
-                "subagent_type": subagent_type,
-                "task_input": description if isinstance(description, str) else "",
-            }
-            tool_call_id = tool_call.get("id")
-            if isinstance(tool_call_id, str):
-                entry["tool_call_id"] = tool_call_id
-            self._pending[task_id] = entry
+        if not isinstance(payload, list):
+            return
+        if len(payload) != 1:
+            # Per-call Send fan-out always emits a single-element list.
+            # A multi-element list signals an upstream contract change
+            # (a different agent factory, or batched Sends) — silently
+            # ignoring it would make subagent handles vanish, so log it.
+            logger.debug(
+                "SubagentTransformer: ignoring tasks input of unexpected length %d "
+                "(expected 1 for per-call Send fan-out); subagent surface will not "
+                "fire for this dispatch",
+                len(payload),
+            )
+            return
+        tool_call = payload[0]
+        if not isinstance(tool_call, dict) or tool_call.get("name") != "task":
+            return
+        args = tool_call.get("args")
+        if not isinstance(args, dict):
+            return
+        subagent_type = args.get("subagent_type")
+        if not isinstance(subagent_type, str) or subagent_type not in self._names:
+            return
+        entry: dict[str, str] = {"subagent_type": subagent_type}
+        description = args.get("description")
+        if isinstance(description, str) and description:
+            entry["task_input"] = description
+        tool_call_id = tool_call.get("id")
+        if isinstance(tool_call_id, str):
+            entry["tool_call_id"] = tool_call_id
+        self._pending[task_id] = entry
 
     def _on_started(
         self,
@@ -276,7 +305,7 @@ class SubagentTransformer(_TasksLifecycleBase):
             path=ns,
             graph_name=info["subagent_type"],
             trigger_call_id=trigger_call_id,
-            task_input=info["task_input"] or None,
+            task_input=info.get("task_input"),
             tool_call_id=info.get("tool_call_id"),
         )
         self._handles[ns] = handle
@@ -314,9 +343,17 @@ class SubagentTransformer(_TasksLifecycleBase):
 
     def process(self, event: ProtocolEvent) -> bool:
         if event.get("method") == "tasks":
-            data = event.get("params", {}).get("data", {})
-            if isinstance(data, dict) and "result" not in data:
-                self._capture_per_call_metadata(data)
+            ns = tuple(event["params"]["namespace"])
+            # Per-call dispatched `tasks` start events arrive at the
+            # parent agent's own scope (`Send("tools", [tool_call])`
+            # creates the child task one level deeper, but the start
+            # event itself is emitted at the parent ns). Gating on
+            # `len(ns) == len(self.scope)` keeps `_pending` from
+            # absorbing per-call tasks dispatched by inner subagents.
+            if len(ns) == len(self.scope) and ns == self.scope:
+                data = event.get("params", {}).get("data", {})
+                if isinstance(data, dict) and "result" not in data:
+                    self._capture_per_call_metadata(data)
         keep = super().process(event)
         handle = self._handle_for_event(event)
         if handle is not None:

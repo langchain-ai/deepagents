@@ -7,12 +7,15 @@ Mirrors the structure of langgraph's `test_stream_subgraph_transformer.py`.
 The realistic event sequence (post-namespace-keyed refactor):
 
 1. Per-call dispatched `tasks` start at parent ns with ``input``
-   matching the `ToolCallWithContext` envelope
-   (`{"tool_call": {"id": tc, "name": "task", "args":
-   {"subagent_type": ..., "description": ...}}}`). The task's `id`
-   is the pregel task id assigned by Send fan-out — the transformer
-   keys ``_pending`` by this id (== `trigger_call_id` parsed from
-   the child's namespace tail), so parallel `task` calls each get a
+   matching the per-call Send envelope: a single-element list of
+   one tool-call dict
+   (``[{"id": <tool_call_id>, "name": "task", "args":
+   {"subagent_type": ..., "description": ...}}]``) — the shape
+   `langchain.agents.create_agent` v1 emits via
+   ``Send("tools", [tool_call])``. The task's `id` is the pregel
+   task id assigned by Send fan-out — the transformer keys
+   ``_pending`` by this id (== `trigger_call_id` parsed from the
+   child's namespace tail), so parallel `task` calls each get a
    distinct entry.
 2. Child-scope `tasks` start at ``["tools:<parent_task_id>"]`` —
    triggers `_on_started`, which looks up the pending entry and

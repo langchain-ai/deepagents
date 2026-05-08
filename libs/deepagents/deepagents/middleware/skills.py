@@ -1013,8 +1013,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        # Skip if skills_metadata is already loaded (non-empty list).
+        # PrivateStateAttr initialises the key to [] by default, so we
+        # must also check the list is non-empty to avoid skipping the
+        # initial load on the first turn.
+        if "skills_metadata" in state and state["skills_metadata"]:
             return None
 
         # Resolve backend (supports both direct instances and factory functions)
@@ -1055,8 +1058,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             State update with `skills_metadata` populated, or `None` if already present.
         """
-        # Skip if skills_metadata is already present in state (even if empty)
-        if "skills_metadata" in state:
+        # Skip if skills_metadata is already loaded (non-empty list).
+        # PrivateStateAttr initialises the key to [] by default, so we
+        # must also check the list is non-empty to avoid skipping the
+        # initial load on the first turn.
+        if "skills_metadata" in state and state["skills_metadata"]:
             return None
 
         # Resolve backend (supports both direct instances and factory functions)

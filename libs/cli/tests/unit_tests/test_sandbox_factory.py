@@ -13,6 +13,10 @@ from deepagents_cli.integrations.sandbox_factory import (
     get_default_working_dir,
     verify_sandbox_deps,
 )
+from deepagents_cli.integrations.sandbox_provider import (
+    SandboxNotFoundError,
+    SandboxProvider,
+)
 
 
 @pytest.mark.parametrize(
@@ -234,6 +238,143 @@ def test_agentcore_delete_untracked_session() -> None:
         provider = _get_provider("agentcore")
 
     provider.delete(sandbox_id="nonexistent")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Daytona reconnect tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeDaytonaNotFoundError(Exception):
+    """Fake Daytona not-found exception for optional-dependency-free tests."""
+
+
+def _make_daytona_provider() -> SandboxProvider:
+    """Build a `_DaytonaProvider` with imports and API key mocked."""
+    fake_daytona_module = MagicMock()
+    fake_daytona_module.DaytonaNotFoundError = _FakeDaytonaNotFoundError
+    fake_daytona_module.Daytona.return_value = MagicMock()
+    fake_daytona_module.DaytonaConfig = MagicMock()
+    with (
+        patch(
+            "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+            return_value=fake_daytona_module,
+        ),
+        patch.dict(os.environ, {"DAYTONA_API_KEY": "test-key"}, clear=False),
+    ):
+        return _get_provider("daytona")
+
+
+def test_daytona_reconnect_started_sandbox_returns_backend() -> None:
+    """Reconnecting to a started Daytona sandbox should not call start()."""
+    provider = _make_daytona_provider()
+
+    started_sandbox = MagicMock()
+    started_sandbox.state = "started"
+    provider._client.get.return_value = (  # ty: ignore[unresolved-attribute]
+        started_sandbox
+    )
+
+    fake_backend_module = MagicMock()
+    fake_backend = MagicMock()
+    fake_backend_module.DaytonaSandbox.return_value = fake_backend
+
+    with patch(
+        "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+        return_value=fake_backend_module,
+    ):
+        result = provider.get_or_create(sandbox_id="sb-123")
+
+    provider._client.get.assert_called_once_with(  # ty: ignore[unresolved-attribute]
+        "sb-123"
+    )
+    started_sandbox.start.assert_not_called()
+    fake_backend_module.DaytonaSandbox.assert_called_once_with(sandbox=started_sandbox)
+    assert result is fake_backend
+
+
+def test_daytona_reconnect_stopped_sandbox_calls_start() -> None:
+    """Reconnecting to a stopped Daytona sandbox should start it before returning."""
+    provider = _make_daytona_provider()
+
+    stopped_sandbox = MagicMock()
+    stopped_sandbox.state = "stopped"
+    provider._client.get.return_value = (  # ty: ignore[unresolved-attribute]
+        stopped_sandbox
+    )
+
+    fake_backend_module = MagicMock()
+    fake_backend_module.DaytonaSandbox.return_value = MagicMock()
+
+    with patch(
+        "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+        return_value=fake_backend_module,
+    ):
+        provider.get_or_create(sandbox_id="sb-456")
+
+    stopped_sandbox.start.assert_called_once_with(timeout=180)
+
+
+def test_daytona_reconnect_starting_sandbox_waits_for_ready() -> None:
+    """Reconnecting to a starting Daytona sandbox should wait for readiness."""
+    provider = _make_daytona_provider()
+
+    starting_sandbox = MagicMock()
+    starting_sandbox.state = "starting"
+    provider._client.get.return_value = (  # ty: ignore[unresolved-attribute]
+        starting_sandbox
+    )
+
+    fake_backend_module = MagicMock()
+    fake_backend_module.DaytonaSandbox.return_value = MagicMock()
+
+    with patch(
+        "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+        return_value=fake_backend_module,
+    ):
+        provider.get_or_create(sandbox_id="sb-starting")
+
+    starting_sandbox.wait_for_sandbox_start.assert_called_once_with(timeout=180)
+
+
+def test_daytona_reconnect_missing_raises_sandbox_not_found() -> None:
+    """Missing Daytona sandbox ids should surface as `SandboxNotFoundError`."""
+    provider = _make_daytona_provider()
+    provider._client.get.side_effect = (  # ty: ignore[unresolved-attribute]
+        _FakeDaytonaNotFoundError("sandbox not found")
+    )
+
+    fake_backend_module = MagicMock()
+
+    with (
+        patch(
+            "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+            return_value=fake_backend_module,
+        ),
+        pytest.raises(SandboxNotFoundError, match="sb-missing"),
+    ):
+        provider.get_or_create(sandbox_id="sb-missing")
+
+
+def test_daytona_reconnect_destroyed_state_raises_sandbox_not_found() -> None:
+    """A destroyed Daytona sandbox should surface as not-found."""
+    provider = _make_daytona_provider()
+    destroyed_sandbox = MagicMock()
+    destroyed_sandbox.state = "destroyed"
+    provider._client.get.return_value = (  # ty: ignore[unresolved-attribute]
+        destroyed_sandbox
+    )
+
+    fake_backend_module = MagicMock()
+
+    with (
+        patch(
+            "deepagents_cli.integrations.sandbox_factory._import_provider_module",
+            return_value=fake_backend_module,
+        ),
+        pytest.raises(SandboxNotFoundError, match="sb-dead"),
+    ):
+        provider.get_or_create(sandbox_id="sb-dead")
 
 
 @pytest.mark.parametrize(

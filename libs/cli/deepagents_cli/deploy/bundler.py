@@ -100,6 +100,10 @@ def _build_runtime_config_json(config: DeployConfig) -> str:
     payload: dict[str, Any] = {
         "appName": app_name,
         "assistantId": "agent",
+        "uploads": {
+            "enabled": config.sandbox.provider != "none",
+            "scope": config.sandbox.scope,
+        },
     }
     # Optional UI-customization fields — only injected when the user
     # set them, so the default-bundle case stays small.
@@ -243,7 +247,14 @@ def bundle(
     # 6b. Copy frontend bundle when enabled.
     if frontend_enabled:
         _copy_frontend_dist(config, build_dir)
-        (build_dir / "app.py").write_text(APP_PY_TEMPLATE, encoding="utf-8")
+        app_py = APP_PY_TEMPLATE.replace(
+            "__DEEPAGENTS_UPLOADS_ENABLED__",
+            "True" if config.sandbox.provider != "none" else "False",
+        ).replace(
+            "__DEEPAGENTS_AUTH_PROVIDER__",
+            auth_provider or "none",
+        )
+        (build_dir / "app.py").write_text(app_py, encoding="utf-8")
         logger.info("Copied frontend bundle and wrote app.py (%s)", auth_provider)
 
     # 7. Render langgraph.json.

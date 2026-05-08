@@ -12,7 +12,7 @@ import string
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rich.markup import escape as escape_markup
 
@@ -212,6 +212,78 @@ _LANGSMITH_DEFAULT_IMAGE = "python:3"
 
 _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
 """Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
+
+
+_DAYTONA_TRANSITIONAL_STATES = frozenset(
+    {
+        "building_snapshot",
+        "creating",
+        "pending_build",
+        "pulling_snapshot",
+        "resizing",
+        "restoring",
+        "starting",
+    }
+)
+"""Daytona sandbox states that can become ready without an explicit start."""
+
+_DAYTONA_UNRECOVERABLE_STATES = frozenset(
+    {
+        "archived",
+        "archiving",
+        "build_failed",
+        "destroyed",
+        "destroying",
+    }
+)
+"""Daytona sandbox states that cannot be reconnected for CLI reuse."""
+
+
+class _DaytonaSandboxHandle(Protocol):
+    """Subset of the Daytona sandbox lifecycle API used for reconnect."""
+
+    state: str | None
+    recoverable: bool | None
+
+    def start(self, timeout: int) -> None:
+        """Start the sandbox and wait for readiness."""
+
+    def wait_for_sandbox_start(self, timeout: int) -> None:
+        """Wait for the sandbox to become ready."""
+
+    def recover(self, timeout: int) -> None:
+        """Recover the sandbox from a recoverable error."""
+
+
+def _ensure_daytona_sandbox_ready(
+    sandbox: _DaytonaSandboxHandle,
+    *,
+    sandbox_id: str,
+    timeout: int,
+) -> None:
+    """Ensure a Daytona sandbox is ready for command execution.
+
+    Raises:
+        SandboxNotFoundError: If the sandbox is missing or in an unusable state.
+    """
+    state = getattr(sandbox, "state", None)
+    if state == "started":
+        return
+    if state == "stopped":
+        sandbox.start(timeout=timeout)
+        return
+    if state in _DAYTONA_TRANSITIONAL_STATES:
+        sandbox.wait_for_sandbox_start(timeout=timeout)
+        return
+    if state == "error" and getattr(sandbox, "recoverable", False):
+        sandbox.recover(timeout=timeout)
+        return
+
+    if state in _DAYTONA_UNRECOVERABLE_STATES or state == "error":
+        msg = f"Daytona sandbox {sandbox_id!r} is not usable; state={state!r}"
+    else:
+        msg = f"Daytona sandbox {sandbox_id!r} has unknown state {state!r}"
+    raise SandboxNotFoundError(msg)
 
 
 class _LangSmithProvider(SandboxProvider):
@@ -416,6 +488,7 @@ class _DaytonaProvider(SandboxProvider):
             provider="daytona",
             package="langchain-daytona",
         )
+        self._daytona = daytona_module
 
         from deepagents_cli.model_config import resolve_env_var
 
@@ -443,7 +516,7 @@ class _DaytonaProvider(SandboxProvider):
         """Get or create a Daytona sandbox.
 
         Args:
-            sandbox_id: Not supported yet — must be None.
+            sandbox_id: Existing sandbox ID, or None to create.
             timeout: Seconds to wait for startup.
             **kwargs: Unused.
 
@@ -451,7 +524,7 @@ class _DaytonaProvider(SandboxProvider):
             `DaytonaSandbox` instance.
 
         Raises:
-            NotImplementedError: If `sandbox_id` is provided.
+            SandboxNotFoundError: If `sandbox_id` does not exist or is unusable.
             RuntimeError: If the sandbox fails to start.
         """
         daytona_backend = _import_provider_module(
@@ -461,11 +534,17 @@ class _DaytonaProvider(SandboxProvider):
         )
 
         if sandbox_id:
-            msg = (
-                "Connecting to existing Daytona sandbox by ID not yet supported. "
-                "Create a new sandbox by omitting sandbox_id parameter."
+            try:
+                sandbox = self._client.get(sandbox_id)
+            except self._daytona.DaytonaNotFoundError as exc:
+                raise SandboxNotFoundError(sandbox_id) from exc
+
+            _ensure_daytona_sandbox_ready(
+                sandbox,
+                sandbox_id=sandbox_id,
+                timeout=timeout,
             )
-            raise NotImplementedError(msg)
+            return daytona_backend.DaytonaSandbox(sandbox=sandbox)
 
         sandbox = self._client.create()
         last_exc: Exception | None = None

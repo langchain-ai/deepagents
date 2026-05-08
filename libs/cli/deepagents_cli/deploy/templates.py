@@ -194,6 +194,57 @@ SANDBOX_BLOCK_DAYTONA = '''\
 from langchain_daytona import DaytonaSandbox
 
 _SANDBOXES: dict = {}
+_DAYTONA_TRANSITIONAL_STATES = frozenset(
+    {
+        "building_snapshot",
+        "creating",
+        "pending_build",
+        "pulling_snapshot",
+        "resizing",
+        "restoring",
+        "starting",
+    }
+)
+_DAYTONA_UNRECOVERABLE_STATES = frozenset(
+    {
+        "archived",
+        "archiving",
+        "build_failed",
+        "destroyed",
+        "destroying",
+    }
+)
+
+
+def _ensure_ready_daytona_sandbox(sandbox):
+    """Return True if `sandbox` is usable after any needed lifecycle calls."""
+    state = getattr(sandbox, "state", None)
+    if state == "started":
+        return True
+    if state == "stopped":
+        sandbox.start()
+        return True
+    if state in _DAYTONA_TRANSITIONAL_STATES:
+        sandbox.wait_for_sandbox_start()
+        return True
+    if state == "error" and getattr(sandbox, "recoverable", False):
+        sandbox.recover()
+        return True
+
+    if state in _DAYTONA_UNRECOVERABLE_STATES or state == "error":
+        logger.warning(
+            "Daytona sandbox %s is not reconnectable; state=%s recoverable=%s",
+            getattr(sandbox, "id", None),
+            state,
+            getattr(sandbox, "recoverable", None),
+        )
+    else:
+        logger.warning(
+            "Daytona sandbox %s is in unknown state %s; will create fresh",
+            getattr(sandbox, "id", None),
+            state,
+        )
+    return False
 
 
 def _get_or_create_sandbox(
@@ -208,7 +259,17 @@ def _get_or_create_sandbox(
     if cache_key in _SANDBOXES:
         return _SANDBOXES[cache_key]
 
-    # Match CLI semantics: Daytona sandbox reconnect by ID is not supported.
+    backend = _reconnect_sandbox(
+        cache_key,
+        scope=scope,
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+        sandbox_info=sandbox_info,
+    )
+    if backend is not None:
+        _SANDBOXES[cache_key] = backend
+        return backend
+
     from daytona import Daytona, CreateSandboxFromImageParams
 
     client = Daytona()
@@ -217,6 +278,42 @@ def _get_or_create_sandbox(
     _SANDBOXES[cache_key] = backend
     logger.info("Created Daytona sandbox %s for cache_key %s", sandbox.id, cache_key)
     return backend
+
+
+# Reconnect to an existing Daytona sandbox from validated sandbox info.
+def _reconnect_sandbox(
+    cache_key,
+    *,
+    scope=None,  # noqa: ARG001
+    thread_id=None,  # noqa: ARG001
+    assistant_id=None,  # noqa: ARG001
+    sandbox_info: SandboxInfo | None = None,
+):
+    if not sandbox_info:
+        return None
+    sandbox_id = sandbox_info.get("sandbox_id")
+    if sandbox_info.get("provider") != "daytona":
+        raise RuntimeError("Expected Daytona sandbox info.")
+    if not isinstance(sandbox_id, str):
+        raise RuntimeError("Daytona sandbox info is missing sandbox_id.")
+
+    try:
+        from daytona import Daytona
+
+        client = Daytona()
+        sandbox = client.get(sandbox_id)
+        if not _ensure_ready_daytona_sandbox(sandbox):
+            return None
+    except Exception:
+        logger.warning(
+            "Failed to reconnect Daytona sandbox %s for key %s",
+            sandbox_id,
+            cache_key,
+            exc_info=True,
+        )
+        return None
+    logger.info("Reconnected Daytona sandbox %s for key %s", sandbox_id, cache_key)
+    return DaytonaSandbox(sandbox=sandbox)
 '''
 """Sandbox creation block for the Daytona provider."""
 
@@ -410,12 +507,12 @@ SANDBOX_BLOCKS = {
 AUTH_ON_HANDLER = '''\
 
 
-@auth.on.threads
+@auth.on
 async def add_owner(
     ctx: Auth.types.AuthContext,
     value: dict,
 ):
-    """Scope all resources to the authenticated user."""
+    """Scope metadata-backed resources to the authenticated user."""
     if is_studio_user(ctx.user):
         return {}
 
@@ -423,6 +520,47 @@ async def add_owner(
     metadata = value.setdefault("metadata", {})
     metadata.update(filters)
     return filters
+
+
+@auth.on.store
+async def scope_store(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.store.value,
+):
+    """Scope store operations to the authenticated user's namespace."""
+    if is_studio_user(ctx.user):
+        return None
+
+    namespace = tuple(value["namespace"]) if value.get("namespace") else ()
+    if not namespace or namespace[0] != ctx.user.identity:
+        namespace = (ctx.user.identity, *namespace)
+    value["namespace"] = namespace
+    return None
+
+
+@auth.on.crons.create
+async def scope_cron_create(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.crons.create.value,
+):
+    """Create crons under the authenticated user's identity."""
+    if is_studio_user(ctx.user):
+        return None
+
+    value["user_id"] = ctx.user.identity
+    return None
+
+
+@auth.on.crons
+async def scope_crons(
+    ctx: Auth.types.AuthContext,
+    value: Auth.types.on.crons.value,
+):
+    """Scope cron operations to the authenticated user."""
+    if is_studio_user(ctx.user):
+        return None
+
+    return {"user_id": ctx.user.identity}
 '''
 
 AUTH_BLOCK_SUPABASE = '''\
@@ -830,6 +968,10 @@ class SandboxInfo(TypedDict):
 
 _SANDBOX_INFO_ADAPTER = TypeAdapter(SandboxInfo)
 
+
+class SandboxAuthorizationError(RuntimeError):
+    """Raised when a requested sandbox is not bound to the request scope."""
+
 # Mount points inside the composite backend.
 # Everything lives under /memories/ — longest-prefix-first routing
 # ensures /memories/user/ and /memories/skills/ match before /memories/.
@@ -1092,6 +1234,7 @@ async def _get_sandbox_info_from_metadata(
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
+    user_identity: str | None = None,
 ) -> SandboxInfo | None:
     """Read the durable sandbox info for this thread/assistant scope."""
     try:
@@ -1107,10 +1250,21 @@ async def _get_sandbox_info_from_metadata(
         else:
             raise RuntimeError(f"Unsupported sandbox scope {{scope!r}}.")
         metadata = target.get("metadata") or {{}}
+        if user_identity is not None and metadata.get("owner") != user_identity:
+            logger.warning(
+                "Rejected sandbox metadata read for key %s by user %s",
+                cache_key,
+                user_identity,
+            )
+            raise SandboxAuthorizationError(
+                "Requested sandbox scope is not owned by the authenticated user."
+            )
         return _validate_sandbox_info(
             metadata.get(_SANDBOX_INFO_KEY),
             cache_key=cache_key,
         )
+    except SandboxAuthorizationError:
+        raise
     except Exception as exc:
         raise RuntimeError(
             f"Failed to read sandbox metadata for key {{cache_key!r}}."
@@ -1124,6 +1278,7 @@ async def _persist_sandbox_info_if_possible(
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
+    user_identity: str | None = None,
 ) -> None:
     """Persist the canonical sandbox info to thread/assistant metadata."""
     try:
@@ -1133,6 +1288,10 @@ async def _persist_sandbox_info_if_possible(
                 return
             target = await client.threads.get(thread_id)
             metadata = dict(target.get("metadata") or {{}})
+            if user_identity is not None and metadata.get("owner") != user_identity:
+                raise SandboxAuthorizationError(
+                    "Requested sandbox scope is not owned by the authenticated user."
+                )
             metadata[_SANDBOX_INFO_KEY] = sandbox_info
             await client.threads.update(thread_id, metadata=metadata)
         elif scope == "assistant":
@@ -1140,10 +1299,16 @@ async def _persist_sandbox_info_if_possible(
                 return
             target = await client.assistants.get(assistant_id)
             metadata = dict(target.get("metadata") or {{}})
+            if user_identity is not None and metadata.get("owner") != user_identity:
+                raise SandboxAuthorizationError(
+                    "Requested sandbox scope is not owned by the authenticated user."
+                )
             metadata[_SANDBOX_INFO_KEY] = sandbox_info
             await client.assistants.update(assistant_id, metadata=metadata)
         else:
             raise RuntimeError(f"Unsupported sandbox scope {{scope!r}}.")
+    except SandboxAuthorizationError:
+        raise
     except Exception as exc:
         raise RuntimeError(
             "Failed to persist sandbox metadata for key "
@@ -1151,28 +1316,57 @@ async def _persist_sandbox_info_if_possible(
         ) from exc
 
 
-# Resolve the scoped sandbox by checking config, metadata, then creating if needed.
+# Resolve the scoped sandbox from trusted metadata, then create if needed.
 async def _resolve_sandbox_for_scope(
     *,
     scope: str,
     thread_id: str | None,
     assistant_id: str | None,
     sandbox_info: Any = None,
+    requested_sandbox_id: str | None = None,
+    user_identity: str | None = None,
 ) -> tuple[SandboxBackendProtocol, SandboxInfo]:
-    """Resolve the sandbox for this scope, reconnecting from metadata before create."""
+    """Resolve the sandbox for this scope without trusting client-supplied ids."""
     cache_key = _sandbox_cache_key(
         scope=scope,
         thread_id=thread_id,
         assistant_id=assistant_id,
     )
-    sandbox_info = _validate_sandbox_info(sandbox_info, cache_key=cache_key)
-    if sandbox_info is None:
-        sandbox_info = await _get_sandbox_info_from_metadata(
-            cache_key,
-            scope=scope,
-            thread_id=thread_id,
-            assistant_id=assistant_id,
-        )
+    sandbox_assertion = _validate_sandbox_info(sandbox_info, cache_key=cache_key)
+    if requested_sandbox_id is None and sandbox_assertion is not None:
+        requested_sandbox_id = sandbox_assertion["sandbox_id"]
+
+    trusted_sandbox_info = await _get_sandbox_info_from_metadata(
+        cache_key,
+        scope=scope,
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+        user_identity=user_identity,
+    )
+    if trusted_sandbox_info is not None:
+        trusted_sandbox_id = trusted_sandbox_info["sandbox_id"]
+        if requested_sandbox_id and requested_sandbox_id != trusted_sandbox_id:
+            logger.warning(
+                "Rejected sandbox id %s for key %s; expected %s",
+                requested_sandbox_id,
+                cache_key,
+                trusted_sandbox_id,
+            )
+            raise SandboxAuthorizationError(
+                "Requested sandbox is not bound to this thread or assistant."
+            )
+        sandbox_info = trusted_sandbox_info
+    else:
+        if requested_sandbox_id:
+            logger.warning(
+                "Rejected unbound sandbox id %s for key %s",
+                requested_sandbox_id,
+                cache_key,
+            )
+            raise SandboxAuthorizationError(
+                "Requested sandbox is not bound to this thread or assistant."
+            )
+        sandbox_info = None
 
     sandbox_backend = _get_or_create_sandbox(
         cache_key,
@@ -1188,6 +1382,7 @@ async def _resolve_sandbox_for_scope(
             scope=scope,
             thread_id=thread_id,
             assistant_id=assistant_id,
+            user_identity=user_identity,
         )
     return sandbox_backend, canonical_info
 
@@ -1208,7 +1403,7 @@ def _build_backend_factory(
             assistant_id=assistant_id,
         )
         sandbox_info = _validate_sandbox_info(
-            configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info,
+            initial_sandbox_info,
             cache_key=cache_key,
         )
         sandbox_backend = _get_or_create_sandbox(
@@ -1260,28 +1455,23 @@ async def make_graph(config: RunnableConfig, runtime: "ServerRuntime"):
     configurable = (config or {{}}).get("configurable", {{}}) or {{}}
     assistant_id = str(configurable.get("assistant_id") or DEFAULT_ASSISTANT_ID)
     thread_id = configurable.get("thread_id")
-    sandbox_cache_key = _sandbox_cache_key(
-        scope=SANDBOX_SCOPE,
-        thread_id=thread_id,
-        assistant_id=assistant_id,
-    )
-    sandbox_info = _validate_sandbox_info(
-        configurable.get(_SANDBOX_INFO_KEY),
-        cache_key=sandbox_cache_key,
-    )
-    if sandbox_info is None and (SANDBOX_SCOPE != "thread" or thread_id):
+    user = getattr(runtime, "user", None)
+    identity = getattr(user, "identity", None) if user else None
+    user_id = str(identity) if identity else None
+    sandbox_info = None
+    if (
+        SANDBOX_PROVIDER != "none"
+        and (SANDBOX_SCOPE != "thread" or thread_id)
+    ):
         _, sandbox_info = await _resolve_sandbox_for_scope(
             scope=SANDBOX_SCOPE,
             thread_id=thread_id,
             assistant_id=assistant_id,
+            sandbox_info=configurable.get(_SANDBOX_INFO_KEY),
+            user_identity=user_id,
         )
 
     store = getattr(runtime, "store", None)
-    user_id = None
-    if HAS_USER_MEMORIES:
-        user = getattr(runtime, "user", None)
-        identity = getattr(user, "identity", None) if user else None
-        user_id = str(identity) if identity else None
     if HAS_USER_MEMORIES and not user_id:
         logger.warning(
             "User memories are enabled but no user_id found "
@@ -1372,14 +1562,123 @@ install step that `langgraph dev` does not perform.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from auth import get_current_user
+from deploy_graph import (
+    DEFAULT_ASSISTANT_ID,
+    SANDBOX_SCOPE,
+    SandboxAuthorizationError,
+    _resolve_sandbox_for_scope,
+)
+from langgraph_sdk import Auth
+
 _FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
+_UPLOADS_ENABLED = __DEEPAGENTS_UPLOADS_ENABLED__
+_AUTH_PROVIDER = "__DEEPAGENTS_AUTH_PROVIDER__"
+_UPLOADS_DIR = "/uploads"
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+class SandboxRequest(BaseModel):
+    assistant_id: str = DEFAULT_ASSISTANT_ID
+    thread_id: str | None = None
+    provider: str | None = None
+    sandbox_id: str | None = None
+    image: str | None = None
+    scope: str | None = None
+
+
+class UploadRequest(SandboxRequest):
+    filename: str | None = None
+
+
+_SANDBOX_REQUEST_ADAPTER = TypeAdapter(SandboxRequest)
+_UPLOAD_REQUEST_ADAPTER = TypeAdapter(UploadRequest)
+
+
+def _identity_from_user(user) -> str | None:
+    if isinstance(user, dict):
+        identity = user.get("identity")
+    else:
+        identity = getattr(user, "identity", None)
+    return str(identity) if identity else None
+
+
+async def _require_authenticated_api_request(
+    request: Request,
+) -> tuple[JSONResponse | None, str | None]:
+    authorization = request.headers.get("authorization")
+    try:
+        if _AUTH_PROVIDER == "anonymous":
+            user = await get_current_user(authorization=authorization)
+        else:
+            user = await get_current_user(
+                authorization=authorization,
+                path=request.url.path,
+            )
+    except Auth.exceptions.HTTPException as exc:
+        return (
+            JSONResponse(
+                {"error": exc.detail},
+                status_code=exc.status_code,
+            ),
+            None,
+        )
+    return None, _identity_from_user(user)
+
+
+def _sanitize_filename(raw_name: str | None) -> str:
+    """Return a single safe filename component."""
+    name = Path(raw_name or "upload").name
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return name or "upload"
+
+
+def _is_allowed_upload(filename: str, content_type: str) -> bool:
+    if content_type.startswith(("text/", "image/")):
+        return True
+    suffix = Path(filename).suffix.lower()
+    return suffix in {
+        ".csv",
+        ".gif",
+        ".jpeg",
+        ".jpg",
+        ".json",
+        ".jsonl",
+        ".md",
+        ".png",
+        ".tsv",
+        ".txt",
+        ".webp",
+    }
+
+
+def _sandbox_cache_key(thread_id: str | None, assistant_id: str) -> str:
+    if SANDBOX_SCOPE == "assistant":
+        return f"assistant:{assistant_id}"
+    if not thread_id:
+        raise ValueError("thread_id is required for thread-scoped sandbox uploads")
+    return f"thread:{thread_id}"
+
+
+def _request_payload(request: Request, *, sandbox_id: str | None = None) -> dict:
+    payload = dict(request.query_params)
+    if sandbox_id is None:
+        return payload
+    query_sandbox_id = payload.get("sandbox_id")
+    if query_sandbox_id and query_sandbox_id != sandbox_id:
+        raise ValueError("sandbox_id path and query parameters must match")
+    payload["sandbox_id"] = sandbox_id
+    return payload
 
 
 async def healthz(_request):
@@ -1392,9 +1691,114 @@ async def app_root_redirect(_request):
     return RedirectResponse(url="/app/", status_code=308)
 
 
+async def ensure_sandbox(request: Request):
+    if not _UPLOADS_ENABLED:
+        return JSONResponse(
+            {"error": "file uploads require a sandbox"},
+            status_code=404,
+        )
+    auth_error, user_identity = await _require_authenticated_api_request(request)
+    if auth_error is not None:
+        return auth_error
+
+    try:
+        payload = _SANDBOX_REQUEST_ADAPTER.validate_python(
+            _request_payload(request)
+        )
+        _, sandbox_info = await _resolve_sandbox_for_scope(
+            scope=SANDBOX_SCOPE,
+            thread_id=payload.thread_id,
+            assistant_id=payload.assistant_id,
+            requested_sandbox_id=payload.sandbox_id,
+            user_identity=user_identity,
+        )
+    except ValidationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except SandboxAuthorizationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    return JSONResponse({"sandbox": sandbox_info})
+
+
+async def upload_file(request: Request):
+    if not _UPLOADS_ENABLED:
+        return JSONResponse(
+            {"error": "file uploads require a sandbox"},
+            status_code=404,
+        )
+    auth_error, user_identity = await _require_authenticated_api_request(request)
+    if auth_error is not None:
+        return auth_error
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            content_length_bytes = int(content_length)
+        except ValueError:
+            return JSONResponse({"error": "invalid content length"}, status_code=400)
+        if content_length_bytes > _MAX_UPLOAD_BYTES:
+            return JSONResponse({"error": "file is too large"}, status_code=413)
+
+    body = await request.body()
+    if not body:
+        return JSONResponse({"error": "file is empty"}, status_code=400)
+    if len(body) > _MAX_UPLOAD_BYTES:
+        return JSONResponse({"error": "file is too large"}, status_code=413)
+
+    try:
+        payload = _UPLOAD_REQUEST_ADAPTER.validate_python(
+            _request_payload(
+                request,
+                sandbox_id=request.path_params.get("sandbox_id"),
+            )
+        )
+        filename = _sanitize_filename(payload.filename)
+        content_type = request.headers.get("content-type", "")
+        if not _is_allowed_upload(filename, content_type):
+            return JSONResponse(
+                {"error": "only text and image uploads are supported"},
+                status_code=415,
+            )
+        sandbox, sandbox_info = await _resolve_sandbox_for_scope(
+            scope=SANDBOX_SCOPE,
+            thread_id=payload.thread_id,
+            assistant_id=payload.assistant_id,
+            requested_sandbox_id=payload.sandbox_id,
+            user_identity=user_identity,
+        )
+    except ValidationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except SandboxAuthorizationError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=403)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    path = f"{_UPLOADS_DIR}/{filename}"
+    results = await sandbox.aupload_files([(path, body)])
+    result = results[0] if results else None
+    if result is None or result.error is not None:
+        return JSONResponse(
+            {"error": getattr(result, "error", "upload failed")},
+            status_code=500,
+        )
+    return JSONResponse({
+        "path": result.path,
+        "mime_type": content_type,
+        "sandbox": sandbox_info,
+    })
+
+
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+        Route("/sandboxes", ensure_sandbox, methods=["POST"]),
+        Route("/sandboxes/{sandbox_id}/files", upload_file, methods=["POST"]),
         Route("/app", app_root_redirect),
         Mount(
             "/app",

@@ -224,6 +224,38 @@ class TestRenderDeployGraph:
             result = _render_deploy_graph(config, mcp_present=False)
             compile(result, f"<deploy_graph_{provider}>", "exec")
 
+    def test_no_sandbox_skips_sandbox_info_resolution(self) -> None:
+        """StateBackend has no provider id, so skip sandbox info persistence."""
+        config = _minimal_config(provider="none")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert 'SANDBOX_PROVIDER != "none"' in result
+        assert "StateBackend" in result
+
+    def test_sandbox_reconnect_uses_server_metadata_first(self) -> None:
+        """Client-provided sandbox records are assertions, not reconnect authority."""
+        config = _minimal_config(provider="langsmith")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        assert "class SandboxAuthorizationError" in result
+        assert "trusted_sandbox_info = await _get_sandbox_info_from_metadata" in result
+        assert 'metadata.get("owner") != user_identity' in result
+        assert "requested_sandbox_id != trusted_sandbox_id" in result
+        assert "Rejected unbound sandbox id" in result
+        unsafe_fallback = "configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info"
+        assert unsafe_fallback not in result
+
+    def test_daytona_block_reconnects_from_sandbox_info(self) -> None:
+        """Generated Daytona deploy graph must reconnect from persisted sandbox info."""
+        config = _minimal_config(provider="daytona")
+        result = _render_deploy_graph(config, mcp_present=False)
+
+        compile(result, "<deploy_graph_daytona_reconnect>", "exec")
+        assert "def _reconnect_sandbox" in result
+        assert "client.get(sandbox_id)" in result
+        assert "_ensure_ready_daytona_sandbox(sandbox)" in result
+        assert "Match CLI semantics" not in result
+
     def test_langsmith_block_uses_snapshot_api(self) -> None:
         """Generated langsmith block must reference the snapshot API surface.
 
@@ -501,6 +533,10 @@ class TestBundleAuth:
         assert "auth = Auth()" in content
         assert "SUPABASE_URL" in content
         assert "add_owner" in content
+        assert "@auth.on\nasync def add_owner" in content
+        assert "@auth.on.store\nasync def scope_store" in content
+        assert "@auth.on.crons.create\nasync def scope_cron_create" in content
+        assert "@auth.on.crons\nasync def scope_crons" in content
 
     def test_auth_py_not_generated_without_auth(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")
@@ -534,6 +570,10 @@ class TestBundleAuth:
         compile(content, "<auth.py>", "exec")
         assert "CLERK_SECRET_KEY" in content
         assert "add_owner" in content
+        assert "@auth.on\nasync def add_owner" in content
+        assert "@auth.on.store\nasync def scope_store" in content
+        assert "@auth.on.crons.create\nasync def scope_cron_create" in content
+        assert "@auth.on.crons\nasync def scope_crons" in content
 
     def test_supabase_auth_py_valid_python(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")

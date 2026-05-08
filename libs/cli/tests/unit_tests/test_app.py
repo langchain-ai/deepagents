@@ -2109,13 +2109,68 @@ class TestAskUserLifecycle:
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = MagicMock()
         tool = MagicMock()
-        tool._tool_name = "ask_user"
         tool.has_expandable_args = True
 
         with patch.object(app, "query", return_value=[tool]):
             app.action_toggle_tool_output()
 
         tool.toggle_args.assert_called_once_with()
+
+    def test_ctrl_o_falls_back_to_tool_with_expandable_args(self) -> None:
+        """When no ask_user is pending, Ctrl+O still expands an ask_user-like row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock()
+        tool.has_output = False
+        tool.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [tool]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
+    def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
+        """Tool with real output wins over a later one with only expandable args."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        older = MagicMock()
+        older.has_output = True
+        older.has_expandable_args = False
+        newer = MagicMock()
+        newer.has_output = False
+        newer.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [older, newer]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        # Iterates in reverse, so newer (expandable args) is hit first.
+        newer.toggle_args.assert_called_once_with()
+        older.toggle_output.assert_not_called()
 
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""

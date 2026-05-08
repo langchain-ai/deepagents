@@ -838,6 +838,7 @@ class ToolCallMessage(Vertical):
                     classes="tool-args",
                 )
         # Collapsed argument detail for tools whose args are too noisy inline.
+        # Mounted for every tool but only populated when `has_expandable_args` is True.
         yield Static("", classes="tool-args", id="args-full")
         yield Static("", classes="tool-output-hint", id="args-hint")
         # Status - shows running animation while pending, then final status
@@ -1044,10 +1045,8 @@ class ToolCallMessage(Vertical):
             self._status_widget.display = True
 
     def toggle_output(self) -> None:
-        """Toggle output expansion, or tool argument detail when there is no output."""
+        """Toggle expansion of the tool's preview/full output."""
         if not self._output:
-            if self.has_expandable_args:
-                self.toggle_args()
             return
         self._expanded = not self._expanded
         self._update_output_display()
@@ -1579,30 +1578,46 @@ class ToolCallMessage(Vertical):
         return bool(self._output)
 
     @property
-    def has_expandable_args(self) -> bool:
-        """Check if this tool message has collapsed arguments available.
+    def tool_name(self) -> str:
+        """Public read-only accessor for the underlying tool name."""
+        return self._tool_name
 
-        Returns:
-            True when arguments can be expanded, False otherwise.
+    @property
+    def has_expandable_args(self) -> bool:
+        """Whether the tool's args are large enough to deserve a collapsible block.
+
+        Only `ask_user` qualifies today: its `questions` payload is too noisy to
+        render inline, but users still need a way to inspect it.
         """
         return self._tool_name == "ask_user" and bool(self._args)
 
     def _format_args_detail(self) -> Content:
-        """Format tool arguments for expanded display.
+        """Render tool arguments as an indented `Content` block.
+
+        Falls back to `str(self._args)` (with a visible marker) when JSON
+        serialization fails — `default=str` already handles most non-serializable
+        values, so reaching the fallback indicates a deeper issue worth logging.
 
         Returns:
-            Literal `Content` containing pretty-printed arguments.
+            Indented `Content` containing JSON-pretty-printed arguments, or a
+            marked fallback rendering on serialization failure.
         """
         try:
             text = json.dumps(self._args, ensure_ascii=False, indent=2, default=str)
-        except (TypeError, ValueError):
-            text = str(self._args)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "ask_user args not JSON-serializable; using repr fallback: %r", exc
+            )
+            text = f"# (fallback rendering)\n{self._args!s}"
         lines = Content(text).split("\n")
         return Content("\n").join(Content.assemble("  ", line) for line in lines)
 
     def _update_args_display(self) -> None:
         """Update the collapsed/expanded argument display."""
-        if not self._args_widget or not self._args_hint_widget:
+        if self._args_widget is None or self._args_hint_widget is None:
+            # Toggle invoked before on_mount cached the refs; log so a regression
+            # that nulls them out post-mount doesn't appear as a silent no-op.
+            logger.debug("_update_args_display called before widget refs are cached")
             return
 
         if not self.has_expandable_args:

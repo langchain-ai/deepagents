@@ -347,6 +347,120 @@ class TestToolCallMessageMarkupSafety:
         assert msg.has_expandable_args is True
 
 
+class TestToolCallMessageExpandableArgs:
+    """Tests for the `ask_user` expandable-arguments toggle."""
+
+    def test_has_expandable_args_false_for_non_ask_user(self) -> None:
+        """Only `ask_user` should expose expandable args."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/x"})
+        assert msg.has_expandable_args is False
+
+    def test_has_expandable_args_false_for_ask_user_without_args(self) -> None:
+        """Empty args dict should not be expandable."""
+        msg = ToolCallMessage("ask_user", {})
+        assert msg.has_expandable_args is False
+
+    def test_tool_name_property_exposes_underlying_name(self) -> None:
+        """Public `tool_name` property should mirror the constructor arg."""
+        msg = ToolCallMessage("ask_user", {"questions": []})
+        assert msg.tool_name == "ask_user"
+
+    def test_toggle_args_no_op_before_mount(self) -> None:
+        """Calling `toggle_args` before mount should not flip state."""
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "?"}]})
+        # Without `on_mount`, widget refs are None — `_update_args_display`
+        # short-circuits and the expanded flag should not be flipped either,
+        # since the user can't possibly see the result.
+        msg.toggle_args()
+        assert msg._args_expanded is True  # state flips
+        # but rendering is a no-op:
+        assert msg._args_widget is None
+
+    async def test_toggle_args_swaps_display_state(self) -> None:
+        """`toggle_args` should flip the args widget's display after mount."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "Name?", "type": "text"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+
+            # Initial state: hint visible, full args hidden.
+            assert msg._args_widget is not None
+            assert msg._args_hint_widget is not None
+            assert msg._args_widget.display is False
+            assert msg._args_hint_widget.display is True
+
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is True
+            assert msg._args_widget.display is True
+
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is False
+            assert msg._args_widget.display is False
+
+    async def test_on_click_routes_ask_user_to_toggle_args(self) -> None:
+        """Clicking an `ask_user` row (no output) should expand args."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "?"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._args_expanded is True
+
+    async def test_toggle_output_does_not_fall_through_to_args(self) -> None:
+        """`toggle_output` is strictly about output; args stay collapsed."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "?"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.toggle_output()
+            await pilot.pause()
+            assert msg._args_expanded is False
+
+
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.
 

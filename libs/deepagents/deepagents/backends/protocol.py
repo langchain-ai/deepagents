@@ -829,7 +829,8 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """

@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
@@ -1329,6 +1331,8 @@ async def _handle_interrupt_cleanup(
             "Previous operation was cancelled."
         )
         await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning("Could not save interrupted state (network): %s", e)
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 
@@ -1367,6 +1371,13 @@ async def _persist_context_tokens(
     """
     try:
         await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning(
+            "Could not persist _context_tokens=%d (network): %s; "
+            "token count may be stale on resume",
+            tokens,
+            e,
+        )
     except Exception:  # non-critical; stale count on resume is acceptable
         logger.warning(
             "Failed to persist _context_tokens=%d; token count may be stale on resume",

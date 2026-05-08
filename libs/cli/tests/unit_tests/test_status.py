@@ -261,6 +261,22 @@ class TestTokenDisplay:
             assert "+" not in rendered
 
 
+class TestModeIndicator:
+    """Tests for the input-mode indicator in the status bar."""
+
+    async def test_incognito_shell_mode_shows_indicator(self) -> None:
+        """Incognito shell mode should not look like normal input mode."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+
+            assert str(indicator.render()) == "INCOG"
+            assert indicator.has_class("shell-incognito")
+
+
 class TestModelLabelPrefixStripping:
     """Tests for provider-specific model prefix stripping in ModelLabel."""
 

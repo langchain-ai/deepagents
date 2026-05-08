@@ -245,12 +245,14 @@ if TYPE_CHECKING:
     console: Console
 
 MODE_PREFIXES: dict[str, str] = {
+    "shell_incognito": "!!",
     "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
 
 MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell_incognito": "$",
     "shell": "$",
     "command": "/",
 }
@@ -267,6 +269,26 @@ if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
 
 PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
 """Reverse lookup: trigger character -> mode name."""
+
+
+def detect_mode_prefix(text: str) -> tuple[str, str] | None:
+    """Return the longest mode prefix and mode for `text`, if any.
+
+    Args:
+        text: Input text that may start with a mode trigger.
+
+    Returns:
+        Tuple of `(prefix, mode)` for the longest matching trigger, otherwise
+        `None`.
+    """
+    for mode, prefix in sorted(
+        MODE_PREFIXES.items(),
+        key=lambda item: len(item[1]),
+        reverse=True,
+    ):
+        if text.startswith(prefix):
+            return prefix, mode
+    return None
 
 
 class CharsetMode(StrEnum):

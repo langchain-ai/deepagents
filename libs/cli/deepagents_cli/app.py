@@ -396,7 +396,7 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
-InputMode = Literal["normal", "shell", "command"]
+InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
 """Seconds since the last keystroke after which the user is considered idle and
@@ -3287,7 +3287,9 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "shell":
+        if mode == "shell_incognito":
+            await self._handle_shell_command(value.removeprefix("!!"), incognito=True)
+        elif mode == "shell":
             await self._handle_shell_command(value.removeprefix("!"))
         elif mode == "command":
             await self._handle_command(value)
@@ -3962,7 +3964,12 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _handle_shell_command(self, command: str) -> None:
+    async def _handle_shell_command(
+        self,
+        command: str,
+        *,
+        incognito: bool = False,
+    ) -> None:
         """Handle a shell command (! prefix).
 
         Thin dispatcher that mounts the user message and spawns a worker
@@ -3970,19 +3977,30 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
+            incognito: Whether the command/output should remain local-only.
         """
-        await self._mount_message(UserMessage(f"!{command}"))
+        if incognito:
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup(
+                        "Running incognito shell command: $cmd",
+                        cmd=command,
+                    )
+                )
+            )
+        else:
+            await self._mount_message(UserMessage(f"!{command}"))
         self._shell_running = True
 
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
         self._shell_worker = self.run_worker(
-            self._run_shell_task(command),
+            self._run_shell_task(command, incognito=incognito),
             exclusive=False,
         )
 
-    async def _run_shell_task(self, command: str) -> None:
+    async def _run_shell_task(self, command: str, *, incognito: bool = False) -> None:
         """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
@@ -3991,6 +4009,7 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
+            incognito: Whether the command/output should remain local-only.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
@@ -4029,9 +4048,14 @@ class DeepAgentsApp(App):
                 output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                msg = AssistantMessage(f"```\n{output}\n```")
-                await self._mount_message(msg)
-                await msg.write_initial_content()
+                if incognito:
+                    await self._mount_message(
+                        AppMessage(f"```\n{output}\n```", markdown=True)
+                    )
+                else:
+                    msg = AssistantMessage(f"```\n{output}\n```")
+                    await self._mount_message(msg)
+                    await msg.write_initial_content()
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
@@ -4300,7 +4324,9 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run shell commands directly\n\n"
+                "  !command        Run shell commands directly\n"
+                "  !!command       Run shell commands locally without adding "
+                "command/output to model context\n\n"
                 "Docs: "
             )
             help_text = Content.assemble(

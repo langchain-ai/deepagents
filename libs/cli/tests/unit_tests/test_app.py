@@ -1838,6 +1838,28 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
+    async def test_queued_incognito_shell_preserves_mode_on_drain(self) -> None:
+        """Queued incognito shell commands should drain as incognito shell."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("!!echo hidden", "shell_incognito"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "!!echo hidden"
+            assert app._pending_messages[0].mode == "shell_incognito"
+
+            handler = AsyncMock()
+            app._handle_shell_command = handler  # type: ignore[method-assign]
+            app._agent_running = False
+
+            await app._process_next_from_queue()
+
+            handler.assert_awaited_once_with("echo hidden", incognito=True)
+
     async def test_immediate_processing_when_agent_idle(self) -> None:
         """Messages should process immediately when agent is not running."""
         app = DeepAgentsApp()
@@ -3101,6 +3123,40 @@ class TestShellCommandInterrupt:
             error_msgs = app.query(ErrorMessage)
             assert any("timed out" in w._content for w in error_msgs)
 
+    async def test_incognito_timeout_feedback_is_not_model_visible(self) -> None:
+        """Incognito timeout feedback should stay out of user/assistant records."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.wait = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+            messages = app._message_store.get_all_messages()
+            assert any(
+                msg.type == MessageType.ERROR and "timed out" in msg.content
+                for msg in messages
+            )
+            assert not any(
+                msg.type in {MessageType.USER, MessageType.ASSISTANT}
+                and "secret" in msg.content
+                for msg in messages
+            )
+
     async def test_posix_killpg_called(self) -> None:
         """On POSIX, _kill_shell_process should use os.killpg with SIGTERM."""
         app = DeepAgentsApp()
@@ -3194,6 +3250,85 @@ class TestShellCommandInterrupt:
             # Close the unawaited coroutine to suppress RuntimeWarning
             coro = mock_rw.call_args[0][0]
             coro.close()
+
+    async def test_process_message_routes_incognito_shell_command(self) -> None:
+        """`shell_incognito` mode should strip `!!` and mark the shell run."""
+        app = DeepAgentsApp()
+        handler = AsyncMock()
+        app._handle_shell_command = handler  # type: ignore[method-assign]
+
+        await app._process_message("!!echo secret", "shell_incognito")
+
+        handler.assert_awaited_once_with("echo secret", incognito=True)
+
+    async def test_incognito_shell_command_header_is_app_message(self) -> None:
+        """Incognito shell commands should not be stored as user messages."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._handle_shell_command("echo secret", incognito=True)
+
+            messages = app._message_store.get_all_messages()
+            assert any(
+                msg.type == MessageType.APP
+                and "incognito shell command" in msg.content
+                and "echo secret" in msg.content
+                for msg in messages
+            )
+            assert not any(
+                msg.type == MessageType.USER and "echo secret" in msg.content
+                for msg in messages
+            )
+
+            # Close the unawaited coroutine to suppress RuntimeWarning.
+            coro = mock_rw.call_args[0][0]
+            coro.close()
+
+    async def test_incognito_shell_output_is_app_message(self) -> None:
+        """Incognito shell output should avoid assistant transcript records."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # type: ignore[assignment]
+            app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
+            app._process_next_from_queue = AsyncMock()  # type: ignore[assignment]
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_cli.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ) as write_mock,
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        messages = app._message_store.get_all_messages()
+        assert any(
+            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
+        )
+        assert not any(
+            msg.type in {MessageType.USER, MessageType.ASSISTANT}
+            and "secret" in msg.content
+            for msg in messages
+        )
+        write_mock.assert_not_awaited()
 
     async def test_kill_noop_when_already_exited(self) -> None:
         """_kill_shell_process should no-op if process already exited."""

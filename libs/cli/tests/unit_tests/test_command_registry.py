@@ -179,3 +179,13 @@ class TestHelpBodyDrift:
             f"Commands in /help body but missing from COMMANDS: {extra}\n"
             "Remove them from help_body or add to COMMANDS in command_registry.py."
         )
+
+    def test_help_body_describes_incognito_shell_prefix(self) -> None:
+        """The `/help` body should document local-only incognito shell mode."""
+        app_src = (
+            Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.py"
+        ).read_text()
+
+        assert "!!command" in app_src
+        assert "command/output" in app_src
+        assert "model context" in app_src

@@ -124,6 +124,12 @@ class StatusBar(Horizontal):
         color: white;
     }
 
+    StatusBar .status-mode.shell-incognito {
+        background: $warning;
+        color: $background;
+        text-style: bold;
+    }
+
     StatusBar .status-auto-approve {
         width: auto;
         padding: 0 1;
@@ -270,11 +276,14 @@ class StatusBar(Horizontal):
             indicator = self.query_one("#mode-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("normal", "shell", "command")
+        indicator.remove_class("normal", "shell", "command", "shell-incognito")
 
         if mode == "shell":
             indicator.update("SHELL")
             indicator.add_class("shell")
+        elif mode == "shell_incognito":
+            indicator.update("INCOG")
+            indicator.add_class("shell-incognito")
         elif mode == "command":
             indicator.update("CMD")
             indicator.add_class("command")

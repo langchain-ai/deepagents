@@ -217,6 +217,34 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["hi"]}
 
+    async def test_shift_enter_inserts_newline_for_multiline_answer(self) -> None:
+        """Shift+Enter inserts a literal newline for multi-paragraph answers."""
+        app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            await pilot.pause()
+
+            await pilot.press("a")
+            await pilot.press("shift+enter")
+            await pilot.press("b")
+            await pilot.pause()
+            assert text_input.text == "a\nb"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["a\nb"]}
+
     async def test_escape_cancels_and_resolves_future(self) -> None:
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 

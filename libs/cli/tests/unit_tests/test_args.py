@@ -8,8 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
-from deepagents_cli.agent import DEFAULT_AGENT_NAME
-from deepagents_cli.main import _DEFAULT_AGENT_NAME, parse_args
+from deepagents_cli.main import parse_args
 from deepagents_cli.ui import show_help, show_threads_list_help
 
 
@@ -458,11 +457,6 @@ class TestAutoUpdateArg:
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
         assert args.auto_update is False
-
-
-def test_default_agent_name_matches_canonical() -> None:
-    """Ensure the duplicated constant in main.py stays in sync with agent.py."""
-    assert _DEFAULT_AGENT_NAME == DEFAULT_AGENT_NAME
 
 
 class TestHelpScreenDrift:

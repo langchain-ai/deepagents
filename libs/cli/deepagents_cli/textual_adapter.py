@@ -73,6 +73,8 @@ configure_debug_logging(logger)
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
+_ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """Return a cached `TypeAdapter(HITLRequest)`.
@@ -570,6 +572,31 @@ async def execute_task_textual(
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user
                                         )
+                                        tool_id = validated_ask_user["tool_call_id"]
+                                        if tool_id not in displayed_tool_ids:
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+                                            tool_msg = ToolCallMessage(
+                                                "ask_user",
+                                                {
+                                                    "questions": validated_ask_user[
+                                                        "questions"
+                                                    ]
+                                                },
+                                            )
+                                            try:
+                                                await adapter._mount_message(tool_msg)
+                                            except Exception:
+                                                logger.exception(
+                                                    "Failed to mount ask_user "
+                                                    "tool row for %s",
+                                                    tool_id,
+                                                )
+                                            else:
+                                                displayed_tool_ids.add(tool_id)
+                                                adapter._current_tool_messages[
+                                                    tool_id
+                                                ] = tool_msg
                                         interrupt_occurred = True
                                         await dispatch_hook("input.required", {})
                                     except ValidationError:
@@ -1006,15 +1033,22 @@ async def execute_task_textual(
                                 }
 
                         result_type = result.get("type")
+                        tool_id = ask_req["tool_call_id"]
                         if result_type == "answered":
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                tool_id = ask_req["tool_call_id"]
-                                if tool_id in adapter._current_tool_messages:
-                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg = adapter._current_tool_messages.pop(
+                                    tool_id, None
+                                )
+                                if tool_msg is not None:
                                     tool_msg.set_success("User answered")
-                                    adapter._current_tool_messages.pop(tool_id, None)
+                                else:
+                                    logger.warning(
+                                        "ask_user tool_id %s missing from "
+                                        "_current_tool_messages on answered",
+                                        tool_id,
+                                    )
                             else:
                                 logger.error(
                                     "ask_user answered payload had non-list "
@@ -1027,12 +1061,28 @@ async def execute_task_textual(
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
+                                tool_msg = adapter._current_tool_messages.pop(
+                                    tool_id, None
+                                )
+                                if tool_msg is not None:
+                                    tool_msg.set_error(
+                                        "invalid ask_user answers payload"
+                                    )
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            if tool_msg is not None:
+                                tool_msg.set_rejected()
+                            else:
+                                logger.warning(
+                                    "ask_user tool_id %s missing from "
+                                    "_current_tool_messages on cancelled",
+                                    tool_id,
+                                )
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1043,6 +1093,9 @@ async def execute_task_textual(
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            if tool_msg is not None:
+                                tool_msg.set_error(error_text)
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1050,9 +1103,13 @@ async def execute_task_textual(
                         )
                         resume_payload[interrupt_id] = {
                             "status": "error",
-                            "error": "ask_user not supported by this UI",
+                            "error": _ASK_USER_UNSUPPORTED_ERROR,
                             "answers": ["" for _ in questions],
                         }
+                        tool_id = ask_req["tool_call_id"]
+                        tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                        if tool_msg is not None:
+                            tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]

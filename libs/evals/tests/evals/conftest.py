@@ -15,6 +15,19 @@ from deepagents import __version__ as deepagents_version
 pytest_plugins = ["tests.evals.pytest_reporter"]
 
 
+def _parse_openrouter_providers(value: str) -> list[str]:
+    """Split a comma-separated provider spec into OpenRouter's `only` list."""
+    # Keep this local instead of importing from `deepagents_harbor.deepagents_wrapper`.
+    # Pytest imports conftest during collection, and the wrapper import path pulls
+    # in Harbor/LangSmith integration modules that are not needed for model setup.
+    parts = [part.strip() for part in value.split(",")]
+    providers = [part for part in parts if part]
+    if not providers:
+        msg = "openrouter_provider must contain at least one non-empty provider name"
+        raise ValueError(msg)
+    return providers
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom marks and fail fast if LangSmith tracing is not enabled.
 
@@ -76,6 +89,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
     )
     parser.addoption(
+        "--eval-category-exclude",
+        action="append",
+        default=[],
+        help="Skip evals tagged with this category, even when --eval-category would include them (repeatable). E.g. --eval-category-exclude memory",
+    )
+    parser.addoption(
         "--eval-tier",
         action="append",
         default=[],
@@ -85,14 +104,33 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--openrouter-provider",
         action="store",
         default=None,
-        help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
+        help=(
+            "Pin OpenRouter to one or more providers (comma-separated allowlist). "
+            "E.g. --openrouter-provider MiniMax or --openrouter-provider MiniMax,Fireworks"
+        ),
+    )
+    parser.addoption(
+        "--openrouter-allow-fallbacks",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow OpenRouter to fall back outside --openrouter-provider when the "
+            "listed providers are unavailable. Default is strict (no fallbacks)."
+        ),
+    )
+    parser.addoption(
+        "--openai-reasoning-effort",
+        action="store",
+        choices=("minimal", "low", "medium", "high", "xhigh"),
+        default=None,
+        help="Apply reasoning effort to OpenAI models. E.g. --openai-reasoning-effort high",
     )
     parser.addoption(
         "--repl",
         action="store",
         choices=("quickjs", "langchain"),
         default=None,
-        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests run without a REPL.",
+        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests bind their tools directly instead of routing through a REPL.",
     )
 
 
@@ -102,36 +140,49 @@ def _filter_by_marker(
     *,
     option: str,
     marker_name: str,
+    exclude_option: str | None = None,
 ) -> None:
-    """Deselect items whose *marker_name* value is not in the CLI *option* list.
+    """Keep items whose *marker_name* value is in the include list and not in the exclude list.
 
-    Exits the test session with returncode 1 if any requested values are not
-    found among collected tests.
+    An empty include list means "include everything"; an empty exclude list
+    means "exclude nothing". When a marker value appears in both lists, the
+    exclude list wins.
+
+    Exits the test session with returncode 1 if any include or exclude value
+    does not match a marker on the collected tests.
 
     Args:
         config: The pytest config object.
         items: Mutable list of collected test items (modified in-place).
-        option: CLI option name (e.g. `--eval-category`).
+        option: CLI include option name (e.g. `--eval-category`).
         marker_name: Pytest marker to read (e.g. `eval_category`).
+        exclude_option: CLI exclude option name, if supported.
     """
     values = config.getoption(option)
-    if not values:
+    excluded = config.getoption(exclude_option) if exclude_option else []
+    if not values and not excluded:
         return
 
     known = {m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args}
     unknown = set(values) - known
-    if unknown:
-        msg = (
-            f"Unknown {option} values: {sorted(unknown)}. "
-            f"Known values in collected tests: {sorted(known)}"
-        )
+    unknown_excluded = set(excluded) - known
+    if unknown or unknown_excluded:
+        parts = []
+        if unknown:
+            parts.append(f"Unknown {option} values: {sorted(unknown)}")
+        if unknown_excluded:
+            parts.append(f"Unknown {exclude_option} values: {sorted(unknown_excluded)}")
+        msg = f"{'; '.join(parts)}. Known values in collected tests: {sorted(known)}"
         pytest.exit(msg, returncode=1)
 
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
         marker = item.get_closest_marker(marker_name)
-        if marker and marker.args and marker.args[0] in values:
+        marker_value = marker.args[0] if marker and marker.args else None
+        included = not values or marker_value in values
+        is_excluded = marker_value in excluded
+        if included and not is_excluded:
             selected.append(item)
         else:
             deselected.append(item)
@@ -140,7 +191,13 @@ def _filter_by_marker(
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    _filter_by_marker(config, items, option="--eval-category", marker_name="eval_category")
+    _filter_by_marker(
+        config,
+        items,
+        option="--eval-category",
+        marker_name="eval_category",
+        exclude_option="--eval-category-exclude",
+    )
     _filter_by_marker(config, items, option="--eval-tier", marker_name="eval_tier")
 
 
@@ -189,17 +246,35 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
     kwargs: dict[str, Any] = {}
     provider = request.config.getoption("--openrouter-provider")
+    allow_fallbacks = bool(request.config.getoption("--openrouter-allow-fallbacks"))
     if provider:
         if not model_name.startswith("openrouter:"):
             msg = "--openrouter-provider requires an openrouter: model prefix"
             raise ValueError(msg)
         kwargs["openrouter_provider"] = {
-            "only": [provider],
-            "allow_fallbacks": False,
+            "only": _parse_openrouter_providers(provider),
+            "allow_fallbacks": allow_fallbacks,
         }
+    elif allow_fallbacks:
+        msg = "--openrouter-allow-fallbacks requires --openrouter-provider"
+        raise ValueError(msg)
     if model_name.startswith("openrouter:"):
         # OpenRouter SDK passes timeout=None to httpx, disabling its default
         # 5s read timeout. This causes indefinite hangs on TCP stalls.
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
+    if model_name.startswith("openai:"):
+        # Match the SDK's built-in `openai` provider profile, which sets
+        # `use_responses_api=True` for all openai: models. The fixture
+        # pre-builds the model so the profile layer doesn't apply
+        # automatically — mirror it explicitly. Also required for
+        # `reasoning_effort` + function tools, which OpenAI gates to
+        # /v1/responses for gpt-5.x.
+        kwargs["use_responses_api"] = True
+    reasoning_effort = request.config.getoption("--openai-reasoning-effort")
+    if reasoning_effort:
+        if not model_name.startswith("openai:"):
+            msg = "--openai-reasoning-effort requires an openai: model prefix"
+            raise ValueError(msg)
+        kwargs["reasoning_effort"] = reasoning_effort
     return init_chat_model(model_name, **kwargs)

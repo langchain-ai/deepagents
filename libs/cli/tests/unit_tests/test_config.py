@@ -1508,7 +1508,7 @@ api_key_env = "FIREWORKS_API_KEY"
 """)
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}, clear=False),
+            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}, clear=True),
         ):
             kwargs = _get_provider_kwargs("fireworks")
 
@@ -1525,7 +1525,7 @@ api_key_env = "TOGETHER_API_KEY"
 """)
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"TOGETHER_API_KEY": "together-key"}, clear=False),
+            patch.dict("os.environ", {"TOGETHER_API_KEY": "together-key"}, clear=True),
         ):
             kwargs = _get_provider_kwargs("together")
 
@@ -1548,7 +1548,7 @@ api_key_env = "FIREWORKS_API_KEY"
                     "FIREWORKS_API_KEY": "canonical",
                     "DEEPAGENTS_CLI_FIREWORKS_API_KEY": "prefixed",
                 },
-                clear=False,
+                clear=True,
             ),
         ):
             kwargs = _get_provider_kwargs("fireworks")
@@ -1600,7 +1600,7 @@ max_tokens = 4096
 """)
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=False),
+            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=True),
         ):
             kwargs = _get_provider_kwargs("custom")
 
@@ -1648,6 +1648,127 @@ temperature = 0.5
 
         assert kwargs["temperature"] == 0
 
+    def test_ollama_optional_api_key_sets_authorization_header(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """OLLAMA_API_KEY is forwarded through client_kwargs for cloud use."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+base_url = "https://ollama.example.com"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "test-key"}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("ollama")
+
+        assert kwargs["client_kwargs"]["headers"]["Authorization"] == (
+            "Bearer test-key"
+        )
+
+    def test_ollama_prefixed_optional_api_key_overrides_canonical(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The CLI-scoped Ollama key follows normal env override behavior."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+base_url = "https://ollama.example.com"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {
+                    "OLLAMA_API_KEY": "canonical",
+                    "DEEPAGENTS_CLI_OLLAMA_API_KEY": "prefixed",
+                },
+                clear=True,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("ollama")
+
+        assert kwargs["client_kwargs"]["headers"]["Authorization"] == (
+            "Bearer prefixed"
+        )
+
+    def test_ollama_preserves_user_authorization_header(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Existing Authorization header (any case) is not overwritten."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+base_url = "https://ollama.example.com"
+
+[models.providers.ollama.params.llama3]
+client_kwargs = { headers = { authorization = "Bearer user-supplied" } }
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "env-key"}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("ollama", model_name="llama3")
+
+        headers = kwargs["client_kwargs"]["headers"]
+        assert headers["authorization"] == "Bearer user-supplied"
+        assert "Authorization" not in headers
+
+    def test_ollama_preserves_unrelated_headers_and_client_kwargs(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Sibling client_kwargs and headers entries survive Authorization injection."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+base_url = "https://ollama.example.com"
+
+[models.providers.ollama.params.llama3]
+client_kwargs = { timeout = 30, headers = { "X-Trace-Id" = "abc" } }
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "env-key"}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("ollama", model_name="llama3")
+
+        client_kwargs = kwargs["client_kwargs"]
+        assert client_kwargs["timeout"] == 30
+        assert client_kwargs["headers"]["X-Trace-Id"] == "abc"
+        assert client_kwargs["headers"]["Authorization"] == "Bearer env-key"
+
+    def test_ollama_local_endpoint_does_not_inject_header(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Without OLLAMA_API_KEY, no Authorization header is injected."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            kwargs = _get_provider_kwargs("ollama")
+
+        client_kwargs = kwargs.get("client_kwargs", {})
+        headers = (
+            client_kwargs.get("headers", {}) if isinstance(client_kwargs, dict) else {}
+        )
+        assert "Authorization" not in headers
+        assert "authorization" not in headers
+
     def test_base_url_and_api_key_override_config_params(self, tmp_path: Path) -> None:
         """base_url/api_key from config fields override same keys in params."""
         config_path = tmp_path / "config.toml"
@@ -1662,7 +1783,7 @@ base_url = "https://wrong-url.com"
 """)
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=False),
+            patch.dict("os.environ", {"CUSTOM_KEY": "secret"}, clear=True),
         ):
             kwargs = _get_provider_kwargs("custom")
 
@@ -1835,6 +1956,22 @@ app_categories = ["cloud-agent"]
         assert "app_url" not in call_kwargs
         assert "app_title" not in call_kwargs
         assert "app_categories" not in call_kwargs
+        assert "openrouter_provider" not in call_kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_sdk_provider_routing_flows_through_cli_profile(
+        self, mock_init: Mock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SDK's Azure-ignore default survives CLI profile chaining."""
+        from deepagents.profiles.provider._openrouter import _OPENROUTER_ALLOW_AZURE_ENV
+
+        monkeypatch.delenv(_OPENROUTER_ALLOW_AZURE_ENV, raising=False)
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openrouter:deepseek/deepseek-chat")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs["openrouter_provider"] == {"ignore": ["azure"]}
 
 
 class TestCreateModelForwardsProviderProfile:
@@ -2428,6 +2565,43 @@ class TestCreateModelViaInitImportError:
             ),
         ):
             _create_model_via_init("model", "dotted.provider", {})
+
+
+class TestCreateModelViaInitUnknownProvider:
+    """Tests for `UnknownProviderError` translation of langchain inference."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_value_error_with_empty_provider_becomes_unknown_provider_error(
+        self, mock_init: Mock
+    ) -> None:
+        """Raise `UnknownProviderError` carrying the model spec and docs URL."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        mock_init.side_effect = ValueError(
+            "Unable to infer model provider for model='mystery-model'."
+        )
+        with pytest.raises(UnknownProviderError) as exc_info:
+            _create_model_via_init("mystery-model", "", {})
+
+        assert exc_info.value.model_spec == "mystery-model"
+        assert exc_info.value.docs_url == PROVIDERS_DOCS_URL
+        # Plain message still mentions the URL for non-Textual surfaces.
+        assert PROVIDERS_DOCS_URL in str(exc_info.value)
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_value_error_with_provider_stays_generic(self, mock_init: Mock) -> None:
+        """Plain `ModelConfigError` when a provider was passed (not inference)."""
+        from deepagents_cli.model_config import UnknownProviderError
+
+        mock_init.side_effect = ValueError("some other configuration problem")
+        with pytest.raises(ModelConfigError) as exc_info:
+            _create_model_via_init("claude-sonnet-4-5", "anthropic", {})
+
+        assert not isinstance(exc_info.value, UnknownProviderError)
+        assert "Invalid model configuration" in str(exc_info.value)
 
 
 class TestDetectProvider:

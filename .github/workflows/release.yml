@@ -43,9 +43,8 @@ on:
         default: ""
         description: "Override: custom package name (takes precedence over dropdown)"
       version:
-        required: false
+        required: true
         type: string
-        default: ""
         description: "Version string — does NOT control the released version"
       release-sha:
         required: false

@@ -640,16 +640,27 @@ def _resolve_project_config_base(project_context: ProjectContext | None) -> Path
     return find_project_root() or Path.cwd()
 
 
+MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
+    ("~/.deepagents/.mcp.json", "user-level"),
+    ("<project-root>/.deepagents/.mcp.json", "project subdir"),
+    ("<project-root>/.mcp.json", "project root"),
+)
+"""Display strings for the auto-discovered MCP config paths.
+
+Ordered from lowest to highest precedence. Each entry is `(path, label)`
+suitable for rendering in help screens and error messages. The runtime
+discovery in `discover_mcp_configs` builds the same paths from
+`Path.home()` and `_resolve_project_config_base()`.
+"""
+
+
 def discover_mcp_configs(
     *, project_context: ProjectContext | None = None
 ) -> list[Path]:
     """Find MCP config files from standard locations.
 
-    Checks three paths in precedence order (lowest to highest):
-
-    1. `~/.deepagents/.mcp.json` (user-level global)
-    2. `<project-root>/.deepagents/.mcp.json` (project subdir)
-    3. `<project-root>/.mcp.json` (project root, Claude Code compat)
+    Checks the paths listed in `MCP_CONFIG_DISCOVERY_PATHS`, lowest to
+    highest precedence.
 
     Args:
         project_context: Explicit project path context, if available.

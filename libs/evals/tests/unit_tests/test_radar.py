@@ -34,9 +34,10 @@ def test_category_labels_cover_all_categories():
     assert set(CATEGORY_LABELS.keys()) == set(ALL_CATEGORIES)
 
 
-def test_short_model_name_strips_provider():
-    assert _short_model_name("anthropic:claude-sonnet-4-6") == "claude-sonnet-4-6"
-    assert _short_model_name("openai:gpt-5.4") == "gpt-5.4"
+def test_short_model_name_uses_registry_display_name():
+    """Registered specs should render their curated display_name."""
+    assert _short_model_name("anthropic:claude-sonnet-4-6") == "Claude Sonnet 4.6"
+    assert _short_model_name("openai:gpt-5.4") == "GPT-5.4"
 
 
 def test_short_model_name_truncates_long():
@@ -53,7 +54,13 @@ def test_short_model_name_no_provider():
 
 
 def test_short_model_name_provider_and_long():
+    """Unregistered provider:model specs fall back to strip + truncate."""
     assert _short_model_name("provider:" + "x" * 50) == "x" * 27 + "..."
+
+
+def test_short_model_name_unregistered_spec_strips_provider():
+    """Unregistered but well-formed specs strip the provider prefix."""
+    assert _short_model_name("madeup_provider:my-model-v1") == "my-model-v1"
 
 
 # --- generate_radar ---

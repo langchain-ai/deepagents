@@ -2011,8 +2011,15 @@ class TestBackslashEnterNewline:
     pair and collapses it into a newline.
     """
 
-    async def test_backslash_then_enter_inserts_newline(self) -> None:
+    async def test_backslash_then_enter_inserts_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Rapid backslash + enter should produce a newline, not submit."""
+        # Widen the gap so wall-clock timing between pilot.press calls on slow
+        # CI runners cannot push the enter past the 150ms default and trip the
+        # submit path.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2057,8 +2064,12 @@ class TestBackslashEnterNewline:
 
             assert ta.text == "\\a"
 
-    async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
+    async def test_backslash_enter_on_empty_prompt_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Backslash + enter on empty prompt should not submit."""
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)

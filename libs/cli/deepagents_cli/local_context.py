@@ -229,7 +229,7 @@ fi
 
 
 def _section_git() -> str:
-    """Git branch, main branches, uncommitted changes.
+    """Git branch or detached HEAD commit, main branches, uncommitted changes.
 
     Returns:
         Bash snippet (requires `IN_GIT` from header).
@@ -237,7 +237,12 @@ def _section_git() -> str:
     return r"""# --- Git ---
 if $IN_GIT; then
   BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
-  GT="**Git**: Current branch \`${BRANCH}\`"
+  if [ "$BRANCH" = "HEAD" ]; then
+    COMMIT="$(git rev-parse --short HEAD 2>/dev/null)"
+    GT="**Git**: Detached HEAD at \`${COMMIT}\`"
+  else
+    GT="**Git**: Current branch \`${BRANCH}\`"
+  fi
 
   MAINS=""
   for b in $(git branch 2>/dev/null | sed 's/^[* ]*//'); do

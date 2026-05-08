@@ -10,6 +10,7 @@ from control_server import app as app_mod
 
 class TestReadyPlayers(unittest.TestCase):
     def setUp(self) -> None:
+        app_mod._connected_ports.clear()
         app_mod._ready_players.clear()
         app_mod._model_ready_ports.clear()
         app_mod._prompt_pool.clear()
@@ -17,6 +18,7 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
 
     def tearDown(self) -> None:
+        app_mod._connected_ports.clear()
         app_mod._ready_players.clear()
         app_mod._model_ready_ports.clear()
         app_mod._prompt_pool.clear()
@@ -280,14 +282,25 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("Prompt must not be empty.", response.text)
 
+    def test_players_connect_tracks_connected_port(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post("/api/players/connect", json={"port": "3001"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["connected"], ["3001"])
+        self.assertEqual(app_mod._connected_ports, {"3001"})
+
     def test_round_reset_clears_ready_names(self) -> None:
         client = TestClient(app_mod.create_app())
+        app_mod._connected_ports.add("3001")
         app_mod._ready_players.update({"3001": "Alice"})
 
         with patch("control_server.app._forward", new=AsyncMock(return_value={})):
             response = client.post("/api/round/reset", json={})
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(app_mod._connected_ports, {"3001"})
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
 
@@ -302,6 +315,7 @@ class TestReadyPlayers(unittest.TestCase):
             response = client.post("/api/players/model-ready", json={"port": "3001"})
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["connected"], ["3001"])
         self.assertEqual(response.json()["ready"], {"3001": "Alice", "3002": "Bob"})
         self.assertEqual(response.json()["model_ready"], ["3001"])
         players_ready.assert_not_awaited()
@@ -324,16 +338,19 @@ class TestReadyPlayers(unittest.TestCase):
 
     def test_players_list_includes_model_ready_ports(self) -> None:
         client = TestClient(app_mod.create_app())
+        app_mod._connected_ports.add("3001")
         app_mod._ready_players.update({"3001": "Alice"})
         app_mod._model_ready_ports.add("3001")
 
         response = client.get("/api/players")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["connected"], ["3001"])
         self.assertEqual(response.json()["model_ready"], ["3001"])
 
     def test_players_clear_resets_readiness_without_relaunching(self) -> None:
         client = TestClient(app_mod.create_app())
+        app_mod._connected_ports.update({"3001", "3002"})
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
         app_mod._model_ready_ports.update({"3001", "3002"})
         forward = AsyncMock(return_value={"phase": "idle"})
@@ -349,8 +366,10 @@ class TestReadyPlayers(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["cleared"], ["3001", "3002"])
+        self.assertEqual(response.json()["connected"], ["3001", "3002"])
         self.assertEqual(response.json()["ready"], {})
         self.assertEqual(response.json()["model_ready"], [])
+        self.assertEqual(app_mod._connected_ports, {"3001", "3002"})
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
         clear_players.assert_awaited_once_with(None)
@@ -378,6 +397,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="state-prompt">none</dd>', response.text)
         self.assertIn('id="state-contestants">none</dd>', response.text)
         self.assertIn('id="state-scores">none</dd>', response.text)
+        self.assertIn("Not connected", response.text)
+        self.assertIn('id="connected-players">none</span>', response.text)
         self.assertIn("renderPromptEditor", response.text)
         self.assertIn("edit.textContent = 'Edit'", response.text)
         self.assertIn("save.textContent = 'Save'", response.text)

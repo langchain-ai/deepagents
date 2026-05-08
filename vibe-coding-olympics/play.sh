@@ -110,6 +110,13 @@ export VIBE_EVENT_SOCKET="$EVENT_SOCKET"
 export DEEPAGENTS_CLI_HOOKS_PATH="$HOOKS_FILE" VIBE_CONTROL_API="$CONTROL_API"
 export VIBE_WAIT_FOR_CONTROLLER="$WAIT_FOR_CONTROLLER"
 
+# Best-effort controller signal: the player process has launched. Later CLI
+# hooks report name submission and model-selection readiness.
+curl -fsS -m 1 \
+  -H "content-type: application/json" \
+  -d "{\"port\":\"$PORT\"}" \
+  "$CONTROL_API/api/players/connect" >/dev/null 2>&1 || true
+
 # Free the port up front so the poller below can't race a zombie Vite from a
 # previous round. Without this, the poller's first curl would succeed against
 # the old server and `open` Firefox on the stale page — which then gets

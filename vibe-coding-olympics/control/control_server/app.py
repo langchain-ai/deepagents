@@ -115,12 +115,19 @@ class PlayerReadyRequest(BaseModel):
     name: str
 
 
+class PlayerConnectedRequest(BaseModel):
+    """Player process reported by the launcher."""
+
+    port: str
+
+
 class PlayerModelReadyRequest(BaseModel):
     """Player model-selection readiness reported by the CLI hook."""
 
     port: str
 
 
+_connected_ports: set[str] = set()
 _ready_players: dict[str, str] = {}
 _model_ready_ports: set[str] = set()
 _prompt_pool: dict[int, str] = dict(enumerate(DEFAULT_PROMPTS, start=1))
@@ -335,6 +342,7 @@ _INDEX_HTML = """<!doctype html>
   button.danger { background: #dc2626; }
   button.secondary { background: #525252; }
   .muted { color: #888; font-size: 0.85rem; margin-top: 0.65rem; }
+  .port-note { color: #707070; font-size: 0.8rem; }
   .inline-error { color: #fca5a5; font-size: 0.85rem; }
   .inline-error:empty { display: none; }
   #ready-players { color: #d4d4d4; }
@@ -353,6 +361,16 @@ _INDEX_HTML = """<!doctype html>
     color: #fde68a;
     border: 1px solid #a16207;
     background: #422006;
+  }
+  .ready-badge.offline {
+    color: #cbd5e1;
+    border: 1px solid #475569;
+    background: #111827;
+  }
+  .ready-badge.connected {
+    color: #bfdbfe;
+    border: 1px solid #1d4ed8;
+    background: #172554;
   }
   .ready-badge.ready {
     color: #86efac;
@@ -490,6 +508,7 @@ _INDEX_HTML = """<!doctype html>
   <button class="secondary" id="btn-list">List</button>
   <button id="btn-times-up">Times up all</button>
   <button class="secondary" id="btn-clear">Reset round all</button>
+  <div class="muted">Connected players: <span id="connected-players">none</span></div>
   <div class="muted">Ready players: <span id="ready-players">none</span></div>
 </section>
 
@@ -604,31 +623,53 @@ function hideRoundStarted() {
     roundStartedTimer = null;
   }
 }
-function orderedReadyEntries(ready) {
-  if (!ready) return [];
-  return Object.entries(ready).map(([port, name]) => ({ port, name }));
+function orderedPlayerEntries(ready, connected) {
+  const entries = [];
+  const seen = new Set();
+  for (const port of connected || []) {
+    seen.add(port);
+    entries.push({ port, name: ready && ready[port] ? ready[port] : '' });
+  }
+  for (const [port, name] of Object.entries(ready || {})) {
+    if (seen.has(port)) continue;
+    entries.push({ port, name });
+  }
+  return entries.slice(0, 2);
 }
-function renderReady(ready, modelReady) {
-  const entries = orderedReadyEntries(ready);
-  const names = entries.map((entry) => entry.name);
+function renderReady(ready, modelReady, connected) {
+  const entries = orderedPlayerEntries(ready, connected);
+  const names = entries.map((entry) => entry.name).filter(Boolean);
   const modelReadyPorts = new Set(modelReady || []);
+  const connectedPorts = new Set(connected || []);
+  document.getElementById('connected-players').textContent =
+    connectedPorts.size ? Array.from(connectedPorts).join(', ') : 'none';
   document.getElementById('ready-players').textContent =
     names.length ? names.join(', ') : 'none';
   ['c1', 'c2'].forEach((id, index) => {
     const slot = document.getElementById(id);
-    const next = names[index] || '';
+    const entry = entries[index];
+    const next = entry ? entry.name : '';
+    const isConnected = Boolean(entry && connectedPorts.has(entry.port));
     slot.dataset.name = next;
-    slot.textContent = next || 'Waiting for CLI player';
+    slot.textContent = next || (isConnected ? `Connected (${entry.port})` : 'Not connected');
     slot.classList.toggle('empty', !next);
     const badge = document.getElementById(`${id}-ready`);
-    const entry = entries[index];
     const isReady = Boolean(entry && modelReadyPorts.has(entry.port));
-    badge.textContent = isReady ? 'Ready' : 'Waiting for model';
-    badge.classList.toggle('visible', Boolean(entry));
+    badge.textContent = isReady
+      ? 'Ready'
+      : isConnected
+        ? (next ? 'Waiting for model' : 'Connected')
+        : 'Not connected';
+    badge.classList.toggle('visible', true);
     badge.classList.toggle('ready', isReady);
-    badge.classList.toggle('waiting', Boolean(entry && !isReady));
+    badge.classList.toggle('waiting', Boolean(entry && isConnected && next && !isReady));
+    badge.classList.toggle('connected', Boolean(entry && isConnected && !next));
+    badge.classList.toggle('offline', !isConnected);
   });
-  const roundPorts = entries.slice(0, 2).map((entry) => entry.port);
+  const roundPorts = entries
+    .filter((entry) => entry.name)
+    .slice(0, 2)
+    .map((entry) => entry.port);
   canStartRound = roundPorts.length === 2
     && roundPorts.every((port) => modelReadyPorts.has(port));
   document.getElementById('btn-start').setAttribute(
@@ -640,7 +681,13 @@ function renderReady(ready, modelReady) {
 }
 async function refreshPlayers() {
   const result = await api('/api/players', undefined, { quiet: true });
-  if (result.ok && result.json) renderReady(result.json.ready, result.json.model_ready);
+  if (result.ok && result.json) {
+    renderReady(
+      result.json.ready,
+      result.json.model_ready,
+      result.json.connected,
+    );
+  }
 }
 async function refreshState(options = {}) {
   const result = await api('/api/state', undefined, options);
@@ -867,7 +914,13 @@ document.getElementById('btn-full-round').onclick = async () => {
 
 document.getElementById('btn-list').onclick = async () => {
   const result = await api('/api/players');
-  if (result.ok && result.json) renderReady(result.json.ready, result.json.model_ready);
+  if (result.ok && result.json) {
+    renderReady(
+      result.json.ready,
+      result.json.model_ready,
+      result.json.connected,
+    );
+  }
 };
 document.getElementById('btn-times-up').onclick = () => api('/api/players/times-up', { all: true });
 document.getElementById('btn-clear').onclick = () => {
@@ -962,12 +1015,23 @@ def create_app() -> FastAPI:
     async def players_list() -> dict[str, Any]:
         return {
             "players": await iterm_ctrl.list_players(),
+            "connected": sorted(_connected_ports),
+            "ready": dict(_ready_players),
+            "model_ready": sorted(_model_ready_ports),
+        }
+
+    @app.post("/api/players/connect")
+    async def players_connect(req: PlayerConnectedRequest) -> dict[str, Any]:
+        _connected_ports.add(req.port)
+        return {
+            "connected": sorted(_connected_ports),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
         }
 
     @app.post("/api/players/ready")
     async def players_ready(req: PlayerReadyRequest) -> dict[str, Any]:
+        _connected_ports.add(req.port)
         _ready_players[req.port] = req.name
         obs_state: dict[str, Any] | None = None
         obs_error: str | None = None
@@ -980,6 +1044,7 @@ def create_app() -> FastAPI:
             obs_error = str(exc.detail)
             logger.warning("Could not forward ready players to OBS: %s", exc.detail)
         return {
+            "connected": sorted(_connected_ports),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "contestants": _ready_contestants(),
@@ -989,11 +1054,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/players/model-ready")
     async def players_model_ready(req: PlayerModelReadyRequest) -> dict[str, Any]:
+        _connected_ports.add(req.port)
         _model_ready_ports.add(req.port)
         players_ready_sent: list[str] = []
         if _all_named_players_model_ready():
             players_ready_sent = await iterm_ctrl.players_ready(None)
         return {
+            "connected": sorted(_connected_ports),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "players_ready_sent": players_ready_sent,
@@ -1023,6 +1090,7 @@ def create_app() -> FastAPI:
             logger.warning("Could not forward cleared players to OBS: %s", exc.detail)
         return {
             "cleared": cleared,
+            "connected": sorted(_connected_ports),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "obs": obs_state,

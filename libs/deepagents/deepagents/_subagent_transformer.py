@@ -26,9 +26,15 @@ This transformer:
 A subagent therefore shows up on **both** `run.subgraphs` (untyped,
 superset, keyed by the raw Pregel segment) and `run.subagents`
 (typed, declared-only). The typed handle's `cause` exposes
-`trigger_call_id` (the pregel task id) — not the model-side
-`tool_call_id`, which is no longer used for correlation because it
-conflated parallel `task` calls dispatched in the same parent step.
+`trigger_call_id` (the pregel task id, used for identity-level
+correlation across lifecycle events for this invocation) and, when
+the dispatch came through a recognised tool-call envelope, also
+`tool_call_id` — the model-side id. Because the per-call Send fan-out
+gives each tool_call its own per-call task, `tool_call_id` here is
+1:1 with `trigger_call_id` and disambiguates parallel `task` calls
+without the conflation that affected the old batched-Send layout.
+UI consumers use `tool_call_id` to anchor the lifecycle event back
+to the originating AI message tool call.
 """
 
 from __future__ import annotations
@@ -61,6 +67,7 @@ class SubagentRunStream(SubgraphRunStream):
         graph_name: str | None = None,
         trigger_call_id: str | None = None,
         task_input: str | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         super().__init__(
             mux,
@@ -69,6 +76,7 @@ class SubagentRunStream(SubgraphRunStream):
             trigger_call_id=trigger_call_id,
         )
         self.task_input = task_input
+        self.tool_call_id = tool_call_id
 
     @property
     def name(self) -> str | None:
@@ -78,16 +86,24 @@ class SubagentRunStream(SubgraphRunStream):
     def cause(self) -> dict[str, str] | None:
         """Invocation descriptor for in-process consumers.
 
-        Exposes the pregel task id under the `trigger_call_id` key
-        (not the model-side `tool_call_id`, which conflated parallel
-        `task` calls under the same parent task). The `type` tag stays
-        camelCase (`"toolCall"`) for in-process consumer compatibility;
-        the wire-side `lifecycle.started.cause` uses snake_case
-        (`"tool_call"`).
+        `trigger_call_id` is the pregel task id (identity-level
+        correlation key across lifecycle events). `tool_call_id`, when
+        present, is the model-side id of the originating tool call —
+        1:1 with `trigger_call_id` under the per-call Send fan-out, used
+        by UI consumers to anchor the invocation back to the AI message.
+        The `type` tag stays camelCase (`"toolCall"`) for in-process
+        consumer compatibility; the wire-side `lifecycle.started.cause`
+        uses snake_case (`"tool_call"`).
         """
         if self.trigger_call_id is None:
             return None
-        return {"type": "toolCall", "trigger_call_id": self.trigger_call_id}
+        result: dict[str, str] = {
+            "type": "toolCall",
+            "trigger_call_id": self.trigger_call_id,
+        }
+        if self.tool_call_id is not None:
+            result["tool_call_id"] = self.tool_call_id
+        return result
 
 
 class AsyncSubagentRunStream(AsyncSubgraphRunStream):
@@ -101,6 +117,7 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
         graph_name: str | None = None,
         trigger_call_id: str | None = None,
         task_input: str | None = None,
+        tool_call_id: str | None = None,
     ) -> None:
         super().__init__(
             mux,
@@ -109,6 +126,7 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
             trigger_call_id=trigger_call_id,
         )
         self.task_input = task_input
+        self.tool_call_id = tool_call_id
 
     @property
     def name(self) -> str | None:
@@ -118,16 +136,24 @@ class AsyncSubagentRunStream(AsyncSubgraphRunStream):
     def cause(self) -> dict[str, str] | None:
         """Invocation descriptor for in-process consumers.
 
-        Exposes the pregel task id under the `trigger_call_id` key
-        (not the model-side `tool_call_id`, which conflated parallel
-        `task` calls under the same parent task). The `type` tag stays
-        camelCase (`"toolCall"`) for in-process consumer compatibility;
-        the wire-side `lifecycle.started.cause` uses snake_case
-        (`"tool_call"`).
+        `trigger_call_id` is the pregel task id (identity-level
+        correlation key across lifecycle events). `tool_call_id`, when
+        present, is the model-side id of the originating tool call —
+        1:1 with `trigger_call_id` under the per-call Send fan-out, used
+        by UI consumers to anchor the invocation back to the AI message.
+        The `type` tag stays camelCase (`"toolCall"`) for in-process
+        consumer compatibility; the wire-side `lifecycle.started.cause`
+        uses snake_case (`"tool_call"`).
         """
         if self.trigger_call_id is None:
             return None
-        return {"type": "toolCall", "trigger_call_id": self.trigger_call_id}
+        result: dict[str, str] = {
+            "type": "toolCall",
+            "trigger_call_id": self.trigger_call_id,
+        }
+        if self.tool_call_id is not None:
+            result["tool_call_id"] = self.tool_call_id
+        return result
 
 
 class SubagentTransformer(_TasksLifecycleBase):
@@ -174,18 +200,20 @@ class SubagentTransformer(_TasksLifecycleBase):
         single-element list of one tool-call dict
         (``Send("tools", [tool_call])`` shape). Anything else is not
         a per-call envelope we recognise and is ignored. We mine
-        `subagent_type` and `description` off that single `task`
-        tool call and stash them keyed by the per-call dispatched
-        task's `id`. The child subgraph's first lifecycle event
-        will carry that same id as `trigger_call_id` (parsed from
-        the ``tools:<id>`` namespace tail), so `_on_started` joins
-        on it directly.
+        `subagent_type`, `description`, and `tool_call_id` off that
+        single `task` tool call and stash them keyed by the per-call
+        dispatched task's `id`. The child subgraph's first lifecycle
+        event will carry that same id as `trigger_call_id` (parsed from
+        the ``tools:<id>`` namespace tail), so `_on_started` joins on
+        it directly.
 
-        Multiple `task` calls dispatched in the same model turn each
-        produce a separate per-call task with its own unique id, so
-        keying by the pregel id disambiguates parallel calls without
-        relying on the model-side `tool_call_id` (which previously
-        conflated calls when emitted in the same batch).
+        Identity-level correlation across lifecycle events still uses
+        `trigger_call_id` (the pregel task id, unique per-call). The
+        captured `tool_call_id` rides alongside as anchoring metadata
+        for UI consumers — under the per-call Send fan-out it's 1:1
+        with `trigger_call_id`, so it disambiguates parallel `task`
+        calls cleanly (the conflation that affected the old batched-Send
+        layout doesn't apply here).
         """
         task_id = data.get("id")
         if not isinstance(task_id, str):
@@ -206,10 +234,14 @@ class SubagentTransformer(_TasksLifecycleBase):
             if subagent_type not in self._names:
                 return
             description = args.get("description")
-            self._pending[task_id] = {
+            entry: dict[str, str] = {
                 "subagent_type": subagent_type,
                 "task_input": description if isinstance(description, str) else "",
             }
+            tool_call_id = tool_call.get("id")
+            if isinstance(tool_call_id, str):
+                entry["tool_call_id"] = tool_call_id
+            self._pending[task_id] = entry
 
     def _on_started(
         self,
@@ -245,6 +277,7 @@ class SubagentTransformer(_TasksLifecycleBase):
             graph_name=info["subagent_type"],
             trigger_call_id=trigger_call_id,
             task_input=info["task_input"] or None,
+            tool_call_id=info.get("tool_call_id"),
         )
         self._handles[ns] = handle
         self._log.push(handle)

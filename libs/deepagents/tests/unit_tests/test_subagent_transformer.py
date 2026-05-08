@@ -59,8 +59,9 @@ def _per_call_tasks_start(
     call whose `input` is a list containing a single tool-call dict.
     `parent_task_id` is the pregel task id (the same id that becomes
     `trigger_call_id` when parsed off the child subgraph's namespace
-    tail). `tool_call_id` is the model-side id; it travels in the
-    tool-call dict but is no longer used for correlation.
+    tail). `tool_call_id` is the model-side id; under the per-call
+    Send fan-out it's 1:1 with `parent_task_id`, and is plumbed
+    through the cause for UI anchoring back to the AI message.
     """
     args: dict[str, Any] = {"subagent_type": subagent_type}
     if description is not None:
@@ -257,9 +258,15 @@ class TestSubagentTransformerUnit:
         assert isinstance(handle, SubagentRunStream)
         assert handle.path == ("tools:abc",)
         assert handle.name == "researcher"
-        # Cause now exposes `trigger_call_id` (pregel task id), not the
-        # model-side `tool_call_id`.
-        assert handle.cause == {"type": "toolCall", "trigger_call_id": "abc"}
+        # `trigger_call_id` is the pregel task id (identity correlation);
+        # `tool_call_id` is the model-side id (for UI anchoring back to
+        # the AI message).
+        assert handle.cause == {
+            "type": "toolCall",
+            "trigger_call_id": "abc",
+            "tool_call_id": "tc-1",
+        }
+        assert handle.tool_call_id == "tc-1"
         assert handle.task_input == "do research"
         assert handle.status == "started"
 

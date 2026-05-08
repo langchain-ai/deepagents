@@ -58,7 +58,7 @@ class AsyncSubAgent(TypedDict):
     """The graph name or assistant ID on the remote server."""
 
     url: NotRequired[str]
-    """URL of the Agent Protocol server.
+    """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
 
     Defaults to the LangGraph SDK's default endpoint. Omit to use ASGI
     transport for local servers.

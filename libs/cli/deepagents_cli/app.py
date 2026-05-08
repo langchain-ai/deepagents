@@ -3228,7 +3228,7 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
             self.call_after_refresh(menu.focus_active)
         except Exception as e:
             logger.exception(
@@ -3240,6 +3240,19 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
+
+    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
+        """Scroll mounted ask_user prompts into view.
+
+        Oversized prompts should start at the top of the viewport so the first
+        question and menu border are visible, instead of only exposing the
+        bottom edge of the widget.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if menu.outer_size.height > chat.size.height:
+            menu.scroll_visible(animate=False, top=True)
+            return
+        menu.scroll_visible()
 
     async def on_ask_user_menu_answered(
         self,

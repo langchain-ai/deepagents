@@ -10,6 +10,7 @@ import os
 import signal
 import time
 import webbrowser
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -2103,6 +2104,32 @@ class TestMessageQueue:
 
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
+
+    def test_tall_ask_user_scrolls_to_widget_top(self) -> None:
+        """Tall ask_user menus should align their top border with the viewport."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=30)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with(animate=False, top=True)
+
+    def test_short_ask_user_uses_default_scroll_visible(self) -> None:
+        """Short ask_user menus should keep the existing scroll behavior."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=10)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with()
 
     def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
         """App-level Ctrl+O should toggle the active ask_user tool row."""

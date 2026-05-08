@@ -673,12 +673,32 @@ def _upsert_issues_board_config(
         print(f"Warning: Issues board auto-wire failed: {exc}")
 
 
+def _resolve_context_hub_identifier(config: Any) -> str:  # noqa: ANN401
+    return config.memories.identifier or f"-/{config.agent.name}"
+
+
+def _resolve_context_hub_repo_handle_for_issues_board(
+    config: Any,  # noqa: ANN401
+) -> str | None:
+    identifier = _resolve_context_hub_identifier(config)
+    owner, sep, repo_handle = identifier.partition("/")
+    if sep == "" or not owner or not repo_handle:
+        print(
+            "Warning: Invalid memories identifier for hub-backed deploy: "
+            f"{identifier!r}; skipping issues board auto-wire."
+        )
+        return None
+    return repo_handle
+
+
 def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
     """Best-effort issues-board wiring after deploy for hub-backed memories."""
     if getattr(config.memories, "backend", "") != "hub":
         return
 
-    context_hub_repo_handle = config.memories.identifier or f"-/{config.agent.name}"
+    context_hub_repo_handle = _resolve_context_hub_repo_handle_for_issues_board(config)
+    if context_hub_repo_handle is None:
+        return
     api_key = _resolve_langsmith_api_key()
     if api_key is None:
         print(

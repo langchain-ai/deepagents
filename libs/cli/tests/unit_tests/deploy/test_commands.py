@@ -161,4 +161,37 @@ class TestAutoWireIssuesBoard:
 
         assert observed["session_id"] == "session-123"
         assert observed["api_key"] == "test-key"
-        assert observed["context_hub_repo_handle"] == "-/my-agent"
+        assert observed["context_hub_repo_handle"] == "my-agent"
+
+    def test_hub_wires_board_with_explicit_identifier(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_cli.deploy.commands import _auto_wire_issues_board_if_hub
+
+        observed: dict[str, str] = {}
+
+        monkeypatch.setattr(
+            "deepagents_cli.deploy.commands._resolve_langsmith_api_key",
+            lambda: "test-key",
+        )
+        monkeypatch.setattr(
+            "deepagents_cli.deploy.commands._resolve_tracer_session_id_by_project_name",
+            lambda **_: "session-123",
+        )
+
+        def _upsert(**kwargs: str) -> None:
+            observed.update(kwargs)
+
+        monkeypatch.setattr(
+            "deepagents_cli.deploy.commands._upsert_issues_board_config",
+            _upsert,
+        )
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(name="my-agent"),
+            memories=SimpleNamespace(backend="hub", identifier="acme/custom-agent"),
+        )
+
+        _auto_wire_issues_board_if_hub(cfg)
+
+        assert observed["context_hub_repo_handle"] == "custom-agent"

@@ -9,7 +9,6 @@ import argparse
 import os
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -583,28 +582,22 @@ def _resolve_langsmith_endpoint() -> str:
 def _resolve_tracer_session_id_by_project_name(
     *, project_name: str, api_key: str
 ) -> str | None:
-    """Resolve tracing project id (session id) by name with short retries."""
+    """Resolve tracing project id (session id) by name."""
     from langsmith import Client
     from langsmith.utils import LangSmithNotFoundError
 
     api_url = _resolve_langsmith_endpoint()
-    last_error: Exception | None = None
-    for delay in (0.0, 1.0, 2.0, 4.0):
-        if delay:
-            time.sleep(delay)
-        try:
-            client = Client(api_url=api_url, api_key=api_key)
-            project = client.read_project(project_name=project_name)
-            return str(project.id)
-        except LangSmithNotFoundError as exc:
-            last_error = exc
-            continue
-        except Exception as exc:
-            last_error = exc
-            continue
-    if last_error is not None:
+    try:
+        client = Client(api_url=api_url, api_key=api_key)
+        project = client.read_project(project_name=project_name)
+        return str(project.id)
+    except LangSmithNotFoundError as exc:
         print(
-            f"Warning: Failed to resolve tracing project '{project_name}': {last_error}"
+            f"Warning: Failed to resolve tracing project '{project_name}': {exc}"
+        )
+    except Exception as exc:
+        print(
+            f"Warning: Failed to resolve tracing project '{project_name}': {exc}"
         )
     return None
 

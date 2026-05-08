@@ -264,7 +264,7 @@ ToolCallMessage.-ascii:hover {
 }
 
 .ask-user-menu .ask-user-choice {
-    height: 1;
+    height: auto;
     padding: 0 1;
 }
 

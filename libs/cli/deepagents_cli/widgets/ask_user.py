@@ -10,7 +10,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static, TextArea
 
 if TYPE_CHECKING:
     import asyncio
@@ -53,6 +53,75 @@ or ' [required]' from question text before rendering.
 Defense-in-depth alongside the instruction in `ASK_USER_TOOL_DESCRIPTION`
 (`ask_user.py`). The UI already renders a `*(required)*` marker based on the
 `required` field, so any LLM-authored duplicate is redundant noise."""
+
+
+class AskUserTextArea(TextArea):
+    """Multi-line text input for free-form ask-user questions.
+
+    Enter submits the answer; Shift/Alt/Ctrl+Enter and Ctrl+J insert a newline.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding(
+            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
+            "insert_newline",
+            "New Line",
+            show=False,
+            priority=True,
+        ),
+    ]
+
+    class Submitted(Message):
+        """Posted when the user presses Enter to submit the answer."""
+
+        def __init__(self, text_area: AskUserTextArea, value: str) -> None:  # noqa: D107
+            super().__init__()
+            self.text_area = text_area
+            self.value = value
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize the ask-user text area."""
+        super().__init__(**kwargs)
+        self.show_line_numbers = False
+
+    def action_insert_newline(self) -> None:
+        """Insert a newline at the cursor."""
+        self.insert("\n")
+
+    async def _on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.Submitted(self, self.text))
+            return
+        if event.key in {"up", "down"}:
+            row, _ = self.cursor_location
+            lines = self.text.split("\n")
+            at_top = row == 0
+            at_bottom = row == len(lines) - 1
+            if (event.key == "up" and at_top) or (event.key == "down" and at_bottom):
+                question = self._find_question_widget()
+                if question is not None and question._q_type == "multiple_choice":
+                    event.prevent_default()
+                    event.stop()
+                    if event.key == "up":
+                        question.action_move_up()
+                    else:
+                        question.action_move_down()
+                    return
+
+    def _find_question_widget(self) -> _QuestionWidget | None:
+        """Walk up to find the enclosing `_QuestionWidget`, if any.
+
+        Returns:
+            The enclosing `_QuestionWidget` ancestor, or `None` if not found.
+        """
+        node: Any = self.parent
+        while node is not None:
+            if isinstance(node, _QuestionWidget):
+                return node
+            node = node.parent
+        return None
 
 
 class AskUserMenu(Container):
@@ -122,6 +191,7 @@ class AskUserMenu(Container):
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
+            "Shift+Enter for newline",
         ]
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
@@ -141,12 +211,12 @@ class AskUserMenu(Container):
         """Focus the current active question's input."""
         self._set_active_question(self._current_question)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:  # noqa: D102
+    def on_ask_user_text_area_submitted(self, event: AskUserTextArea.Submitted) -> None:
+        """Confirm the question whose text area was submitted."""
         event.stop()
-        # Find which question owns this Input and confirm it.
         for qw in self._question_widgets:
-            if (qw._text_input and qw._text_input is event.input) or (
-                qw._other_input and qw._other_input is event.input
+            if (qw._text_input and qw._text_input is event.text_area) or (
+                qw._other_input and qw._other_input is event.text_area
             ):
                 answer = qw.get_answer()
                 if answer.strip() or not qw._required:
@@ -288,8 +358,8 @@ class _QuestionWidget(Vertical):
         self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
         self._selected_choice: int = 0
-        self._text_input: Input | None = None
-        self._other_input: Input | None = None
+        self._text_input: AskUserTextArea | None = None
+        self._other_input: AskUserTextArea | None = None
         self._is_other_selected: bool = False
 
     def compose(self) -> ComposeResult:
@@ -311,17 +381,11 @@ class _QuestionWidget(Vertical):
             self._choice_widgets.append(other_cw)
             yield other_cw
 
-            self._other_input = Input(
-                placeholder="Type your answer...",
-                classes="ask-user-other-input",
-            )
+            self._other_input = AskUserTextArea(classes="ask-user-other-input")
             self._other_input.display = False
             yield self._other_input
         else:
-            self._text_input = Input(
-                placeholder="Type your answer...",
-                classes="ask-user-text-input",
-            )
+            self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
 
     def focus_input(self) -> None:
@@ -336,10 +400,10 @@ class _QuestionWidget(Vertical):
     def get_answer(self) -> str:
         """Return the current answer text for this question."""
         if self._q_type == "text" or not self._choices:
-            return self._text_input.value if self._text_input else ""
+            return self._text_input.text if self._text_input else ""
 
         if self._is_other_selected and self._other_input:
-            return self._other_input.value
+            return self._other_input.text
 
         if self._choice_widgets and self._selected_choice < len(self._choices):
             return self._choices[self._selected_choice].get("value", "")

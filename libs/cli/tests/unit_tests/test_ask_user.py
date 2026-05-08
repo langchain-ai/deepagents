@@ -636,6 +636,40 @@ class TestAskUserMenu:
             assert not qw._is_other_selected
             assert qw.has_focus
 
+    async def test_down_in_wrapped_other_input_moves_cursor(self) -> None:
+        """Down inside a wrapped Other answer should not leave the text input."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test(size=(50, 24)) as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw = menu._question_widgets[0]
+
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = " ".join(["wrapped"] * 20)
+            other_input.move_cursor((0, 0))
+            other_input.focus()
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert other_input.has_focus
+            assert qw._is_other_selected
+            assert other_input.cursor_location != (0, 0)
+
     async def test_return_to_mc_other_refocuses_input(self) -> None:
         """Tab away from Other input and Shift+Tab back refocuses it."""
         app = _AskUserTestApp(

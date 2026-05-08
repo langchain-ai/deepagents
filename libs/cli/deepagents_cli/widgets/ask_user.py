@@ -98,10 +98,9 @@ class AskUserTextArea(TextArea):
             self.post_message(self.Submitted(self, self.text))
             return
         if event.key in {"up", "down"}:
-            row, _ = self.cursor_location
-            lines = self.text.split("\n")
-            at_top = row == 0
-            at_bottom = row == len(lines) - 1
+            cursor_location = self.cursor_location
+            at_top = self.get_cursor_up_location() == cursor_location
+            at_bottom = self.get_cursor_down_location() == cursor_location
             if (event.key == "up" and at_top) or (event.key == "down" and at_bottom):
                 question = self._find_question_widget()
                 if question is not None and question._q_type == "multiple_choice":

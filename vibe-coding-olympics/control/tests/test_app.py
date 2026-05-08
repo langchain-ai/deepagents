@@ -289,18 +289,43 @@ class TestReadyPlayers(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["connected"], ["3001"])
-        self.assertEqual(app_mod._connected_ports, {"3001"})
+        self.assertIn("3001", app_mod._connected_ports)
+
+    def test_players_heartbeat_refreshes_connected_port(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        with patch("control_server.app.time.monotonic", return_value=100.0):
+            response = client.post("/api/players/heartbeat", json={"port": "3001"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["connected"], ["3001"])
+        self.assertEqual(app_mod._connected_ports["3001"], 100.0)
+
+    def test_players_list_expires_stale_connected_port(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._connected_ports["3001"] = 1.0
+        app_mod._ready_players["3001"] = "Alice"
+        app_mod._model_ready_ports.add("3001")
+
+        with patch("control_server.app.time.monotonic", return_value=10.0):
+            response = client.get("/api/players")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["connected"], [])
+        self.assertEqual(response.json()["ready"], {})
+        self.assertEqual(response.json()["model_ready"], [])
+        self.assertEqual(app_mod._connected_ports, {})
 
     def test_round_reset_clears_ready_names(self) -> None:
         client = TestClient(app_mod.create_app())
-        app_mod._connected_ports.add("3001")
+        app_mod._connected_ports["3001"] = app_mod.time.monotonic()
         app_mod._ready_players.update({"3001": "Alice"})
 
         with patch("control_server.app._forward", new=AsyncMock(return_value={})):
             response = client.post("/api/round/reset", json={})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(app_mod._connected_ports, {"3001"})
+        self.assertIn("3001", app_mod._connected_ports)
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
 
@@ -338,11 +363,15 @@ class TestReadyPlayers(unittest.TestCase):
 
     def test_players_list_includes_model_ready_ports(self) -> None:
         client = TestClient(app_mod.create_app())
-        app_mod._connected_ports.add("3001")
+        app_mod._connected_ports["3001"] = app_mod.time.monotonic()
         app_mod._ready_players.update({"3001": "Alice"})
         app_mod._model_ready_ports.add("3001")
 
-        response = client.get("/api/players")
+        with patch(
+            "control_server.iterm_ctrl.list_players",
+            new=AsyncMock(return_value=[]),
+        ):
+            response = client.get("/api/players")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["connected"], ["3001"])
@@ -350,7 +379,8 @@ class TestReadyPlayers(unittest.TestCase):
 
     def test_players_clear_resets_readiness_without_relaunching(self) -> None:
         client = TestClient(app_mod.create_app())
-        app_mod._connected_ports.update({"3001", "3002"})
+        seen_at = app_mod.time.monotonic()
+        app_mod._connected_ports.update({"3001": seen_at, "3002": seen_at})
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
         app_mod._model_ready_ports.update({"3001", "3002"})
         forward = AsyncMock(return_value={"phase": "idle"})
@@ -369,7 +399,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.json()["connected"], ["3001", "3002"])
         self.assertEqual(response.json()["ready"], {})
         self.assertEqual(response.json()["model_ready"], [])
-        self.assertEqual(app_mod._connected_ports, {"3001", "3002"})
+        self.assertEqual(set(app_mod._connected_ports), {"3001", "3002"})
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
         clear_players.assert_awaited_once_with(None)

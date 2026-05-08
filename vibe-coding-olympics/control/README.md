@@ -92,6 +92,7 @@ browser.
 | `/api/prompts/draw` | GET | — | Draws a random prompt pool entry |
 | `/api/players` | GET | — | Lists active player ports |
 | `/api/players/connect` | POST | `{port: str}` | Marks a player launcher as connected |
+| `/api/players/heartbeat` | POST | `{port: str}` | Refreshes player connection state; stale ports expire after 6 seconds |
 | `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and forwards ready names to OBS |
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
 | `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |

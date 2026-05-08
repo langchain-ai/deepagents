@@ -116,6 +116,17 @@ curl -fsS -m 1 \
   -H "content-type: application/json" \
   -d "{\"port\":\"$PORT\"}" \
   "$CONTROL_API/api/players/connect" >/dev/null 2>&1 || true
+(
+  while true; do
+    curl -fsS -m 1 \
+      -H "content-type: application/json" \
+      -d "{\"port\":\"$PORT\"}" \
+      "$CONTROL_API/api/players/heartbeat" >/dev/null 2>&1 || true
+    sleep 2
+  done
+) &
+HEARTBEAT_PID=$!
+trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
 
 # Free the port up front so the poller below can't race a zombie Vite from a
 # previous round. Without this, the poller's first curl would succeed against

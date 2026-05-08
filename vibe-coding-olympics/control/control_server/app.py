@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import time
 from typing import Any
 
 import httpx
@@ -26,6 +27,7 @@ from control_server import iterm_ctrl
 logger = logging.getLogger(__name__)
 
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
+PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
 
 DEFAULT_PROMPTS = (
     "A website for a taco truck",
@@ -127,7 +129,7 @@ class PlayerModelReadyRequest(BaseModel):
     port: str
 
 
-_connected_ports: set[str] = set()
+_connected_ports: dict[str, float] = {}
 _ready_players: dict[str, str] = {}
 _model_ready_ports: set[str] = set()
 _prompt_pool: dict[int, str] = dict(enumerate(DEFAULT_PROMPTS, start=1))
@@ -142,6 +144,26 @@ def _ready_contestants() -> list[str]:
 def _round_player_ports() -> list[str]:
     """Return the two player ports assigned to the current round."""
     return list(_ready_players)[:2]
+
+
+def _mark_player_connected(port: str) -> None:
+    """Record a player heartbeat timestamp."""
+    _connected_ports[port] = time.monotonic()
+
+
+def _connected_player_ports() -> list[str]:
+    """Return connected ports, expiring stale player state first."""
+    now = time.monotonic()
+    stale = [
+        port
+        for port, seen_at in _connected_ports.items()
+        if now - seen_at > PLAYER_HEARTBEAT_TIMEOUT_SECS
+    ]
+    for port in stale:
+        _connected_ports.pop(port, None)
+        _ready_players.pop(port, None)
+        _model_ready_ports.discard(port)
+    return sorted(_connected_ports)
 
 
 def _all_named_players_model_ready() -> bool:
@@ -1015,23 +1037,32 @@ def create_app() -> FastAPI:
     async def players_list() -> dict[str, Any]:
         return {
             "players": await iterm_ctrl.list_players(),
-            "connected": sorted(_connected_ports),
+            "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
         }
 
     @app.post("/api/players/connect")
     async def players_connect(req: PlayerConnectedRequest) -> dict[str, Any]:
-        _connected_ports.add(req.port)
+        _mark_player_connected(req.port)
         return {
-            "connected": sorted(_connected_ports),
+            "connected": _connected_player_ports(),
+            "ready": dict(_ready_players),
+            "model_ready": sorted(_model_ready_ports),
+        }
+
+    @app.post("/api/players/heartbeat")
+    async def players_heartbeat(req: PlayerConnectedRequest) -> dict[str, Any]:
+        _mark_player_connected(req.port)
+        return {
+            "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
         }
 
     @app.post("/api/players/ready")
     async def players_ready(req: PlayerReadyRequest) -> dict[str, Any]:
-        _connected_ports.add(req.port)
+        _mark_player_connected(req.port)
         _ready_players[req.port] = req.name
         obs_state: dict[str, Any] | None = None
         obs_error: str | None = None
@@ -1044,7 +1075,7 @@ def create_app() -> FastAPI:
             obs_error = str(exc.detail)
             logger.warning("Could not forward ready players to OBS: %s", exc.detail)
         return {
-            "connected": sorted(_connected_ports),
+            "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "contestants": _ready_contestants(),
@@ -1054,13 +1085,13 @@ def create_app() -> FastAPI:
 
     @app.post("/api/players/model-ready")
     async def players_model_ready(req: PlayerModelReadyRequest) -> dict[str, Any]:
-        _connected_ports.add(req.port)
+        _mark_player_connected(req.port)
         _model_ready_ports.add(req.port)
         players_ready_sent: list[str] = []
         if _all_named_players_model_ready():
             players_ready_sent = await iterm_ctrl.players_ready(None)
         return {
-            "connected": sorted(_connected_ports),
+            "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "players_ready_sent": players_ready_sent,
@@ -1090,7 +1121,7 @@ def create_app() -> FastAPI:
             logger.warning("Could not forward cleared players to OBS: %s", exc.detail)
         return {
             "cleared": cleared,
-            "connected": sorted(_connected_ports),
+            "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
             "obs": obs_state,

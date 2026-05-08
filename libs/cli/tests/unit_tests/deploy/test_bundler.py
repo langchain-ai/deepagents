@@ -242,7 +242,8 @@ class TestRenderDeployGraph:
         assert 'metadata.get("owner") != user_identity' in result
         assert "requested_sandbox_id != trusted_sandbox_id" in result
         assert "Rejected unbound sandbox id" in result
-        assert "configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info" not in result
+        unsafe_fallback = "configurable.get(_SANDBOX_INFO_KEY) or initial_sandbox_info"
+        assert unsafe_fallback not in result
 
     def test_daytona_block_reconnects_from_sandbox_info(self) -> None:
         """Generated Daytona deploy graph must reconnect from persisted sandbox info."""

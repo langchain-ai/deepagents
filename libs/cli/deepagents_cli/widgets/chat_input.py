@@ -1943,6 +1943,15 @@ class ChatInput(Vertical):
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
 
+    def set_cursor_blink(self, *, blink: bool) -> None:
+        """Toggle the input's cursor blink without changing focus.
+
+        Args:
+            blink: Whether the cursor should blink.
+        """
+        if self._text_area is not None:
+            self._text_area.cursor_blink = blink
+
     def exit_mode(self) -> bool:
         """Exit the current input mode (command/shell) back to normal.
 

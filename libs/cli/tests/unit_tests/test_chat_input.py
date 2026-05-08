@@ -2579,3 +2579,37 @@ class TestScrollCursorVisibleDesync:
                 result = text_area.scroll_cursor_visible()
 
             assert result == Offset(0, 0)
+
+
+class TestSetCursorBlink:
+    """`ChatInput.set_cursor_blink` toggles cursor blink without changing focus."""
+
+    async def test_toggles_reactive(self) -> None:
+        """Pause flips `cursor_blink` to False; resume flips it back to True."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            assert chat._text_area.cursor_blink is True
+
+            chat.set_cursor_blink(blink=False)
+            await pilot.pause()
+            assert chat._text_area.cursor_blink is False
+
+            chat.set_cursor_blink(blink=True)
+            await pilot.pause()
+            assert chat._text_area.cursor_blink is True
+
+    async def test_preserves_widget_focus(self) -> None:
+        """Pausing must not blur the widget."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            await pilot.pause()
+
+            chat.set_cursor_blink(blink=False)
+            await pilot.pause()
+
+            assert chat._text_area.has_focus is True

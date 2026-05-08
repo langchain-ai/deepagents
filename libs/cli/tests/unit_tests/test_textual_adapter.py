@@ -29,7 +29,11 @@ from deepagents_cli.textual_adapter import (
     format_token_count,
     print_usage_table,
 )
-from deepagents_cli.widgets.messages import SummarizationMessage, ToolCallMessage
+from deepagents_cli.widgets.messages import (
+    AppMessage,
+    SummarizationMessage,
+    ToolCallMessage,
+)
 
 
 async def _mock_mount(widget: object) -> None:
@@ -1232,10 +1236,15 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
-    async def test_ask_user_cancelled_marks_row_rejected(self) -> None:
-        """Cancelled result should call `set_rejected` and pop the tool row."""
+    async def test_ask_user_cancelled_marks_row_rejected_and_halts(self) -> None:
+        """Cancelled result should reject the row and not resume generation."""
+        mounted: list[object] = []
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "cancelled"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
 
         async def request_ask_user(
             _questions: list[Any],
@@ -1258,7 +1267,7 @@ class TestExecuteTaskTextualAskUser:
             ]
         )
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
             request_ask_user=request_ask_user,
@@ -1272,11 +1281,11 @@ class TestExecuteTaskTextualAskUser:
             adapter=adapter,
         )
 
-        resume_cmd = agent.stream_inputs[1]
-        assert isinstance(resume_cmd, Command)
-        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
-        assert resume_payload["interrupt-1"]["status"] == "cancelled"
+        assert len(agent.stream_inputs) == 1
         assert "tool-1" not in adapter._current_tool_messages
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert len(app_messages) == 1
+        assert "Question cancelled" in str(app_messages[0]._content)
 
     async def test_ask_user_invalid_answers_payload_marks_row_error(self) -> None:
         """Non-list answers should mark row as error and pop it."""

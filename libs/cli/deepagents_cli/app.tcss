@@ -264,16 +264,34 @@ ToolCallMessage.-ascii:hover {
 }
 
 .ask-user-menu .ask-user-choice {
-    height: 1;
+    height: auto;
     padding: 0 1;
 }
 
 .ask-user-menu .ask-user-text-input {
     margin: 1 1 0 1;
+    height: auto;
+    min-height: 3;
+    max-height: 10;
+    background: transparent;
 }
 
 .ask-user-menu .ask-user-other-input {
     margin: 1 1 0 1;
+    height: auto;
+    min-height: 3;
+    max-height: 10;
+    background: transparent;
+}
+
+.ask-user-menu AskUserTextArea {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

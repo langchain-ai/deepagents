@@ -47,6 +47,12 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
+from deepagents.middleware._utils import (
+    BUILTIN_SECTION_ORDER,
+    SystemSection,
+    get_system_section,
+    set_system_section,
+)
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
@@ -59,6 +65,7 @@ from deepagents.middleware.summarization import (
 )
 
 __all__ = [
+    "BUILTIN_SECTION_ORDER",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
@@ -66,6 +73,9 @@ __all__ = [
     "FilesystemPermission",
     "MemoryMiddleware",
     "SkillsMiddleware",
+    "SystemSection",
+    "get_system_section",
+    "set_system_section",
     "SubAgent",
     "SubAgentMiddleware",
     "SummarizationMiddleware",

@@ -71,10 +71,7 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import ToolRuntime
-from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import ContentBlock, SystemMessage
-
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import set_system_section
 
 logger = logging.getLogger(__name__)
 
@@ -332,21 +329,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         """
         contents = request.state.get("memory_contents", {})
         agent_memory = self._format_agent_memory(contents)
-
-        new_system_message = append_to_system_message(request.system_message, agent_memory)
-
-        # Runtime check uses `request.model` (not a flag captured at init) so
-        # the breakpoint correctly follows middleware-level model overrides.
-        if self._add_cache_control and isinstance(request.model, ChatAnthropic) and new_system_message.content_blocks:
-            blocks: list[ContentBlock] = list(new_system_message.content_blocks)
-            last = blocks[-1]
-            base = last if isinstance(last, dict) else {}
-            # Merged dict is structurally a ContentBlock with an extra
-            # provider-specific key; ty can't discriminate the union.
-            blocks[-1] = {**base, "cache_control": {"type": "ephemeral"}}  # ty: ignore[invalid-assignment]
-            new_system_message = SystemMessage(content_blocks=blocks)
-
-        return request.override(system_message=new_system_message)
+        # cache_control placement and Anthropic model detection are delegated to
+        # SystemPromptAssemblerMiddleware, which applies them at assembly time.
+        return set_system_section(
+            request, "memory", agent_memory, cache_control=self._add_cache_control
+        )
 
     def wrap_model_call(
         self,

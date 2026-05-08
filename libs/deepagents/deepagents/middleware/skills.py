@@ -131,7 +131,7 @@ from langgraph.prebuilt import ToolRuntime
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import set_system_section
 
 logger = logging.getLogger(__name__)
 
@@ -991,9 +991,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             skills_list=skills_list,
         )
 
-        new_system_message = append_to_system_message(request.system_message, skills_section)
-
-        return request.override(system_message=new_system_message)
+        return set_system_section(request, "skills", skills_section)
 
     def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load skills metadata before agent execution (synchronous).

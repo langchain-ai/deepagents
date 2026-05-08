@@ -56,7 +56,7 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import set_system_section
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 
@@ -1695,8 +1695,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+            request = set_system_section(request, "filesystem", system_prompt)
 
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
@@ -1760,8 +1759,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             system_prompt = "\n\n".join(prompt_parts).strip()
 
         if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+            request = set_system_section(request, "filesystem", system_prompt)
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

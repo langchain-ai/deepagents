@@ -26,7 +26,7 @@ from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import set_system_section
 
 logger = logging.getLogger(__name__)
 
@@ -934,8 +934,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """Update the system message to include async subagent instructions."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return handler(request.override(system_message=new_system_message))
+            return handler(set_system_section(request, "async_subagents", self.system_prompt))
         return handler(request)
 
     async def awrap_model_call(
@@ -945,6 +944,5 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """(async) Update the system message to include async subagent instructions."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return await handler(request.override(system_message=new_system_message))
+            return await handler(set_system_section(request, "async_subagents", self.system_prompt))
         return await handler(request)

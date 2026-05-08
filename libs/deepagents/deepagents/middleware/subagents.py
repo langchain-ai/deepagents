@@ -18,7 +18,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import set_system_section
 from deepagents.middleware.filesystem import FilesystemPermission
 
 
@@ -608,8 +608,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return handler(request.override(system_message=new_system_message))
+            return handler(set_system_section(request, "subagents", self.system_prompt))
         return handler(request)
 
     async def awrap_model_call(
@@ -619,6 +618,5 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     ) -> ModelResponse[ResponseT]:
         """(async) Update the system message to include instructions on using subagents."""
         if self.system_prompt is not None:
-            new_system_message = append_to_system_message(request.system_message, self.system_prompt)
-            return await handler(request.override(system_message=new_system_message))
+            return await handler(set_system_section(request, "subagents", self.system_prompt))
         return await handler(request)

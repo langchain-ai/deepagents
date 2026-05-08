@@ -35,6 +35,7 @@ from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.middleware._system_prompt import SystemPromptAssemblerMiddleware
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -677,6 +678,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 add_cache_control=True,
             )
         )
+    deepagent_middleware.append(SystemPromptAssemblerMiddleware())
     if interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
     deepagent_middleware = _apply_excluded_middleware(

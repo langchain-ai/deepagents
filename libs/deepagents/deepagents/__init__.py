@@ -1,5 +1,6 @@
 """Deep Agents package."""
 
+from deepagents._subagent_dispatch_transformer import SubagentDispatchTransformer
 from deepagents._subagent_transformer import (
     AsyncSubagentRunStream,
     SubagentRunStream,
@@ -34,6 +35,7 @@ __all__ = [
     "ProviderProfile",
     "SubAgent",
     "SubAgentMiddleware",
+    "SubagentDispatchTransformer",
     "SubagentRunStream",
     "SubagentTransformer",
     "__version__",

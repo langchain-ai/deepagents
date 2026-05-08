@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncSubAgent(TypedDict):
-    """Specification for an async subagent running on a remote Agent Protocol server.
+    """Specification for an async subagent running on a remote [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
 
     Async subagents connect to any Agent Protocol-compliant server via the
     LangGraph SDK. They run as background tasks that the main agent can

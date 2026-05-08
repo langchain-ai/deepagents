@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.0.52](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.51...deepagents-cli==0.0.52) (2026-05-08)
+
+
+### Features
+
+* **cli:** add `ContextHubBackend` for iteration in `deepagents-deploy` ([#2923](https://github.com/langchain-ai/deepagents/issues/2923)) ([fb0f0ba](https://github.com/langchain-ai/deepagents/commit/fb0f0ba08a58c3d2ae5db2435c07e3b826f395fa))
+* **cli:** add env var for launch theme ([#3176](https://github.com/langchain-ai/deepagents/issues/3176)) ([47a3e4e](https://github.com/langchain-ai/deepagents/commit/47a3e4e219bf43a08697fceabfaddcadc464c97b))
+* **cli:** add splash tips visibility env var ([#3179](https://github.com/langchain-ai/deepagents/issues/3179)) ([c9be71c](https://github.com/langchain-ai/deepagents/commit/c9be71ce431aadbf24424411a57fada2ed560c93))
+* **cli:** add splash version visibility env var ([#3173](https://github.com/langchain-ai/deepagents/issues/3173)) ([f57d09e](https://github.com/langchain-ai/deepagents/commit/f57d09e46b965091525817d1e17741ec61aa6274))
+* **cli:** add startup splash env var overrides ([#3175](https://github.com/langchain-ai/deepagents/issues/3175)) ([8d3d197](https://github.com/langchain-ai/deepagents/commit/8d3d197941c878a409795b870c308f4b761dea5b))
+* **cli:** add TUI footer visibility env vars ([#3171](https://github.com/langchain-ai/deepagents/issues/3171)) ([8f5796b](https://github.com/langchain-ai/deepagents/commit/8f5796b3704c95c6f775445496177d955eec2da3))
+* **cli:** auto-wire issues board with context hub repo handle ([#3231](https://github.com/langchain-ai/deepagents/issues/3231)) ([94628fe](https://github.com/langchain-ai/deepagents/commit/94628fef98aefb5389ab56c8acee31726d6385dc))
+* **cli:** emit `user.name.set` hook during onboarding ([#3177](https://github.com/langchain-ai/deepagents/issues/3177)) ([43a494e](https://github.com/langchain-ai/deepagents/commit/43a494ed2fe44b7ba3a03d9833301ff3fc485b73))
+* **cli:** external event listener via Unix domain socket ([#3207](https://github.com/langchain-ai/deepagents/issues/3207)) ([ffeac22](https://github.com/langchain-ai/deepagents/commit/ffeac22f8e5572681ca1ad7c4f2e55ef57207577))
+* **cli:** strip provider-specific model prefixes in status bar footer ([#3222](https://github.com/langchain-ai/deepagents/issues/3222)) ([eaa1d82](https://github.com/langchain-ai/deepagents/commit/eaa1d821c96246471b274663e714878fdd2f67bb))
+* **evals:** add `open-fireworks` model preset ([#3182](https://github.com/langchain-ai/deepagents/issues/3182)) ([a748fdd](https://github.com/langchain-ai/deepagents/commit/a748fddd1ef463212e28dd0f6d0be6403ed8dd9f))
+
+
+### Bug Fixes
+
+* **cli:** allow multiple-choice labels to wrap in narrow ask-user menus ([#3257](https://github.com/langchain-ai/deepagents/issues/3257)) ([79a38d9](https://github.com/langchain-ai/deepagents/commit/79a38d9a3a18f28903717a0d4efa8ad66caee129))
+* **cli:** catch `WorkerCancelled` in `await_prewarm_imports` ([#3178](https://github.com/langchain-ai/deepagents/issues/3178)) ([aa0d0f7](https://github.com/langchain-ai/deepagents/commit/aa0d0f732680a917bfc407f61f689326006be163))
+* **cli:** halt turn immediately when `ask_user` is cancelled ([#3258](https://github.com/langchain-ai/deepagents/issues/3258)) ([00d9b99](https://github.com/langchain-ai/deepagents/commit/00d9b99ce748d34cb150e08e2c46be6d648b3170))
+* **cli:** only restore iTerm2 cursor guide when it was enabled at startup ([#3256](https://github.com/langchain-ai/deepagents/issues/3256)) ([2620ff5](https://github.com/langchain-ai/deepagents/commit/2620ff56d1d89275e604e756abe54c1408414167))
+* **cli:** pause input cursor blink when terminal loses OS focus ([#3246](https://github.com/langchain-ai/deepagents/issues/3246)) ([8582b83](https://github.com/langchain-ai/deepagents/commit/8582b8355d5c0c70f45cee9522e4c8e02264005e))
+* **cli:** scroll tall `ask_user prompts` to top of viewport ([#3238](https://github.com/langchain-ai/deepagents/issues/3238)) ([705daa7](https://github.com/langchain-ai/deepagents/commit/705daa7e651153cb2cf80455131fcfe4311973b9))
+* **cli:** suppress noisy network warnings from interrupt cleanup ([#3250](https://github.com/langchain-ai/deepagents/issues/3250)) ([4e4a8fe](https://github.com/langchain-ai/deepagents/commit/4e4a8fedd1ed72606ac0df336859ba5d7180021f))
+
 ## [0.0.51](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.50...deepagents-cli==0.0.51) (2026-05-05)
 
 ### Features

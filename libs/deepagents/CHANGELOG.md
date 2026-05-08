@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.7...deepagents==0.5.8) (2026-05-08)
+
+### Bug Fixes
+
+* Avoid deprecated-use warnings in `CompositeBackend` path mutation ([#3244](https://github.com/langchain-ai/deepagents/issues/3244)) ([64d45f6](https://github.com/langchain-ai/deepagents/commit/64d45f67c86edb4df2ced0e7b82f1a8fd158ec8c))
+
 ## [0.5.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.6...deepagents==0.5.7) (2026-05-05)
 
 ### Bug Fixes

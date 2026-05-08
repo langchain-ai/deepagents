@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_cli import theme
+from deepagents_cli._env_vars import HIDE_MODEL_SELECTOR_SEARCH, is_env_truthy
 from deepagents_cli.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_cli.model_config import (
     ModelConfig,
@@ -274,6 +275,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._cli_profile_override = cli_profile_override
         self._curated = curated
         self._title = title
+        self._show_filter = not is_env_truthy(HIDE_MODEL_SELECTOR_SEARCH)
 
         # Model data — populated asynchronously in on_mount via _load_model_data
         self._all_models: list[tuple[str, str]] = []
@@ -334,11 +336,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     id="model-selector-info",
                 )
 
-            # Search input
-            yield Input(
-                placeholder="Type to filter or enter provider:model...",
-                id="model-filter",
-            )
+            if self._show_filter:
+                yield Input(
+                    placeholder="Type to filter or enter provider:model...",
+                    id="model-filter",
+                )
 
             # Scrollable model list
             with VerticalScroll(classes="model-list"):
@@ -434,8 +436,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Focus the filter input immediately so the user can start typing
         # while model data loads.
-        filter_input = self.query_one("#model-filter", Input)
-        filter_input.focus()
+        if self._show_filter:
+            filter_input = self.query_one("#model-filter", Input)
+            filter_input.focus()
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
@@ -488,6 +491,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input changed event.
         """
+        if not self._show_filter:
+            return
         self._filter_text = event.value
         if not self._loaded:
             return  # on_mount will re-apply filter after data loads
@@ -500,6 +505,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Args:
             event: The input submitted event.
         """
+        if not self._show_filter:
+            return
         event.stop()
         self.action_select()
 
@@ -992,7 +999,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     def action_tab_complete(self) -> None:
         """Replace search text with the currently selected model spec."""
-        if not self._filtered_models:
+        if not self._show_filter or not self._filtered_models:
             return
         model_spec, _ = self._filtered_models[self._selected_index]
         filter_input = self.query_one("#model-filter", Input)
@@ -1051,6 +1058,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._filtered_models:
             model_spec, provider = self._filtered_models[self._selected_index]
             self._select_with_auth_check(model_spec, provider)
+            return
+
+        if not self._show_filter:
             return
 
         # No matches - check if user typed a custom provider:model spec

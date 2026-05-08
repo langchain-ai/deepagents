@@ -2,6 +2,9 @@
 
 MVP runner. Three-phase FSM (`IDLE` → `CODING` → `SCOREBOARD` → `IDLE`) plus a minimal compositor interface to OBS (scene switch + text updates). One-shot commands over HTTP.
 
+For live event startup, use `../README.md`. This file documents OBS setup and
+the runner API.
+
 ```
 producer  ──POST /transition──▶  FastAPI  ──obs-websocket──▶  OBS
                                     │

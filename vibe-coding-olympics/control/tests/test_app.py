@@ -12,10 +12,16 @@ class TestReadyPlayers(unittest.TestCase):
     def setUp(self) -> None:
         app_mod._ready_players.clear()
         app_mod._model_ready_ports.clear()
+        app_mod._prompt_pool.clear()
+        app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
+        app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
 
     def tearDown(self) -> None:
         app_mod._ready_players.clear()
         app_mod._model_ready_ports.clear()
+        app_mod._prompt_pool.clear()
+        app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
+        app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
 
     def test_ready_players_forward_to_obs_in_submission_order(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -116,16 +122,152 @@ class TestReadyPlayers(unittest.TestCase):
             {"prompt": "build a taco truck", "contestants": ["Alice", "Bob"]},
         )
 
-    def test_round_start_rejects_empty_prompt(self) -> None:
+    def test_round_start_draws_prompt_when_prompt_is_empty(self) -> None:
         client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._model_ready_ports.update({"3001", "3002"})
+        app_mod._prompt_pool.clear()
+        app_mod._prompt_pool[1] = "A website for a taco truck"
+        forward = AsyncMock(return_value={"phase": "coding"})
+
+        with (
+            patch("control_server.app._forward", forward),
+            patch(
+                "control_server.iterm_ctrl.send_prompt_to_players",
+                new=AsyncMock(return_value=["3001", "3002"]),
+            ),
+        ):
+            response = client.post(
+                "/api/round/start",
+                json={"prompt": "   ", "contestants": ["Alice", "Bob"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["prompt"], "A website for a taco truck")
+        forward.assert_awaited_once_with(
+            "start",
+            {
+                "prompt": "A website for a taco truck",
+                "contestants": ["Alice", "Bob"],
+            },
+        )
+
+    def test_round_start_rejects_empty_prompt_pool(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._model_ready_ports.update({"3001", "3002"})
+        app_mod._prompt_pool.clear()
 
         response = client.post(
             "/api/round/start",
-            json={"prompt": "   ", "contestants": ["Alice"]},
+            json={"contestants": ["Alice", "Bob"]},
         )
 
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("Prompt must not be empty.", response.text)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Prompt pool is empty.", response.text)
+
+    def test_round_end_early_signals_players_then_ends_round(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        calls: list[str] = []
+
+        async def times_up(ports: list[str] | None) -> list[str]:
+            calls.append("times-up")
+            self.assertEqual(ports, ["3001", "3002"])
+            return ["3001", "3002"]
+
+        async def forward(event: str, payload: dict[str, object]) -> dict[str, str]:
+            calls.append(event)
+            self.assertEqual(payload, {"scores": {"Alice": 8.2, "Bob": 7.5}})
+            return {"phase": "scoreboard"}
+
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "coding"}),
+            ),
+            patch("control_server.app._forward", forward),
+            patch("control_server.iterm_ctrl.times_up_players", times_up),
+        ):
+            response = client.post(
+                "/api/round/end-early",
+                json={"scores": {"Alice": 8.2, "Bob": 7.5}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["times_up_sent"], ["3001", "3002"])
+        self.assertEqual(response.json()["state"], {"phase": "scoreboard"})
+        self.assertEqual(calls, ["times-up", "end"])
+
+    def test_round_end_early_rejects_when_not_coding(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "idle"}),
+            ),
+            patch("control_server.app._forward", new=AsyncMock()) as forward,
+            patch(
+                "control_server.iterm_ctrl.times_up_players",
+                new=AsyncMock(),
+            ) as times_up,
+        ):
+            response = client.post("/api/round/end-early", json={"scores": {}})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Cannot end early while OBS is in phase `idle`.", response.text)
+        times_up.assert_not_awaited()
+        forward.assert_not_awaited()
+
+    def test_prompt_crud_and_draw_endpoints(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._prompt_pool.clear()
+        app_mod._next_prompt_id = 1
+
+        created = client.post(
+            "/api/prompts",
+            json={"prompt": "  A website for a moon laundromat  "},
+        )
+        listed = client.get("/api/prompts")
+        updated = client.patch(
+            "/api/prompts/1",
+            json={"prompt": "A website for a moon greenhouse"},
+        )
+        drawn = client.get("/api/prompts/draw")
+        deleted = client.delete("/api/prompts/1")
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(
+            created.json(),
+            {"id": 1, "prompt": "A website for a moon laundromat"},
+        )
+        self.assertEqual(
+            listed.json()["prompts"],
+            [{"id": 1, "prompt": "A website for a moon laundromat"}],
+        )
+        self.assertEqual(
+            updated.json(),
+            {"id": 1, "prompt": "A website for a moon greenhouse"},
+        )
+        self.assertEqual(drawn.json(), {"prompt": "A website for a moon greenhouse"})
+        self.assertEqual(
+            deleted.json(),
+            {"id": 1, "prompt": "A website for a moon greenhouse"},
+        )
+        self.assertEqual(client.get("/api/prompts").json()["prompts"], [])
+
+    def test_prompt_list_places_new_entries_before_defaults(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        client.post("/api/prompts", json={"prompt": "A website for a moon greenhouse"})
+        client.post("/api/prompts", json={"prompt": "A website for a neon museum"})
+
+        prompts = client.get("/api/prompts").json()["prompts"]
+
+        self.assertEqual(prompts[0]["prompt"], "A website for a neon museum")
+        self.assertEqual(prompts[1]["prompt"], "A website for a moon greenhouse")
+        self.assertEqual(prompts[2]["prompt"], "A website for a taco truck")
 
     def test_players_prompt_rejects_empty_prompt(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -226,6 +368,20 @@ class TestReadyPlayers(unittest.TestCase):
             response.text,
         )
         self.assertIn('aria-disabled="true">Start</button>', response.text)
+        self.assertIn(
+            'id="btn-end-early" aria-disabled="true">End early</button>',
+            response.text,
+        )
+        self.assertIn('id="end-error"', response.text)
+        self.assertIn('id="obs-phase">unknown</span>', response.text)
+        self.assertIn('id="state-summary"', response.text)
+        self.assertIn('id="state-prompt">none</dd>', response.text)
+        self.assertIn('id="state-contestants">none</dd>', response.text)
+        self.assertIn('id="state-scores">none</dd>', response.text)
+        self.assertIn("renderPromptEditor", response.text)
+        self.assertIn("edit.textContent = 'Edit'", response.text)
+        self.assertIn("save.textContent = 'Save'", response.text)
+        self.assertNotIn("Send prompt to all", response.text)
 
 
 if __name__ == "__main__":

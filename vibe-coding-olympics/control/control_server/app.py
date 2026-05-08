@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 from typing import Any
 
 import httpx
@@ -26,10 +27,52 @@ logger = logging.getLogger(__name__)
 
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
 
+DEFAULT_PROMPTS = (
+    "A website for a taco truck",
+    "A website for a haunted house",
+    "A website for a space tourism company",
+    "A website for a cat café",
+    "A website for a time traveler",
+    "A website for a secret society",
+    "A website for a deep sea explorer",
+    "A website for a robot therapist",
+    "A website for a cloud factory",
+    "A website for a pirate radio station",
+    "A website for a noodle shop on Mars",
+    "A website for a wizard's bookstore",
+    "A website for a retro arcade",
+    "A website for a penguin sanctuary",
+    "A website for a midnight bakery",
+    "A website for a volcano observatory",
+    "A website for a time capsule service",
+    "A website for a dream interpreter",
+    "A website for an underwater hotel",
+    "A website for a dragon daycare",
+)
+
 
 class StartRequest(BaseModel):
-    prompt: str
+    prompt: str | None = None
     contestants: list[str] = Field(default_factory=list)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt(cls, value: str | None) -> str | None:
+        """Normalize optional prompts supplied by the controller."""
+        if value is None:
+            return None
+        prompt = value.strip()
+        return prompt or None
+
+
+class EndRequest(BaseModel):
+    scores: dict[str, float] = Field(default_factory=dict)
+
+
+class PromptRequest(BaseModel):
+    """Prompt pool entry created or edited by the controller."""
+
+    prompt: str
 
     @field_validator("prompt")
     @classmethod
@@ -40,10 +83,6 @@ class StartRequest(BaseModel):
             msg = "Prompt must not be empty."
             raise ValueError(msg)
         return prompt
-
-
-class EndRequest(BaseModel):
-    scores: dict[str, float] = Field(default_factory=dict)
 
 
 class PlayerTarget(BaseModel):
@@ -84,6 +123,8 @@ class PlayerModelReadyRequest(BaseModel):
 
 _ready_players: dict[str, str] = {}
 _model_ready_ports: set[str] = set()
+_prompt_pool: dict[int, str] = dict(enumerate(DEFAULT_PROMPTS, start=1))
+_next_prompt_id = len(_prompt_pool) + 1
 
 
 def _ready_contestants() -> list[str]:
@@ -140,6 +181,41 @@ async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     return response.json()
 
 
+async def _get_obs_state() -> dict[str, Any]:
+    """Return the OBS runner's current state snapshot."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            response = await client.get(f"{VIBE_OBS_API}/state")
+        except httpx.HTTPError as exc:
+            msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
+            raise HTTPException(status_code=502, detail=msg) from exc
+    if response.status_code >= 400:
+        try:
+            body = response.json()
+            detail = body.get("detail", body) if isinstance(body, dict) else body
+        except ValueError:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    return response.json()
+
+
+async def _end_round_early(scores: dict[str, float]) -> dict[str, Any]:
+    """Signal active players that time is up, then end a live round."""
+    state = await _get_obs_state()
+    phase = state.get("phase")
+    if phase != "coding":
+        msg = f"Cannot end early while OBS is in phase `{phase}`."
+        raise HTTPException(status_code=409, detail=msg)
+
+    ports = _round_player_ports()
+    times_up_sent = await iterm_ctrl.times_up_players(ports or None)
+    ended = await _forward("end", {"scores": scores})
+    return {
+        "state": ended,
+        "times_up_sent": times_up_sent,
+    }
+
+
 def _resolve_ports(target: PlayerTarget) -> list[str] | None:
     """Translate a `PlayerTarget` into an arg for `iterm_ctrl`."""
     if target.all:
@@ -159,6 +235,35 @@ def _clear_player_readiness(ports: list[str] | None) -> None:
     for port in ports:
         _ready_players.pop(port, None)
         _model_ready_ports.discard(port)
+
+
+def _prompt_entries() -> list[dict[str, Any]]:
+    """Return prompt pool entries in display order."""
+    default_count = len(DEFAULT_PROMPTS)
+
+    def sort_key(item: tuple[int, str]) -> tuple[int, int]:
+        prompt_id, _prompt = item
+        if prompt_id > default_count:
+            return (0, -prompt_id)
+        return (1, prompt_id)
+
+    return [
+        {"id": key, "prompt": value}
+        for key, value in sorted(_prompt_pool.items(), key=sort_key)
+    ]
+
+
+def _draw_prompt() -> str:
+    """Select one prompt from the pool."""
+    if not _prompt_pool:
+        msg = "Prompt pool is empty."
+        raise HTTPException(status_code=409, detail=msg)
+    return random.choice(list(_prompt_pool.values()))
+
+
+def _round_prompt(req: StartRequest) -> str:
+    """Return the supplied prompt or draw one from the pool."""
+    return req.prompt or _draw_prompt()
 
 
 _INDEX_HTML = """<!doctype html>
@@ -257,6 +362,45 @@ _INDEX_HTML = """<!doctype html>
   .action-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
   .row { display: flex; gap: 0.75rem; }
   .row > label { flex: 1; }
+  .prompt-pool {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+  .prompt-entry {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.4rem;
+    align-items: center;
+    min-height: 2.35rem;
+  }
+  .prompt-entry.editing { grid-template-columns: 1fr auto auto auto; }
+  .prompt-entry input { margin-top: 0; }
+  .prompt-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: #e5e5e5;
+  }
+  .state-summary {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.35rem 0.75rem;
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    background: #0a0a0a;
+    font-size: 0.88rem;
+  }
+  .state-summary dt {
+    color: #888;
+    margin: 0;
+  }
+  .state-summary dd {
+    color: #e5e5e5;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
   #log {
     background: #000;
     color: #6ee7b7;
@@ -278,7 +422,7 @@ _INDEX_HTML = """<!doctype html>
 <section>
   <h2>Start round</h2>
   <label>Prompt
-    <input id="prompt" type="text" placeholder="build a cat shrine" required>
+    <input id="prompt" type="text" placeholder="blank draws from prompt pool">
   </label>
   <div class="row">
     <label><span class="label-line"><span>Player 1</span><span class="ready-badge" id="c1-ready">Ready</span></span>
@@ -290,9 +434,20 @@ _INDEX_HTML = """<!doctype html>
   </div>
   <div class="action-line">
     <button id="btn-start" aria-disabled="true">Start</button>
+    <button class="secondary" id="btn-draw-prompt">Draw prompt</button>
     <span class="ready-badge ready" id="round-started">Round started</span>
     <span class="inline-error" id="start-error" role="alert"></span>
   </div>
+</section>
+
+<section>
+  <h2>Prompt pool</h2>
+  <div class="action-line">
+    <input id="new-prompt" type="text" placeholder="Add a new website prompt">
+    <button id="btn-add-prompt">Add</button>
+  </div>
+  <div class="muted">Leave the round prompt blank to draw randomly from this pool.</div>
+  <div class="prompt-pool" id="prompt-pool"></div>
 </section>
 
 <section>
@@ -306,12 +461,20 @@ _INDEX_HTML = """<!doctype html>
     </label>
   </div>
   <button id="btn-end">End</button>
+  <button class="danger" id="btn-end-early" aria-disabled="true">End early</button>
+  <span class="inline-error" id="end-error" role="alert"></span>
 </section>
 
 <section>
   <h2>Game state</h2>
   <button class="secondary" id="btn-state">Get state</button>
   <button class="danger" id="btn-reset">Reset to Idle</button>
+  <div class="muted">OBS phase: <span id="obs-phase">unknown</span></div>
+  <dl class="state-summary" id="state-summary">
+    <dt>Prompt</dt><dd id="state-prompt">none</dd>
+    <dt>Contestants</dt><dd id="state-contestants">none</dd>
+    <dt>Scores</dt><dd id="state-scores">none</dd>
+  </dl>
   <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #2a2a2a;">
     <button id="btn-full-round">Run full round</button>
     <div style="color:#707070;font-size:0.8rem;margin-top:0.5rem;">
@@ -325,7 +488,6 @@ _INDEX_HTML = """<!doctype html>
 <section>
   <h2>Players</h2>
   <button class="secondary" id="btn-list">List</button>
-  <button id="btn-send-prompt">Send prompt to all</button>
   <button id="btn-times-up">Times up all</button>
   <button class="secondary" id="btn-clear">Reset round all</button>
   <div class="muted">Ready players: <span id="ready-players">none</span></div>
@@ -350,7 +512,11 @@ function log(msg, isErr) {
 async function api(path, body, options = {}) {
   try {
     const opts = { headers: { 'content-type': 'application/json' } };
-    if (body !== undefined) { opts.method = 'POST'; opts.body = JSON.stringify(body); }
+    if (options.method) opts.method = options.method;
+    if (body !== undefined) {
+      opts.method = opts.method || 'POST';
+      opts.body = JSON.stringify(body);
+    }
     const res = await fetch(path, opts);
     const text = await res.text();
     let json = null;
@@ -369,9 +535,13 @@ function playerName(id) {
   const element = document.getElementById(id);
   return element.dataset.name || '';
 }
-function promptValue() {
+function promptValue(options = {}) {
   const input = document.getElementById('prompt');
   const prompt = input.value.trim();
+  if (options.allowBlank && !prompt) {
+    input.setCustomValidity('');
+    return null;
+  }
   input.setCustomValidity(prompt ? '' : 'Prompt must not be empty.');
   if (!prompt) {
     input.reportValidity();
@@ -387,8 +557,34 @@ document.getElementById('prompt').addEventListener('input', (event) => {
 let lastReadyNames = [];
 let roundStartedTimer = null;
 let canStartRound = false;
+let currentPhase = 'unknown';
 function setStartError(message) {
   document.getElementById('start-error').textContent = message;
+}
+function setEndError(message) {
+  document.getElementById('end-error').textContent = message;
+}
+function renderPhase(phase) {
+  currentPhase = phase || 'unknown';
+  document.getElementById('obs-phase').textContent = currentPhase;
+  document.getElementById('btn-end-early').setAttribute(
+    'aria-disabled',
+    String(currentPhase !== 'coding'),
+  );
+  if (currentPhase === 'coding') setEndError('');
+}
+function renderState(state) {
+  if (!state) return;
+  if (state.phase) renderPhase(state.phase);
+  document.getElementById('state-prompt').textContent = state.prompt || 'none';
+  const contestants = state.contestants || [];
+  document.getElementById('state-contestants').textContent =
+    contestants.length ? contestants.join(', ') : 'none';
+  const scores = state.scores || {};
+  const scoreEntries = Object.entries(scores);
+  document.getElementById('state-scores').textContent = scoreEntries.length
+    ? scoreEntries.map(([name, score]) => `${name}: ${score}`).join(', ')
+    : 'none';
 }
 function showRoundStarted() {
   const badge = document.getElementById('round-started');
@@ -446,11 +642,102 @@ async function refreshPlayers() {
   const result = await api('/api/players', undefined, { quiet: true });
   if (result.ok && result.json) renderReady(result.json.ready, result.json.model_ready);
 }
+async function refreshState(options = {}) {
+  const result = await api('/api/state', undefined, options);
+  if (result.ok && result.json) renderState(result.json);
+  return result;
+}
+async function loadPromptPool() {
+  const result = await api('/api/prompts', undefined, { quiet: true });
+  if (!result.ok || !result.json) return;
+  const container = document.getElementById('prompt-pool');
+  container.replaceChildren();
+  for (const entry of result.json.prompts) {
+    const row = document.createElement('div');
+    row.className = 'prompt-entry';
+
+    const text = document.createElement('div');
+    text.className = 'prompt-text';
+    text.textContent = entry.prompt;
+
+    const edit = document.createElement('button');
+    edit.className = 'secondary';
+    edit.textContent = 'Edit';
+    edit.onclick = () => renderPromptEditor(row, entry);
+
+    const remove = document.createElement('button');
+    remove.className = 'danger';
+    remove.textContent = 'Delete';
+    remove.onclick = async () => {
+      const response = await api(
+        `/api/prompts/${entry.id}`,
+        undefined,
+        { method: 'DELETE' },
+      );
+      if (response.ok) loadPromptPool();
+    };
+
+    row.append(text, edit, remove);
+    container.appendChild(row);
+  }
+}
+function renderPromptEditor(row, entry) {
+  row.classList.add('editing');
+  row.replaceChildren();
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = entry.prompt;
+
+  const save = document.createElement('button');
+  save.textContent = 'Save';
+  save.onclick = async () => {
+    const prompt = input.value.trim();
+    if (!prompt) {
+      log('prompt is required', true);
+      return;
+    }
+    const response = await api(
+      `/api/prompts/${entry.id}`,
+      { prompt },
+      { method: 'PATCH' },
+    );
+    if (response.ok) loadPromptPool();
+  };
+
+  const cancel = document.createElement('button');
+  cancel.className = 'secondary';
+  cancel.textContent = 'Cancel';
+  cancel.onclick = loadPromptPool;
+
+  const remove = document.createElement('button');
+  remove.className = 'danger';
+  remove.textContent = 'Delete';
+  remove.onclick = async () => {
+    const response = await api(
+      `/api/prompts/${entry.id}`,
+      undefined,
+      { method: 'DELETE' },
+    );
+    if (response.ok) loadPromptPool();
+  };
+
+  row.append(input, save, cancel, remove);
+  input.focus();
+  input.select();
+}
+async function drawPrompt() {
+  const result = await api('/api/prompts/draw');
+  if (result.ok && result.json) {
+    document.getElementById('prompt').value = result.json.prompt;
+    document.getElementById('prompt').setCustomValidity('');
+  }
+  return result;
+}
 
 document.getElementById('btn-start').onclick = async () => {
   hideRoundStarted();
-  const prompt = promptValue();
-  if (prompt === null) return;
+  const prompt = promptValue({ allowBlank: true });
   await refreshPlayers();
   const c1 = playerName('c1');
   const c2 = playerName('c2');
@@ -462,8 +749,14 @@ document.getElementById('btn-start').onclick = async () => {
     return;
   }
   if (contestants.length === 0) { log('at least one player is required', true); return; }
-  const result = await api('/api/round/start', { prompt, contestants });
+  const body = { contestants };
+  if (prompt !== null) body.prompt = prompt;
+  const result = await api('/api/round/start', body);
   if (result.ok) {
+    if (result.json && result.json.state) renderState(result.json.state);
+    if (result.json && result.json.prompt) {
+      document.getElementById('prompt').value = result.json.prompt;
+    }
     showRoundStarted();
     return;
   }
@@ -473,16 +766,64 @@ document.getElementById('btn-start').onclick = async () => {
 };
 
 document.getElementById('btn-end').onclick = () => {
+  api('/api/round/end', { scores: roundScores() }).then((result) => {
+    if (result.ok && result.json) renderState(result.json);
+  });
+};
+
+document.getElementById('btn-end-early').onclick = () => {
+  if (currentPhase !== 'coding') {
+    const message = `No live round to end early. OBS is ${currentPhase}.`;
+    setEndError(message);
+    log(message, true);
+    return;
+  }
+  api('/api/round/end-early', { scores: roundScores() }).then((result) => {
+    if (result.ok && result.json && result.json.state) {
+      renderState(result.json.state);
+    }
+    if (!result.ok && result.json && result.json.detail) {
+      setEndError(String(result.json.detail));
+    }
+  });
+};
+
+function roundScores() {
   const c1 = playerName('c1');
   const c2 = playerName('c2');
   const scores = {};
   if (c1) scores[c1] = num('s1');
   if (c2) scores[c2] = num('s2');
-  api('/api/round/end', { scores });
-};
+  return scores;
+}
 
-document.getElementById('btn-state').onclick = () => api('/api/state');
-document.getElementById('btn-reset').onclick = () => api('/api/round/reset', {});
+document.getElementById('btn-state').onclick = () => refreshState();
+document.getElementById('btn-reset').onclick = () => {
+  api('/api/round/reset', {}).then((result) => {
+    if (result.ok && result.json) renderState(result.json);
+  });
+};
+document.getElementById('btn-draw-prompt').onclick = drawPrompt;
+
+async function addPrompt() {
+  const input = document.getElementById('new-prompt');
+  const prompt = input.value.trim();
+  if (!prompt) {
+    log('prompt is required', true);
+    return;
+  }
+  const result = await api('/api/prompts', { prompt });
+  if (result.ok) {
+    input.value = '';
+    loadPromptPool();
+  }
+}
+document.getElementById('btn-add-prompt').onclick = addPrompt;
+document.getElementById('new-prompt').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  addPrompt();
+});
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -490,8 +831,7 @@ document.getElementById('btn-full-round').onclick = async () => {
   const btn = document.getElementById('btn-full-round');
   btn.disabled = true;
   try {
-    const prompt = promptValue();
-    if (prompt === null) return;
+    const prompt = promptValue({ allowBlank: true });
     const c1 = playerName('c1');
     const c2 = playerName('c2');
     const contestants = [c1, c2].filter(Boolean);
@@ -504,8 +844,13 @@ document.getElementById('btn-full-round').onclick = async () => {
     if (c2) scores[c2] = num('s2');
 
     log('full round: start');
-    let r = await api('/api/round/start', { prompt, contestants });
+    const body = { contestants };
+    if (prompt !== null) body.prompt = prompt;
+    let r = await api('/api/round/start', body);
     if (!r.ok) return;
+    if (r.json && r.json.prompt) {
+      document.getElementById('prompt').value = r.json.prompt;
+    }
     await sleep(2000);
 
     log('full round: end');
@@ -524,15 +869,17 @@ document.getElementById('btn-list').onclick = async () => {
   const result = await api('/api/players');
   if (result.ok && result.json) renderReady(result.json.ready, result.json.model_ready);
 };
-document.getElementById('btn-send-prompt').onclick = () => {
-  const prompt = promptValue();
-  if (prompt === null) return;
-  api('/api/players/prompt', { all: true, prompt });
-};
 document.getElementById('btn-times-up').onclick = () => api('/api/players/times-up', { all: true });
-document.getElementById('btn-clear').onclick = () => api('/api/players/clear', { all: true });
+document.getElementById('btn-clear').onclick = () => {
+  api('/api/players/clear', { all: true }).then((result) => {
+    if (result.ok && result.json && result.json.obs) renderState(result.json.obs);
+  });
+};
 refreshPlayers();
+refreshState({ quiet: true });
+loadPromptPool();
 setInterval(refreshPlayers, 2000);
+setInterval(() => refreshState({ quiet: true }), 2000);
 </script>
 </body>
 </html>
@@ -549,29 +896,61 @@ def create_app() -> FastAPI:
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                response = await client.get(f"{VIBE_OBS_API}/state")
-            except httpx.HTTPError as exc:
-                msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
-                raise HTTPException(status_code=502, detail=msg) from exc
-        return response.json()
+        return await _get_obs_state()
+
+    @app.get("/api/prompts")
+    async def prompts_list() -> dict[str, list[dict[str, Any]]]:
+        return {"prompts": _prompt_entries()}
+
+    @app.post("/api/prompts")
+    async def prompts_create(req: PromptRequest) -> dict[str, Any]:
+        global _next_prompt_id
+
+        prompt_id = _next_prompt_id
+        _next_prompt_id += 1
+        _prompt_pool[prompt_id] = req.prompt
+        return {"id": prompt_id, "prompt": req.prompt}
+
+    @app.patch("/api/prompts/{prompt_id}")
+    async def prompts_update(prompt_id: int, req: PromptRequest) -> dict[str, Any]:
+        if prompt_id not in _prompt_pool:
+            msg = "Prompt not found."
+            raise HTTPException(status_code=404, detail=msg)
+        _prompt_pool[prompt_id] = req.prompt
+        return {"id": prompt_id, "prompt": req.prompt}
+
+    @app.delete("/api/prompts/{prompt_id}")
+    async def prompts_delete(prompt_id: int) -> dict[str, Any]:
+        if prompt_id not in _prompt_pool:
+            msg = "Prompt not found."
+            raise HTTPException(status_code=404, detail=msg)
+        prompt = _prompt_pool.pop(prompt_id)
+        return {"id": prompt_id, "prompt": prompt}
+
+    @app.get("/api/prompts/draw")
+    async def prompts_draw() -> dict[str, str]:
+        return {"prompt": _draw_prompt()}
 
     @app.post("/api/round/start")
     async def round_start(req: StartRequest) -> dict[str, Any]:
         if not _all_named_players_model_ready():
             raise HTTPException(status_code=409, detail=_start_blocked_message())
+        prompt = _round_prompt(req)
         contestants = req.contestants or _ready_contestants()[:2]
         state = await _forward(
             "start",
-            {"prompt": req.prompt, "contestants": contestants},
+            {"prompt": prompt, "contestants": contestants},
         )
-        sent = await iterm_ctrl.send_prompt_to_players(None, req.prompt)
-        return {"state": state, "prompt_sent": sent}
+        sent = await iterm_ctrl.send_prompt_to_players(None, prompt)
+        return {"state": state, "prompt": prompt, "prompt_sent": sent}
 
     @app.post("/api/round/end")
     async def round_end(req: EndRequest) -> dict[str, Any]:
         return await _forward("end", {"scores": req.scores})
+
+    @app.post("/api/round/end-early")
+    async def round_end_early(req: EndRequest) -> dict[str, Any]:
+        return await _end_round_early(req.scores)
 
     @app.post("/api/round/reset")
     async def round_reset() -> dict[str, Any]:

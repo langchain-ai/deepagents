@@ -2,6 +2,9 @@
 
 End-to-end smoke test for the player-dispatch CLI. Both `vibe-players` (CLI) and `vibe-control` (web UI) delegate to the same iTerm2 session-discovery helpers in `control/control_server/iterm_ctrl.py`, so passing this runbook validates the web panel's Players section too.
 
+For live event startup, use `README.md`. This file is for testing and
+debugging the player discovery/dispatch layer.
+
 Run commands from `vibe-coding-olympics/control/` unless noted.
 
 ## Prereqs

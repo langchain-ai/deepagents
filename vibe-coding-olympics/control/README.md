@@ -23,21 +23,35 @@ uv sync
 
 ## Run
 
-Bring the OBS runner up first (it owns game state):
+For the full day-of startup checklist, use `../README.md`. The controller
+machine runs both the OBS runner and this control panel; player machines run
+`../play.sh <port>`.
+
+Bring the OBS runner up first because it owns game state:
 
 ```bash
 # terminal 1
-cd ../obs && uv run vibe-obs                      # http://localhost:8765
+cd vibe-coding-olympics/obs
+uv run vibe-obs                                  # http://localhost:8765
 ```
 
 Then the control panel:
 
 ```bash
 # terminal 2
-cd control && uv run vibe-control                  # http://localhost:8766
+cd vibe-coding-olympics/control
+uv run vibe-control                              # http://localhost:8766
 ```
 
 Open `http://localhost:8766` in a browser.
+
+On player computers:
+
+```bash
+cd vibe-coding-olympics
+./play.sh 3001                                  # player 1
+./play.sh 3002                                  # player 2, on the other computer
+```
 
 ### CLI
 
@@ -56,9 +70,10 @@ uv run vibe-players reset --all
 
 In normal event flow, run `../play.sh <port>` once per player computer at the
 start of the day. It starts the Vite server, opens the browser preview once,
-and leaves the CLI waiting for controller prompts. Use `clear` between rounds;
-it resets the CLI thread/readiness state without restarting Vite or reopening
-the browser.
+and leaves the CLI waiting for controller prompts. Use the web UI's
+**Reset round all** button, or `vibe-players clear --all`, between rounds; it
+resets CLI thread/readiness state without restarting Vite or reopening the
+browser.
 
 ## Endpoints
 
@@ -66,9 +81,15 @@ the browser.
 | --- | --- | --- | --- |
 | `/` | GET | — | Serves the HTML control panel |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner |
-| `/api/round/start` | POST | `{prompt, contestants[]}` | Fires `start` on the FSM |
+| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, drawing from the prompt pool when `prompt` is blank or omitted |
 | `/api/round/end` | POST | `{scores: {name: float}}` | Fires `end` on the FSM |
+| `/api/round/end-early` | POST | `{scores: {name: float}}` | Requires OBS `coding`, sends `times-up` to current player CLI(s), then fires `end` on the FSM |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM |
+| `/api/prompts` | GET | — | Lists prompt pool entries |
+| `/api/prompts` | POST | `{prompt: str}` | Adds a prompt pool entry |
+| `/api/prompts/{id}` | PATCH | `{prompt: str}` | Updates a prompt pool entry |
+| `/api/prompts/{id}` | DELETE | — | Deletes a prompt pool entry |
+| `/api/prompts/draw` | GET | — | Draws a random prompt pool entry |
 | `/api/players` | GET | — | Lists active player ports |
 | `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and forwards ready names to OBS |
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |

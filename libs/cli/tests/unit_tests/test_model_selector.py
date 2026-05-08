@@ -203,6 +203,25 @@ class TestModelSelectorChrome:
 
             assert "Esc cancel" in str(help_text.content)
 
+    async def test_env_can_hide_filter_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The competition launcher can hide search from the model selector."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_HIDE_MODEL_SELECTOR_SEARCH", "1")
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert not screen.query("#model-filter")
+
+            initial_index = screen._selected_index
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert screen._selected_index == initial_index + 1
+
 
 class TestModelSelectorAvailabilityHint:
     """Tests for the API-keys hint shown above the standard model list."""

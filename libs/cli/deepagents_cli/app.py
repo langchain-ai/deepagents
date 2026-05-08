@@ -58,6 +58,7 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_cli.notifications import (
     ActionId,
     MissingDepPayload,
@@ -115,73 +116,12 @@ if TYPE_CHECKING:
     from deepagents_cli.widgets.ask_user import AskUserMenu
     from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
 
-# iTerm2 Cursor Guide Workaround
-# ===============================
-# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
-# Textual takes over the terminal in alternate screen mode. We disable it at
-# module load and restore on exit. Both atexit and exit() override are used
-# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
-# exceptions), while exit() ensures restoration before Textual's cleanup.
-
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI)
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
-
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
-
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during onboarding model switch.
 
 Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished onboarding modal forever.
 """
-
-
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
-
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
-    """
-    if not _IS_ITERM:
-        return
-    try:
-        import sys
-
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe)
-        pass
-
-
-# Disable cursor guide at module load (before Textual takes over)
-_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
-
-if _IS_ITERM:
-    import atexit
-
-    def _restore_cursor_guide() -> None:
-        """Restore iTerm2 cursor guide on exit.
-
-        Registered with atexit to ensure the cursor guide is re-enabled
-        when the CLI exits, regardless of how the exit occurs.
-        """
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    atexit.register(_restore_cursor_guide)
 
 
 def _load_theme_preference() -> str:
@@ -5972,11 +5912,7 @@ class DeepAgentsApp(App):
         return_code: int = 0,
         message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
-        """Exit the app, restoring iTerm2 cursor guide if applicable.
-
-        Overrides parent to restore iTerm2's cursor guide before Textual's
-        cleanup. The atexit handler serves as a fallback for abnormal
-        termination.
+        """Exit the app after shutting down background resources.
 
         Args:
             result: Return value passed to the app runner.
@@ -6032,7 +5968,7 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:

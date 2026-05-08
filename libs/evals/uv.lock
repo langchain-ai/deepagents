@@ -422,7 +422,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.5.7"
+version = "0.5.8"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

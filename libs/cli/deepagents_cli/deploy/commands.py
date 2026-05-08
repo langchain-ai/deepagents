@@ -673,12 +673,12 @@ def _upsert_issues_board_config(
         print(f"Warning: Issues board auto-wire failed: {exc}")
 
 
-def _resolve_context_hub_identifier(config: Any) -> str:  # noqa: ANN401
+def _resolve_context_hub_identifier(config: DeployConfig) -> str:
     return config.memories.identifier or f"-/{config.agent.name}"
 
 
 def _resolve_context_hub_repo_handle_for_issues_board(
-    config: Any,  # noqa: ANN401
+    config: DeployConfig,
 ) -> str | None:
     identifier = _resolve_context_hub_identifier(config)
     owner, sep, repo_handle = identifier.partition("/")
@@ -691,9 +691,9 @@ def _resolve_context_hub_repo_handle_for_issues_board(
     return repo_handle
 
 
-def _auto_wire_issues_board_if_hub(config: Any) -> None:  # noqa: ANN401
+def _auto_wire_issues_board_if_hub(config: DeployConfig) -> None:
     """Best-effort issues-board wiring after deploy for hub-backed memories."""
-    if getattr(config.memories, "backend", "") != "hub":
+    if config.memories.backend != "hub":
         return
 
     context_hub_repo_handle = _resolve_context_hub_repo_handle_for_issues_board(config)

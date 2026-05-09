@@ -4361,7 +4361,7 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
-        elif cmd == "/auth":
+        elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
             await self._show_theme_selector()

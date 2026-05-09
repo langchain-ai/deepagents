@@ -2438,6 +2438,23 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    async def test_connect_alias_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/connect' should push the AuthManagerScreen modal."""
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/connect")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthManagerScreen)
+
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""

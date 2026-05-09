@@ -75,6 +75,7 @@ class TestBypassTiers:
     def test_aliases_in_correct_tier(self) -> None:
         assert "/q" in ALWAYS_IMMEDIATE
         assert "/compact" in QUEUE_BOUND
+        assert "/connect" in IMMEDIATE_UI
 
     def test_every_command_classified(self) -> None:
         for cmd in COMMANDS:

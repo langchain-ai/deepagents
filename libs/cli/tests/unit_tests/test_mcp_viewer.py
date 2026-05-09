@@ -487,6 +487,139 @@ class TestMCPViewerScreen:
             # The literal characters should be present, not consumed as markup.
             assert "[bold]hax[/]" in text
 
+    async def test_arrow_down_scrolls_inside_tall_tool_then_jumps(self) -> None:
+        """Down scrolls inside an over-tall expanded tool; then jumps to next."""
+        from textual.containers import VerticalScroll
+
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="big", description=long_desc),
+                    MCPToolInfo(name="next", description="short"),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")  # expand "big"
+            await pilot.pause()
+            assert screen._tool_widgets[0]._expanded
+
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            initial_offset = scroll.scroll_offset.y
+
+            # First Down must scroll, not jump.
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            assert scroll.scroll_offset.y > initial_offset
+
+            # Many Downs eventually expose the bottom and the next press jumps.
+            for _ in range(60):
+                if screen._selected_index == 1:
+                    break
+                await pilot.press("down")
+                await pilot.pause()
+            assert screen._selected_index == 1, (
+                "expected to eventually jump to next tool"
+            )
+
+    async def test_arrow_up_scrolls_inside_tall_tool_then_jumps(self) -> None:
+        """Up scrolls back through an over-tall expanded tool; then jumps."""
+        from textual.containers import VerticalScroll
+
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="prev", description="short"),
+                    MCPToolInfo(name="big", description=long_desc),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Tab to "big", expand, then scroll all the way down.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            await pilot.press("enter")
+            await pilot.pause()
+            for _ in range(60):
+                await pilot.press("down")
+                await pilot.pause()
+                if screen._selected_index != 1:
+                    break
+
+            # Reset: tab back to "big" so it is selected and scrolled past top.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            # Scroll to the bottom of "big" so its top is above the viewport.
+            scroll.scroll_relative(y=30, animate=False)
+            await pilot.pause()
+            offset_before = scroll.scroll_offset.y
+
+            # First Up must scroll back, not jump.
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 1
+            assert scroll.scroll_offset.y < offset_before
+
+            # Many Ups eventually re-expose the top and the next press jumps.
+            for _ in range(60):
+                if screen._selected_index == 0:
+                    break
+                await pilot.press("up")
+                await pilot.pause()
+            assert screen._selected_index == 0
+
+    async def test_tab_always_jumps_even_inside_tall_tool(self) -> None:
+        """Tab / Shift+Tab unconditionally jump, ignoring viewport visibility."""
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="big", description=long_desc),
+                    MCPToolInfo(name="next", description="short"),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")  # expand "big" — bottom is far off-screen
+            await pilot.pause()
+
+            # One Tab must jump even though Down would only scroll one row.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
     async def test_filter_matches_only_tool_and_server_names(self) -> None:
         """Filter ignores descriptions, param names, and transport."""
         from textual.widgets import Input

@@ -301,9 +301,9 @@ class MCPViewerScreen(ModalScreen[None]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("up", "move_up", "Up", show=False, priority=True),
-        Binding("shift+tab", "move_up", "Up", show=False, priority=True),
         Binding("down", "move_down", "Down", show=False, priority=True),
-        Binding("tab", "move_down", "Down", show=False, priority=True),
+        Binding("shift+tab", "jump_up", "Up", show=False, priority=True),
+        Binding("tab", "jump_down", "Down", show=False, priority=True),
         Binding("enter", "toggle_expand", "Expand", show=False, priority=True),
         # Use a non-letter chord so it does not steal text input from the
         # filter Input. PR #2949 originally proposed `a` for the same
@@ -616,11 +616,47 @@ class MCPViewerScreen(ModalScreen[None]):
         self._move_to(target)
 
     def action_move_up(self) -> None:
-        """Move selection up."""
-        self._move_selection(-1)
+        """Smart up: scroll one row inside a tall expanded tool, else jump.
+
+        If the selected tool's top edge is already inside the viewport, jump
+        to the previous tool. Otherwise scroll the viewport up by one row so
+        the user can read the rest of the current tool's content. `Tab` /
+        `Shift+Tab` skip this and always jump (see `action_jump_up`).
+        """
+        if not self._tool_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        selected = self._tool_widgets[self._selected_index]
+        if selected.region.y >= scroll.region.y:
+            self._move_selection(-1)
+        else:
+            scroll.scroll_relative(y=-1, animate=False)
 
     def action_move_down(self) -> None:
-        """Move selection down."""
+        """Smart down: scroll one row inside a tall expanded tool, else jump.
+
+        If the selected tool's bottom edge is already inside the viewport,
+        jump to the next tool. Otherwise scroll the viewport down by one row
+        so the user can read the rest of the current tool's content. `Tab` /
+        `Shift+Tab` skip this and always jump (see `action_jump_down`).
+        """
+        if not self._tool_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        selected = self._tool_widgets[self._selected_index]
+        selected_bottom = selected.region.y + selected.region.height
+        viewport_bottom = scroll.region.y + scroll.region.height
+        if selected_bottom <= viewport_bottom:
+            self._move_selection(1)
+        else:
+            scroll.scroll_relative(y=1, animate=False)
+
+    def action_jump_up(self) -> None:
+        """Always jump to the previous tool (Shift+Tab)."""
+        self._move_selection(-1)
+
+    def action_jump_down(self) -> None:
+        """Always jump to the next tool (Tab)."""
         self._move_selection(1)
 
     def action_toggle_expand(self) -> None:

@@ -600,35 +600,54 @@ class MCPViewerScreen(ModalScreen[None]):
         if old != index:
             self._tool_widgets[old].set_selected(False)
             self._tool_widgets[index].set_selected(True)
-            # Pin to top so jumping past an expanded tool doesn't rebound.
-            self._tool_widgets[index].scroll_visible(top=True)
+            # Caller (action) is responsible for any viewport pin — different
+            # navigation directions want different anchors (top for down,
+            # bottom for up).
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta positions.
+        """Move selection by delta positions, clamped at the list ends.
+
+        No wrap-around — pressing `Down` past the last tool stays put
+        rather than jumping to the first.
 
         Args:
             delta: Number of positions to move.
         """
         if not self._tool_widgets:
             return
-        count = len(self._tool_widgets)
-        target = (self._selected_index + delta) % count
-        self._move_to(target)
+        target = self._selected_index + delta
+        if 0 <= target < len(self._tool_widgets):
+            self._move_to(target)
+
+    def _scroll_widget_bottom_to_view(self, widget: MCPToolItem) -> None:
+        """Scroll so `widget.region.bottom` aligns with the viewport bottom.
+
+        Used when jumping upward to the previous tool: lands the user at
+        the bottom of that tool so the next `Up` press immediately
+        line-scrolls upward through its content rather than jumping again.
+        """
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        delta = (widget.region.y + widget.region.height) - (
+            scroll.region.y + scroll.region.height
+        )
+        if delta:
+            scroll.scroll_relative(y=delta, animate=False)
 
     def action_move_up(self) -> None:
         """Smart up: scroll one row inside a tall expanded tool, else jump.
 
         If the selected tool's top edge is already inside the viewport, jump
-        to the previous tool. Otherwise scroll the viewport up by one row so
-        the user can read the rest of the current tool's content. `Tab` /
-        `Shift+Tab` skip this and always jump (see `action_jump_up`).
+        to the previous tool and pin its **bottom** to the viewport so the
+        next `Up` resumes line-stepping through that tool. Otherwise scroll
+        the viewport up by one row. `Tab` / `Shift+Tab` skip the smart check
+        (see `action_jump_up`).
         """
         if not self._tool_widgets:
             return
         scroll = self.query_one(".mcp-list", VerticalScroll)
         selected = self._tool_widgets[self._selected_index]
         if selected.region.y >= scroll.region.y:
-            self._move_selection(-1)
+            self._jump_up()
         else:
             scroll.scroll_relative(y=-1, animate=False)
 
@@ -636,9 +655,9 @@ class MCPViewerScreen(ModalScreen[None]):
         """Smart down: scroll one row inside a tall expanded tool, else jump.
 
         If the selected tool's bottom edge is already inside the viewport,
-        jump to the next tool. Otherwise scroll the viewport down by one row
-        so the user can read the rest of the current tool's content. `Tab` /
-        `Shift+Tab` skip this and always jump (see `action_jump_down`).
+        jump to the next tool and pin its top to the viewport. Otherwise
+        scroll the viewport down by one row. `Tab` / `Shift+Tab` skip the
+        smart check (see `action_jump_down`).
         """
         if not self._tool_widgets:
             return
@@ -647,17 +666,33 @@ class MCPViewerScreen(ModalScreen[None]):
         selected_bottom = selected.region.y + selected.region.height
         viewport_bottom = scroll.region.y + scroll.region.height
         if selected_bottom <= viewport_bottom:
-            self._move_selection(1)
+            self._jump_down()
         else:
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Always jump to the previous tool (Shift+Tab)."""
-        self._move_selection(-1)
+        """Always jump to the previous tool (Shift+Tab); pin its bottom."""
+        self._jump_up()
 
     def action_jump_down(self) -> None:
-        """Always jump to the next tool (Tab)."""
+        """Always jump to the next tool (Tab); pin its top."""
+        self._jump_down()
+
+    def _jump_down(self) -> None:
+        """Move selection down by one and pin the new tool's top."""
+        old = self._selected_index
         self._move_selection(1)
+        if self._selected_index != old:
+            self._tool_widgets[self._selected_index].scroll_visible(top=True)
+
+    def _jump_up(self) -> None:
+        """Move selection up by one and pin the new tool's bottom."""
+        old = self._selected_index
+        self._move_selection(-1)
+        if self._selected_index != old:
+            self._scroll_widget_bottom_to_view(
+                self._tool_widgets[self._selected_index]
+            )
 
     def action_toggle_expand(self) -> None:
         """Toggle expand/collapse on the selected tool."""

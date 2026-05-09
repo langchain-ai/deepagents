@@ -171,20 +171,27 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 2
 
-            # Wrap around
+            # No wrap-around at the end of the list — Down stays put.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 0
+            assert screen._selected_index == 2
 
-            # Tab advances selection
-            await pilot.press("tab")
+            # Reset to first via Shift+Tab.
+            await pilot.press("shift+tab")
             await pilot.pause()
-            assert screen._selected_index == 1
-
-            # Shift+Tab moves selection back
             await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 0
+
+            # No wrap-around at the start either.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Tab advances selection.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
 
             # The filter Input exists and is the focused widget
             filter_input = screen.query_one("#mcp-filter", Input)
@@ -552,25 +559,14 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            # Tab to "big", expand, then scroll all the way down.
+            # Select "big" and expand it; scroll past its top.
             await pilot.press("tab")
             await pilot.pause()
             assert screen._selected_index == 1
             await pilot.press("enter")
             await pilot.pause()
-            for _ in range(60):
-                await pilot.press("down")
-                await pilot.pause()
-                if screen._selected_index != 1:
-                    break
-
-            # Reset: tab back to "big" so it is selected and scrolled past top.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 1
 
             scroll = screen.query_one(".mcp-list", VerticalScroll)
-            # Scroll to the bottom of "big" so its top is above the viewport.
             scroll.scroll_relative(y=30, animate=False)
             await pilot.pause()
             offset_before = scroll.scroll_offset.y
@@ -581,13 +577,99 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 1
             assert scroll.scroll_offset.y < offset_before
 
-            # Many Ups eventually re-expose the top and the next press jumps.
+            # Many Ups eventually re-expose the top and the next press jumps
+            # to "prev". Cap the loop so a regression can't hang the suite.
             for _ in range(60):
                 if screen._selected_index == 0:
                     break
                 await pilot.press("up")
                 await pilot.pause()
             assert screen._selected_index == 0
+
+    async def test_up_jump_pins_previous_tool_to_viewport_bottom(self) -> None:
+        """After jumping up, the new tool's bottom is at the viewport bottom.
+
+        This means the next `Up` immediately line-scrolls within that tool
+        (does not re-jump), so the user can keep reading upward.
+        """
+        from textual.containers import VerticalScroll
+
+        long_desc = "\n".join(f"line {i}" for i in range(40))
+        info = [
+            MCPServerInfo(
+                name="srv",
+                transport="stdio",
+                tools=(
+                    MCPToolInfo(name="big", description=long_desc),
+                    MCPToolInfo(name="next", description="short"),
+                ),
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("enter")  # expand "big"
+            await pilot.pause()
+            # Scroll all the way down through "big" until we jump to "next".
+            for _ in range(80):
+                await pilot.press("down")
+                await pilot.pause()
+                if screen._selected_index == 1:
+                    break
+            assert screen._selected_index == 1
+
+            scroll = screen.query_one(".mcp-list", VerticalScroll)
+            big = screen._tool_widgets[0]
+
+            # Press Up — should jump back to "big" and pin its bottom to the
+            # viewport bottom.
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            big_bottom = big.region.y + big.region.height
+            viewport_bottom = scroll.region.y + scroll.region.height
+            assert big_bottom == viewport_bottom
+
+            # The next Up must line-scroll inside "big", not jump again
+            # (there's nothing above index 0 anyway, but the assertion is
+            # really that scroll moved).
+            offset_before = scroll.scroll_offset.y
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            assert scroll.scroll_offset.y < offset_before
+
+    async def test_no_wrap_around_at_list_ends(self) -> None:
+        """Down past the last tool, or Up past the first, are no-ops."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._selected_index == 0
+            # Up from the first tool stays put.
+            await pilot.press("up")
+            await pilot.pause()
+            assert screen._selected_index == 0
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Tab to the last tool, then Down/Tab past stays put.
+            await pilot.press("tab")
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 2
 
     async def test_tab_always_jumps_even_inside_tall_tool(self) -> None:
         """Tab / Shift+Tab unconditionally jump, ignoring viewport visibility."""

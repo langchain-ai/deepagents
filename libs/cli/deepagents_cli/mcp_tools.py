@@ -9,6 +9,7 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import copy
 import fnmatch
 import json
 import logging
@@ -1344,13 +1345,29 @@ async def _load_tools_from_config(
         server_tools = _apply_tool_filter(server_tools, server_name, server_config)
         all_tools.extend(server_tools)
 
-        prefix = f"{server_name}_"
+        # Pair each tool's input_schema by its LangChain (server-prefixed)
+        # name — the same form `server_tools` carries — so the lookup needs
+        # no string surgery and stays correct if `tool_name_prefix` ever
+        # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
+        # but Python's `frozen=True` does not freeze nested mutables; a
+        # shared reference would let one holder mutate every other's view.
         schemas: dict[str, dict[str, Any] | None] = {}
         for mcp_tool in mcp_tools:
             try:
-                schemas[mcp_tool.name] = getattr(mcp_tool, "inputSchema", None)
-            except Exception:  # noqa: BLE001 - tool metadata may be malformed; degrade gracefully
-                schemas[mcp_tool.name] = None
+                raw_schema = getattr(mcp_tool, "inputSchema", None)
+            except (AttributeError, TypeError) as exc:
+                logger.warning(
+                    "MCP tool %r on server %r: inputSchema access raised %s; "
+                    "rendering with no parameters",
+                    getattr(mcp_tool, "name", "<unnamed>"),
+                    server_name,
+                    exc.__class__.__name__,
+                )
+                raw_schema = None
+            lc_name = f"{server_name}_{mcp_tool.name}"
+            schemas[lc_name] = (
+                copy.deepcopy(raw_schema) if raw_schema is not None else None
+            )
 
         server_infos.append(
             MCPServerInfo(
@@ -1360,7 +1377,7 @@ async def _load_tools_from_config(
                     MCPToolInfo(
                         name=tool.name,
                         description=tool.description or "",
-                        input_schema=schemas.get(tool.name.removeprefix(prefix)),
+                        input_schema=schemas.get(tool.name),
                     )
                     for tool in server_tools
                 ),

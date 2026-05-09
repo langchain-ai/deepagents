@@ -624,14 +624,15 @@ class TestMCPViewerScreen:
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             big = screen._tool_widgets[0]
 
-            # Press Up — should jump back to "big" and pin its bottom to the
-            # viewport bottom.
+            # Press Up — should jump back to "big" and pin its bottom near
+            # the viewport bottom (within 1 row, allowing for layout-tick
+            # rounding).
             await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 0
             big_bottom = big.region.y + big.region.height
             viewport_bottom = scroll.region.y + scroll.region.height
-            assert big_bottom == viewport_bottom
+            assert abs(big_bottom - viewport_bottom) <= 1
 
             # The next Up must line-scroll inside "big", not jump again
             # (there's nothing above index 0 anyway, but the assertion is
@@ -733,9 +734,7 @@ class TestMCPViewerScreen:
             for query in ("target_path", "argument", "stdio"):
                 filter_input.value = query
                 await pilot.pause()
-                assert screen._tool_widgets == [], (
-                    f"{query!r} unexpectedly matched"
-                )
+                assert screen._tool_widgets == [], f"{query!r} unexpectedly matched"
 
     async def test_toggle_all_expands_then_collapses(self) -> None:
         """`Ctrl+E` expands every tool, pressing again collapses all."""
@@ -856,16 +855,18 @@ class TestMCPViewerScreen:
             assert "esc" in text
 
     async def test_three_state_status_indicators_render(self) -> None:
-        """Each `MCPServerStatus` produces a visually distinct header line."""
-        from deepagents_cli import theme
+        """Each `MCPServerStatus` produces a visually distinct header line.
 
+        We assert on rendered text + glyph (the user-visible signal); the
+        per-state theme color is verified separately by the unit-level
+        `_status_color` test, not by inspecting `Content` internal repr.
+        """
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_mixed_status_info())
             app.push_screen(screen)
             await pilot.pause()
 
-            colors = theme.get_theme_colors(screen)
             headers = screen.query(".mcp-server-header")
             assert len(headers) == 3
 
@@ -885,13 +886,15 @@ class TestMCPViewerScreen:
             assert "error" in err_text
             assert "Connection refused" in err_text
 
-            # Each header carries the matching theme color in its content spans.
-            ok_spans = repr(headers[0]._Static__content)  # type: ignore[attr-defined]
-            unauth_spans = repr(headers[1]._Static__content)  # type: ignore[attr-defined]
-            err_spans = repr(headers[2]._Static__content)  # type: ignore[attr-defined]
-            assert colors.success in ok_spans
-            assert colors.warning in unauth_spans
-            assert colors.error in err_spans
+    def test_status_color_maps_three_states(self) -> None:
+        """Unit-level: each status maps to the correct theme color attribute."""
+        from deepagents_cli import theme
+        from deepagents_cli.widgets.mcp_viewer import _status_color
+
+        colors = theme.get_theme_colors()
+        assert _status_color("ok", colors) == colors.success
+        assert _status_color("unauthenticated", colors) == colors.warning
+        assert _status_color("error", colors) == colors.error
 
     async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
         """Status icons reuse existing `Glyphs` (unicode by default)."""

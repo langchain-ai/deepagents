@@ -1031,7 +1031,7 @@ class TestGetMCPTools:
                     # Allow LangChain conversion to succeed first.
                     return {"type": "object", "properties": {}}
                 msg = "metadata access failed"
-                raise RuntimeError(msg)
+                raise AttributeError(msg)
 
         session.list_tools = AsyncMock(
             return_value=_make_tool_page(
@@ -1042,6 +1042,36 @@ class TestGetMCPTools:
         _tools, manager, server_infos = await get_mcp_tools(path)
 
         assert server_infos[0].tools[0].input_schema is None
+        await manager.cleanup()  # type: ignore[union-attr]
+
+    async def test_input_schema_pairs_when_tool_name_starts_with_server_prefix(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """A bare tool name that itself starts with the server prefix still pairs.
+
+        Server `srv` exposing tool `srv_read` produces LangChain name
+        `srv_srv_read`. The schema dict is keyed by the LC name directly, so
+        the lookup is unambiguous regardless of how the bare name happens
+        to look. (Regression guard for the prior `removeprefix`-based path.)
+        """
+        path = write_config(
+            {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
+        )
+        session, _recorded = fake_create_session
+        schema = {"type": "object", "properties": {"x": {"type": "string"}}}
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page(
+                [_make_mcp_tool("srv_read", "Read", input_schema=schema)]
+            )
+        )
+
+        _tools, manager, server_infos = await get_mcp_tools(path)
+
+        info = server_infos[0]
+        assert [t.name for t in info.tools] == ["srv_srv_read"]
+        assert info.tools[0].input_schema == schema
         await manager.cleanup()  # type: ignore[union-attr]
 
     async def test_input_schema_paired_to_post_filter_tools(

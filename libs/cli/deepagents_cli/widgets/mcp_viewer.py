@@ -28,6 +28,10 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     Maps onto the existing `Glyphs` set so ASCII fallback is automatic
     (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
 
+    Args:
+        status: One of `ok` / `unauthenticated` / `error`.
+        glyphs: Active `Glyphs` table (Unicode or ASCII).
+
     Returns:
         The unicode or ASCII glyph character matching `status`.
     """
@@ -46,6 +50,10 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     pass the value to `Content.styled()` or `Content.assemble()` so a
     theme switch recolors the indicator without code changes.
 
+    Args:
+        status: One of `ok` / `unauthenticated` / `error`.
+        colors: Active theme palette (typically from `theme.get_theme_colors`).
+
     Returns:
         Hex color string from the active theme.
     """
@@ -56,6 +64,69 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     return colors.error
 
 
+def _styled(inner: str, style: str) -> str:
+    """Wrap a `Content.from_markup` template fragment in `[style]…[/]` if needed.
+
+    Centralizes the `'[' + style + ']…[/]' if style else …` pattern that the
+    three formatter methods would otherwise repeat five times.
+
+    Args:
+        inner: Template fragment (may contain `$var` substitutions).
+        style: Active style string; empty string means render unstyled.
+
+    Returns:
+        `inner` wrapped in `[style]…[/]` when `style` is truthy, otherwise
+        `inner` unchanged.
+    """
+    return f"[{style}]{inner}[/]" if style else inner
+
+
+def _format_prop_type(prop_type: Any) -> str:  # noqa: ANN401 - JSON Schema field is intentionally untyped
+    """Render a JSON Schema `type` field for parameter display.
+
+    JSON Schema allows `type` to be a string (`"string"`) or a list of
+    strings (`["string", "null"]` for nullable types). Plain `str()` on a
+    list produces an ugly Python repr; we join with `|` instead.
+
+    Args:
+        prop_type: The raw value of the schema's `type` field.
+
+    Returns:
+        Display-friendly type string. `"any"` when `prop_type` is missing
+        or not coercible to a meaningful string.
+    """
+    if prop_type is None:
+        return "any"
+    if isinstance(prop_type, list):
+        parts = [str(t) for t in prop_type if t]
+        return "|".join(parts) if parts else "any"
+    return str(prop_type) or "any"
+
+
+def _sanitize_inline(text: str, *, max_length: int = 200) -> str:
+    """Strip control characters and truncate text rendered inline in a header.
+
+    External-origin strings (e.g. `MCPServerInfo.error` returned by an MCP
+    server) might contain newlines, ANSI escape sequences, or other control
+    characters that would corrupt the modal layout. Replace control chars
+    with spaces and truncate to `max_length` so a hostile or buggy server
+    cannot break the screen.
+
+    Args:
+        text: Untrusted inline text.
+        max_length: Maximum characters to retain (truncated with `…`).
+
+    Returns:
+        Sanitized single-line text safe to embed inside a `Content.assemble`
+        tuple or `from_markup` substitution.
+    """
+    cleaned = "".join(ch if ch == " " or ch.isprintable() else " " for ch in text)
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 1] + "…"
+    return cleaned
+
+
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
@@ -63,19 +134,26 @@ def _visible_tools_for(
 
     Filter matches tool and server *names* only — descriptions, parameter
     names, and the transport are deliberately not in the haystack so long
-    MCP docstrings don't produce spurious matches.
+    MCP docstrings don't produce spurious matches. A server with zero tools
+    that matches by name returns `None` so the caller can skip rendering a
+    stub header followed by the global "No matching tools" empty-state.
+
+    Args:
+        server: The server whose tools are candidates for display.
+        tokens: Lower-cased filter tokens — empty means "no filter".
 
     Returns:
-        - `server.tools` when the filter is empty or matches the server name.
+        - `server.tools` when the filter is empty or matches the server name
+          and the server actually has tools.
         - A subset tuple when individual tool names match.
-        - `None` when nothing matches — caller skips the header entirely.
+        - `None` when nothing matches, including the server-name-match case
+          on a server with zero tools — caller skips the header entirely.
     """
     if not tokens:
         return server.tools
 
-    server_name = server.name.lower()
-    if all(token in server_name for token in tokens):
-        return server.tools
+    if all(token in server.name.lower() for token in tokens):
+        return server.tools or None
 
     matching = tuple(
         tool
@@ -149,8 +227,7 @@ class MCPToolItem(Static):
             desc_text = description[:cut] + ellipsis
         else:
             desc_text = description
-        style = self._desc_style()
-        template = "  $name [" + style + "]$desc[/]" if style else "  $name $desc"
+        template = f"  $name {_styled('$desc', self._desc_style())}"
         return Content.from_markup(template, name=name, desc=desc_text)
 
     def _format_expanded(self, name: str, description: str) -> Content:
@@ -168,13 +245,9 @@ class MCPToolItem(Static):
             Styled Content label with description and parameters on
             following lines.
         """
-        style = self._desc_style()
         if description:
-            template = (
-                "  [bold]$name[/bold]\n    [" + style + "]$desc[/]"
-                if style
-                else "  [bold]$name[/bold]\n    $desc"
-            )
+            style = self._desc_style()
+            template = f"  [bold]$name[/bold]\n    {_styled('$desc', style)}"
             base = Content.from_markup(template, name=name, desc=description)
         else:
             base = Content.from_markup("  [bold]$name[/bold]", name=name)
@@ -207,27 +280,22 @@ class MCPToolItem(Static):
         # not selected, render dim so the params sit visually below the
         # description.
         style = self._desc_style()
-        header_template = (
-            "\n    [" + style + "]Parameters:[/]" if style else "\n    Parameters:"
-        )
-        result = Content.from_markup(header_template)
+        result = Content.from_markup("\n    " + _styled("Parameters:", style))
+        line_template = "\n      " + _styled("$name: $ptype$star", style)
         for prop_name, prop_schema in properties.items():
-            if isinstance(prop_schema, dict):
-                prop_type = str(prop_schema.get("type") or "any")
-            else:
-                prop_type = "any"
+            prop_type = _format_prop_type(
+                prop_schema.get("type") if isinstance(prop_schema, dict) else None
+            )
             star = " *" if str(prop_name) in required_set else ""
             # `Content.from_markup` substitution escapes user-supplied
             # text, so a parameter named `[bold]foo[/]` cannot inject
-            # markup tags into the output.
-            line_template = (
-                "\n      [" + style + "]$name: $ptype$star[/]"
-                if style
-                else "\n      $name: $ptype$star"
-            )
+            # markup tags into the output. Newlines are stripped to
+            # protect viewport-row math (smart-scroll relies on
+            # `widget.region.height` matching the rendered row count).
+            safe_name = str(prop_name).replace("\n", " ").replace("\r", " ")[:80]
             line = Content.from_markup(
                 line_template,
-                name=str(prop_name),
+                name=safe_name,
                 ptype=prop_type,
                 star=star,
             )
@@ -257,14 +325,19 @@ class MCPToolItem(Static):
         self.set_expanded(not self._expanded)
 
     def set_expanded(self, expanded: bool) -> None:
-        """Set expansion state explicitly; no-op when already in that state.
+        """Set expansion state explicitly and re-render.
 
-        Provides a single seam through which expansion changes flow, so the
-        screen-level `Ctrl+E` toggle-all action and the per-row `toggle_expand`
-        can share the same render path.
+        Single seam through which expansion changes flow, so the screen-level
+        `Ctrl+E` toggle-all action and the per-row `toggle_expand` share the
+        same render path. Always re-applies `styles.height` and re-renders so
+        callers do not need to know whether the state changed — the redundant
+        write is cheap and avoids drift if `styles.height` was changed
+        externally (CSS reload, theme switch, programmatic edit).
+
+        Args:
+            expanded: `True` for expanded multi-line view, `False` for
+                collapsed single-line view.
         """
-        if expanded == self._expanded:
-            return
         self._expanded = expanded
         self.styles.height = "auto" if expanded else 1
         self._rerender()
@@ -521,8 +594,9 @@ class MCPViewerScreen(ModalScreen[None]):
         """Mount filtered server headers + tool items into `scroll`.
 
         Empty `query` shows everything; otherwise multi-token AND matching
-        across server names, transport, tool names, descriptions, and
-        parameter names.
+        on server names and tool names only — descriptions, parameter
+        names, and transport are not in the haystack (see
+        `_visible_tools_for`).
         """
         glyphs = get_glyphs()
 
@@ -538,7 +612,6 @@ class MCPViewerScreen(ModalScreen[None]):
         tokens = [tok for tok in query.lower().split() if tok]
         colors = theme.get_theme_colors(self)
         flat_index = 0
-        rendered_any_tool = False
 
         for server in self._server_info:
             visible_tools = _visible_tools_for(server, tokens)
@@ -546,27 +619,20 @@ class MCPViewerScreen(ModalScreen[None]):
                 # Server filtered out entirely.
                 continue
 
-            tool_count = len(visible_tools)
-            t_label = "tool" if tool_count == 1 else "tools"
             indicator_color = _status_color(server.status, colors)
             indicator_glyph = _status_glyph(server.status, glyphs)
-            if server.status == "ok":
-                summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
-                header_content = Content.assemble(
-                    (f"{indicator_glyph} ", indicator_color),
-                    (server.name, "bold"),
-                    (summary, "dim"),
+            scroll.mount(
+                Static(
+                    self._render_server_header(
+                        server,
+                        indicator_glyph,
+                        indicator_color,
+                        visible_tools,
+                        glyphs,
+                    ),
+                    classes="mcp-server-header",
                 )
-            else:
-                error_text = server.error or ""
-                header_content = Content.assemble(
-                    (f"{indicator_glyph} ", indicator_color),
-                    (server.name, "bold"),
-                    (f" {server.transport}", "dim"),
-                    (f" {glyphs.bullet} {server.status}", indicator_color),
-                    (f" — {error_text}", "dim") if error_text else "",
-                )
-            scroll.mount(Static(header_content, classes="mcp-server-header"))
+            )
             for tool in visible_tools:
                 classes = "mcp-tool-item"
                 if flat_index == 0:
@@ -581,10 +647,75 @@ class MCPViewerScreen(ModalScreen[None]):
                 self._tool_widgets.append(widget)
                 scroll.mount(widget)
                 flat_index += 1
-                rendered_any_tool = True
 
-        if tokens and not self._tool_widgets and not rendered_any_tool:
+        if tokens and not self._tool_widgets:
             scroll.mount(Static("No matching tools.", classes="mcp-empty"))
+
+    @staticmethod
+    def _render_server_header(
+        server: MCPServerInfo,
+        indicator_glyph: str,
+        indicator_color: str,
+        visible_tools: tuple[MCPToolInfo, ...],
+        glyphs: Glyphs,
+    ) -> Content:
+        """Build the styled header line for one server.
+
+        Routes external-origin strings (`server.name`, `server.transport`,
+        `server.error`) through `Content.from_markup`'s `$var` substitution
+        per AGENTS.md — `assemble`'s plain-string tuples don't markup-parse
+        but do not escape either, leaving the door open to surprise. The
+        `$var` form is also resilient if the values ever contain `[…]`-shaped
+        text. `server.error` additionally goes through `_sanitize_inline`
+        because MCP servers can return arbitrary error text including
+        newlines or terminal escapes.
+
+        Args:
+            server: The server whose header is being rendered.
+            indicator_glyph: Status glyph (already chosen from `_status_glyph`).
+            indicator_color: Status color (already chosen from `_status_color`).
+            visible_tools: Tools that survived the active filter — used only
+                for the count label.
+            glyphs: Active `Glyphs` table for the bullet separator.
+
+        Returns:
+            Styled `Content` ready to mount inside a `Static`.
+        """
+        tool_count = len(visible_tools)
+        t_label = "tool" if tool_count == 1 else "tools"
+        if server.status == "ok":
+            template = (
+                "[$icolor]$icon [/]"
+                "[bold]$name[/bold]"
+                f"[dim] $transport {glyphs.bullet} $count $tlabel[/dim]"
+            )
+            return Content.from_markup(
+                template,
+                icolor=indicator_color,
+                icon=indicator_glyph,
+                name=server.name,
+                transport=server.transport,
+                count=str(tool_count),
+                tlabel=t_label,
+            )
+        error_text = _sanitize_inline(server.error or "")
+        template = (
+            "[$icolor]$icon [/]"
+            "[bold]$name[/bold]"
+            "[dim] $transport[/dim]"
+            f"[$icolor] {glyphs.bullet} $status[/]"
+        )
+        if error_text:
+            template += "[dim] — $error[/dim]"
+        return Content.from_markup(
+            template,
+            icolor=indicator_color,
+            icon=indicator_glyph,
+            name=server.name,
+            transport=server.transport,
+            status=server.status,
+            error=error_text,
+        )
 
     def _move_to(self, index: int) -> None:
         """Move selection to the given index.
@@ -647,7 +778,7 @@ class MCPViewerScreen(ModalScreen[None]):
         scroll = self.query_one(".mcp-list", VerticalScroll)
         selected = self._tool_widgets[self._selected_index]
         if selected.region.y >= scroll.region.y:
-            self._jump_up()
+            self.action_jump_up()
         else:
             scroll.scroll_relative(y=-1, animate=False)
 
@@ -666,33 +797,23 @@ class MCPViewerScreen(ModalScreen[None]):
         selected_bottom = selected.region.y + selected.region.height
         viewport_bottom = scroll.region.y + scroll.region.height
         if selected_bottom <= viewport_bottom:
-            self._jump_down()
+            self.action_jump_down()
         else:
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
         """Always jump to the previous tool (Shift+Tab); pin its bottom."""
-        self._jump_up()
+        old = self._selected_index
+        self._move_selection(-1)
+        if self._selected_index != old:
+            self._scroll_widget_bottom_to_view(self._tool_widgets[self._selected_index])
 
     def action_jump_down(self) -> None:
         """Always jump to the next tool (Tab); pin its top."""
-        self._jump_down()
-
-    def _jump_down(self) -> None:
-        """Move selection down by one and pin the new tool's top."""
         old = self._selected_index
         self._move_selection(1)
         if self._selected_index != old:
             self._tool_widgets[self._selected_index].scroll_visible(top=True)
-
-    def _jump_up(self) -> None:
-        """Move selection up by one and pin the new tool's bottom."""
-        old = self._selected_index
-        self._move_selection(-1)
-        if self._selected_index != old:
-            self._scroll_widget_bottom_to_view(
-                self._tool_widgets[self._selected_index]
-            )
 
     def action_toggle_expand(self) -> None:
         """Toggle expand/collapse on the selected tool."""

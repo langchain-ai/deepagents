@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-cli"
-version = "0.0.51"
+version = "0.0.52"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.5.7",
+    "deepagents==0.5.8",
     "langchain>=1.2.17,<2.0.0",
     "langgraph>=1.1.10,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.0.3,<4.0.0",

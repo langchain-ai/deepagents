@@ -225,7 +225,8 @@ class RemoteAgent:
         """Update the state of a thread.
 
         Exceptions from the underlying graph (server/network errors) are logged
-        at WARNING level and then re-raised so callers can handle them.
+        at DEBUG level and then re-raised so callers can decide how to surface
+        them (callers typically log at WARNING with a friendlier message).
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -240,7 +241,7 @@ class RemoteAgent:
         try:
             await graph.aupdate_state(_prepare_config(config), values)
         except Exception:
-            logger.warning(
+            logger.debug(
                 "Failed to update state for thread %s", thread_id, exc_info=True
             )
             raise

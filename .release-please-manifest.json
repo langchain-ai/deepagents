@@ -1,11 +1,11 @@
 {
-  "libs/cli": "0.0.51",
-  "libs/deepagents": "0.5.7",
+  "libs/cli": "0.0.52",
+  "libs/deepagents": "0.5.8",
   "libs/acp": "0.0.6",
   "libs/code": "0.0.1",
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
-  "libs/partners/quickjs": "0.1.0",
+  "libs/partners/quickjs": "0.1.1",
   "libs/repl": "0.0.1"
 }

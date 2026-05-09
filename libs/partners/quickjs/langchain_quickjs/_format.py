@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
+from pydantic import BaseModel
 from quickjs_rs import UNDEFINED
 
 if TYPE_CHECKING:
@@ -80,6 +81,71 @@ def coerce_tool_output(value: Any) -> str:
             if isinstance(entry, Command):
                 return _coerce_command_output(entry)
     return _coerce_message_content(value)
+
+
+# Scalar types the quickjs_rs binding marshals natively. Compound shapes
+# (``dict`` / ``list`` / ``tuple``) are walked recursively in
+# ``_coerce_for_marshal``; anything else becomes ``str(value)`` so the JS
+# side can still see a usable value.
+_NATIVE_JS_SCALARS = (str, bool, int, float, type(None))
+
+
+def coerce_tool_output_for_ptc(value: Any) -> Any:
+    """Coerce a tool result for the PTC bridge, preserving native types.
+
+    The quickjs_rs ``register`` bridge marshals Python primitives, ``list``,
+    and ``dict`` directly to native JS values, so the model can use them
+    without an explicit ``JSON.parse``. This helper unwraps LangChain's
+    ``ToolMessage`` / ``Command`` envelopes (matching ``coerce_tool_output``'s
+    selection rules) and returns the underlying value typed.
+
+    Compound returns are walked recursively: nested values that the binding
+    cannot marshal natively (``datetime``, Pydantic models, custom classes)
+    are stringified in place via ``str(value)`` so the surrounding object
+    structure remains navigable from JS. Cyclic structures hit Python's
+    recursion limit and surface as a host error in the eval — same outcome
+    as ``json.dumps`` on a self-referencing dict.
+    """
+    if isinstance(value, Command):
+        return coerce_tool_output_for_ptc(_extract_command_content(value))
+    if isinstance(value, ToolMessage):
+        return coerce_tool_output_for_ptc(value.content)
+    if isinstance(value, list):
+        for entry in reversed(value):
+            if isinstance(entry, ToolMessage):
+                return coerce_tool_output_for_ptc(entry.content)
+            if isinstance(entry, Command):
+                return coerce_tool_output_for_ptc(_extract_command_content(entry))
+    return _coerce_for_marshal(value)
+
+
+def _coerce_for_marshal(value: Any) -> Any:
+    """Convert *value* into a shape the quickjs_rs bridge can marshal."""
+    if isinstance(value, _NATIVE_JS_SCALARS):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _coerce_for_marshal(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_coerce_for_marshal(v) for v in value]
+    # Pydantic models are dumped to a plain dict so the JS side sees the
+    # field shape its return-type signature advertises (rather than
+    # ``str(model)``). Nested models / datetimes are handled by recursion.
+    if isinstance(value, BaseModel):
+        return _coerce_for_marshal(value.model_dump())
+    return str(value)
+
+
+def _extract_command_content(command: Command) -> Any:
+    """Return the trailing message content from a ``Command`` update, if any."""
+    update = command.update
+    if isinstance(update, dict):
+        messages = update.get("messages")
+        if isinstance(messages, list):
+            for entry in reversed(messages):
+                content = getattr(entry, "content", None)
+                if content is not None:
+                    return content
+    return str(update)
 
 
 def _coerce_message_content(content: Any) -> str:

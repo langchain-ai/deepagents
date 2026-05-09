@@ -876,15 +876,19 @@ class TestUpdateSubcommand:
     @staticmethod
     def _run_update(
         *,
+        debug: bool = False,
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
+        log_path: str = "/tmp/deepagents-update.log",
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `update` subcommand; return exit code + mocks."""
+        from deepagents_cli._env_vars import DEBUG_UPDATE
         from deepagents_cli.main import cli_main
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
         with (
+            patch.dict(os.environ, {DEBUG_UPDATE: "1" if debug else ""}),
             patch.object(sys, "argv", ["deepagents", "update"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_cli.main.check_cli_dependencies"),
@@ -893,6 +897,10 @@ class TestUpdateSubcommand:
                 "deepagents_cli.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
+            patch(
+                "deepagents_cli.update_check.create_update_log_path",
+                return_value=log_path,
+            ),
             patch(
                 "deepagents_cli.update_check.perform_upgrade",
                 new_callable=AsyncMock,
@@ -934,6 +942,26 @@ class TestUpdateSubcommand:
         )
         assert code == 0
         perform_upgrade_mock.assert_not_called()
+
+    def test_debug_update_skips_upgrade(self) -> None:
+        """Debug update mode exits 0 without invoking the installer."""
+        code, _, perform_upgrade_mock = self._run_update(
+            debug=True,
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+        )
+        assert code == 0
+        perform_upgrade_mock.assert_not_called()
+
+    def test_markup_like_log_path_does_not_break_output(self) -> None:
+        """Dynamic log paths are printed without Rich markup parsing."""
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            log_path="/tmp/[/red]/deepagents-update.log",
+        )
+        assert code == 0
+        perform_upgrade_mock.assert_awaited_once()
 
     def test_update_available_runs_upgrade(self) -> None:
         """`(True, "x.y.z")` triggers `perform_upgrade` and exits 0 on success."""

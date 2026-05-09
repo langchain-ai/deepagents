@@ -487,6 +487,47 @@ jobs:
           echo "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: "🛡️ Validate dispatch inputs"
+        # Defense in depth: these flow through to `_eval.yml` as shell
+        # arguments. Reject anything outside the per-field allowlist before
+        # we hand them off. `openrouter_provider` accepts a comma-separated
+        # allowlist (e.g. `MiniMax,Fireworks`, plus variant-suffixed forms
+        # like `siliconflow/fp8`) so it uses the looser provider CSV pattern
+        # that also permits `/` and `.`; `repl` is single-valued so it stays
+        # on SLUG. Models are validated downstream by
+        # `_SAFE_SPEC_RE` in `.github/scripts/models.py`.
+        # Keep in parity with the equivalent block in `evals_trials.yml`.
+        env:
+          EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+          EVAL_CATEGORIES_OVERRIDE: ${{ inputs.eval_categories_override }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
+          EVAL_TIERS: ${{ inputs.eval_tiers }}
+          EVAL_TIERS_OVERRIDE: ${{ inputs.eval_tiers_override }}
+          OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          REPL: ${{ inputs.repl }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          import re
+          import sys
+
+          _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
+          _PROVIDER_CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,./]*$")
+          _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
+          for name, value, pattern in (
+              ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
+              ("eval_categories_override", os.environ.get("EVAL_CATEGORIES_OVERRIDE", ""), _CSV_RE),
+              ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
+              ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
+              ("eval_tiers_override", os.environ.get("EVAL_TIERS_OVERRIDE", ""), _CSV_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _PROVIDER_CSV_RE),
+              ("repl", os.environ.get("REPL", ""), _SLUG_RE),
+          ):
+              if not pattern.match(value):
+                  print(f"::error::Unsafe `{name}` value: {value!r}")
+                  sys.exit(1)
+          PYEOF
+
       - name: "🐍 Compute eval matrix"
         id: set-matrix
         run: python .github/scripts/models.py eval

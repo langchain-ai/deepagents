@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import tomllib
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 from packaging.version import InvalidVersion, Version
 
+from deepagents_cli._version import __version__
 from deepagents_cli.update_check import (
     CACHE_TTL,
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
+    cleanup_update_logs,
     clear_update_notified,
+    create_update_log_path,
     format_age_suffix,
+    format_installed_age_suffix,
     format_release_age,
+    format_release_age_parenthetical,
     format_sdk_age_suffix,
     format_sdk_release_age,
     get_latest_version,
@@ -28,6 +34,7 @@ from deepagents_cli.update_check import (
     is_update_available,
     mark_update_notified,
     mark_version_seen,
+    perform_upgrade,
     set_auto_update,
     should_notify_update,
 )
@@ -38,6 +45,14 @@ def cache_file(tmp_path):
     """Override CACHE_FILE to use a temporary directory."""
     path = tmp_path / "latest_version.json"
     with patch("deepagents_cli.update_check.CACHE_FILE", path):
+        yield path
+
+
+@pytest.fixture
+def update_log_dir(tmp_path):
+    """Override UPDATE_LOG_DIR to use a temporary directory."""
+    path = tmp_path / "update_logs"
+    with patch("deepagents_cli.update_check.UPDATE_LOG_DIR", path):
         yield path
 
 
@@ -169,13 +184,58 @@ class TestGetLatestVersion:
     def test_cached_hit(self, cache_file) -> None:
         """Fresh cache returns version without HTTP call."""
         cache_file.write_text(
-            json.dumps({"version": "1.5.0", "checked_at": time.time()})
+            json.dumps(
+                {
+                    "version": "1.5.0",
+                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
+                    "checked_at": time.time(),
+                }
+            )
         )
         with patch("requests.get") as mock_get:
             result = get_latest_version()
 
         assert result == "1.5.0"
         mock_get.assert_not_called()
+
+    def test_cached_hit_missing_installed_release_time_triggers_fetch(
+        self, cache_file
+    ) -> None:
+        """Old cache files are refreshed so installed age notices have data."""
+        cache_file.write_text(
+            json.dumps({"version": "1.5.0", "checked_at": time.time()})
+        )
+        releases = {
+            "2.0.0": [{"filename": "a.tar.gz"}],
+            __version__: [{"filename": "installed.tar.gz"}],
+        }
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "2.0.0",
+                releases=releases,
+                release_times={__version__: "2026-04-01T12:00:00Z"},
+            ),
+        ) as mock_get:
+            result = get_latest_version()
+
+        assert result == "2.0.0"
+        mock_get.assert_called_once()
+        data = json.loads(cache_file.read_text())
+        assert data["release_times"][__version__] == "2026-04-01T12:00:00Z"
+
+    def test_cached_hit_missing_installed_release_time_falls_back_on_fetch_error(
+        self, cache_file
+    ) -> None:
+        """Age metadata refresh failures must not discard a fresh cached version."""
+        cache_file.write_text(
+            json.dumps({"version": "1.5.0", "checked_at": time.time()})
+        )
+        with patch("requests.get", side_effect=OSError("offline")) as mock_get:
+            result = get_latest_version()
+
+        assert result == "1.5.0"
+        mock_get.assert_called_once()
 
     def test_cached_hit_prerelease(self, cache_file) -> None:
         """Fresh cache returns pre-release version without HTTP call."""
@@ -184,6 +244,7 @@ class TestGetLatestVersion:
                 {
                     "version": "1.5.0",
                     "version_prerelease": "1.6.0a1",
+                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
                     "checked_at": time.time(),
                 }
             )
@@ -201,6 +262,7 @@ class TestGetLatestVersion:
                 {
                     "version": "1.5.0",
                     "version_prerelease": None,
+                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
                     "checked_at": time.time(),
                 }
             )
@@ -467,6 +529,21 @@ class TestExtractReleaseTimes:
             "1.1.0a1": "2026-04-18T09:30:00Z",
         }
 
+    def test_includes_installed_version_when_provided(self) -> None:
+        payload = {
+            "releases": {
+                "1.0.0": [{"upload_time_iso_8601": "2026-04-15T12:00:00Z"}],
+                "0.9.0": [{"upload_time_iso_8601": "2026-04-01T12:00:00Z"}],
+            },
+        }
+        times = _extract_release_times(
+            payload, stable="1.0.0", prerelease=None, installed="0.9.0"
+        )
+        assert times == {
+            "1.0.0": "2026-04-15T12:00:00Z",
+            "0.9.0": "2026-04-01T12:00:00Z",
+        }
+
     def test_releases_key_absent(self) -> None:
         """Payload with no `releases` key yields an empty result."""
         payload: dict[str, object] = {}
@@ -651,6 +728,132 @@ class TestFormatAgeSuffix:
         assert format_age_suffix(None) == ""
 
 
+class TestFormatReleaseAgeParenthetical:
+    def test_returns_parenthesized_release_age(self, cache_file) -> None:
+        """Known age is formatted for update-available lead sentences."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_times": {"1.0.0": "2026-04-15T12:00:00Z"},
+                    "checked_at": time.time(),
+                }
+            )
+        )
+        with patch(
+            "deepagents_cli.sessions.format_relative_timestamp", return_value="3d ago"
+        ):
+            assert format_release_age_parenthetical("1.0.0") == " (released 3d ago)"
+
+    def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
+        assert format_release_age_parenthetical("1.0.0") == ""
+
+
+class TestFormatInstalledAgeSuffix:
+    def test_returns_days_old_for_versions_at_least_one_week_old(
+        self, cache_file
+    ) -> None:
+        """Installed version age is shown only after it crosses the threshold."""
+        from datetime import UTC, datetime, timedelta
+
+        iso = (datetime.now(tz=UTC) - timedelta(days=8)).isoformat()
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_times": {"1.0.0": iso},
+                    "checked_at": time.time(),
+                }
+            )
+        )
+        assert format_installed_age_suffix("1.0.0") == " (8 days old)"
+
+    def test_omits_versions_newer_than_one_week(self, cache_file) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        iso = (datetime.now(tz=UTC) - timedelta(days=6)).isoformat()
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_times": {"1.0.0": iso},
+                    "checked_at": time.time(),
+                }
+            )
+        )
+        assert format_installed_age_suffix("1.0.0") == ""
+
+    def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
+        assert format_installed_age_suffix("1.0.0") == ""
+
+
+class TestUpdateLogs:
+    def test_create_update_log_path_uses_log_dir(self, update_log_dir) -> None:
+        path = create_update_log_path()
+        assert path.parent == update_log_dir
+        assert path.name.endswith("-update.log")
+
+    def test_cleanup_update_logs_removes_old_and_excess(self, update_log_dir) -> None:
+        update_log_dir.mkdir(parents=True)
+        now = time.time()
+        paths = []
+        for idx in range(4):
+            path = update_log_dir / f"{idx}-update.log"
+            path.write_text(str(idx))
+            os.utime(path, (now - idx, now - idx))
+            paths.append(path)
+        old = update_log_dir / "old-update.log"
+        old.write_text("old")
+        os.utime(old, (now - 30 * 86_400, now - 30 * 86_400))
+
+        cleanup_update_logs(retention_days=14, max_files=2)
+
+        remaining = {path.name for path in update_log_dir.glob("*.log")}
+        assert remaining == {paths[0].name, paths[1].name}
+
+    async def test_perform_upgrade_runs_when_log_cannot_be_created(
+        self, tmp_path
+    ) -> None:
+        """Log persistence is best-effort and must not block the updater."""
+        blocked_parent = tmp_path / "not-a-dir"
+        blocked_parent.write_text("file")
+        log_path = blocked_parent / "update.log"
+
+        with (
+            patch(
+                "deepagents_cli.update_check.detect_install_method",
+                return_value="pip",
+            ),
+            patch.dict(
+                "deepagents_cli.update_check._UPGRADE_COMMANDS",
+                {"pip": "printf 'ok\\n'"},
+            ),
+        ):
+            success, output = await perform_upgrade(log_path=log_path)
+
+        assert success is True
+        assert output == "ok"
+
+    async def test_perform_upgrade_ignores_log_close_failure(self, tmp_path) -> None:
+        """A close-time log flush failure must not fail a successful upgrade."""
+        log_path = tmp_path / "update.log"
+        opener = mock_open()
+        opener.return_value.close.side_effect = OSError("flush failed")
+
+        with (
+            patch(
+                "deepagents_cli.update_check.detect_install_method",
+                return_value="pip",
+            ),
+            patch.dict(
+                "deepagents_cli.update_check._UPGRADE_COMMANDS",
+                {"pip": "printf 'ok\\n'"},
+            ),
+            patch("pathlib.Path.open", opener),
+        ):
+            success, output = await perform_upgrade(log_path=log_path)
+
+        assert success is True
+        assert output == "ok"
+
+
 def _mock_sdk_pypi_response(
     releases: dict[str, list[dict[str, object]]] | None = None,
 ) -> MagicMock:
@@ -823,6 +1026,28 @@ class TestGetLatestVersionReleaseTimes:
 
         data = json.loads(cache_file.read_text())
         assert data["release_times"] == {"2.0.0": "2026-04-15T12:00:00Z"}
+
+    def test_installed_release_time_cached_on_fresh_fetch(self, cache_file) -> None:
+        """The current install's release timestamp is cached for age notices."""
+        releases = {
+            "2.0.0": [{"filename": "a.tar.gz"}],
+            __version__: [{"filename": "installed.tar.gz"}],
+        }
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "2.0.0",
+                releases=releases,
+                release_times={
+                    "2.0.0": "2026-04-15T12:00:00Z",
+                    __version__: "2026-04-01T12:00:00Z",
+                },
+            ),
+        ):
+            get_latest_version()
+
+        data = json.loads(cache_file.read_text())
+        assert data["release_times"][__version__] == "2026-04-01T12:00:00Z"
 
     def test_release_times_cached_for_prerelease(self, cache_file) -> None:
         """Prerelease fetch captures both stable and prerelease timestamps."""

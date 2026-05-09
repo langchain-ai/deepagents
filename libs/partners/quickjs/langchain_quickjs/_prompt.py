@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_type_hints
+
+from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from langchain_core.tools import BaseTool
-
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
@@ -65,7 +68,7 @@ def is_valid_ptc_tool_name(name: str) -> bool:
     return is_valid_js_identifier(to_camel_case(name))
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
+def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
@@ -73,7 +76,8 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
     for tool in tools:
         camel = to_camel_case(tool.name)
         schema = _safe_json_schema(tool)
-        signature = _render_signature(camel, schema)
+        return_type = _render_return_type(tool)
+        signature = _render_signature(camel, schema, return_type=return_type)
         description = (
             (tool.description or "").strip().splitlines()[0] if tool.description else ""
         )
@@ -83,10 +87,40 @@ def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
         "The agent tools listed below are exposed on the global object at "
-        "`globalThis.tools` (also reachable as `tools`). Each takes a single object "
-        "argument and returns a Promise that resolves to a string.\n\n"
-        "Invocation pattern: `await tools.<name>({ ... })`).\n\n"
-        "Use `await`; combine with `Promise.all` for concurrent calls.\n\n"
+        "`globalThis.tools` (also reachable as `tools`). Each takes a single "
+        "object argument and returns a Promise that resolves to the tool's "
+        "native value: strings as strings, numbers as numbers, lists as "
+        "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
+        "`JSON.parse` results — they are already typed.\n\n"
+        "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
+        "- Use `await` to get tool results; combine with `Promise.all` for "
+        "independent calls so they run concurrently.\n"
+        f"- If the task needs multiple tool calls, prefer one `{tool_name}` "
+        "invocation that performs all of them rather than splitting the work "
+        f"across multiple `{tool_name}` calls — each round-trip costs a model "
+        "turn.\n"
+        "- Pipeline dependent calls within a single program. If a result from "
+        "one tool is needed as input to a later tool, chain them in one "
+        "program instead of returning the intermediate value to the model.\n"
+        "- If a tool returns an ID or other value that can be passed directly "
+        "into the next tool, trust it and chain the calls instead of stopping "
+        "to double-check it.\n"
+        "- To inspect an intermediate value, `console.log` it inside the same "
+        "program; otherwise, fetch as much information as possible in one "
+        "call.\n"
+        f"- Only split work across multiple `{tool_name}` invocations when "
+        "you genuinely cannot determine what to do next without additional "
+        "model reasoning or user input.\n\n"
+        "Example shape — substitute real tool names:\n\n"
+        "```typescript\n"
+        'const users = await tools.findUsers({ name: "Ada" });\n'
+        "const userId = users[0].id;\n"
+        "const [city, normalized] = await Promise.all([\n"
+        "  tools.cityForUser({ user_id: userId }),\n"
+        '  tools.normalize({ name: "Ada" }),\n'
+        "]);\n"
+        "console.log({ city, normalized });\n"
+        "```\n\n"
         "```typescript\n"
         f"{body}\n"
         "```"
@@ -105,9 +139,16 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     return None
 
 
-def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
-    default_signature = f"async function {fn_name}"
-    default_signature += "(input: Record<string, unknown>): Promise<string>"
+def _render_signature(
+    fn_name: str,
+    schema: dict[str, Any] | None,
+    *,
+    return_type: str = "unknown",
+) -> str:
+    return_clause = f"Promise<{return_type}>"
+    default_signature = (
+        f"async function {fn_name}(input: Record<string, unknown>): {return_clause}"
+    )
     if not schema or not isinstance(schema.get("properties"), dict):
         return default_signature
     props: dict[str, Any] = schema["properties"]
@@ -122,7 +163,35 @@ def _render_signature(fn_name: str, schema: dict[str, Any] | None) -> str:
     body = "\n".join(fields) if fields else ""
     if not body:
         return default_signature
-    return f"async function {fn_name}(input: {{\n{body}\n}}): Promise<string>"
+    return f"async function {fn_name}(input: {{\n{body}\n}}): {return_clause}"
+
+
+# Return types come from the tool's underlying function annotation. We feed
+# the annotation through ``pydantic.TypeAdapter`` to get a JSON Schema and
+# render it through the same ``_json_schema_to_ts`` we use for input args.
+# Compound shapes (TypedDict, BaseModel, recursive types) end up as ``$ref``
+# in the schema and currently render as ``unknown`` — same behaviour as
+# nested-model input args. Until that path resolves ``$ref`` / ``$defs``,
+# the simpler unified renderer is the right trade-off here.
+
+
+def _render_return_type(tool: BaseTool) -> str:
+    """Render the return annotation as a TS type, defaulting to ``unknown``."""
+    target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    if target is None:
+        return "unknown"
+    annotation = inspect.Signature.empty
+    with contextlib.suppress(TypeError, ValueError, NameError):
+        signature = inspect.signature(target)
+        resolved = get_type_hints(target)
+        annotation = resolved.get("return", signature.return_annotation)
+    if annotation is inspect.Signature.empty or annotation is Any:
+        return "unknown"
+    try:
+        schema = TypeAdapter(annotation).json_schema()
+    except Exception:  # noqa: BLE001 — schema generation is best-effort
+        return "unknown"
+    return _json_schema_to_ts(schema)
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:

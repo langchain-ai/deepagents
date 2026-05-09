@@ -118,13 +118,9 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
     assert result["messages"][-1].content == "The answer is 42."
 
 
-async def test_deepagent_with_quickjs_json_roundtrip_foreign_function() -> None:
-    """Verify async eval can parse JSON strings returned from PTC tool calls."""
-    code = (
-        "const idsJson = await tools.listUserIds({});\n"
-        "const ids = JSON.parse(idsJson);\n"
-        "ids.join(',');"
-    )
+async def test_deepagent_with_quickjs_list_returning_foreign_function() -> None:
+    """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
+    code = "const ids = await tools.listUserIds({});\nids.join(',');"
     result = await _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).ainvoke(
         {
             "messages": [

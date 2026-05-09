@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import io
 import os
 import signal
 import time
 import webbrowser
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -31,15 +31,12 @@ from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
 from deepagents_cli.app import (
-    _ITERM_CURSOR_GUIDE_OFF,
-    _ITERM_CURSOR_GUIDE_ON,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
     ExternalInput,
     QueuedMessage,
     TextualSessionState,
-    _write_iterm_escape,
 )
 from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -1008,119 +1005,6 @@ class TestAppBindings:
         bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
         bindings_by_key = {b.key: b for b in bindings}
         assert "ctrl+e" not in bindings_by_key
-
-
-class TestITerm2CursorGuide:
-    """Test iTerm2 cursor guide handling."""
-
-    def test_escape_sequences_are_valid(self) -> None:
-        """Escape sequences should be properly formatted OSC 1337 commands.
-
-        Format: OSC (ESC ]) + "1337;" + command + ST (ESC backslash)
-        """
-        assert _ITERM_CURSOR_GUIDE_OFF.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_OFF.endswith("\x1b\\")
-        assert "HighlightCursorLine=no" in _ITERM_CURSOR_GUIDE_OFF
-
-        assert _ITERM_CURSOR_GUIDE_ON.startswith("\x1b]1337;")
-        assert _ITERM_CURSOR_GUIDE_ON.endswith("\x1b\\")
-        assert "HighlightCursorLine=yes" in _ITERM_CURSOR_GUIDE_ON
-
-    def test_write_iterm_escape_does_nothing_when_not_iterm(self) -> None:
-        """_write_iterm_escape should no-op when _IS_ITERM is False."""
-        mock_stderr = MagicMock()
-        with (
-            patch("deepagents_cli.app._IS_ITERM", False),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            mock_stderr.write.assert_not_called()
-
-    def test_write_iterm_escape_writes_sequence_when_iterm(self) -> None:
-        """_write_iterm_escape should write sequence when in iTerm2."""
-        mock_stderr = io.StringIO()
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-            assert mock_stderr.getvalue() == _ITERM_CURSOR_GUIDE_ON
-
-    def test_write_iterm_escape_handles_oserror_gracefully(self) -> None:
-        """_write_iterm_escape should not raise on OSError."""
-        mock_stderr = MagicMock()
-        mock_stderr.write.side_effect = OSError("Broken pipe")
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", mock_stderr),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    def test_write_iterm_escape_handles_none_stderr(self) -> None:
-        """_write_iterm_escape should handle None __stderr__ gracefully."""
-        with (
-            patch("deepagents_cli.app._IS_ITERM", True),
-            patch("sys.__stderr__", None),
-        ):
-            _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-
-class TestITerm2Detection:
-    """Test iTerm2 detection logic."""
-
-    def test_detection_requires_tty(self) -> None:
-        """_IS_ITERM should check that stderr is a TTY.
-
-        Detection happens at module load, so we test the logic pattern directly.
-        """
-        with (
-            patch.dict(os.environ, {"LC_TERMINAL": "iTerm2"}, clear=False),
-            patch("os.isatty", return_value=False),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is False
-
-    def test_detection_via_lc_terminal(self) -> None:
-        """Detection should match LC_TERMINAL=iTerm2."""
-        with (
-            patch.dict(
-                os.environ, {"LC_TERMINAL": "iTerm2", "TERM_PROGRAM": ""}, clear=False
-            ),
-            patch("os.isatty", return_value=True),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is True
-
-    def test_detection_via_term_program(self) -> None:
-        """Detection should match TERM_PROGRAM=iTerm.app."""
-        env = {"LC_TERMINAL": "", "TERM_PROGRAM": "iTerm.app"}
-        with (
-            patch.dict(os.environ, env, clear=False),
-            patch("os.isatty", return_value=True),
-        ):
-            result = (
-                (
-                    os.environ.get("LC_TERMINAL", "") == "iTerm2"
-                    or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-                )
-                and hasattr(os, "isatty")
-                and os.isatty(2)
-            )
-            assert result is True
 
 
 class TestModalScreenEscapeDismissal:
@@ -2104,6 +1988,100 @@ class TestMessageQueue:
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
 
+    def test_tall_ask_user_scrolls_to_widget_top(self) -> None:
+        """Tall ask_user menus should align their top border with the viewport."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=30)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with(animate=False, top=True)
+
+    def test_short_ask_user_uses_default_scroll_visible(self) -> None:
+        """Short ask_user menus should keep the existing scroll behavior."""
+        app = DeepAgentsApp(agent=MagicMock())
+        menu = MagicMock()
+        menu.outer_size = SimpleNamespace(height=10)
+        chat = MagicMock()
+        chat.size = SimpleNamespace(height=20)
+
+        with patch.object(app, "query_one", return_value=chat):
+            app._scroll_ask_user_into_view(menu)
+
+        menu.scroll_visible.assert_called_once_with()
+
+    def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
+        """App-level Ctrl+O should toggle the active ask_user tool row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = MagicMock()
+        tool = MagicMock()
+        tool.has_expandable_args = True
+
+        with patch.object(app, "query", return_value=[tool]):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+
+    def test_ctrl_o_falls_back_to_tool_with_expandable_args(self) -> None:
+        """When no ask_user is pending, Ctrl+O still expands an ask_user-like row."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock()
+        tool.has_output = False
+        tool.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [tool]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
+    def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
+        """Tool with real output wins over a later one with only expandable args."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        older = MagicMock()
+        older.has_output = True
+        older.has_expandable_args = False
+        newer = MagicMock()
+        newer.has_output = False
+        newer.has_expandable_args = True
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_cli.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [older, newer]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        # Iterates in reverse, so newer (expandable args) is hit first.
+        newer.toggle_args.assert_called_once_with()
+        older.toggle_output.assert_not_called()
+
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
         app = DeepAgentsApp()
@@ -2460,6 +2438,23 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    async def test_connect_alias_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/connect' should push the AuthManagerScreen modal."""
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/connect")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthManagerScreen)
+
 
 class TestCopyCommand:
     """Tests for `/copy` command behavior."""
@@ -2704,6 +2699,84 @@ class TestAppFocusRestoresChatInput:
                 app.on_app_focus()
 
             mock_focus.assert_not_called()
+
+    async def test_app_focus_resumes_blink_with_modal_open(self) -> None:
+        """Blink should resume on focus regain even when a modal blocks refocus."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
+
+            app.push_screen(ThreadSelectorScreen(current_thread=None))
+            await pilot.pause()
+            assert isinstance(app.screen, ModalScreen)
+
+            app._chat_input._text_area.cursor_blink = False
+            app.on_app_focus()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is True
+
+    async def test_app_focus_resumes_blink_with_approval_pending(self) -> None:
+        """Blink should resume on focus regain even when an approval is pending."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+
+            app._pending_approval_widget = MagicMock()
+            app._chat_input._text_area.cursor_blink = False
+
+            app.on_app_focus()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is True
+
+
+class TestAppBlurPausesCursorBlink:
+    """Test `on_app_blur` pauses cursor blink without changing widget focus."""
+
+    async def test_app_blur_pauses_blink(self) -> None:
+        """Losing terminal focus should pause the chat input cursor blink."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+            assert app._chat_input._text_area.cursor_blink is True
+
+            app.on_app_blur()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.cursor_blink is False
+
+    async def test_app_blur_preserves_widget_focus(self) -> None:
+        """Pausing blink must not blur the chat input widget."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            assert app._chat_input._text_area is not None
+            app._chat_input._text_area.focus()
+            await pilot.pause()
+
+            app.on_app_blur()
+            await pilot.pause()
+
+            assert app._chat_input._text_area.has_focus is True
+
+    async def test_app_blur_noop_before_mount(self) -> None:
+        """`on_app_blur` should silently ignore blur events before mount."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._chat_input = None
+
+            app.on_app_blur()
 
 
 class TestPasteRouting:
@@ -5396,6 +5469,26 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
     )
 
 
+def test_build_update_notification_uses_release_and_installed_age_copy() -> None:
+    """Update notices separate latest-release age from installed-version age."""
+    from deepagents_cli.app import DeepAgentsApp
+
+    notification = DeepAgentsApp._build_update_notification(
+        latest="2.0.0",
+        cli_version="1.0.0",
+        release_age=" (released 3d ago)",
+        installed_age=" (8 days old)",
+        upgrade_cmd="pip install",
+    )
+
+    assert notification.body == (
+        "v2.0.0 is available (released 3d ago).\n"
+        "Currently installed: 1.0.0 (8 days old).\n"
+        "Your session will not be interrupted."
+    )
+    assert notification.title == "Update available"
+
+
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
 
@@ -5879,6 +5972,46 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_debug_update_install_does_not_run_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug update modal can exercise Install now without changing packages."""
+        from deepagents_cli._env_vars import DEBUG_UPDATE
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setenv(DEBUG_UPDATE, "1")
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-cli")),
+            ) as mock_upgrade:
+                with patch(
+                    "deepagents_cli.app.asyncio.sleep",
+                    new=AsyncMock(),
+                ):
+                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateProgressScreen)
+
+        mock_upgrade.assert_not_called()
+        assert app._notice_registry.get("update:available") is None
+        assert not any("Mock update complete" in m for m in notified)
+
     async def test_install_failure_removes_entry_and_toasts_manual(self) -> None:
         """Failed install removes the stale entry and surfaces the manual command."""
         from deepagents_cli.notifications import ActionId
@@ -5916,6 +6049,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.clear_update_notified",
@@ -5927,6 +6068,7 @@ class TestNotificationCenterIntegration:
 
         mock_clear.assert_called_once()
         assert app._notice_registry.get("update:available") is None
+        assert any("remind you next launch" in m for m in notified)
 
     async def test_update_skip_version_marks_notified_for_latest(self) -> None:
         """'Skip this version' marks the version notified and removes the entry."""
@@ -5935,6 +6077,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry(latest="3.1.4")
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.mark_update_notified",
@@ -5948,6 +6098,7 @@ class TestNotificationCenterIntegration:
 
         mock_mark.assert_called_once_with("3.1.4")
         assert app._notice_registry.get("update:available") is None
+        assert any("Skipped v3.1.4" in m for m in notified)
 
     async def test_dispatcher_handler_exception_surfaces_action_label(self) -> None:
         """A handler raising OSError produces a warning toast naming the action."""
@@ -6163,7 +6314,11 @@ class TestNotificationCenterIntegration:
                 "deepagents_cli.update_check.mark_update_notified",
             ),
             patch(
-                "deepagents_cli.update_check.format_age_suffix",
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
                 return_value="",
             ),
             patch(
@@ -6176,6 +6331,59 @@ class TestNotificationCenterIntegration:
                 await app._check_for_updates()
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
+        """Hourly rechecks surface updates without interrupting the session."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        bodies: list[str] = []
+        original_notify_actionable = app._notify_actionable
+
+        def capture_notify_actionable(
+            entry: PendingNotification, **kwargs: Any
+        ) -> None:
+            bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
+            original_notify_actionable(entry, **kwargs)
+
+        app._notify_actionable = capture_notify_actionable  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.update_check.mark_update_notified",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.upgrade_command",
+                return_value="pip install -U deepagents-cli",
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+
+        entry = app._notice_registry.get("update:available")
+        assert entry is not None
+        assert any("session will not be interrupted" in body for body in bodies)
+        assert any("Press ctrl+n to install." in body for body in bodies)
 
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
@@ -6209,7 +6417,12 @@ class TestNotificationCenterIntegration:
 
         # Hint toast surfaced with ctrl+n pointer; pending event cleared so
         # subsequent missing-dep toasts aren't suppressed.
-        assert any("Update available" in m and "ctrl+n" in m for m in notified)
+        assert any(
+            "Update available" in m
+            and "session will not be interrupted" in m
+            and "ctrl+n" in m
+            for m in notified
+        )
         assert not app._update_modal_pending.is_set()
         assert app._notice_registry.get(entry.key) is entry
 

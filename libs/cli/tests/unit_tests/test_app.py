@@ -5859,8 +5859,8 @@ class TestNotificationCenterIntegration:
         """Debug update modal can exercise Install now without changing packages."""
         from deepagents_cli._env_vars import DEBUG_UPDATE
         from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
 
-        monkeypatch.setenv(DEBUG_UPDATE, "1")
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
@@ -5876,16 +5876,22 @@ class TestNotificationCenterIntegration:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            monkeypatch.setenv(DEBUG_UPDATE, "1")
             with patch(
                 "deepagents_cli.update_check.perform_upgrade",
                 new=AsyncMock(return_value=(True, "Updated deepagents-cli")),
             ) as mock_upgrade:
-                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                with patch(
+                    "deepagents_cli.app.asyncio.sleep",
+                    new=AsyncMock(),
+                ):
+                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()
+                assert isinstance(app.screen, UpdateProgressScreen)
 
         mock_upgrade.assert_not_called()
         assert app._notice_registry.get("update:available") is None
-        assert any("debug mode" in m for m in notified)
+        assert not any("Mock update complete" in m for m in notified)
 
     async def test_install_failure_removes_entry_and_toasts_manual(self) -> None:
         """Failed install removes the stale entry and surfaces the manual command."""
@@ -5924,6 +5930,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.clear_update_notified",
@@ -5935,6 +5949,7 @@ class TestNotificationCenterIntegration:
 
         mock_clear.assert_called_once()
         assert app._notice_registry.get("update:available") is None
+        assert any("remind you next launch" in m for m in notified)
 
     async def test_update_skip_version_marks_notified_for_latest(self) -> None:
         """'Skip this version' marks the version notified and removes the entry."""
@@ -5943,6 +5958,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry(latest="3.1.4")
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.mark_update_notified",
@@ -5956,6 +5979,7 @@ class TestNotificationCenterIntegration:
 
         mock_mark.assert_called_once_with("3.1.4")
         assert app._notice_registry.get("update:available") is None
+        assert any("Skipped v3.1.4" in m for m in notified)
 
     async def test_dispatcher_handler_exception_surfaces_action_label(self) -> None:
         """A handler raising OSError produces a warning toast naming the action."""
@@ -6189,6 +6213,59 @@ class TestNotificationCenterIntegration:
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
 
+    async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
+        """Hourly rechecks surface updates without interrupting the session."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        bodies: list[str] = []
+        original_notify_actionable = app._notify_actionable
+
+        def capture_notify_actionable(
+            entry: PendingNotification, **kwargs: Any
+        ) -> None:
+            bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
+            original_notify_actionable(entry, **kwargs)
+
+        app._notify_actionable = capture_notify_actionable  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.update_check.mark_update_notified",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.upgrade_command",
+                return_value="pip install -U deepagents-cli",
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+
+        entry = app._notice_registry.get("update:available")
+        assert entry is not None
+        assert any("session will not be interrupted" in body for body in bodies)
+        assert any("Press ctrl+n to install." in body for body in bodies)
+
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
         from deepagents_cli.widgets.update_available import UpdateAvailableScreen
@@ -6221,7 +6298,12 @@ class TestNotificationCenterIntegration:
 
         # Hint toast surfaced with ctrl+n pointer; pending event cleared so
         # subsequent missing-dep toasts aren't suppressed.
-        assert any("Update available" in m and "ctrl+n" in m for m in notified)
+        assert any(
+            "Update available" in m
+            and "session will not be interrupted" in m
+            and "ctrl+n" in m
+            for m in notified
+        )
         assert not app._update_modal_pending.is_set()
         assert app._notice_registry.get(entry.key) is entry
 

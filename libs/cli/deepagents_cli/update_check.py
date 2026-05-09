@@ -14,22 +14,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import operator
 import os
 import shutil
 import sys
 import time
 import tomllib
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Literal, TextIO
 
 from packaging.version import InvalidVersion, Version
 
 from deepagents_cli._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
+from deepagents_cli.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-from deepagents_cli.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,17 @@ no fallback chain.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
+
+UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
+"""Directory for persisted update command logs."""
+
+UPDATE_LOG_RETENTION_DAYS = 14
+"""Delete update logs older than this many days."""
+
+UPDATE_LOG_MAX_FILES = 10
+"""Keep at most this many newest update logs."""
+
+UpgradeProgressCallback = Callable[[str], Awaitable[None] | None]
 
 
 def _parse_version(v: str) -> Version:
@@ -669,11 +682,87 @@ def upgrade_command(method: InstallMethod | None = None) -> str:
     return _UPGRADE_COMMANDS.get(method, _UPGRADE_COMMANDS["pip"])
 
 
-async def perform_upgrade() -> tuple[bool, str]:
+def cleanup_update_logs(
+    *,
+    retention_days: int = UPDATE_LOG_RETENTION_DAYS,
+    max_files: int = UPDATE_LOG_MAX_FILES,
+) -> None:
+    """Remove old update logs while preserving the newest recent logs.
+
+    Args:
+        retention_days: Maximum age in days to keep.
+        max_files: Maximum number of newest log files to keep.
+    """
+    try:
+        if not UPDATE_LOG_DIR.exists():
+            return
+        logs = sorted(
+            (
+                (p, p.stat().st_mtime)
+                for p in UPDATE_LOG_DIR.glob("*.log")
+                if p.is_file()
+            ),
+            key=operator.itemgetter(1),
+            reverse=True,
+        )
+        cutoff = time.time() - (retention_days * 86_400)
+        for idx, (path, mtime) in enumerate(logs):
+            if idx >= max_files or mtime < cutoff:
+                path.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Failed to clean up update logs", exc_info=True)
+
+
+def create_update_log_path() -> Path:
+    """Return a new timestamped update log path and clean stale logs."""
+    cleanup_update_logs()
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+    return UPDATE_LOG_DIR / f"{stamp}-update.log"
+
+
+async def _emit_progress(callback: UpgradeProgressCallback | None, line: str) -> None:
+    """Send a progress line to *callback*, supporting sync or async callbacks."""
+    if callback is None:
+        return
+    result = callback(line)
+    if isinstance(result, Awaitable):
+        await result
+
+
+async def _read_stream(
+    stream: asyncio.StreamReader,
+    *,
+    lines: list[str],
+    log_file: TextIO | None,
+    progress: UpgradeProgressCallback | None,
+) -> None:
+    """Read subprocess output, append it to the log file, and emit progress."""
+    while True:
+        raw = await stream.readline()
+        if not raw:
+            return
+        line = raw.decode(errors="replace").rstrip("\n")
+        lines.append(line)
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.write(f"{line}\n")
+                log_file.flush()
+        await _emit_progress(progress, line)
+
+
+async def perform_upgrade(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> tuple[bool, str]:
     """Attempt to upgrade `deepagents-cli` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
     managers to avoid cross-environment contamination.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
@@ -690,6 +779,21 @@ async def perform_upgrade() -> tuple[bool, str]:
     if method == "brew" and not shutil.which("brew"):
         return False, "brew not found on PATH."
 
+    if log_path is None:
+        log_path = create_update_log_path()
+
+    output_lines: list[str] = []
+    proc: asyncio.subprocess.Process | None = None
+    log_file: TextIO | None = None
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = log_path.open("w", encoding="utf-8")
+        log_file.write(f"$ {cmd}\n")
+        log_file.flush()
+    except OSError:
+        logger.debug("Could not create update log at %s", log_path, exc_info=True)
+        log_file = None
+
     try:
         proc = await asyncio.create_subprocess_shell(
             cmd,
@@ -697,28 +801,56 @@ async def perform_upgrade() -> tuple[bool, str]:
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=_UPGRADE_TIMEOUT
+        await asyncio.wait_for(
+            asyncio.gather(
+                _read_stream(
+                    proc.stdout,  # type: ignore[arg-type]
+                    lines=output_lines,
+                    log_file=log_file,
+                    progress=progress,
+                ),
+                _read_stream(
+                    proc.stderr,  # type: ignore[arg-type]
+                    lines=output_lines,
+                    log_file=log_file,
+                    progress=progress,
+                ),
+                proc.wait(),
+            ),
+            timeout=_UPGRADE_TIMEOUT,
         )
-        output = (stdout or b"").decode() + (stderr or b"").decode()
-        if proc.returncode == 0:
-            return True, output.strip()
-        logger.warning(
-            "Upgrade via %s exited with code %d: %s",
-            method,
-            proc.returncode,
-            output.strip(),
-        )
-        return False, output.strip()
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
+        if proc is not None:
+            proc.kill()
+            await proc.wait()
         msg = f"Upgrade command timed out after {_UPGRADE_TIMEOUT}s: {cmd}"
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.write(f"{msg}\n")
+                log_file.close()
+        await _emit_progress(progress, msg)
         logger.warning(msg)
         return False, msg
     except OSError:
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.close()
         logger.warning("Failed to execute upgrade command: %s", cmd, exc_info=True)
         return False, f"Failed to execute: {cmd}"
+
+    if log_file is not None:
+        with suppress(OSError):
+            log_file.close()
+    output = "\n".join(output_lines).strip()
+    if proc.returncode == 0:
+        return True, output
+    logger.warning(
+        "Upgrade via %s exited with code %d: %s",
+        method,
+        proc.returncode,
+        output,
+    )
+    return False, output
 
 
 # ---------------------------------------------------------------------------

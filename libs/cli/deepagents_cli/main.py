@@ -1682,9 +1682,11 @@ def cli_main() -> None:
             try:
                 from rich.markup import escape
 
+                from deepagents_cli._env_vars import DEBUG_UPDATE
                 from deepagents_cli._version import __version__ as cli_version
                 from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
+                    create_update_log_path,
                     format_age_suffix,
                     format_installed_age_suffix,
                     format_release_age_parenthetical,
@@ -1725,7 +1727,17 @@ def cli_main() -> None:
                     f"Currently installed: {cli_version}{installed_age}. "
                     "Upgrading..."
                 )
-                success, output = asyncio.run(perform_upgrade())
+                if os.environ.get(DEBUG_UPDATE):
+                    console.print("Skipped update install (debug mode).", style="dim")
+                    sys.exit(0)
+                log_path = create_update_log_path()
+                console.print(
+                    f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(perform_upgrade(log_path=log_path))
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
 
 
 class _AskUserTestApp(App[None]):
+    CSS_PATH = Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.tcss"
+
     def __init__(self, questions: list[Question]) -> None:
         super().__init__()
         self._questions = questions
@@ -163,6 +166,30 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             qw = menu._question_widgets[0]
             assert qw.has_focus
+
+    async def test_multiple_choice_option_wraps_in_narrow_menu(self) -> None:
+        """Long choice labels should wrap instead of being clipped to one row."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [
+                        {
+                            "value": (
+                                "this option label is intentionally long enough "
+                                "to wrap in a narrow ask user menu"
+                            )
+                        }
+                    ],
+                }
+            ]
+        )
+
+        async with app.run_test(size=(36, 24)) as pilot:
+            await pilot.pause()
+            choice = app.query_one(".ask-user-choice", Static)
+            assert choice.size.height > 1
 
     async def test_text_question_submits_typed_answer(self) -> None:
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])

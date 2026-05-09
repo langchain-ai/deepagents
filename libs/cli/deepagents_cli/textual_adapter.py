@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
@@ -981,6 +983,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
@@ -1074,6 +1077,9 @@ async def execute_task_textual(
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            # Halt the turn on cancel; error branches still
+                            # resume so the agent can react to the failure.
+                            ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             if tool_msg is not None:
                                 tool_msg.set_rejected()
@@ -1236,12 +1242,15 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
-                if suppress_resumed_output and not pending_ask_user:
-                    await adapter._mount_message(
-                        AppMessage(
-                            "Command rejected. Tell the agent what you'd like instead."
-                        )
+                if suppress_resumed_output and (
+                    ask_user_cancelled or not pending_ask_user
+                ):
+                    message = (
+                        "Question cancelled. Tell the agent what you'd like instead."
+                        if ask_user_cancelled
+                        else "Command rejected. Tell the agent what you'd like instead."
                     )
+                    await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     return turn_stats
 
@@ -1329,6 +1338,8 @@ async def _handle_interrupt_cleanup(
             "Previous operation was cancelled."
         )
         await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning("Could not save interrupted state (network): %s", e)
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 
@@ -1367,6 +1378,13 @@ async def _persist_context_tokens(
     """
     try:
         await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning(
+            "Could not persist _context_tokens=%d (network): %s; "
+            "token count may be stale on resume",
+            tokens,
+            e,
+        )
     except Exception:  # non-critical; stale count on resume is acceptable
         logger.warning(
             "Failed to persist _context_tokens=%d; token count may be stale on resume",

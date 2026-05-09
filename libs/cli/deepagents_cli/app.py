@@ -58,6 +58,7 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_cli.notifications import (
     ActionId,
     MissingDepPayload,
@@ -114,31 +115,7 @@ if TYPE_CHECKING:
     from deepagents_cli.widgets.approval import ApprovalMenu
     from deepagents_cli.widgets.ask_user import AskUserMenu
     from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
-
-# iTerm2 Cursor Guide Workaround
-# ===============================
-# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
-# Textual takes over the terminal in alternate screen mode. We disable it at
-# module load and restore on exit. Both atexit and exit() override are used
-# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
-# exceptions), while exit() ensures restoration before Textual's cleanup.
-
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI)
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
-
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+    from deepagents_cli.widgets.update_progress import UpdateProgressScreen
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during onboarding model switch.
@@ -147,41 +124,8 @@ Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished onboarding modal forever.
 """
 
-
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
-
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
-    """
-    if not _IS_ITERM:
-        return
-    try:
-        import sys
-
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe)
-        pass
-
-
-# Disable cursor guide at module load (before Textual takes over)
-_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
-
-if _IS_ITERM:
-    import atexit
-
-    def _restore_cursor_guide() -> None:
-        """Restore iTerm2 cursor guide on exit.
-
-        Registered with atexit to ensure the cursor guide is re-enabled
-        when the CLI exits, regardless of how the exit occurs.
-        """
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    atexit.register(_restore_cursor_guide)
+_UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
+"""How often long-running TUI sessions quietly re-check for CLI updates."""
 
 
 def _load_theme_preference() -> str:
@@ -1220,6 +1164,9 @@ class DeepAgentsApp(App):
         `CACHE_TTL`) leaves this clear so missing-dep toasts still fire.
         """
 
+        self._update_install_running = False
+        """True while a self-update command is running."""
+
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
         """Cached skill metadata (populated by startup discovery worker,
@@ -1638,6 +1585,14 @@ class DeepAgentsApp(App):
                 self._check_for_updates,
                 exclusive=True,
                 group="startup-update-check",
+            )
+            self.set_interval(
+                _UPDATE_RECHECK_INTERVAL_SECONDS,
+                lambda: self.run_worker(
+                    self._check_for_updates(periodic=True),
+                    exclusive=True,
+                    group="periodic-update-check",
+                ),
             )
             self.run_worker(
                 self._show_whats_new,
@@ -2324,21 +2279,24 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
-    async def _check_for_updates(self) -> None:
+    async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
 
         Wraps `_check_for_updates_impl` so `_update_check_done.set()`
         always fires — lets `_check_optional_tools_background` unblock
         after the PyPI round-trip regardless of success, failure, or no-op.
+
+        Args:
+            periodic: Whether this is a quiet in-session recheck.
         """
         try:
-            await self._check_for_updates_impl()
+            await self._check_for_updates_impl(periodic=periodic)
         finally:
             # Always signal completion — the optional-tools worker
             # waits on this before deciding whether to post toasts.
             self._update_check_done.set()
 
-    async def _check_for_updates_impl(self) -> None:
+    async def _check_for_updates_impl(self, *, periodic: bool = False) -> None:
         """Check PyPI for a newer version and either auto-update or queue a modal.
 
         Phase 1 contacts PyPI and records the latest version on the app.
@@ -2356,7 +2314,9 @@ class DeepAgentsApp(App):
                 upgrade_command,
             )
 
-            available, latest = await asyncio.to_thread(is_update_available)
+            available, latest = await asyncio.to_thread(
+                is_update_available, bypass_cache=periodic
+            )
             if not available or latest is None:
                 return
 
@@ -2370,14 +2330,29 @@ class DeepAgentsApp(App):
             from deepagents_cli._version import __version__ as cli_version
 
             if is_auto_update_enabled():
-                from deepagents_cli.update_check import perform_upgrade
+                from deepagents_cli._env_vars import DEBUG_UPDATE
+                from deepagents_cli.update_check import (
+                    create_update_log_path,
+                    perform_upgrade,
+                )
 
+                if os.environ.get(DEBUG_UPDATE):
+                    self.notify(
+                        "Skipped update install (debug mode).",
+                        severity="information",
+                        timeout=4,
+                        markup=False,
+                    )
+                    return
+
+                log_path = create_update_log_path()
                 self.notify(
-                    f"Updating to v{latest}...",
+                    f"Updating to v{latest}... Logs: {log_path}",
                     severity="information",
                     timeout=5,
+                    markup=False,
                 )
-                success, output = await perform_upgrade()
+                success, output = await perform_upgrade(log_path=log_path)
                 if success:
                     self.notify(
                         f"Updated to v{latest}. Restart to use the new version.",
@@ -2392,7 +2367,9 @@ class DeepAgentsApp(App):
                     )
                     cmd = upgrade_command()
                     snippet = _truncate(output, limit=160) if output else ""
-                    message = f"Auto-update failed. Run manually: {cmd}"
+                    message = (
+                        f"Auto-update failed. Run manually: {cmd}\nLog: {log_path}"
+                    )
                     if snippet:
                         message = f"{message}\n{snippet}"
                     self.notify(
@@ -2403,7 +2380,8 @@ class DeepAgentsApp(App):
                     )
             else:
                 from deepagents_cli.update_check import (
-                    format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -2412,13 +2390,28 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
-                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+                release_age = await asyncio.to_thread(
+                    format_release_age_parenthetical, latest
+                )
+                installed_age = await asyncio.to_thread(
+                    format_installed_age_suffix, cli_version
+                )
                 notification = self._build_update_notification(
                     latest=latest,
                     cli_version=cli_version,
-                    age_suffix=age_suffix,
+                    release_age=release_age,
+                    installed_age=installed_age,
                     upgrade_cmd=cmd,
                 )
+                if periodic:
+                    self._notify_actionable(
+                        notification,
+                        severity="information",
+                        timeout=12,
+                        action_hint="Press ctrl+n to install.",
+                    )
+                    await asyncio.to_thread(mark_update_notified, latest)
+                    return
                 # Register without a toast: the dedicated modal is
                 # the update's UI, so a parallel toast would be
                 # redundant. Registration still makes the entry
@@ -2444,7 +2437,8 @@ class DeepAgentsApp(App):
         *,
         latest: str,
         cli_version: str,
-        age_suffix: str,
+        release_age: str,
+        installed_age: str,
         upgrade_cmd: str,
     ) -> PendingNotification:
         """Build the update-available registry entry.
@@ -2452,16 +2446,21 @@ class DeepAgentsApp(App):
         Args:
             latest: New version advertised by PyPI.
             cli_version: Currently installed version string.
-            age_suffix: Pre-formatted "(released N days ago)" fragment.
+            release_age: Pre-formatted " (released N days ago)" fragment.
+            installed_age: Pre-formatted " (N days old)" fragment.
             upgrade_cmd: Shell command to install the update.
 
         Returns:
             Registry entry ready to pass to `_notify_actionable`.
         """
-        body = f"v{latest} is available (current: v{cli_version}{age_suffix})."
+        body = (
+            f"v{latest} is available{release_age}.\n"
+            f"Currently installed: {cli_version}{installed_age}.\n"
+            "Your session will not be interrupted."
+        )
         return PendingNotification(
             key="update:available",
-            title=f"Update available: v{latest}",
+            title="Update available",
             body=body,
             actions=(
                 NotificationAction(ActionId.INSTALL, "Install now", primary=True),
@@ -2510,10 +2509,13 @@ class DeepAgentsApp(App):
         """Handle the `/update` slash command — check for and install updates."""
         await self._mount_message(UserMessage("/update"))
         try:
+            from deepagents_cli._env_vars import DEBUG_UPDATE
             from deepagents_cli._version import __version__ as cli_version
             from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
                 format_age_suffix,
+                format_installed_age_suffix,
+                format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
@@ -2550,13 +2552,24 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+            release_age = await asyncio.to_thread(
+                format_release_age_parenthetical, latest
+            )
+            installed_age = await asyncio.to_thread(
+                format_installed_age_suffix, cli_version
+            )
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
             )
+            if os.environ.get(DEBUG_UPDATE):
+                await self._mount_message(
+                    AppMessage("Skipped update install (debug mode).")
+                )
+                return
             success, output = await perform_upgrade()
             if success:
                 self._update_available = (False, None)
@@ -4447,7 +4460,7 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
-        elif cmd == "/auth":
+        elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
             await self._show_theme_selector()
@@ -5998,11 +6011,7 @@ class DeepAgentsApp(App):
         return_code: int = 0,
         message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
-        """Exit the app, restoring iTerm2 cursor guide if applicable.
-
-        Overrides parent to restore iTerm2's cursor guide before Textual's
-        cleanup. The atexit handler serves as a fallback for abnormal
-        termination.
+        """Exit the app after shutting down background resources.
 
         Args:
             result: Return value passed to the app runner.
@@ -6058,7 +6067,7 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
@@ -6255,20 +6264,32 @@ class DeepAgentsApp(App):
             event.stop()
 
     def on_app_focus(self) -> None:
-        """Restore chat input focus when the terminal regains OS focus.
+        """Restore chat input focus and resume cursor blink on terminal focus regain.
 
         When the user opens a link via `webbrowser.open`, OS focus shifts to
         the browser. On returning to the terminal, Textual fires `AppFocus`
         (requires a terminal that supports FocusIn events). Re-focusing the chat
         input here keeps it ready for typing.
         """
-        if not self._chat_input:
+        if self._chat_input is None:
             return
+        self._chat_input.set_cursor_blink(blink=True)
         if isinstance(self.screen, ModalScreen):
             return
         if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
+
+    def on_app_blur(self) -> None:
+        """Pause the chat input cursor blink when the terminal loses OS focus.
+
+        `TextArea` pauses its own blink when its `has_focus` flips, but
+        `AppBlur` does not change widget focus, so we toggle `cursor_blink`
+        manually.
+        """
+        if self._chat_input is None:
+            return
+        self._chat_input.set_cursor_blink(blink=False)
 
     def on_click(self, event: Click) -> None:
         """Handle clicks anywhere in the terminal.
@@ -6925,6 +6946,7 @@ class DeepAgentsApp(App):
         *,
         severity: Literal["information", "warning", "error"] = "information",
         timeout: float | None = None,
+        action_hint: str = "Press ctrl+n to review and take action.",
     ) -> None:
         """Register *notification* and post its actionable toast.
 
@@ -6936,10 +6958,11 @@ class DeepAgentsApp(App):
             severity: Toast severity banner color.
             timeout: Seconds the toast stays on screen (defaults to
                 `App.NOTIFICATION_TIMEOUT`).
+            action_hint: Final call-to-action line for the toast.
         """
         self._notice_registry.add(notification)
 
-        toast_body = f"{notification.body}\n\nctrl+n for options"
+        toast_body = f"{notification.body}\n\n{action_hint}"
         effective_timeout = (
             timeout if timeout is not None else self.NOTIFICATION_TIMEOUT
         )
@@ -6997,7 +7020,8 @@ class DeepAgentsApp(App):
         update_notification = self._build_update_notification(
             latest="9.9.9",
             cli_version="0.0.1",
-            age_suffix=", released 2 days ago",
+            release_age=" (released 2 days ago)",
+            installed_age="",
             upgrade_cmd="uv tool upgrade deepagents-cli",
         )
         self._notice_registry.add(update_notification)
@@ -7118,8 +7142,8 @@ class DeepAgentsApp(App):
             # the user how to reach it.
             self._update_modal_pending.clear()
             self.notify(
-                "Update available. Close the current dialog, "
-                "then press ctrl+n to review it.",
+                "Update available. Your session will not be interrupted. "
+                "Press ctrl+n to review it.",
                 severity="information",
                 timeout=8,
                 markup=False,
@@ -7311,53 +7335,176 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.update_check import (
             clear_update_notified,
+            create_update_log_path,
             mark_update_notified,
             perform_upgrade,
             upgrade_command,
         )
 
         if action_id == ActionId.INSTALL:
-            self.notify(
-                f"Updating to v{payload.latest}...",
-                severity="information",
-                timeout=5,
-                markup=False,
-            )
-            success, output = await perform_upgrade()
-            if success:
-                self._notice_registry.remove(entry.key)
+            from deepagents_cli._env_vars import DEBUG_UPDATE
+
+            if self._update_install_running:
                 self.notify(
-                    f"Updated to v{payload.latest}. Restart to use the new version.",
+                    "Update already running.",
                     severity="information",
-                    timeout=10,
+                    timeout=4,
                     markup=False,
                 )
                 return
-            logger.warning(
-                "Auto-upgrade failed for v%s. Output:\n%s", payload.latest, output
-            )
-            self._notice_registry.remove(entry.key)
+
+            from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
             cmd = upgrade_command()
-            snippet = _truncate(output, limit=160) if output else ""
-            message = f"Auto-update failed. Run manually: {cmd}"
-            if snippet:
-                message = f"{message}\n{snippet}"
-            self.notify(
-                message,
-                severity="warning",
-                timeout=15,
-                markup=False,
+            log_path = create_update_log_path()
+            screen = UpdateProgressScreen(
+                latest=payload.latest,
+                command=cmd,
+                log_path=log_path,
             )
+            progress_modal_visible = not isinstance(self.screen, ModalScreen)
+            if progress_modal_visible:
+                self.push_screen(screen)
+            else:
+                self.notify(
+                    f"Updating to v{payload.latest}... Logs: {log_path}",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+            self._update_install_running = True
+            try:
+                if os.environ.get(DEBUG_UPDATE):
+                    await self._run_debug_update_install(
+                        entry=entry,
+                        payload=payload,
+                        screen=screen,
+                        log_path=log_path,
+                        show_toast=not progress_modal_visible,
+                    )
+                    return
+                success, output = await perform_upgrade(
+                    progress=screen.append_line,
+                    log_path=log_path,
+                )
+                if success:
+                    self._notice_registry.remove(entry.key)
+                    screen.mark_success()
+                    if not progress_modal_visible:
+                        self.notify(
+                            f"Updated to v{payload.latest}. "
+                            "Restart to use the new version.",
+                            severity="information",
+                            timeout=10,
+                            markup=False,
+                        )
+                    return
+                logger.warning(
+                    "Auto-upgrade failed for v%s. Output:\n%s",
+                    payload.latest,
+                    output,
+                )
+                self._notice_registry.remove(entry.key)
+                screen.mark_failure(cmd)
+                snippet = _truncate(output, limit=160) if output else ""
+                message = f"Auto-update failed. Run manually: {cmd}"
+                if snippet:
+                    message = f"{message}\n{snippet}"
+                self.notify(
+                    message,
+                    severity="warning",
+                    timeout=15,
+                    markup=False,
+                )
+            finally:
+                self._update_install_running = False
             return
         if action_id == ActionId.SKIP_VERSION:
             await asyncio.to_thread(mark_update_notified, payload.latest)
             self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Skipped v{payload.latest}.",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
             return
         if action_id == ActionId.SKIP_ONCE:
             await asyncio.to_thread(clear_update_notified)
             self._notice_registry.remove(entry.key)
+            self.notify(
+                "We'll remind you next launch.",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
             return
         self._log_unknown_action(entry, action_id)
+
+    async def _run_debug_update_install(
+        self,
+        *,
+        entry: PendingNotification,
+        payload: UpdateAvailablePayload,
+        screen: UpdateProgressScreen,
+        log_path: Path,
+        show_toast: bool,
+    ) -> None:
+        """Exercise the update progress UI without invoking a package manager.
+
+        Args:
+            entry: The update notification entry to clear when complete.
+            payload: Update payload with the mocked target version.
+            screen: Progress modal to update.
+            log_path: Debug log path to write mock output into.
+            show_toast: Whether to show a completion toast.
+        """
+        steps = (
+            ("Debug mode: no package manager command was started.", 0.3),
+            (f"Resolving deepagents-cli v{payload.latest}...", 0.8),
+            ("Looking up compatible build tags...", 0.2),
+            ("Downloading wheel metadata...", 0.5),
+            ("Downloading deepagents_cli-9.9.9-py3-none-any.whl...", 0.2),
+            ("Downloading dependency metadata...", 0.2),
+            ("Unpacking wheel...", 0.9),
+            ("Checking installed entry points...", 0.2),
+            ("Removing previous console script...", 0.2),
+            ("Installing files...", 0.7),
+            ("Writing dist-info metadata...", 0.2),
+            ("Rebuilding executable shims...", 0.2),
+            ("Validating import metadata...", 0.2),
+            ("Verifying console script...", 0.4),
+            ("Cleaning temporary build directory...", 0.2),
+            ("Recording update receipt...", 0.2),
+            ("Update complete.", 0.2),
+        )
+        wrote_log = False
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("w", encoding="utf-8") as log:
+                log.write("$ debug mock update\n")
+                for line, delay in steps:
+                    log.write(f"{line}\n")
+                    log.flush()
+                    screen.append_line(line)
+                    await asyncio.sleep(delay)
+            wrote_log = True
+        except OSError:
+            logger.debug("Could not write debug update log", exc_info=True)
+
+        if not wrote_log:
+            for line, delay in steps:
+                screen.append_line(line)
+                await asyncio.sleep(delay)
+        self._notice_registry.remove(entry.key)
+        screen.mark_success()
+        if show_toast:
+            self.notify(
+                "Mock update complete (debug mode).",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
 
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""

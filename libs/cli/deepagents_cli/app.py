@@ -4364,9 +4364,7 @@ class DeepAgentsApp(App):
                 None,
             )
             if content is None:
-                await self._mount_message(
-                    AppMessage("No assistant message to copy yet.")
-                )
+                await self._mount_message(AppMessage("No message to copy yet."))
                 return
 
             from deepagents_cli.clipboard import copy_text_to_clipboard

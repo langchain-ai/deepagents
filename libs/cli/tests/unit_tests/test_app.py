@@ -2545,7 +2545,7 @@ class TestCopyCommand:
 
             copy_mock.assert_not_called()
             assert any(
-                str(w._content) == "No assistant message to copy yet."
+                str(w._content) == "No message to copy yet."
                 for w in app.query(AppMessage)
             )
 

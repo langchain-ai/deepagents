@@ -487,8 +487,8 @@ class TestMCPViewerScreen:
             # The literal characters should be present, not consumed as markup.
             assert "[bold]hax[/]" in text
 
-    async def test_filter_param_name_match(self) -> None:
-        """Param-name filter matches when input_schema.properties has the key."""
+    async def test_filter_matches_only_tool_and_server_names(self) -> None:
+        """Filter ignores descriptions, param names, and transport."""
         from textual.widgets import Input
 
         info = [
@@ -498,7 +498,7 @@ class TestMCPViewerScreen:
                 tools=(
                     MCPToolInfo(
                         name="run",
-                        description="Run something",
+                        description="Run something with a target_path argument",
                         input_schema={
                             "type": "object",
                             "properties": {"target_path": {"type": "string"}},
@@ -515,11 +515,12 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             filter_input = screen.query_one("#mcp-filter", Input)
-            filter_input.value = "target_path"
-            await pilot.pause()
-
-            visible = [w.tool_name for w in screen._tool_widgets]
-            assert visible == ["run"]
+            for query in ("target_path", "argument", "stdio"):
+                filter_input.value = query
+                await pilot.pause()
+                assert screen._tool_widgets == [], (
+                    f"{query!r} unexpectedly matched"
+                )
 
     async def test_toggle_all_expands_then_collapses(self) -> None:
         """`Ctrl+E` expands every tool, pressing again collapses all."""

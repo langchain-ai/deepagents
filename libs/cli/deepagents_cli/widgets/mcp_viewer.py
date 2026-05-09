@@ -56,53 +56,33 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     return colors.error
 
 
-def _tool_haystack(tool: MCPToolInfo) -> str:
-    """Return the searchable text for a single tool (lower-cased).
-
-    Includes the tool name, description, and any parameter names from
-    `input_schema.properties`. Param names are a small bonus signal so
-    `"path"` finds tools that accept `path: string` even when neither the
-    name nor description mentions it.
-    """
-    parts = [tool.name, tool.description or ""]
-    schema = tool.input_schema
-    if schema:
-        properties = schema.get("properties") or {}
-        if isinstance(properties, dict):
-            parts.extend(str(name) for name in properties)
-    return " ".join(parts).lower()
-
-
-def _server_haystack(server: MCPServerInfo) -> str:
-    """Return the searchable text for a server header (lower-cased)."""
-    return f"{server.name} {server.transport}".lower()
-
-
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
     """Return the tools to render for `server` under the active filter.
 
-    - `tokens=[]` (empty filter) -> all tools (or `()` if the server has none).
-    - Server-name match across all tokens -> all tools.
-    - Otherwise -> only tools whose haystack matches every token.
-    - Returns `None` when nothing about the server matches and no tools
-      survive — the caller should skip rendering the header entirely.
+    Filter matches tool and server *names* only — descriptions, parameter
+    names, and the transport are deliberately not in the haystack so long
+    MCP docstrings don't produce spurious matches.
+
+    Returns:
+        - `server.tools` when the filter is empty or matches the server name.
+        - A subset tuple when individual tool names match.
+        - `None` when nothing matches — caller skips the header entirely.
     """
     if not tokens:
         return server.tools
 
-    if all(token in _server_haystack(server) for token in tokens):
+    server_name = server.name.lower()
+    if all(token in server_name for token in tokens):
         return server.tools
 
     matching = tuple(
         tool
         for tool in server.tools
-        if all(token in _tool_haystack(tool) for token in tokens)
+        if all(token in tool.name.lower() for token in tokens)
     )
-    if matching:
-        return matching
-    return None
+    return matching or None
 
 
 class MCPToolItem(Static):
@@ -620,7 +600,8 @@ class MCPViewerScreen(ModalScreen[None]):
         if old != index:
             self._tool_widgets[old].set_selected(False)
             self._tool_widgets[index].set_selected(True)
-            self._tool_widgets[index].scroll_visible()
+            # Pin to top so jumping past an expanded tool doesn't rebound.
+            self._tool_widgets[index].scroll_visible(top=True)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta positions.

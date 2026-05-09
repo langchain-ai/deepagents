@@ -5365,7 +5365,8 @@ def test_build_update_notification_uses_release_and_installed_age_copy() -> None
 
     assert notification.body == (
         "v2.0.0 is available (released 3d ago).\n"
-        "Currently installed: 1.0.0 (8 days old)."
+        "Currently installed: 1.0.0 (8 days old).\n"
+        "Your session will not be interrupted."
     )
     assert notification.title == "Update available"
 

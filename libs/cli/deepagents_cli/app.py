@@ -2343,7 +2343,8 @@ class DeepAgentsApp(App):
                     )
             else:
                 from deepagents_cli.update_check import (
-                    format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -2352,11 +2353,17 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
-                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+                release_age = await asyncio.to_thread(
+                    format_release_age_parenthetical, latest
+                )
+                installed_age = await asyncio.to_thread(
+                    format_installed_age_suffix, cli_version
+                )
                 notification = self._build_update_notification(
                     latest=latest,
                     cli_version=cli_version,
-                    age_suffix=age_suffix,
+                    release_age=release_age,
+                    installed_age=installed_age,
                     upgrade_cmd=cmd,
                 )
                 # Register without a toast: the dedicated modal is
@@ -2384,7 +2391,8 @@ class DeepAgentsApp(App):
         *,
         latest: str,
         cli_version: str,
-        age_suffix: str,
+        release_age: str,
+        installed_age: str,
         upgrade_cmd: str,
     ) -> PendingNotification:
         """Build the update-available registry entry.
@@ -2392,16 +2400,20 @@ class DeepAgentsApp(App):
         Args:
             latest: New version advertised by PyPI.
             cli_version: Currently installed version string.
-            age_suffix: Pre-formatted "(released N days ago)" fragment.
+            release_age: Pre-formatted " (released N days ago)" fragment.
+            installed_age: Pre-formatted " (N days old)" fragment.
             upgrade_cmd: Shell command to install the update.
 
         Returns:
             Registry entry ready to pass to `_notify_actionable`.
         """
-        body = f"v{latest} is available (current: v{cli_version}{age_suffix})."
+        body = (
+            f"v{latest} is available{release_age}.\n"
+            f"Currently installed: {cli_version}{installed_age}."
+        )
         return PendingNotification(
             key="update:available",
-            title=f"Update available: v{latest}",
+            title="Update available",
             body=body,
             actions=(
                 NotificationAction(ActionId.INSTALL, "Install now", primary=True),
@@ -2454,6 +2466,8 @@ class DeepAgentsApp(App):
             from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
                 format_age_suffix,
+                format_installed_age_suffix,
+                format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
@@ -2490,11 +2504,17 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+            release_age = await asyncio.to_thread(
+                format_release_age_parenthetical, latest
+            )
+            installed_age = await asyncio.to_thread(
+                format_installed_age_suffix, cli_version
+            )
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
             )
             success, output = await perform_upgrade()
@@ -6919,7 +6939,8 @@ class DeepAgentsApp(App):
         update_notification = self._build_update_notification(
             latest="9.9.9",
             cli_version="0.0.1",
-            age_suffix=", released 2 days ago",
+            release_age=" (released 2 days ago)",
+            installed_age="",
             upgrade_cmd="uv tool upgrade deepagents-cli",
         )
         self._notice_registry.add(update_notification)
@@ -7239,6 +7260,18 @@ class DeepAgentsApp(App):
         )
 
         if action_id == ActionId.INSTALL:
+            from deepagents_cli._env_vars import DEBUG_UPDATE
+
+            if os.environ.get(DEBUG_UPDATE):
+                self._notice_registry.remove(entry.key)
+                self.notify(
+                    "Skipped update install (debug mode).",
+                    severity="information",
+                    timeout=4,
+                    markup=False,
+                )
+                return
+
             self.notify(
                 f"Updating to v{payload.latest}...",
                 severity="information",

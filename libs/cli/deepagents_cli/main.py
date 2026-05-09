@@ -1686,6 +1686,8 @@ def cli_main() -> None:
                 from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
                     format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
                     upgrade_command,
@@ -1716,10 +1718,12 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
-                age_suffix = format_age_suffix(latest)
+                release_age = format_release_age_parenthetical(latest)
+                installed_age = format_installed_age_suffix(cli_version)
                 console.print(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
                 success, output = asyncio.run(perform_upgrade())
                 if success:
@@ -2085,7 +2089,8 @@ def cli_main() -> None:
                 if result.update_available[0]:
                     from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
-                        format_age_suffix,
+                        format_installed_age_suffix,
+                        format_release_age_parenthetical,
                         is_auto_update_enabled,
                         mark_update_notified,
                         should_notify_update,
@@ -2095,11 +2100,14 @@ def cli_main() -> None:
                     latest = result.update_available[1]
                     if latest and should_notify_update(latest):
                         console.print()
-                        age_suffix = format_age_suffix(latest)
+                        release_age = format_release_age_parenthetical(latest)
+                        installed_age = format_installed_age_suffix(cli_version)
                         update_msg = Text("Update available: ", style="yellow bold")
                         update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(release_age, style="dim")
                         update_msg.append(
-                            f" (current: v{cli_version}{age_suffix})", style="dim"
+                            f". Currently installed: {cli_version}{installed_age}.",
+                            style="dim",
                         )
                         console.print(update_msg)
                         cmd_hint = Text("Run: ", style="dim")

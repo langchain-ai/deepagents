@@ -5334,6 +5334,25 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
     )
 
 
+def test_build_update_notification_uses_release_and_installed_age_copy() -> None:
+    """Update notices separate latest-release age from installed-version age."""
+    from deepagents_cli.app import DeepAgentsApp
+
+    notification = DeepAgentsApp._build_update_notification(
+        latest="2.0.0",
+        cli_version="1.0.0",
+        release_age=" (released 3d ago)",
+        installed_age=" (8 days old)",
+        upgrade_cmd="pip install",
+    )
+
+    assert notification.body == (
+        "v2.0.0 is available (released 3d ago).\n"
+        "Currently installed: 1.0.0 (8 days old)."
+    )
+    assert notification.title == "Update available"
+
+
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
 
@@ -5817,6 +5836,40 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_debug_update_install_does_not_run_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug update modal can exercise Install now without changing packages."""
+        from deepagents_cli._env_vars import DEBUG_UPDATE
+        from deepagents_cli.notifications import ActionId
+
+        monkeypatch.setenv(DEBUG_UPDATE, "1")
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-cli")),
+            ) as mock_upgrade:
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+        mock_upgrade.assert_not_called()
+        assert app._notice_registry.get("update:available") is None
+        assert any("debug mode" in m for m in notified)
+
     async def test_install_failure_removes_entry_and_toasts_manual(self) -> None:
         """Failed install removes the stale entry and surfaces the manual command."""
         from deepagents_cli.notifications import ActionId
@@ -6101,7 +6154,11 @@ class TestNotificationCenterIntegration:
                 "deepagents_cli.update_check.mark_update_notified",
             ),
             patch(
-                "deepagents_cli.update_check.format_age_suffix",
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
                 return_value="",
             ),
             patch(

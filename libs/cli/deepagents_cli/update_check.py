@@ -19,6 +19,7 @@ import shutil
 import sys
 import time
 import tomllib
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from packaging.version import InvalidVersion, Version
@@ -57,6 +58,9 @@ A cached `latest_version.json` younger than this is reused without an HTTP
 call to PyPI; older payloads trigger a fresh fetch. Set conservatively at
 24h since release cadence is on the order of days, not minutes.
 """
+
+INSTALLED_AGE_NOTICE_DAYS = 7
+"""Minimum installed-version age before update notices call it out explicitly."""
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
@@ -154,13 +158,21 @@ def get_latest_version(
         The latest version string, or `None` on any failure.
     """
     cache_key = "version_prerelease" if include_prereleases else "version"
+    cached_version: str | None = None
 
     try:
         if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             fresh = time.time() - data.get("checked_at", 0) < CACHE_TTL
             if fresh and cache_key in data:
-                return data[cache_key]
+                value = data[cache_key]
+                cached_version = value if isinstance(value, str) else None
+            release_times = data.get("release_times")
+            has_installed_release_time = (
+                isinstance(release_times, dict) and __version__ in release_times
+            )
+            if fresh and cache_key in data and has_installed_release_time:
+                return cached_version
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug("Failed to read update-check cache", exc_info=True)
 
@@ -171,7 +183,7 @@ def get_latest_version(
             "requests package not installed — update checks disabled. "
             "Install with: pip install requests"
         )
-        return None
+        return cached_version
 
     try:
         resp = requests.get(
@@ -188,10 +200,10 @@ def get_latest_version(
         prerelease = _latest_from_releases(releases, include_prereleases=True)
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
-        return None
+        return cached_version
 
     release_times = _extract_release_times(
-        payload, stable=stable, prerelease=prerelease
+        payload, stable=stable, prerelease=prerelease, installed=__version__
     )
 
     try:
@@ -214,7 +226,11 @@ def get_latest_version(
 
 
 def _extract_release_times(
-    payload: dict[str, Any], *, stable: str, prerelease: str | None
+    payload: dict[str, Any],
+    *,
+    stable: str,
+    prerelease: str | None,
+    installed: str | None = None,
 ) -> dict[str, str]:
     """Pull `upload_time_iso_8601` for the given versions out of a PyPI payload.
 
@@ -229,6 +245,7 @@ def _extract_release_times(
         payload: Parsed PyPI JSON response.
         stable: Latest stable version string.
         prerelease: Latest pre-release version string, if any.
+        installed: Currently installed version string, if it should be cached.
 
     Returns:
         Mapping of version string to ISO-8601 upload time. Silently drops
@@ -238,7 +255,7 @@ def _extract_release_times(
     releases = payload.get("releases")
     if not isinstance(releases, dict):
         return times
-    for ver in (stable, prerelease):
+    for ver in (stable, prerelease, installed):
         if not ver:
             continue
         files = releases.get(ver)
@@ -312,6 +329,39 @@ def format_age_suffix(version: str | None) -> str:
     """
     age = format_release_age(version)
     return f", {age}" if age else ""
+
+
+def format_release_age_parenthetical(version: str | None) -> str:
+    """Return `" (released Nd ago)"` for `version`, or `""` when unknown."""
+    age = format_release_age(version)
+    return f" ({age})" if age else ""
+
+
+def _days_old_from_iso(iso: str | None) -> int | None:
+    """Return whole elapsed days for an ISO-8601 timestamp, or `None` on failure."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso).astimezone()
+    except (ValueError, TypeError):
+        logger.debug(
+            "Failed to parse release timestamp %r for installed age",
+            iso,
+            exc_info=True,
+        )
+        return None
+
+    days = (datetime.now(tz=dt.tzinfo) - dt).days
+    return max(days, 0)
+
+
+def format_installed_age_suffix(version: str | None) -> str:
+    """Return `" (N days old)"` for installed versions at least a week old."""
+    days = _days_old_from_iso(get_release_time(version))
+    if days is None or days < INSTALLED_AGE_NOTICE_DAYS:
+        return ""
+    unit = "day" if days == 1 else "days"
+    return f" ({days} {unit} old)"
 
 
 def get_sdk_release_time(

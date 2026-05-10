@@ -1385,6 +1385,8 @@ class TestModalScreenShiftTabHandling:
 
     async def test_shift_tab_moves_backward_in_thread_selector(self) -> None:
         """Shift+Tab should move backward in the thread selector controls."""
+        from textual.widgets import Select
+
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         app = DeepAgentsApp()
@@ -1408,11 +1410,20 @@ class TestModalScreenShiftTabHandling:
 
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
+            scope_select = screen.query_one("#thread-scope-select", Select)
             sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
             await pilot.press("tab")
             await pilot.pause()
+            assert scope_select.has_focus
+
+            await pilot.press("tab")
+            await pilot.pause()
             assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert scope_select.has_focus
 
             await pilot.press("shift+tab")
             await pilot.pause()

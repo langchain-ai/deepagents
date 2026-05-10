@@ -126,7 +126,7 @@ Mark a change as breaking using either form supported by Conventional Commits �
    `Backend.fetch`, which returns a `FetchResult` instead of raw bytes.
    ```
 
-The two forms should be combined, as shown above. The `!` makes the breaking nature obvious in `git log` and PR titles, and the footer body becomes the migration note that release-please surfaces under `⚠ BREAKING CHANGES`.
+The `!` alone is sufficient to trigger the version bump. The `BREAKING CHANGE:` footer is optional — it only changes what text appears under the `⚠ BREAKING CHANGES` heading in the changelog. Without the footer, that entry is just the commit subject; with it, the entry becomes your footer text (use this to spell out the migration). Combine both whenever the migration path isn't obvious from the subject alone — the `!` makes the breaking nature obvious in `git log` and PR titles, and the footer carries the migration instructions.
 
 > [!IMPORTANT]
 > All packages are pre-1.0, so a breaking change bumps the **minor** version, not the major (see [Version Bumping](#version-bumping)). The change is still flagged as `⚠ BREAKING CHANGES` at the top of the release notes regardless of the resulting version bump.

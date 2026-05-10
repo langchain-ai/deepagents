@@ -1,5 +1,21 @@
 # Deep Agents CLI Changelog
 
+## [0.0.53](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.52...deepagents-cli==0.0.53) (2026-05-10)
+
+### Features
+
+* `/copy` slash command ([#3225](https://github.com/langchain-ai/deepagents/issues/3225)) ([646df53](https://github.com/langchain-ai/deepagents/commit/646df5364274ba11c1104038095ed4478c076c40))
+* Per-terminal theme selection ([#3248](https://github.com/langchain-ai/deepagents/issues/3248)) ([e2251f1](https://github.com/langchain-ai/deepagents/commit/e2251f17c0cc9363d6ed2385436ade22a8e74cd2))
+* Incognito shell command mode ([#3252](https://github.com/langchain-ai/deepagents/issues/3252)) ([56aee50](https://github.com/langchain-ai/deepagents/commit/56aee504b5f8196d569757794e2e7e61cf9bef18))
+* Live progress UI and periodic recheck for self-updates ([#3280](https://github.com/langchain-ai/deepagents/issues/3280)) ([3e9e805](https://github.com/langchain-ai/deepagents/commit/3e9e80597d9e2edc7685400023a2cad15a84a6b8))
+* Ollama model discovery via probe ([#3286](https://github.com/langchain-ai/deepagents/issues/3286)) ([c1dd6c8](https://github.com/langchain-ai/deepagents/commit/c1dd6c8a0f8b423edc75be243fc0487e4c900703))
+
+### Bug Fixes
+
+* Re-render assistant messages after streaming to fix fenced code disappearance ([#3293](https://github.com/langchain-ai/deepagents/issues/3293)) ([01b0a44](https://github.com/langchain-ai/deepagents/commit/01b0a44353a891a2ff10b3a2e2f6e23cc0879c9b))
+* Show `Resuming...` banner immediately on thread resume ([#3297](https://github.com/langchain-ai/deepagents/issues/3297)) ([3bb2782](https://github.com/langchain-ai/deepagents/commit/3bb2782ae8bd42d9521b611ebdfc42456b7d41a2))
+* Show pending token placeholder during streaming and restore on early exit ([#3288](https://github.com/langchain-ai/deepagents/issues/3288)) ([882232d](https://github.com/langchain-ai/deepagents/commit/882232dbc4ffbaf0bedeb12f0f3119024352ac43))
+
 ## [0.0.52](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.51...deepagents-cli==0.0.52) (2026-05-08)
 
 ### Features

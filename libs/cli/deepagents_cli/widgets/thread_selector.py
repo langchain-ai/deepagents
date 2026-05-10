@@ -110,6 +110,8 @@ _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _SCOPE_SELECT_ID = "thread-scope-select"
 _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
+_CONTROLS_SCROLL_ID = "thread-controls-scroll"
+_CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
 
 
@@ -400,6 +402,19 @@ class ThreadOption(Horizontal):
         self.post_message(self.Clicked(self.thread_id, self.index))
 
 
+class ThreadControlsScroll(VerticalScroll):
+    """Emit scroll changes so the parent can refresh the overflow indicator."""
+
+    class Scrolled(Message):
+        """Message sent when the controls pane scroll position changes."""
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        """Notify the selector so it can update the overflow indicator."""
+        super().watch_scroll_y(old_value, new_value)
+        if self.is_attached:
+            self.post_message(self.Scrolled())
+
+
 class DeleteThreadConfirmScreen(ModalScreen[bool]):
     """Confirmation modal shown before deleting a thread."""
 
@@ -563,6 +578,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         border-left: solid $primary-lighten-2;
     }
 
+    ThreadSelectorScreen .thread-controls-scroll {
+        height: 1fr;
+        min-height: 1;
+        scrollbar-gutter: stable;
+    }
+
     ThreadSelectorScreen .thread-controls-title {
         text-style: bold;
         color: $primary;
@@ -588,6 +609,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     ThreadSelectorScreen .thread-column-toggle {
         width: 1fr;
         height: auto;
+    }
+
+    ThreadSelectorScreen .thread-controls-overflow {
+        height: 1;
+        color: $text-muted;
+        text-align: center;
     }
 
     ThreadSelectorScreen .thread-list-header {
@@ -958,28 +985,36 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         id=_SCOPE_SELECT_ID,
                         classes="thread-scope-select",
                     )
-                    yield Checkbox(
-                        self._format_sort_toggle_label(),
-                        self._sort_by_updated,
-                        id=_SORT_SWITCH_ID,
-                        classes="thread-column-toggle",
-                        compact=True,
-                    )
-                    yield Checkbox(
-                        "Relative Timestamps",
-                        self._relative_time,
-                        id=_RELATIVE_TIME_SWITCH_ID,
-                        classes="thread-column-toggle",
-                        compact=True,
-                    )
-                    for key in _COLUMN_ORDER:
+                    with ThreadControlsScroll(
+                        id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
+                    ):
                         yield Checkbox(
-                            _COLUMN_TOGGLE_LABELS[key],
-                            self._columns.get(key, False),
-                            id=self._switch_id(key),
+                            self._format_sort_toggle_label(),
+                            self._sort_by_updated,
+                            id=_SORT_SWITCH_ID,
                             classes="thread-column-toggle",
                             compact=True,
                         )
+                        yield Checkbox(
+                            "Relative Timestamps",
+                            self._relative_time,
+                            id=_RELATIVE_TIME_SWITCH_ID,
+                            classes="thread-column-toggle",
+                            compact=True,
+                        )
+                        for key in _COLUMN_ORDER:
+                            yield Checkbox(
+                                _COLUMN_TOGGLE_LABELS[key],
+                                self._columns.get(key, False),
+                                id=self._switch_id(key),
+                                classes="thread-column-toggle",
+                                compact=True,
+                            )
+                    yield Static(
+                        get_glyphs().ellipsis,
+                        id=_CONTROLS_OVERFLOW_ID,
+                        classes="thread-controls-overflow",
+                    )
 
             yield Static(
                 self._build_help_text(),
@@ -997,6 +1032,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         filter_input = self._get_filter_input()
         self._filter_focus_order()
         filter_input.focus()
+        self.call_after_refresh(self._update_controls_overflow_hint)
 
         if self._has_initial_threads:
             self.call_after_refresh(self._scroll_selected_into_view)
@@ -1015,6 +1051,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self.run_worker(
                 self._load_threads, exclusive=True, group="thread-selector-load"
             )
+
+    def on_resize(self) -> None:
+        """Refresh the overflow indicator when the modal is resized."""
+        self.call_after_refresh(self._update_controls_overflow_hint)
+
+    def on_thread_controls_scroll_scrolled(
+        self, event: ThreadControlsScroll.Scrolled
+    ) -> None:
+        """Refresh the overflow indicator after the options pane scrolls."""
+        event.stop()
+        self.call_after_refresh(self._update_controls_overflow_hint)
 
     def _start_thread_load(self) -> None:
         """Launch the thread-load worker after the initial layout pass."""
@@ -1701,6 +1748,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _update_help_widgets(self) -> None:
         """Update visible header and help text after state changes."""
         self._schedule_header_rebuild()
+        self.call_after_refresh(self._update_controls_overflow_hint)
 
         try:
             help_widget = self.query_one("#thread-help", Static)
@@ -1713,6 +1761,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             sort_checkbox.label = self._format_sort_toggle_label()
             if sort_checkbox.value != self._sort_by_updated:
                 sort_checkbox.value = self._sort_by_updated
+
+    def _update_controls_overflow_hint(self) -> None:
+        """Show an ellipsis when the options pane has hidden rows below."""
+        try:
+            scroll = self.query_one(f"#{_CONTROLS_SCROLL_ID}", VerticalScroll)
+            hint = self.query_one(f"#{_CONTROLS_OVERFLOW_ID}", Static)
+        except NoMatches:
+            return
+
+        hint.display = scroll.scroll_y < scroll.max_scroll_y
 
     def _schedule_header_rebuild(self) -> None:
         """Queue a header rebuild to reflect column/sort changes."""

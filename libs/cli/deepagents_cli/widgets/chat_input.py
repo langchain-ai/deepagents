@@ -1271,10 +1271,16 @@ class ChatInput(Vertical):
             prefix, detected = detected_prefix
             strip_length = len(prefix)
             if self.mode == "shell" and detected == "shell":
-                # The first `!` is already represented by shell mode's virtual
-                # prefix. A second typed `!` should complete `!!` even though
-                # only one bang is visible in the text area.
+                # First `!` was stripped on entry to shell mode, so the
+                # currently-visible `!` is the second bang of `!!`. Promote to
+                # incognito and consume it.
                 detected = "shell_incognito"
+            elif self.mode == "shell_incognito" and detected == "shell":
+                # Already in incognito; an extra `!` is part of the command
+                # body. Skip the strip-and-demote path that would otherwise
+                # drop us back to plain shell mode.
+                detected = "shell_incognito"
+                strip_length = 0
             if prefix == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -1288,7 +1294,8 @@ class ChatInput(Vertical):
                 # from looping back here.
                 if self.mode != detected:
                     self.mode = detected
-                self._strip_mode_prefix(strip_length)
+                if strip_length:
+                    self._strip_mode_prefix(strip_length)
                 # Fall through to update completion suggestions in the same
                 # refresh cycle as the mode/glyph change rather than waiting
                 # for the next text-change event caused by the prefix strip.
@@ -1420,7 +1427,8 @@ class ChatInput(Vertical):
         not misinterpreted as new input.
 
         Args:
-            length: Number of leading trigger characters to remove.
+            length: Number of leading characters to strip (matches the trigger
+                length detected by `detect_mode_prefix`).
         """
         if not self._text_area:
             return
@@ -1911,6 +1919,20 @@ class ChatInput(Vertical):
                 prompt = self.query_one("#prompt", Static)
             except NoMatches:
                 logger.warning("watch_mode._apply: prompt widget not found")
+                if mode == "shell_incognito":
+                    # Privacy-sensitive: surface a visible warning so the user
+                    # never types an incognito command without confirmation
+                    # that the mode is active.
+                    app = getattr(self, "app", None)
+                    if app is not None:
+                        with contextlib.suppress(Exception):
+                            app.notify(
+                                "Incognito mode UI failed to render; "
+                                "switching back to normal input.",
+                                severity="warning",
+                                markup=False,
+                            )
+                    self.mode = "normal"
                 return
             prompt.update(glyph or ">")
             if mode == "shell_incognito":

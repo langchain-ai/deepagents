@@ -187,6 +187,19 @@ class TestHelpBodyDrift:
             Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.py"
         ).read_text()
 
-        assert "!!command" in app_src
-        assert "command/output" in app_src
-        assert "model context" in app_src
+        # Locate the Interactive Features block where the `!!` row lives.
+        match = re.search(
+            r'"Interactive Features:\\n"(.*?)"\s*Docs:',
+            app_src,
+            re.DOTALL,
+        )
+        assert match, "Could not locate Interactive Features section in help_body"
+        section = match.group(1)
+
+        assert "!!command" in section, "Help body must show `!!command` literal"
+        # Concept-level checks rather than exact wording — independent of
+        # whether the sentence reads "command/output to model context" or
+        # "output and command to model context".
+        assert "model context" in section
+        assert "command" in section
+        assert "output" in section

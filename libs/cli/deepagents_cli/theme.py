@@ -96,7 +96,8 @@ LC_TOOL_HOVER = "#FFCB91"
 """Tool call hover — lighter variant for interactive feedback."""
 
 LC_INCOGNITO = "#2DD4BF"
-"""Incognito shell accent — distinct from shell and warning states."""
+"""Incognito shell accent — teal, must read distinctly against `LC_PINK`
+shell and `error` warning border colors."""
 
 
 # ---------------------------------------------------------------------------
@@ -767,13 +768,11 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     """Construct `ThemeColors` from the app's active Textual theme.
 
     Reads standard properties (primary, secondary, etc.) from the resolved
-    theme so Python-side styling matches CSS.  `muted` falls back to the
-    dark/light base unconditionally (no Textual equivalent).
-    `mode_bash` is derived from the theme's `error` color, `mode_command`
-    from `secondary`, and `mode_incognito` falls back to the base palette.
-
-    Non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected and fall
-    back to the base palette automatically.
+    theme so Python-side styling matches CSS. `muted` and `mode_incognito`
+    have no Textual equivalent and always source from the dark/light base
+    palette. `mode_bash` is derived from the theme's `error` color and
+    `mode_command` from `secondary`, both falling back to the base palette
+    when non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected.
 
     Args:
         app: The Textual App instance.

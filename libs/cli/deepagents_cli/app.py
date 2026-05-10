@@ -3302,16 +3302,81 @@ class DeepAgentsApp(App):
             mode: The input mode that determines message routing.
         """
         if mode == "shell_incognito":
-            await self._handle_shell_command(value.removeprefix("!!"), incognito=True)
+            await self._handle_shell_command(
+                self._strip_mode_value(value, "!!", "!", mode), incognito=True
+            )
         elif mode == "shell":
-            await self._handle_shell_command(value.removeprefix("!"))
+            await self._handle_shell_command(
+                self._strip_mode_value(value, "!", "!!", mode)
+            )
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
             await self._handle_user_message(value)
         else:
-            logger.warning("Unrecognized input mode %r, treating as normal", mode)
-            await self._handle_user_message(value)
+            # Fail safe: never default to the agent dispatch path on an
+            # unrecognized mode, since that would silently leak `!!`/`!`
+            # prefixed text to the LLM if the mode literal is ever wrong.
+            logger.error(
+                "Unrecognized input mode %r; refusing to forward to agent", mode
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    f"Internal error: unknown input mode {mode!r}. "
+                    "Message was not sent."
+                )
+            )
+
+    @staticmethod
+    def _strip_mode_value(
+        value: str, prefix: str, conflicting_prefix: str, mode: InputMode
+    ) -> str:
+        """Strip `prefix` from `value`, logging if a wrong prefix was supplied.
+
+        Three submission paths feed `_process_message`: (1) typed input, where
+        the chat input has already stripped the prefix, so `value` does not
+        start with `prefix`; (2) re-submission via the queue, where the value
+        was re-prepended with `prefix`; and (3) external/programmatic callers,
+        which may send either form. `removeprefix` is a no-op for path (1) and
+        does the work for paths (2) and (3).
+
+        A leading `conflicting_prefix` (the sibling shell mode's trigger)
+        indicates state-machine drift between the declared `mode` and the
+        actual text — for example, mode `"shell_incognito"` paired with a
+        value starting with a single `!`. We log for diagnostics but still
+        strip `prefix` so the user is not surprised by a sudden refusal; the
+        sibling prefix becomes part of the command body and the shell will
+        report any resulting error locally.
+
+        Examples:
+            shell_incognito + `"!!ls"` -> `"ls"`     (queued submission)
+            shell_incognito + `"ls"`   -> `"ls"`     (typed submission, prefix
+                                                      already stripped)
+            shell_incognito + `"!ls"`  -> `"!ls"`    (drift; logs a warning,
+                                                      shell sees `!ls`)
+            shell + `"!ls"`            -> `"ls"`
+            shell + `"!!ls"`           -> `"!ls"`    (drift; logs a warning)
+
+        Args:
+            value: Submitted text expected to match `mode`.
+            prefix: Trigger prefix associated with `mode` (e.g. `"!!"` for
+                `shell_incognito`, `"!"` for `shell`).
+            conflicting_prefix: Sibling-mode prefix whose presence at the
+                start of `value` signals drift (e.g. pass `"!"` when
+                `prefix="!!"`).
+            mode: Input mode for diagnostic messages.
+
+        Returns:
+            `value` with a leading `prefix` removed if present, otherwise
+            `value` unchanged.
+        """
+        if value.startswith(conflicting_prefix) and not value.startswith(prefix):
+            logger.warning(
+                "Mode %r received value with conflicting prefix %r",
+                mode,
+                conflicting_prefix,
+            )
+        return value.removeprefix(prefix)
 
     def _has_initial_submission(self) -> bool:
         """Return whether startup should auto-submit a prompt or skill."""
@@ -4075,6 +4140,20 @@ class DeepAgentsApp(App):
             logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
+        except Exception:
+            # Defense in depth: a crash between subprocess read and
+            # `_mount_message` could leave the user with no signal that the
+            # command ran at all (privacy-sensitive in the incognito path).
+            # Surface a local-only error and re-raise so the worker layer
+            # records the failure.
+            logger.exception(
+                "Shell task crashed (incognito=%s): %s", incognito, command
+            )
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage("Shell command crashed; see logs.")
+                )
+            raise
         finally:
             await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
 
@@ -4330,7 +4409,7 @@ class DeepAgentsApp(App):
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
                 "  !command        Run shell commands directly\n"
-                "  !!command       Run shell commands locally without adding "
+                "  !!command       Run shell commands without adding "
                 "command/output to model context\n\n"
                 "Docs: "
             )

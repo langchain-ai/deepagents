@@ -267,12 +267,21 @@ if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
     )
     raise ValueError(msg)
 
-PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
+_MODE_PREFIXES_BY_LENGTH: tuple[tuple[str, str], ...] = tuple(
+    sorted(MODE_PREFIXES.items(), key=lambda item: len(item[1]), reverse=True)
+)
+"""Mode entries ordered longest-prefix-first.
+
+Pre-sorted at import so `detect_mode_prefix` runs in constant time per
+keystroke without re-sorting.
+"""
 
 
 def detect_mode_prefix(text: str) -> tuple[str, str] | None:
     """Return the longest mode prefix and mode for `text`, if any.
+
+    Longer prefixes win so multi-character triggers like `!!` are matched
+    before their single-character prefixes (`!`).
 
     Args:
         text: Input text that may start with a mode trigger.
@@ -281,11 +290,7 @@ def detect_mode_prefix(text: str) -> tuple[str, str] | None:
         Tuple of `(prefix, mode)` for the longest matching trigger, otherwise
         `None`.
     """
-    for mode, prefix in sorted(
-        MODE_PREFIXES.items(),
-        key=lambda item: len(item[1]),
-        reverse=True,
-    ):
+    for mode, prefix in _MODE_PREFIXES_BY_LENGTH:
         if text.startswith(prefix):
             return prefix, mode
     return None

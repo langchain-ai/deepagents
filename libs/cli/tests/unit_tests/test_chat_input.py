@@ -1049,6 +1049,33 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!!pwd"
             assert app.submitted[0].mode == "shell_incognito"
 
+    async def test_typing_second_bang_enters_incognito_shell_mode(self) -> None:
+        """Typing `!!pwd` as separate keypresses should submit incognito shell."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            chat._text_area.insert("pwd")
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
+
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
         app = _RecordingApp()

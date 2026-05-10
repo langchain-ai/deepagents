@@ -1281,6 +1281,12 @@ class ChatInput(Vertical):
             self._stripping_prefix = False
         elif detected_prefix := detect_mode_prefix(text):
             prefix, detected = detected_prefix
+            strip_length = len(prefix)
+            if self.mode == "shell" and detected == "shell":
+                # The first `!` is already represented by shell mode's virtual
+                # prefix. A second typed `!` should complete `!!` even though
+                # only one bang is visible in the text area.
+                detected = "shell_incognito"
             if prefix == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -1294,7 +1300,7 @@ class ChatInput(Vertical):
                 # from looping back here.
                 if self.mode != detected:
                     self.mode = detected
-                self._strip_mode_prefix(len(prefix))
+                self._strip_mode_prefix(strip_length)
                 # Fall through to update completion suggestions in the same
                 # refresh cycle as the mode/glyph change rather than waiting
                 # for the next text-change event caused by the prefix strip.

@@ -491,7 +491,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
         Binding(
-            "ctrl+g",
+            "ctrl+y",
             "toggle_cwd_filter",
             "Toggle cwd filter",
             show=False,
@@ -709,7 +709,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
                 When the default sentinel, the picker mirrors Claude Code's
                 `/resume` and scopes to the current working directory; press
-                Ctrl+G in the picker to toggle "all directories". Pass an
+                Ctrl+Y in the picker to toggle "all directories". Pass an
                 explicit path to scope to that directory, or `None` to start
                 the picker with no cwd filter.
         """
@@ -819,7 +819,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
-            f" {glyphs.bullet} Ctrl+G "
+            f" {glyphs.bullet} Ctrl+Y "
             f"{'show all dirs' if self._filter_cwd else 'filter to cwd'}"
             f" {glyphs.bullet} Esc cancel"
         )

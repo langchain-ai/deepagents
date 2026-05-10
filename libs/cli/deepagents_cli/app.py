@@ -4324,7 +4324,7 @@ class DeepAgentsApp(App):
 
         elif cmd in {"/changelog", "/docs", "/feedback"}:
             await self._open_url_command(command, cmd)
-        elif cmd == "/version":
+        elif cmd in {"/version", "/about"}:
             await self._mount_message(UserMessage(command))
             await self._handle_version_command()
         elif cmd == "/agents":

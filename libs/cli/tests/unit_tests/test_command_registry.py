@@ -74,6 +74,7 @@ class TestBypassTiers:
 
     def test_aliases_in_correct_tier(self) -> None:
         assert "/q" in ALWAYS_IMMEDIATE
+        assert "/about" in BYPASS_WHEN_CONNECTING
         assert "/compact" in QUEUE_BOUND
         assert "/connect" in IMMEDIATE_UI
 

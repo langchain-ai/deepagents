@@ -4256,6 +4256,20 @@ class TestSlashCommandBypass:
             pm.assert_called_once_with("/version", "command")
             assert len(app._pending_messages) == 0
 
+    async def test_about_alias_executes_during_connecting(self) -> None:
+        """/about should process like the hidden alias for /version."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/about", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/about", "command")
+            assert len(app._pending_messages) == 0
+
     async def test_version_queues_during_agent_running(self) -> None:
         """/version should still queue when agent is actively running."""
         app = DeepAgentsApp()
@@ -4697,6 +4711,18 @@ class TestDeferredActions:
             app._connecting = False
             app._shell_running = False
             assert app._can_bypass_queue("/version") is False
+
+    async def test_can_bypass_queue_about_matches_version(self) -> None:
+        """/about follows the same connection-only bypass policy as /version."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._connecting = True
+            assert app._can_bypass_queue("/about") is True
+
+            app._agent_running = True
+            assert app._can_bypass_queue("/about") is False
 
     async def test_can_bypass_queue_bare_model_bypasses(self) -> None:
         """Bare /model should bypass the queue."""

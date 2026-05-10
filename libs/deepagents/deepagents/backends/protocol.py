@@ -199,6 +199,7 @@ def _normalize_files_update(
 
     # `stacklevel=3` lifts attribution past `__init__` and this helper to the
     # user's `WriteResult(...)` / `EditResult(...)` call site.
+    # TODO(mdrxy): remove `files_update` fields in 0.7.0. https://github.com/langchain-ai/deepagents/issues/3220  # noqa: FIX002
     warn_deprecated(
         since="0.5.0",
         removal="0.7.0",
@@ -829,7 +830,8 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """

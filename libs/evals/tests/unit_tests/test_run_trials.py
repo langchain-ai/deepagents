@@ -206,7 +206,7 @@ class TestAggregateTrials:
             for i in range(3)
         ]
         summary = run_trials.aggregate_trials(reports)
-        assert [t["trial_index"] for t in summary["trials"]] == [0, 1, 2]
+        assert [t["trial_index"] for t in summary["trials"]] == [1, 2, 3]
         assert [t["correctness"] for t in summary["trials"]] == pytest.approx([0.4, 0.45, 0.5])
 
     def test_non_numeric_metric_value_is_excluded_with_warning(
@@ -229,7 +229,7 @@ class TestAggregateTrials:
         summary = run_trials.aggregate_trials(reports)
         assert summary["metrics"]["correctness"]["n"] == 0
         captured = capsys.readouterr()
-        assert "non-numeric value for 'correctness'" in captured.err
+        assert "trial 1: non-numeric value for 'correctness'" in captured.err
 
     def test_bool_values_are_not_aggregated_as_ints(
         self, capsys: pytest.CaptureFixture[str]
@@ -250,7 +250,7 @@ class TestAggregateTrials:
         reports[0]["passed"] = True
         summary = run_trials.aggregate_trials(reports)
         assert summary["counts"]["passed"]["n"] == 0
-        assert "non-numeric value for 'passed'" in capsys.readouterr().err
+        assert "trial 1: non-numeric value for 'passed'" in capsys.readouterr().err
 
     def test_divergent_model_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
         a = _report(
@@ -424,6 +424,28 @@ class TestParseArgs:
         )
         assert args.pytest_extra == ["-k", "smoke"]
 
+    def test_model_defaults_to_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(run_trials._MODEL_ENV_VAR, "openai:gpt-5.5-via-env")
+        args = run_trials._parse_args(["--trials", "1"])
+        assert args.model == "openai:gpt-5.5-via-env"
+
+    def test_explicit_model_beats_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(run_trials._MODEL_ENV_VAR, "from-env")
+        args = run_trials._parse_args(["--model", "from-flag", "--trials", "1"])
+        assert args.model == "from-flag"
+
+    def test_missing_model_error_mentions_env_var_and_list_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv(run_trials._MODEL_ENV_VAR, raising=False)
+        with pytest.raises(SystemExit):
+            run_trials._parse_args(["--trials", "1"])
+        err = capsys.readouterr().err
+        assert run_trials._MODEL_ENV_VAR in err
+        assert "deepagents-evals list models" in err
+
 
 class TestDiscoverReports:
     def test_returns_empty_when_root_missing(self, tmp_path: Path) -> None:
@@ -489,6 +511,39 @@ class TestLoadReport:
         path = tmp_path / "ok.json"
         path.write_text('{"a": 1}')
         assert run_trials._load_report(path) == {"a": 1}
+
+
+class TestMainJsonFlag:
+    def test_json_emits_compact_summary_to_stdout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        report = _report(
+            correctness=0.5,
+            solve_rate=0.2,
+            step_ratio=0.8,
+            tool_call_ratio=0.6,
+            median_duration_s=10.0,
+            passed=80,
+            failed=80,
+            total=160,
+        )
+        (tmp_path / "evals_report_trial_000.json").write_text(json.dumps(report))
+        summary_out = tmp_path / "trials_summary.json"
+
+        rc = run_trials.main(
+            ["--aggregate-only", str(tmp_path), "--summary-out", str(summary_out), "--json"]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        # stdout is exactly one JSON line equal to the on-disk summary.
+        stdout_lines = [line for line in captured.out.splitlines() if line.strip()]
+        assert len(stdout_lines) == 1
+        from_stdout = json.loads(stdout_lines[0])
+        from_disk = json.loads(summary_out.read_text())
+        assert from_stdout == from_disk
+        # The "wrote ..." breadcrumb goes to stderr, not stdout.
+        assert "wrote" in captured.err
+        assert "wrote" not in captured.out
 
 
 class TestMainAggregateOnly:

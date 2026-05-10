@@ -1682,10 +1682,14 @@ def cli_main() -> None:
             try:
                 from rich.markup import escape
 
+                from deepagents_cli._env_vars import DEBUG_UPDATE
                 from deepagents_cli._version import __version__ as cli_version
                 from deepagents_cli.config import _is_editable_install
                 from deepagents_cli.update_check import (
+                    create_update_log_path,
                     format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     is_update_available,
                     perform_upgrade,
                     upgrade_command,
@@ -1716,12 +1720,24 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
-                age_suffix = format_age_suffix(latest)
+                release_age = format_release_age_parenthetical(latest)
+                installed_age = format_installed_age_suffix(cli_version)
                 console.print(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
-                success, output = asyncio.run(perform_upgrade())
+                if os.environ.get(DEBUG_UPDATE):
+                    console.print("Skipped update install (debug mode).", style="dim")
+                    sys.exit(0)
+                log_path = create_update_log_path()
+                console.print(
+                    f"Update log: {log_path}\nTail progress: tail -f {log_path}",
+                    style="dim",
+                    highlight=False,
+                    markup=False,
+                )
+                success, output = asyncio.run(perform_upgrade(log_path=log_path))
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
@@ -2085,7 +2101,8 @@ def cli_main() -> None:
                 if result.update_available[0]:
                     from deepagents_cli._version import __version__ as cli_version
                     from deepagents_cli.update_check import (
-                        format_age_suffix,
+                        format_installed_age_suffix,
+                        format_release_age_parenthetical,
                         is_auto_update_enabled,
                         mark_update_notified,
                         should_notify_update,
@@ -2095,11 +2112,14 @@ def cli_main() -> None:
                     latest = result.update_available[1]
                     if latest and should_notify_update(latest):
                         console.print()
-                        age_suffix = format_age_suffix(latest)
+                        release_age = format_release_age_parenthetical(latest)
+                        installed_age = format_installed_age_suffix(cli_version)
                         update_msg = Text("Update available: ", style="yellow bold")
                         update_msg.append(f"v{latest}", style="yellow")
+                        update_msg.append(release_age, style="dim")
                         update_msg.append(
-                            f" (current: v{cli_version}{age_suffix})", style="dim"
+                            f". Currently installed: {cli_version}{installed_age}.",
+                            style="dim",
                         )
                         console.print(update_msg)
                         cmd_hint = Text("Run: ", style="dim")

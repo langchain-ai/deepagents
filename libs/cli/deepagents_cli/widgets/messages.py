@@ -21,7 +21,7 @@ from textual.widgets import Static
 from deepagents_cli import theme
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
-    PREFIX_TO_MODE,
+    detect_mode_prefix,
     get_glyphs,
     is_ascii_mode,
 )
@@ -96,6 +96,8 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     colors = theme.get_theme_colors(widget_or_app)
     if not mode:
         return colors.primary
+    if mode == "shell_incognito":
+        return colors.mode_incognito
     if mode == "shell":
         return colors.mode_bash
     if mode == "command":
@@ -138,6 +140,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Web tools
     "web_search",
     "fetch_url",
+    "ask_user",
     # Agent tools
     "task",
     "write_todos",
@@ -187,9 +190,10 @@ class UserMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        if mode:
-            self.add_class(f"-mode-{mode}")
+        mode_match = detect_mode_prefix(self._content)
+        if mode_match:
+            _prefix, mode = mode_match
+            self.add_class(f"-mode-{mode.replace('_', '-')}")
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -206,11 +210,12 @@ class UserMessage(_TimestampClickMixin, Static):
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             parts.append(("> ", f"bold {colors.primary}"))
 
@@ -287,11 +292,12 @@ class QueuedUserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             prefix = (f"{glyph} ", f"bold {colors.muted}")
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             prefix = ("> ", f"bold {colors.muted}")
         return Content.assemble(prefix, (content, colors.muted))
@@ -787,8 +793,11 @@ class ToolCallMessage(Vertical):
         self._status = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
+        self._args_expanded: bool = False
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
+        self._args_widget: Static | None = None
+        self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
@@ -833,6 +842,10 @@ class ToolCallMessage(Vertical):
                     Content.from_markup("[dim]($args)[/dim]", args=args_str),
                     classes="tool-args",
                 )
+        # Collapsed argument detail for tools whose args are too noisy inline.
+        # Mounted for every tool but only populated when `has_expandable_args` is True.
+        yield Static("", classes="tool-args", id="args-full")
+        yield Static("", classes="tool-output-hint", id="args-hint")
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
         # Output area - hidden initially, shown when output is set
@@ -846,14 +859,19 @@ class ToolCallMessage(Vertical):
             self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
+        self._args_widget = self.query_one("#args-full", Static)
+        self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
+        self._args_widget.display = False
+        self._args_hint_widget.display = False
         self._preview_widget.display = False
         self._hint_widget.display = False
         self._full_widget.display = False
+        self._update_args_display()
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
@@ -1032,17 +1050,26 @@ class ToolCallMessage(Vertical):
             self._status_widget.display = True
 
     def toggle_output(self) -> None:
-        """Toggle between preview and full output display."""
+        """Toggle expansion of the tool's preview/full output."""
         if not self._output:
             return
         self._expanded = not self._expanded
         self._update_output_display()
 
+    def toggle_args(self) -> None:
+        """Toggle display of collapsed tool arguments."""
+        if not self.has_expandable_args:
+            return
+        self._args_expanded = not self._args_expanded
+        self._update_args_display()
+
     def on_click(self, event: Click) -> None:
-        """Toggle output expansion, or show timestamp if no output."""
+        """Toggle output/argument expansion, or show timestamp if nothing expands."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
+        elif self.has_expandable_args:
+            self.toggle_args()
         else:
             _show_timestamp_toast(self)
 
@@ -1554,6 +1581,67 @@ class ToolCallMessage(Vertical):
             True if there is output content, False otherwise.
         """
         return bool(self._output)
+
+    @property
+    def tool_name(self) -> str:
+        """Public read-only accessor for the underlying tool name."""
+        return self._tool_name
+
+    @property
+    def has_expandable_args(self) -> bool:
+        """Whether the tool's args are large enough to deserve a collapsible block.
+
+        Only `ask_user` qualifies today: its `questions` payload is too noisy to
+        render inline, but users still need a way to inspect it.
+        """
+        return self._tool_name == "ask_user" and bool(self._args)
+
+    def _format_args_detail(self) -> Content:
+        """Render tool arguments as an indented `Content` block.
+
+        Falls back to `str(self._args)` (with a visible marker) when JSON
+        serialization fails — `default=str` already handles most non-serializable
+        values, so reaching the fallback indicates a deeper issue worth logging.
+
+        Returns:
+            Indented `Content` containing JSON-pretty-printed arguments, or a
+            marked fallback rendering on serialization failure.
+        """
+        try:
+            text = json.dumps(self._args, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "ask_user args not JSON-serializable; using repr fallback: %r", exc
+            )
+            text = f"# (fallback rendering)\n{self._args!s}"
+        lines = Content(text).split("\n")
+        return Content("\n").join(Content.assemble("  ", line) for line in lines)
+
+    def _update_args_display(self) -> None:
+        """Update the collapsed/expanded argument display."""
+        if self._args_widget is None or self._args_hint_widget is None:
+            # Toggle invoked before on_mount cached the refs; log so a regression
+            # that nulls them out post-mount doesn't appear as a silent no-op.
+            logger.debug("_update_args_display called before widget refs are cached")
+            return
+
+        if not self.has_expandable_args:
+            self._args_widget.display = False
+            self._args_hint_widget.display = False
+            return
+
+        if self._args_expanded:
+            self._args_widget.update(self._format_args_detail())
+            self._args_widget.display = True
+            self._args_hint_widget.update(
+                Content.styled("click or Ctrl+O to hide arguments", "dim italic")
+            )
+        else:
+            self._args_widget.display = False
+            self._args_hint_widget.update(
+                Content.styled("click or Ctrl+O to show arguments", "dim italic")
+            )
+        self._args_hint_widget.display = True
 
     def _filtered_args(self) -> dict[str, Any]:
         """Filter large tool args for display.

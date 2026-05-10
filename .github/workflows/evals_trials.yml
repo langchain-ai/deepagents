@@ -13,9 +13,19 @@
 # unique `evals-report-trial-NNN-<slug>` artifact name; the aggregate job
 # downloads them all and runs `scripts/run_trials.py --aggregate-only`.
 
-name: "📊 Eval trials - GHA"
+name: "📊 Evals - N Trials"
 run-name: >-
-  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{ inputs.parallel && ' (parallel)' || ' (sequential)' }}${{ inputs.openai_reasoning_effort && format(' reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl && format(' repl:{0}', inputs.repl) || '' }}
+  📊 Eval trials — ${{ inputs.model }} × ${{ inputs.trials }} trials${{
+  inputs.parallel && ' (parallel)' || ' (sequential)' }}${{
+  (inputs.eval_categories_override || inputs.eval_categories) && format('
+  [{0}]', inputs.eval_categories_override || inputs.eval_categories) || '' }}${{
+  inputs.eval_categories_exclude && format(' excluding {0}',
+  inputs.eval_categories_exclude) || '' }}${{ (inputs.eval_tiers_override ||
+  inputs.eval_tiers) && format(' tier:{0}', inputs.eval_tiers_override ||
+  inputs.eval_tiers) || '' }}${{ inputs.openai_reasoning_effort && format('
+  reasoning:{0}', inputs.openai_reasoning_effort) || '' }}${{ inputs.repl &&
+  format(' repl:{0}', inputs.repl) || '' }}${{ inputs.analyze_failures && ' 🧠'
+  || '' }}
 
 on:
   workflow_dispatch:
@@ -30,27 +40,90 @@ on:
         default: "5"
         type: string
       parallel:
-        description: "Run trials in parallel (faster, but bursts API calls). Off → sequential."
+        description: "Run trials in parallel (faster, but bursts API calls). Off →
+          sequential."
         required: false
         default: false
         type: boolean
       eval_categories:
-        description: "Comma-separated eval categories. Empty = all."
+        description: "Eval category to run. Full listing: libs/evals/EVAL_CATALOG.md.
+          Leave empty to use eval_categories_override instead. Defaults to all
+          if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - conversation
+          - file_operations
+          - memory
+          - retrieval
+          - summarization
+          - tool_use
+          - unit_test
+      eval_categories_override:
+        description: "Custom category list (overrides dropdown). Comma-separated, e.g.
+          'memory,tool_use,retrieval'. Leave empty to use the preset selection
+          above."
+        required: false
+        default: ""
+        type: string
+      eval_categories_exclude:
+        description: "Category list to skip; takes precedence over the include filter on
+          conflict. Comma-separated, e.g. 'unit_test' or 'memory,unit_test'.
+          Empty = skip none."
         required: false
         default: ""
         type: string
       eval_tiers:
-        description: "Comma-separated eval tiers (baseline | hillclimb). Empty = all."
+        description: "Eval tier to run (baseline = regression gate, hillclimb = progress
+          tracking). Leave empty to use eval_tiers_override instead. Defaults to
+          all if both are empty."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - baseline
+          - hillclimb
+      eval_tiers_override:
+        description: "Custom tier list (overrides dropdown). Comma-separated, e.g.
+          'baseline,hillclimb'. Leave empty to use the preset selection above."
         required: false
         default: ""
         type: string
+      analyze_failures:
+        description: "Run the LLM failure-analysis step after each trial."
+        required: false
+        default: false
+        type: boolean
+      analysis_model:
+        description: "Model for failure analysis. Only used when analyze_failures is
+          true. Defaults to 'anthropic:claude-haiku-4-5-20251001'."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "anthropic:claude-haiku-4-5-20251001"
+          - "anthropic:claude-sonnet-4-6"
+          - "anthropic:claude-opus-4-6"
+          - "openai:gpt-5.4"
+          - "openai:gpt-5.5"
+          - "openai:gpt-5.5-pro"
+          - "openai:gpt-5.4-mini"
+          - "openai:o4-mini"
+          - "google_genai:gemini-3-flash-preview"
+          - "google_genai:gemini-3.1-flash-lite-preview"
       openrouter_provider:
-        description: "Pin OpenRouter to one or more providers (comma-separated allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
+        description: "Pin OpenRouter to one or more providers (comma-separated
+          allowlist), e.g. `MiniMax` or `MiniMax,Fireworks`."
         required: false
         default: ""
         type: string
       openrouter_allow_fallbacks:
-        description: "Soft allowlist: prefer the listed providers but allow OpenRouter to fall back. Off (default) = strict pin."
+        description: "Soft allowlist: prefer the listed providers but allow OpenRouter
+          to fall back. Off (default) = strict pin."
         required: false
         default: false
         type: boolean
@@ -67,7 +140,8 @@ on:
           - high
           - xhigh
       repl:
-        description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools directly."
+        description: "REPL middleware for `@pytest.mark.repl` tests. Empty = bind tools
+          directly."
         required: false
         default: ""
         type: choice
@@ -75,6 +149,13 @@ on:
           - ""
           - quickjs
           - langchain
+      notes:
+        description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
+          retry reason). Shown on the run summary; does not affect eval
+          behavior."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -92,7 +173,13 @@ jobs:
       max_parallel: ${{ steps.build.outputs.max_parallel }}
       provider: ${{ steps.build.outputs.provider }}
       slug: ${{ steps.build.outputs.slug }}
+      eval_categories: ${{ steps.build.outputs.eval_categories }}
+      eval_tiers: ${{ steps.build.outputs.eval_tiers }}
+      analysis_model: ${{ steps.build.outputs.analysis_model }}
     steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: "🐍 Build trial matrix"
         id: build
         env:
@@ -100,12 +187,23 @@ jobs:
           TRIALS: ${{ inputs.trials }}
           PARALLEL: ${{ inputs.parallel }}
           EVAL_CATEGORIES: ${{ inputs.eval_categories }}
+          EVAL_CATEGORIES_OVERRIDE: ${{ inputs.eval_categories_override }}
+          EVAL_CATEGORIES_EXCLUDE: ${{ inputs.eval_categories_exclude }}
           EVAL_TIERS: ${{ inputs.eval_tiers }}
+          EVAL_TIERS_OVERRIDE: ${{ inputs.eval_tiers_override }}
           OPENROUTER_PROVIDER: ${{ inputs.openrouter_provider }}
+          OPENROUTER_ALLOW_FALLBACKS: ${{ inputs.openrouter_allow_fallbacks }}
+          OPENAI_REASONING_EFFORT: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
+          ANALYZE_FAILURES: ${{ inputs.analyze_failures }}
+          NOTES: ${{ inputs.notes }}
+          # Default duplicates `_eval.yml`'s; resolved here once so the
+          # step-summary and the matrix forward share a single source.
+          ANALYSIS_MODEL: ${{ inputs.analysis_model || 'anthropic:claude-haiku-4-5-20251001' }}
         run: |
           python3 << 'PYEOF'
           import json, os, re, sys
+          from pathlib import Path
 
           # Per-CI cap: stricter than run_trials.py's `_MAX_TRIALS = 50` so a
           # typo in the dispatch form can't burn a whole runner pool. If you
@@ -118,10 +216,23 @@ jobs:
 
           # Require non-empty provider AND non-empty model name; allow `/`
           # and `.` only on the model side (provider names don't use them).
-          if not re.match(r"^[a-zA-Z0-9_\-.]+:[a-zA-Z0-9_\-./]+$", model):
+          _MODEL_RE = re.compile(r"^[a-zA-Z0-9_\-.]+:[a-zA-Z0-9_\-./]+$")
+          if not _MODEL_RE.match(model):
               print(f"::error::Model must be `provider:name` with non-empty parts, got {model!r}")
               sys.exit(1)
           provider = model.split(":", 1)[0]
+
+          # `analysis_model` is forwarded into `_eval.yml` (and downstream
+          # into `init_chat_model`) without further validation; reject
+          # malformed values at dispatch time so a typo fails loud here
+          # rather than silently after eval has burned runner minutes.
+          analysis_model = os.environ["ANALYSIS_MODEL"].strip()
+          if not _MODEL_RE.match(analysis_model):
+              print(
+                  f"::error::analysis_model must be `provider:name` with non-empty parts, "
+                  f"got {analysis_model!r}"
+              )
+              sys.exit(1)
 
           try:
               n = int(trials_raw)
@@ -135,14 +246,20 @@ jobs:
           # Defense in depth: these flow through to `_eval.yml` as shell
           # arguments. Reject anything outside a comma-separated identifier
           # list before we hand them off. `openrouter_provider` accepts a
-          # comma-separated allowlist (e.g. `MiniMax,Fireworks`) so it uses
-          # the CSV pattern; `repl` is single-valued so it stays on SLUG.
+          # comma-separated allowlist (e.g. `MiniMax,Fireworks`, plus
+          # variant-suffixed forms like `siliconflow/fp8`) so it uses the
+          # looser provider CSV pattern that also permits `/` and `.`;
+          # `repl` is single-valued so it stays on SLUG.
           _CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,]*$")
+          _PROVIDER_CSV_RE = re.compile(r"^[a-zA-Z0-9_\-,./]*$")
           _SLUG_RE = re.compile(r"^[a-zA-Z0-9_\-]*$")
           for name, value, pattern in (
               ("eval_categories", os.environ.get("EVAL_CATEGORIES", ""), _CSV_RE),
+              ("eval_categories_override", os.environ.get("EVAL_CATEGORIES_OVERRIDE", ""), _CSV_RE),
+              ("eval_categories_exclude", os.environ.get("EVAL_CATEGORIES_EXCLUDE", ""), _CSV_RE),
               ("eval_tiers", os.environ.get("EVAL_TIERS", ""), _CSV_RE),
-              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _CSV_RE),
+              ("eval_tiers_override", os.environ.get("EVAL_TIERS_OVERRIDE", ""), _CSV_RE),
+              ("openrouter_provider", os.environ.get("OPENROUTER_PROVIDER", ""), _PROVIDER_CSV_RE),
               ("repl", os.environ.get("REPL", ""), _SLUG_RE),
           ):
               if not pattern.match(value):
@@ -151,12 +268,30 @@ jobs:
 
           slug = re.sub(r"[^a-zA-Z0-9_\-]", "-", model).strip("-")
 
+          # Override takes precedence over the dropdown (mirrors `evals.yml`).
+          eval_categories_in = (
+              os.environ.get("EVAL_CATEGORIES_OVERRIDE", "").strip()
+              or os.environ.get("EVAL_CATEGORIES", "").strip()
+          )
+          eval_categories_exclude = os.environ.get("EVAL_CATEGORIES_EXCLUDE", "").strip()
+          # Override takes precedence over the dropdown (mirrors `evals.yml`).
+          eval_tiers = (
+              os.environ.get("EVAL_TIERS_OVERRIDE", "").strip()
+              or os.environ.get("EVAL_TIERS", "").strip()
+          )
+          openrouter_provider = os.environ.get("OPENROUTER_PROVIDER", "").strip()
+          openrouter_allow_fallbacks = (
+              os.environ.get("OPENROUTER_ALLOW_FALLBACKS", "").strip().lower() == "true"
+          )
+          openai_reasoning_effort = os.environ.get("OPENAI_REASONING_EFFORT", "").strip()
+          repl = os.environ.get("REPL", "").strip()
+
           entries = [
               {
                   "trial_index": i,
                   "artifact_key": f"trial-{i:03d}-{slug}",
               }
-              for i in range(n)
+              for i in range(1, n + 1)
           ]
           matrix = {"include": entries}
           max_parallel = n if parallel else 1
@@ -167,14 +302,167 @@ jobs:
               f.write(f"max_parallel={max_parallel}\n")
               f.write(f"provider={provider}\n")
               f.write(f"slug={slug}\n")
+              f.write(f"eval_categories={eval_categories_in}\n")
+              f.write(f"eval_tiers={eval_tiers}\n")
+              f.write(f"analysis_model={analysis_model}\n")
+
+          # Resolve categories against the catalog so the dispatch summary
+          # shows what will actually run after include/exclude filtering.
+          # Mirrors the logic in `evals.yml`'s prep job (kept in Python here
+          # since the rest of this step is already Python). Names that don't
+          # appear in the JSON are surfaced as warnings; pytest is the final
+          # arbiter when the markers and JSON drift.
+          categories_json = Path("libs/evals/deepagents_evals/categories.json")
+          catalog: list[str] = []
+          catalog_error = ""
+          try:
+              catalog = list(json.loads(categories_json.read_text())["categories"])
+          except FileNotFoundError:
+              catalog_error = f"catalog file missing: `{categories_json}`"
+          except (KeyError, json.JSONDecodeError) as exc:
+              catalog_error = f"catalog parse failed: {exc}"
+
+          def _split_csv(value: str) -> list[str]:
+              return [c.strip() for c in value.split(",") if c.strip()]
+
+          unknowns: list[str] = []
+          if eval_categories_in:
+              selected = _split_csv(eval_categories_in)
+              for cat in selected:
+                  if catalog and cat not in catalog:
+                      unknowns.append(cat)
+          else:
+              selected = list(catalog)
+
+          excluded = _split_csv(eval_categories_exclude)
+          for cat in excluded:
+              if catalog and cat not in catalog:
+                  unknowns.append(cat)
+
+          resolved = [c for c in selected if c not in excluded]
+
+          for cat in unknowns:
+              print(
+                  f"::warning::Eval category '{cat}' is not in {categories_json}; "
+                  "possible typo or missing catalog entry."
+              )
 
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
+              lines: list[str] = []
+              sha = os.environ.get("GITHUB_SHA", "")
+              server = os.environ.get("GITHUB_SERVER_URL", "")
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              ref_name = os.environ.get("GITHUB_REF_NAME", "")
+              ref = os.environ.get("GITHUB_REF", "")
+              if sha and server and repo:
+                  lines += [
+                      "### 🌳 Source tree",
+                      "",
+                      (
+                          f"Run fired from [`{sha[:7]}`]({server}/{repo}/tree/{sha}) on "
+                          f"[`{ref_name}`]({server}/{repo}/tree/{ref})."
+                      ),
+                      "",
+                  ]
+
+              lines += [
+                  "### 📊 Trial dispatch inputs",
+                  "",
+                  "| Input | Value |",
+                  "|---|---|",
+                  f"| `model` | `{model}` |",
+                  f"| `trials` | {n} |",
+                  f"| `parallelism` | {'parallel' if parallel else 'sequential'} (max-parallel={max_parallel}) |",
+              ]
+
+              override_val = os.environ.get("EVAL_CATEGORIES_OVERRIDE", "").strip()
+              dropdown_val = os.environ.get("EVAL_CATEGORIES", "").strip()
+              if override_val:
+                  lines.append(f"| `eval_categories_override` | `{override_val}` |")
+              elif dropdown_val:
+                  lines.append(f"| `eval_categories` | `{dropdown_val}` |")
+              else:
+                  lines.append("| `eval_categories` | (all) |")
+
+              if eval_categories_in:
+                  cats = _split_csv(eval_categories_in)
+                  if len(cats) > 1:
+                      bulleted = "<br>".join(f"• <code>{c}</code>" for c in cats)
+                      lines.append(f"| `eval_categories` (expanded) | {bulleted} |")
+
+              if excluded:
+                  comma_list = ", ".join(f"`{c}`" for c in excluded)
+                  lines.append(f"| `eval_categories_exclude` | {comma_list} |")
+              else:
+                  lines.append("| `eval_categories_exclude` | (none) |")
+
+              if catalog_error:
+                  lines.append(f"| **resolved categories** | _({catalog_error})_ |")
+                  print(f"::warning::Could not compute resolved eval categories: {catalog_error}")
+              else:
+                  if not resolved:
+                      row_value = "_(none — exclusion removed every selected category)_"
+                  else:
+                      row_value = ", ".join(f"`{c}`" for c in resolved)
+                  unknown_note = ""
+                  if unknowns:
+                      note = ", ".join(f"`{c}`" for c in unknowns)
+                      unknown_note = f"<br>⚠️ _Not in catalog: {note}_"
+                  lines.append(f"| **resolved categories** | {row_value}{unknown_note} |")
+
+              tiers_override_val = os.environ.get("EVAL_TIERS_OVERRIDE", "").strip()
+              tiers_dropdown_val = os.environ.get("EVAL_TIERS", "").strip()
+              if tiers_override_val:
+                  lines.append(f"| `eval_tiers_override` | `{tiers_override_val}` |")
+              elif tiers_dropdown_val:
+                  lines.append(f"| `eval_tiers` | `{tiers_dropdown_val}` |")
+              else:
+                  lines.append("| `eval_tiers` | (all) |")
+
+              if eval_tiers:
+                  tiers_list = _split_csv(eval_tiers)
+                  if len(tiers_list) > 1:
+                      bulleted = "<br>".join(f"• <code>{t}</code>" for t in tiers_list)
+                      lines.append(f"| `eval_tiers` (expanded) | {bulleted} |")
+
+              analyze_failures = (
+                  os.environ.get("ANALYZE_FAILURES", "").strip().lower() == "true"
+              )
+              if analyze_failures:
+                  lines.append(f"| `analyze_failures` | ✅ enabled (`{analysis_model}`) |")
+
+              if openrouter_provider:
+                  lines.append(f"| `openrouter_provider` | `{openrouter_provider}` |")
+                  badge = (
+                      "✅ soft (preferred + fallback)"
+                      if openrouter_allow_fallbacks
+                      else "🔒 strict (no fallback)"
+                  )
+                  lines.append(f"| `openrouter_allow_fallbacks` | {badge} |")
+              if openai_reasoning_effort:
+                  lines.append(f"| `openai_reasoning_effort` | `{openai_reasoning_effort}` |")
+              if repl:
+                  lines.append(f"| `repl` | `{repl}` |")
+
+              notes = os.environ.get("NOTES", "").strip()
+              if notes:
+                  # GitHub Step Summary renders as GFM; pipes break table cells and raw newlines end the row.
+                  escaped = (
+                      notes.replace("|", "\\|")
+                      .replace("\r\n", "<br>")
+                      .replace("\n", "<br>")
+                  )
+                  lines.append(f"| `notes` | {escaped} |")
+
+              lines += [
+                  "",
+                  "📚 [Eval Catalog](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/EVAL_CATALOG.md) | [Model Groups](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/MODEL_GROUPS.md)",
+                  "",
+              ]
+
               with open(summary, "a") as f:
-                  f.write("### Trial dispatch\n\n")
-                  f.write(f"- model: `{model}`\n")
-                  f.write(f"- trials: {n}\n")
-                  f.write(f"- parallelism: {'parallel' if parallel else 'sequential'} (max-parallel={max_parallel})\n")
+                  f.write("\n".join(lines) + "\n")
           PYEOF
 
   eval-trial:
@@ -189,9 +477,11 @@ jobs:
       model: ${{ inputs.model }}
       provider: ${{ needs.prep.outputs.provider }}
       artifact_key: ${{ matrix.artifact_key }}
-      eval_categories: ${{ inputs.eval_categories }}
-      eval_tiers: ${{ inputs.eval_tiers }}
-      analyze_failures: false
+      eval_categories: ${{ needs.prep.outputs.eval_categories }}
+      eval_categories_exclude: ${{ inputs.eval_categories_exclude }}
+      eval_tiers: ${{ needs.prep.outputs.eval_tiers }}
+      analyze_failures: ${{ inputs.analyze_failures }}
+      analysis_model: ${{ needs.prep.outputs.analysis_model }}
       openrouter_provider: ${{ inputs.openrouter_provider }}
       openrouter_allow_fallbacks: ${{ inputs.openrouter_allow_fallbacks }}
       openai_reasoning_effort: ${{ inputs.openai_reasoning_effort }}
@@ -224,6 +514,8 @@ jobs:
 
       - name: "📦 Install evals package"
         working-directory: libs/evals
+        # `UV_FROZEN=true` already enforces lockfile use; uv 0.11 rejects
+        # combining that environment variable with `--locked`.
         run: uv sync --group test
 
       - name: "📊 Aggregate trial reports"
@@ -244,6 +536,7 @@ jobs:
 
       - name: "📊 Post summary"
         if: always()
+        working-directory: libs/evals
         env:
           MODEL: ${{ inputs.model }}
           N: ${{ inputs.trials }}
@@ -251,7 +544,7 @@ jobs:
           REASONING: ${{ inputs.openai_reasoning_effort }}
           REPL: ${{ inputs.repl }}
         run: |
-          python3 << 'PYEOF'
+          uv run python << 'PYEOF'
           import json, os, sys
           from pathlib import Path
 

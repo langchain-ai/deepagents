@@ -13,6 +13,8 @@ from deepagents_cli.config import get_glyphs
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.app import App
 
 _PREVIEW_MAX_LENGTH = 40
@@ -41,6 +43,54 @@ def _shorten_preview(texts: list[str]) -> str:
     if len(dense_text) > _PREVIEW_MAX_LENGTH:
         return f"{dense_text[: _PREVIEW_MAX_LENGTH - 1]}{glyphs.ellipsis}"
     return dense_text
+
+
+def copy_text_to_clipboard(app: App, text: str) -> tuple[bool, str | None]:
+    """Copy text to the system clipboard.
+
+    Args:
+        app: The active Textual app, used for the app clipboard backend.
+        text: Text to copy.
+
+    Returns:
+        Tuple of `(success, error_message)`.
+
+            `success` is `True` when one backend completed without raising.
+            `error_message` is `None` on success and the last backend's error
+            string when every backend failed, suitable for surfacing to the
+            user so they can self-diagnose missing clipboard support.
+    """
+    # Backend order: pyperclip first (most reliable when installed), then
+    # Textual's app clipboard, then OSC 52 as a last resort for SSH/remote
+    # sessions where no local clipboard is reachable.
+    copy_methods: list[Callable[[str], object]] = [app.copy_to_clipboard]
+
+    try:
+        import pyperclip
+
+        copy_methods.insert(0, pyperclip.copy)
+    except ImportError:
+        pass
+
+    copy_methods.append(_copy_osc52)
+
+    last_error: str | None = None
+    for copy_fn in copy_methods:
+        try:
+            copy_fn(text)
+        except (OSError, RuntimeError, TypeError) as e:
+            last_error = str(e) or type(e).__name__
+            logger.debug(
+                "Clipboard copy method %s failed: %s",
+                getattr(copy_fn, "__name__", repr(copy_fn)),
+                e,
+                exc_info=True,
+            )
+            continue
+        else:
+            return True, None
+
+    return False, last_error
 
 
 def copy_selection_to_clipboard(app: App) -> None:
@@ -83,46 +133,23 @@ def copy_selection_to_clipboard(app: App) -> None:
 
     combined_text = "\n".join(selected_texts)
 
-    # Try multiple clipboard methods
-    # Prefer pyperclip/app clipboard first (works reliably on local machines)
-    # OSC 52 is last resort (for SSH/remote where native clipboard unavailable)
-    copy_methods = [app.copy_to_clipboard]
+    success, _ = copy_text_to_clipboard(app, combined_text)
+    if success:
+        # Use markup=False to prevent copied text from being parsed as Rich markup
+        app.notify(
+            f'"{_shorten_preview(selected_texts)}" copied',
+            severity="information",
+            timeout=2,
+            markup=False,
+        )
+        return
 
-    # Try pyperclip if available (preferred - uses pbcopy on macOS)
-    try:
-        import pyperclip
-
-        copy_methods.insert(0, pyperclip.copy)
-    except ImportError:
-        pass
-
-    # OSC 52 as fallback for remote/SSH sessions
-    copy_methods.append(_copy_osc52)
-
-    for copy_fn in copy_methods:
-        try:
-            copy_fn(combined_text)
-            # Use markup=False to prevent copied text from being parsed as Rich markup
-            app.notify(
-                f'"{_shorten_preview(selected_texts)}" copied',
-                severity="information",
-                timeout=2,
-                markup=False,
-            )
-        except (OSError, RuntimeError, TypeError) as e:
-            logger.debug(
-                "Clipboard copy method %s failed: %s",
-                getattr(copy_fn, "__name__", repr(copy_fn)),
-                e,
-                exc_info=True,
-            )
-            continue
-        else:
-            return
-
-    # If all methods fail, still notify but warn
+    # If all methods fail, still notify but warn. markup=False guards against
+    # this string ever growing dynamic content (e.g., the backend error reason)
+    # that could contain bracket characters.
     app.notify(
         "Failed to copy - no clipboard method available",
         severity="warning",
         timeout=3,
+        markup=False,
     )

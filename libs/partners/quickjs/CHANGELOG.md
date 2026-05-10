@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.0...langchain-quickjs==0.1.1) (2026-05-08)
+
+
+### Features
+
+* **quickjs:** propagate return types ([#3210](https://github.com/langchain-ai/deepagents/issues/3210)) ([e26bccb](https://github.com/langchain-ai/deepagents/commit/e26bccbe81b4e3ff2f0332f56f683106e0bafd88))
+
+
+### Reverted Changes
+
+* **quickjs:** release: 0.1.1 ([#3255](https://github.com/langchain-ai/deepagents/issues/3255)) ([8125f71](https://github.com/langchain-ai/deepagents/commit/8125f71a6ffd40b75a25c017e2b255eeb3be48a6))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.0.1...langchain-quickjs==0.1.0) (2026-05-05)
 
 This release introduces a new QuickJS runtime implementation backed by

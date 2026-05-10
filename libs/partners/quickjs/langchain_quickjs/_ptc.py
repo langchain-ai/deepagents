@@ -125,9 +125,9 @@ def _raise_on_invalid_ptc_tools(tools: Sequence[BaseTool]) -> None:
         raise ValueError(msg)
 
 
-def render_ptc_prompt(tools: Sequence[BaseTool]) -> str:
+def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> str:
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
     _raise_on_invalid_ptc_tools(tools)
-    return _prompt.render_ptc_prompt(tools)
+    return _prompt.render_ptc_prompt(tools, tool_name=tool_name)

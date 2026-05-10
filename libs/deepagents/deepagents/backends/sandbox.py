@@ -1,4 +1,7 @@
-"""Base sandbox implementation (`BaseSandbox`) implementing `SandboxBackendProtocol`.
+"""Base sandbox implementation.
+
+[`BaseSandbox`][deepagents.backends.sandbox.BaseSandbox] implements
+[`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
 File listing, grep, glob, and read use shell commands via `execute()`. Write
 delegates content transfer to `upload_files()`. Edit uses server-side `execute()`

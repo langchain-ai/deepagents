@@ -9,6 +9,7 @@ import os
 import shlex
 import signal
 import sys
+import threading
 import time
 import uuid
 import webbrowser
@@ -18,17 +19,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
 
+from textual import on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.theme import Theme
-from textual.widgets import Static
+from textual.widgets import Header, Static
 from textual.widgets._toast import (
     Toast as _Toast,  # noqa: PLC2701  # for Toast click routing
 )
@@ -56,6 +59,7 @@ from deepagents_cli._session_stats import (
 # after user interaction begins.
 from deepagents_cli._version import CHANGELOG_URL, DOCS_URL
 from deepagents_cli.config import is_ascii_mode
+from deepagents_cli.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_cli.notifications import (
     ActionId,
     MissingDepPayload,
@@ -88,21 +92,42 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
+# Serializes process-local read-modify-write operations for `config.toml`.
+# Without this, overlapping global-theme and per-terminal-theme saves can each
+# read the same pre-mutation state and then clobber the other's keys.
+_CONFIG_WRITE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _ConfigWriteResult:
+    """Result of a config write with TUI-facing failure context."""
+
+    ok: bool
+    """Whether the write completed successfully."""
+
+    message: str | None = None
+    """Optional user-facing detail for repairs or failures."""
+
+    severity: Literal["warning", "error"] = "warning"
+    """Toast severity to use when `message` is shown."""
+
+
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends import CompositeBackend
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import Click, MouseUp, Paste
+    from textual.events import MouseUp, Paste
     from textual.scrollbar import ScrollUp
     from textual.widget import Widget
     from textual.worker import Worker
 
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_cli.event_bus import EventSource, ExternalEvent
     from deepagents_cli.mcp_tools import MCPServerInfo
     from deepagents_cli.remote_client import RemoteAgent
     from deepagents_cli.server import ServerProcess
@@ -111,31 +136,7 @@ if TYPE_CHECKING:
     from deepagents_cli.widgets.approval import ApprovalMenu
     from deepagents_cli.widgets.ask_user import AskUserMenu
     from deepagents_cli.widgets.notification_center import NotificationSuppressRequested
-
-# iTerm2 Cursor Guide Workaround
-# ===============================
-# iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
-# Textual takes over the terminal in alternate screen mode. We disable it at
-# module load and restore on exit. Both atexit and exit() override are used
-# for defense-in-depth: atexit catches abnormal termination (SIGTERM, unhandled
-# exceptions), while exit() ensures restoration before Textual's cleanup.
-
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI)
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
-
-# iTerm2 cursor guide escape sequences (OSC 1337)
-# Format: OSC 1337 ; HighlightCursorLine=<yes|no> ST
-# Where OSC = ESC ] (0x1b 0x5d) and ST = ESC \ (0x1b 0x5c)
-_ITERM_CURSOR_GUIDE_OFF = "\x1b]1337;HighlightCursorLine=no\x1b\\"
-_ITERM_CURSOR_GUIDE_ON = "\x1b]1337;HighlightCursorLine=yes\x1b\\"
+    from deepagents_cli.widgets.update_progress import UpdateProgressScreen
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during onboarding model switch.
@@ -144,45 +145,163 @@ Server startup is normally seconds; this ceiling exists only so a stuck
 backend cannot trap the user inside a finished onboarding modal forever.
 """
 
+_UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
+"""How often long-running TUI sessions quietly re-check for CLI updates."""
 
-def _write_iterm_escape(sequence: str) -> None:
-    """Write an iTerm2 escape sequence to stderr.
 
-    Silently fails if the terminal is unavailable (redirected, closed, broken
-    pipe). This is a cosmetic feature, so failures should never crash the app.
+def _resolve_theme_name(value: object) -> str | None:
+    """Resolve a user-supplied theme name to a canonical registry key.
+
+    Accepts the registry key or the human-readable label, case-insensitive
+    on both, with surrounding whitespace stripped — config values
+    (especially `[ui.terminal_themes]`) and the `DEEPAGENTS_CLI_THEME`
+    env var are commonly hand-edited. Also applies the legacy
+    `textual-ansi` → `ansi-light` migration (pre-Textual 8.2.5).
+
+    Args:
+        value: Raw value read from TOML or an environment variable.
+
+    Returns:
+        The canonical registry key, or `None` if the value is not a string or
+            does not match any registered theme by key or label
+            (case-insensitive).
     """
-    if not _IS_ITERM:
-        return
+    if not isinstance(value, str):
+        return None
+    name = value.strip()
+    if name == "textual-ansi":
+        name = "ansi-light"
+    registry = theme.get_registry()
+    if name in registry:
+        return name
+    folded = name.casefold()
+    for registered, entry in registry.items():
+        if registered.casefold() == folded or entry.label.casefold() == folded:
+            return registered
+    return None
+
+
+def _as_toml_table(value: object) -> dict[str, object] | None:
+    """Return `value` as a TOML table when it has the expected runtime shape."""
+    if not isinstance(value, dict):
+        return None
+    # `tomllib` parses TOML tables as string-keyed dicts; `ty` cannot infer
+    # that from a runtime `dict` check. Keep the cast at this boundary so it
+    # does not become a general-purpose escape hatch.
+    from typing import cast
+
+    return cast("dict[str, object]", value)
+
+
+def _resolve_terminal_mapping(ui: Mapping[str, object]) -> str | None:
+    """Resolve `[ui.terminal_themes][TERM_PROGRAM]` to a registered theme.
+
+    Centralizes both the lookup and the misconfiguration warnings shared by
+    `_load_theme_preference` (startup) and `_load_terminal_default` (picker
+    badge). Misconfiguration is logged exactly once per call.
+
+    Args:
+        ui: The `[ui]` table parsed from `config.toml`.
+
+    Returns:
+        The canonical registry key, or `None` if `terminal_themes` is absent,
+            malformed, references an unknown theme, or `TERM_PROGRAM` is unset
+            despite a non-empty mapping.
+    """
+    terminal_themes = ui.get("terminal_themes")
+    if terminal_themes is None:
+        return None
+    terminal_themes_table = _as_toml_table(terminal_themes)
+    if terminal_themes_table is None:
+        logger.warning(
+            "[ui.terminal_themes] should be a table mapping TERM_PROGRAM "
+            "values to theme names; got %s",
+            type(terminal_themes).__name__,
+        )
+        return None
+    term_program = os.environ.get("TERM_PROGRAM", "").strip()
+    if not term_program:
+        if terminal_themes_table:
+            logger.warning(
+                "[ui.terminal_themes] is configured but TERM_PROGRAM is unset; "
+                "no per-terminal theme will be applied",
+            )
+        return None
+    mapped = terminal_themes_table.get(term_program)
+    resolved = _resolve_theme_name(mapped)
+    if resolved is not None:
+        return resolved
+    if isinstance(mapped, str):
+        logger.warning(
+            "Unknown theme '%s' mapped to TERM_PROGRAM='%s' "
+            "in [ui.terminal_themes]; ignoring",
+            mapped,
+            term_program,
+        )
+    elif mapped is not None:
+        logger.warning(
+            "Expected string theme name for TERM_PROGRAM='%s' in "
+            "[ui.terminal_themes], got %s; ignoring",
+            term_program,
+            type(mapped).__name__,
+        )
+    return None
+
+
+def _load_terminal_default() -> str | None:
+    """Return the saved default theme for the current `TERM_PROGRAM`.
+
+    Reads `[ui.terminal_themes][TERM_PROGRAM]` from `config.toml` and
+    resolves the value via `_resolve_theme_name`, so labels and case variants
+    are accepted. Used by `ThemeSelectorScreen` to badge the matching option
+    with `(default)`.
+
+    Returns:
+        The canonical registry key, or `None` if `TERM_PROGRAM` is unset, the
+            file is missing/unreadable, no mapping is set, or the mapped value
+            doesn't match a registered theme. Read errors and misconfigurations
+            are logged at WARNING.
+    """
+    if not os.environ.get("TERM_PROGRAM", "").strip():
+        return None
+
+    import tomllib
+
+    from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return None
     try:
-        import sys
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for terminal theme default: %s", exc)
+        return None
 
-        if sys.__stderr__ is not None:
-            sys.__stderr__.write(sequence)
-            sys.__stderr__.flush()
-    except OSError:
-        # Terminal may be unavailable (redirected, closed, broken pipe)
-        pass
-
-
-# Disable cursor guide at module load (before Textual takes over)
-_write_iterm_escape(_ITERM_CURSOR_GUIDE_OFF)
-
-if _IS_ITERM:
-    import atexit
-
-    def _restore_cursor_guide() -> None:
-        """Restore iTerm2 cursor guide on exit.
-
-        Registered with atexit to ensure the cursor guide is re-enabled
-        when the CLI exits, regardless of how the exit occurs.
-        """
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
-
-    atexit.register(_restore_cursor_guide)
+    ui = data.get("ui")
+    if not isinstance(ui, dict):
+        if ui is not None:
+            logger.warning(
+                "[ui] should be a table; got %s while loading terminal theme default",
+                type(ui).__name__,
+            )
+        return None
+    return _resolve_terminal_mapping(ui)
 
 
 def _load_theme_preference() -> str:
     """Load the forced or saved theme name, or return the default.
+
+    Resolution order:
+
+    1. `DEEPAGENTS_CLI_THEME` env var (explicit override). If it is set but
+        cannot be resolved, the default theme is used immediately.
+    2. `[ui.terminal_themes]` mapping keyed by `TERM_PROGRAM` — wins over the
+        saved preference so a user moving between terminals (e.g. dark iTerm,
+        light Apple Terminal) gets the right theme automatically.
+    3. `[ui].theme` in `~/.deepagents/config.toml` (saved preference, used
+        when no terminal mapping matches).
+    4. `theme.DEFAULT_THEME`.
 
     Returns:
         A Textual theme name (e.g., `'langchain'`, `'langchain-light'`).
@@ -191,16 +310,9 @@ def _load_theme_preference() -> str:
 
     env_name = os.environ.get(THEME)
     if env_name is not None:
-        name = env_name.strip()
-        registry = theme.get_registry()
-        if name in registry:
-            return name
-        for registered, entry in registry.items():
-            if (
-                registered.casefold() == name.casefold()
-                or entry.label.casefold() == name.casefold()
-            ):
-                return registered
+        resolved = _resolve_theme_name(env_name)
+        if resolved is not None:
+            return resolved
         logger.warning(
             "Unknown theme '%s' in %s; falling back to default",
             env_name,
@@ -210,30 +322,123 @@ def _load_theme_preference() -> str:
 
     import tomllib
 
+    from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return theme.DEFAULT_THEME
     try:
-        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
-
-        if not DEFAULT_CONFIG_PATH.exists():
-            return theme.DEFAULT_THEME
-
         with DEFAULT_CONFIG_PATH.open("rb") as f:
             data = tomllib.load(f)
     except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
         logger.warning("Could not read config for theme preference: %s", exc)
         return theme.DEFAULT_THEME
 
-    name = data.get("ui", {}).get("theme")
-    # Migrate legacy `textual-ansi` preference (pre-Textual 8.2.5) to `ansi-light`.
-    if name == "textual-ansi":
-        name = "ansi-light"
-    if isinstance(name, str) and name in theme.get_registry():
-        return name
-    if isinstance(name, str):
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading theme preference",
+            type(ui).__name__,
+        )
+        return theme.DEFAULT_THEME
+
+    resolved = _resolve_terminal_mapping(ui)
+    if resolved is not None:
+        return resolved
+
+    saved = ui.get("theme")
+    resolved = _resolve_theme_name(saved)
+    if resolved is not None:
+        return resolved
+    if isinstance(saved, str):
         logger.warning(
             "Unknown theme '%s' in config; falling back to default",
-            name,
+            saved,
         )
+
     return theme.DEFAULT_THEME
+
+
+def _replace_malformed_ui(
+    data: dict[str, object],
+) -> tuple[dict[str, object], str | None]:
+    """Return a writable `[ui]` table, replacing malformed values if needed."""
+    ui = data.get("ui")
+    table = _as_toml_table(ui)
+    if table is not None:
+        return table, None
+    replaced_malformed = ui is not None
+    if ui is not None:
+        logger.warning(
+            "Existing [ui] is not a table (got %r); replacing with a fresh table",
+            ui,
+        )
+    ui = {}
+    data["ui"] = ui
+    return ui, (
+        "Existing [ui] was not a table and was replaced while saving the theme "
+        "configuration."
+        if replaced_malformed
+        else None
+    )
+
+
+def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
+    """Persist theme preference and return TUI-facing status details.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    if name not in theme.get_registry():
+        logger.warning("Refusing to save unknown theme '%s'", name)
+        return _ConfigWriteResult(False, f"Unknown theme '{name}' was not saved.")
+
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["theme"] = name
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save theme preference")
+        return _ConfigWriteResult(
+            False,
+            f"Theme applied for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
 
 
 def save_theme_preference(name: str) -> bool:
@@ -245,44 +450,114 @@ def save_theme_preference(name: str) -> bool:
     Returns:
         `True` if the preference was saved, `False` if any error occurred.
     """
+    return _save_theme_preference_result(name).ok
+
+
+def _save_terminal_theme_mapping_result(
+    term_program: str, name: str
+) -> _ConfigWriteResult:
+    """Persist a terminal theme mapping and return TUI-facing status details.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
     if name not in theme.get_registry():
-        logger.warning("Refusing to save unknown theme '%s'", name)
-        return False
+        logger.warning("Refusing to map unknown theme '%s'", name)
+        return _ConfigWriteResult(False, f"Unknown theme '{name}' was not saved.")
+    term_program = term_program.strip()
+    if not term_program:
+        logger.warning("Refusing to save terminal mapping with empty TERM_PROGRAM")
+        return _ConfigWriteResult(
+            False,
+            "TERM_PROGRAM is unset; can't set a per-terminal default.",
+        )
 
     import contextlib
     import tempfile
+    import tomllib
 
     try:
-        import tomllib
-
         import tomli_w
 
         from deepagents_cli.model_config import DEFAULT_CONFIG_PATH
 
         DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if DEFAULT_CONFIG_PATH.exists():
-            with DEFAULT_CONFIG_PATH.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+        repair_messages: list[str] = []
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        if "ui" not in data:
-            data["ui"] = {}
-        data["ui"]["theme"] = name
+            ui, repair_message = _replace_malformed_ui(data)
+            if repair_message is not None:
+                repair_messages.append(repair_message)
+            terminal_themes = ui.get("terminal_themes")
+            terminal_themes_table = _as_toml_table(terminal_themes)
+            if terminal_themes_table is None:
+                if terminal_themes is not None:
+                    logger.warning(
+                        "Existing [ui.terminal_themes] is not a table (got %r); "
+                        "replacing with a fresh table",
+                        terminal_themes,
+                    )
+                    repair_messages.append(
+                        "Existing [ui.terminal_themes] was not a table and was "
+                        "replaced while saving this terminal default."
+                    )
+                terminal_themes_table = {}
+                ui["terminal_themes"] = terminal_themes_table
+            terminal_themes_table[term_program] = name
 
-        fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
-    except Exception:
-        logger.exception("Could not save theme preference")
-        return False
-    return True
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save terminal theme mapping")
+        return _ConfigWriteResult(
+            False,
+            f"Could not save terminal mapping ({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, " ".join(repair_messages) or None)
+
+
+def save_terminal_theme_mapping(term_program: str, name: str) -> bool:
+    """Persist a `[ui.terminal_themes][term_program] = name` entry.
+
+    The write is atomic (temp file + `Path.replace`) to avoid corrupting
+    `config.toml` on crash or SIGINT. Mirrors `save_theme_preference`.
+
+    Args:
+        term_program: Value of the `TERM_PROGRAM` environment variable to key
+            on. Whitespace is stripped; the trimmed value is matched verbatim
+            against `os.environ["TERM_PROGRAM"]` at lookup time.
+        name: Theme name to map. Validated as an exact registry-key match —
+            labels and case variants are rejected here because the picker
+            writes canonical keys.
+
+    Returns:
+        `True` if the mapping was saved, `False` if `name` isn't a registered
+            theme, `term_program` is empty after stripping, or any error
+            occurred.
+    """
+    return _save_terminal_theme_mapping_result(term_program, name).ok
 
 
 def _extract_model_params_flag(raw_arg: str) -> tuple[str, dict[str, Any] | None]:
@@ -393,7 +668,7 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
-InputMode = Literal["normal", "shell", "command"]
+InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
 """Seconds since the last keystroke after which the user is considered idle and
@@ -417,6 +692,19 @@ class QueuedMessage:
 
     mode: InputMode
     """The input mode that determines message routing."""
+
+
+class ExternalInput(Message):
+    """Textual message carrying an external prompt or command."""
+
+    def __init__(self, event: ExternalEvent) -> None:
+        """Create an external input message.
+
+        Args:
+            event: Transport-independent external event.
+        """
+        super().__init__()
+        self.event = event
 
 
 DeferredActionKind = Literal[
@@ -617,6 +905,23 @@ def _toast_identity(
     return getattr(notif, "identity", None)
 
 
+class _StaticHeader(Header):
+    """`Header` variant that doesn't toggle tall mode on click.
+
+    Textual's default `Header._on_click` toggles a `-tall` class to expand the
+    header from 1 to 3 lines. Subclassing alone isn't enough: Textual's message
+    dispatch walks the full MRO and invokes every matching handler, so the
+    parent's `_on_click` still fires unless we call `event.prevent_default()`,
+    which sets `_no_default_action` and breaks the MRO walk
+    (see `MessagePump._get_dispatch_methods`).
+    """
+
+    @on(Click)
+    def _suppress_header_click(self, event: Click) -> None:  # noqa: PLR6301
+        event.prevent_default()
+        event.stop()
+
+
 class DeepAgentsApp(App):
     """Main Textual application for deepagents-cli."""
 
@@ -729,6 +1034,8 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        title: str | None = None,
+        sub_title: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -779,9 +1086,25 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            title: Override the Textual `App.title` shown in the optional
+                header bar.
+
+                When `None`, the class-level `TITLE` is used.
+
+                Reassigning `app.title` at runtime updates the header live.
+            sub_title: Override the Textual `App.sub_title` shown in the
+                optional header bar.
+
+                When `None`, the parent default is used.
+
+                Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
+        if title is not None:
+            self.title = title
+        if sub_title is not None:
+            self.sub_title = sub_title
 
         self._register_custom_themes()
 
@@ -1127,6 +1450,16 @@ class DeepAgentsApp(App):
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
 
+        self._external_event_source: EventSource | None = None
+        """External event source created when its env var is enabled.
+
+        Cleared back to `None` if the listener fails to start so callers can
+        distinguish a configured-and-running listener from a no-op.
+        """
+
+        self._external_event_source_task: asyncio.Task[None] | None = None
+        """Lifecycle task for `_external_event_source`; cleared together."""
+
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
@@ -1158,6 +1491,9 @@ class DeepAgentsApp(App):
         A detected-but-throttled update (already notified within
         `CACHE_TTL`) leaves this clear so missing-dep toasts still fire.
         """
+
+        self._update_install_running = False
+        """True while a self-update command is running."""
 
         # Skills cache
         self._discovered_skills: list[ExtendedSkillMetadata] = []
@@ -1216,8 +1552,9 @@ class DeepAgentsApp(App):
 
         Most styling uses Textual's built-in variables (`$primary`,
         `$text-muted`, `$error-muted`, etc.).  This override injects the
-        app-specific variables (`$mode-bash`, `$mode-command`, `$skill`,
-        `$skill-hover`, `$tool`, `$tool-hover`) that have no Textual equivalent.
+        app-specific variables (`$mode-bash`, `$mode-command`,
+        `$mode-incognito`, `$skill`, `$skill-hover`, `$tool`, `$tool-hover`)
+        that have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.
@@ -1264,6 +1601,10 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
+        from deepagents_cli._env_vars import SHOW_HEADER, is_env_truthy
+
+        if is_env_truthy(SHOW_HEADER):
+            yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior
         with VerticalScroll(id="chat"):
@@ -1362,6 +1703,63 @@ class DeepAgentsApp(App):
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue()
         )
+        self._maybe_start_external_event_source()
+
+    def _maybe_start_external_event_source(self) -> None:
+        """Start the external event listener when explicitly enabled."""
+        from deepagents_cli._env_vars import (
+            EXTERNAL_EVENT_SOCKET,
+            EXTERNAL_EVENT_SOCKET_PATH,
+            is_env_truthy,
+        )
+
+        if not is_env_truthy(EXTERNAL_EVENT_SOCKET):
+            return
+
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        raw_path = os.environ.get(EXTERNAL_EVENT_SOCKET_PATH)
+        path = Path(raw_path).expanduser() if raw_path else None
+        source = UnixSocketEventSource(path)
+        self._external_event_source = source
+        self._external_event_source_task = asyncio.create_task(
+            self._run_external_event_source(source)
+        )
+
+    async def _run_external_event_source(self, source: EventSource) -> None:
+        """Drive `source` from start to shutdown, surfacing failures to the user.
+
+        Args:
+            source: External event source whose lifecycle this task owns.
+
+        Raises:
+            asyncio.CancelledError: Re-raised when the task is cancelled
+                during app shutdown so the cleanup path runs to completion.
+        """
+
+        async def sink(event: ExternalEvent) -> None:  # noqa: RUF029  # protocol requires async callable; post_message is sync
+            self.post_message(ExternalInput(event))
+
+        try:
+            await source.start(sink)
+            await source.serve_forever()
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.exception("External event source failed to start")
+            self._external_event_source = None
+            with suppress(Exception):
+                self.notify(
+                    f"External event listener failed: {exc}",
+                    severity="error",
+                    timeout=8,
+                    markup=False,
+                )
+        finally:
+            try:
+                await source.stop()
+            except Exception:
+                logger.exception("Error while stopping external event source")
 
     async def _refresh_git_branch(self) -> None:
         """Resolve the current git branch and update the status bar.
@@ -1485,7 +1883,7 @@ class DeepAgentsApp(App):
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
-        self._ui_adapter._on_tokens_hide = self._hide_tokens
+        self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
 
         # Fire-and-forget workers — none of these block the event loop.
@@ -1517,6 +1915,14 @@ class DeepAgentsApp(App):
                 self._check_for_updates,
                 exclusive=True,
                 group="startup-update-check",
+            )
+            self.set_interval(
+                _UPDATE_RECHECK_INTERVAL_SECONDS,
+                lambda: self.run_worker(
+                    self._check_for_updates(periodic=True),
+                    exclusive=True,
+                    group="periodic-update-check",
+                ),
             )
             self.run_worker(
                 self._show_whats_new,
@@ -2203,21 +2609,24 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
-    async def _check_for_updates(self) -> None:
+    async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
 
         Wraps `_check_for_updates_impl` so `_update_check_done.set()`
         always fires — lets `_check_optional_tools_background` unblock
         after the PyPI round-trip regardless of success, failure, or no-op.
+
+        Args:
+            periodic: Whether this is a quiet in-session recheck.
         """
         try:
-            await self._check_for_updates_impl()
+            await self._check_for_updates_impl(periodic=periodic)
         finally:
             # Always signal completion — the optional-tools worker
             # waits on this before deciding whether to post toasts.
             self._update_check_done.set()
 
-    async def _check_for_updates_impl(self) -> None:
+    async def _check_for_updates_impl(self, *, periodic: bool = False) -> None:
         """Check PyPI for a newer version and either auto-update or queue a modal.
 
         Phase 1 contacts PyPI and records the latest version on the app.
@@ -2235,7 +2644,9 @@ class DeepAgentsApp(App):
                 upgrade_command,
             )
 
-            available, latest = await asyncio.to_thread(is_update_available)
+            available, latest = await asyncio.to_thread(
+                is_update_available, bypass_cache=periodic
+            )
             if not available or latest is None:
                 return
 
@@ -2249,14 +2660,29 @@ class DeepAgentsApp(App):
             from deepagents_cli._version import __version__ as cli_version
 
             if is_auto_update_enabled():
-                from deepagents_cli.update_check import perform_upgrade
+                from deepagents_cli._env_vars import DEBUG_UPDATE
+                from deepagents_cli.update_check import (
+                    create_update_log_path,
+                    perform_upgrade,
+                )
 
+                if os.environ.get(DEBUG_UPDATE):
+                    self.notify(
+                        "Skipped update install (debug mode).",
+                        severity="information",
+                        timeout=4,
+                        markup=False,
+                    )
+                    return
+
+                log_path = create_update_log_path()
                 self.notify(
-                    f"Updating to v{latest}...",
+                    f"Updating to v{latest}... Logs: {log_path}",
                     severity="information",
                     timeout=5,
+                    markup=False,
                 )
-                success, output = await perform_upgrade()
+                success, output = await perform_upgrade(log_path=log_path)
                 if success:
                     self.notify(
                         f"Updated to v{latest}. Restart to use the new version.",
@@ -2271,7 +2697,9 @@ class DeepAgentsApp(App):
                     )
                     cmd = upgrade_command()
                     snippet = _truncate(output, limit=160) if output else ""
-                    message = f"Auto-update failed. Run manually: {cmd}"
+                    message = (
+                        f"Auto-update failed. Run manually: {cmd}\nLog: {log_path}"
+                    )
                     if snippet:
                         message = f"{message}\n{snippet}"
                     self.notify(
@@ -2282,7 +2710,8 @@ class DeepAgentsApp(App):
                     )
             else:
                 from deepagents_cli.update_check import (
-                    format_age_suffix,
+                    format_installed_age_suffix,
+                    format_release_age_parenthetical,
                     mark_update_notified,
                     should_notify_update,
                 )
@@ -2291,13 +2720,28 @@ class DeepAgentsApp(App):
                     return
 
                 cmd = upgrade_command()
-                age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+                release_age = await asyncio.to_thread(
+                    format_release_age_parenthetical, latest
+                )
+                installed_age = await asyncio.to_thread(
+                    format_installed_age_suffix, cli_version
+                )
                 notification = self._build_update_notification(
                     latest=latest,
                     cli_version=cli_version,
-                    age_suffix=age_suffix,
+                    release_age=release_age,
+                    installed_age=installed_age,
                     upgrade_cmd=cmd,
                 )
+                if periodic:
+                    self._notify_actionable(
+                        notification,
+                        severity="information",
+                        timeout=12,
+                        action_hint="Press ctrl+n to install.",
+                    )
+                    await asyncio.to_thread(mark_update_notified, latest)
+                    return
                 # Register without a toast: the dedicated modal is
                 # the update's UI, so a parallel toast would be
                 # redundant. Registration still makes the entry
@@ -2323,7 +2767,8 @@ class DeepAgentsApp(App):
         *,
         latest: str,
         cli_version: str,
-        age_suffix: str,
+        release_age: str,
+        installed_age: str,
         upgrade_cmd: str,
     ) -> PendingNotification:
         """Build the update-available registry entry.
@@ -2331,16 +2776,21 @@ class DeepAgentsApp(App):
         Args:
             latest: New version advertised by PyPI.
             cli_version: Currently installed version string.
-            age_suffix: Pre-formatted "(released N days ago)" fragment.
+            release_age: Pre-formatted " (released N days ago)" fragment.
+            installed_age: Pre-formatted " (N days old)" fragment.
             upgrade_cmd: Shell command to install the update.
 
         Returns:
             Registry entry ready to pass to `_notify_actionable`.
         """
-        body = f"v{latest} is available (current: v{cli_version}{age_suffix})."
+        body = (
+            f"v{latest} is available{release_age}.\n"
+            f"Currently installed: {cli_version}{installed_age}.\n"
+            "Your session will not be interrupted."
+        )
         return PendingNotification(
             key="update:available",
-            title=f"Update available: v{latest}",
+            title="Update available",
             body=body,
             actions=(
                 NotificationAction(ActionId.INSTALL, "Install now", primary=True),
@@ -2389,10 +2839,13 @@ class DeepAgentsApp(App):
         """Handle the `/update` slash command — check for and install updates."""
         await self._mount_message(UserMessage("/update"))
         try:
+            from deepagents_cli._env_vars import DEBUG_UPDATE
             from deepagents_cli._version import __version__ as cli_version
             from deepagents_cli.config import _is_editable_install
             from deepagents_cli.update_check import (
                 format_age_suffix,
+                format_installed_age_suffix,
+                format_release_age_parenthetical,
                 is_update_available,
                 perform_upgrade,
                 upgrade_command,
@@ -2429,13 +2882,24 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            age_suffix = await asyncio.to_thread(format_age_suffix, latest)
+            release_age = await asyncio.to_thread(
+                format_release_age_parenthetical, latest
+            )
+            installed_age = await asyncio.to_thread(
+                format_installed_age_suffix, cli_version
+            )
             await self._mount_message(
                 AppMessage(
-                    f"Update available: v{latest} "
-                    f"(current: v{cli_version}{age_suffix}). Upgrading..."
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Upgrading..."
                 )
             )
+            if os.environ.get(DEBUG_UPDATE):
+                await self._mount_message(
+                    AppMessage("Skipped update install (debug mode).")
+                )
+                return
             success, output = await perform_upgrade()
             if success:
                 self._update_available = (False, None)
@@ -2617,10 +3081,10 @@ class DeepAgentsApp(App):
             approximate=self._tokens_approximate,
         )
 
-    def _hide_tokens(self) -> None:
-        """Hide the token display during streaming."""
+    def _show_pending_tokens(self) -> None:
+        """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
-            self._status_bar.hide_tokens()
+            self._status_bar.show_pending_tokens()
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
@@ -3107,7 +3571,7 @@ class DeepAgentsApp(App):
         try:
             messages = self.query_one("#messages", Container)
             await self._mount_before_queued(messages, menu)
-            self.call_after_refresh(menu.scroll_visible)
+            self.call_after_refresh(lambda: self._scroll_ask_user_into_view(menu))
             self.call_after_refresh(menu.focus_active)
         except Exception as e:
             logger.exception(
@@ -3119,6 +3583,19 @@ class DeepAgentsApp(App):
                 result_future.set_exception(e)
 
         return result_future
+
+    def _scroll_ask_user_into_view(self, menu: AskUserMenu) -> None:
+        """Scroll mounted ask_user prompts into view.
+
+        Oversized prompts should start at the top of the viewport so the first
+        question and menu border are visible, instead of only exposing the
+        bottom edge of the widget.
+        """
+        chat = self.query_one("#chat", VerticalScroll)
+        if menu.outer_size.height > chat.size.height:
+            menu.scroll_visible(animate=False, top=True)
+            return
+        menu.scroll_visible()
 
     async def on_ask_user_menu_answered(
         self,
@@ -3153,15 +3630,82 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode == "shell":
-            await self._handle_shell_command(value.removeprefix("!"))
+        if mode == "shell_incognito":
+            await self._handle_shell_command(
+                self._strip_mode_value(value, "!!", "!", mode), incognito=True
+            )
+        elif mode == "shell":
+            await self._handle_shell_command(
+                self._strip_mode_value(value, "!", "!!", mode)
+            )
         elif mode == "command":
             await self._handle_command(value)
         elif mode == "normal":
             await self._handle_user_message(value)
         else:
-            logger.warning("Unrecognized input mode %r, treating as normal", mode)
-            await self._handle_user_message(value)
+            # Fail safe: never default to the agent dispatch path on an
+            # unrecognized mode, since that would silently leak `!!`/`!`
+            # prefixed text to the LLM if the mode literal is ever wrong.
+            logger.error(
+                "Unrecognized input mode %r; refusing to forward to agent", mode
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    f"Internal error: unknown input mode {mode!r}. "
+                    "Message was not sent."
+                )
+            )
+
+    @staticmethod
+    def _strip_mode_value(
+        value: str, prefix: str, conflicting_prefix: str, mode: InputMode
+    ) -> str:
+        """Strip `prefix` from `value`, logging if a wrong prefix was supplied.
+
+        Three submission paths feed `_process_message`: (1) typed input, where
+        the chat input has already stripped the prefix, so `value` does not
+        start with `prefix`; (2) re-submission via the queue, where the value
+        was re-prepended with `prefix`; and (3) external/programmatic callers,
+        which may send either form. `removeprefix` is a no-op for path (1) and
+        does the work for paths (2) and (3).
+
+        A leading `conflicting_prefix` (the sibling shell mode's trigger)
+        indicates state-machine drift between the declared `mode` and the
+        actual text — for example, mode `"shell_incognito"` paired with a
+        value starting with a single `!`. We log for diagnostics but still
+        strip `prefix` so the user is not surprised by a sudden refusal; the
+        sibling prefix becomes part of the command body and the shell will
+        report any resulting error locally.
+
+        Examples:
+            shell_incognito + `"!!ls"` -> `"ls"`     (queued submission)
+            shell_incognito + `"ls"`   -> `"ls"`     (typed submission, prefix
+                                                      already stripped)
+            shell_incognito + `"!ls"`  -> `"!ls"`    (drift; logs a warning,
+                                                      shell sees `!ls`)
+            shell + `"!ls"`            -> `"ls"`
+            shell + `"!!ls"`           -> `"!ls"`    (drift; logs a warning)
+
+        Args:
+            value: Submitted text expected to match `mode`.
+            prefix: Trigger prefix associated with `mode` (e.g. `"!!"` for
+                `shell_incognito`, `"!"` for `shell`).
+            conflicting_prefix: Sibling-mode prefix whose presence at the
+                start of `value` signals drift (e.g. pass `"!"` when
+                `prefix="!!"`).
+            mode: Input mode for diagnostic messages.
+
+        Returns:
+            `value` with a leading `prefix` removed if present, otherwise
+            `value` unchanged.
+        """
+        if value.startswith(conflicting_prefix) and not value.startswith(prefix):
+            logger.warning(
+                "Mode %r received value with conflicting prefix %r",
+                mode,
+                conflicting_prefix,
+            )
+        return value.removeprefix(prefix)
 
     def _has_initial_submission(self) -> bool:
         """Return whether startup should auto-submit a prompt or skill."""
@@ -3664,23 +4208,33 @@ class DeepAgentsApp(App):
             return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
-    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
-        """Handle submitted input from ChatInput widget."""
-        value = event.value
-        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+    async def _submit_input(
+        self,
+        value: str,
+        mode: InputMode,
+        *,
+        force_bypass: bool = False,
+    ) -> None:
+        """Submit input, fast-pathing always-immediate commands.
 
-        # Reset quit pending state on any input
-        self._quit_pending = False
+        For commands in `ALWAYS_IMMEDIATE` (or whenever `force_bypass` is set
+        by an external caller), the value is processed directly. Otherwise
+        the standard queue and per-tier bypass policy applies.
 
-        from deepagents_cli.hooks import dispatch_hook
-
-        await dispatch_hook("user.prompt", {})
-
-        # /quit and /q always execute immediately, even mid-thread-switch.
+        Args:
+            value: Raw text submitted by the user or external source.
+            mode: Input routing mode.
+            force_bypass: When `True`, skip queueing and process the value
+                immediately. External callers use this to mirror the
+                `ALWAYS_IMMEDIATE` fast path for commands they classify as
+                urgent.
+        """
         from deepagents_cli.command_registry import ALWAYS_IMMEDIATE
 
-        if mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE:
-            self.exit()
+        if force_bypass or (
+            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+        ):
+            await self._process_message(value, mode)
             return
 
         # Prevent message handling while a thread switch is in-flight.
@@ -3719,6 +4273,54 @@ class DeepAgentsApp(App):
             return
 
         await self._process_message(value, mode)
+
+    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        """Handle submitted input from ChatInput widget."""
+        value = event.value
+        mode: InputMode = event.mode  # type: ignore[assignment]  # Textual event mode is str at type level but InputMode at runtime
+
+        # Reset quit pending state on any input
+        self._quit_pending = False
+
+        from deepagents_cli.hooks import dispatch_hook
+
+        await dispatch_hook("user.prompt", {})
+
+        await self._submit_input(value, mode)
+
+    async def on_external_input(self, event: ExternalInput) -> None:
+        """Route external prompt and command events through the app queue.
+
+        Honors `event.bypass`: when an external caller supplies any tier
+        other than `QUEUED`, the event skips the queue regardless of normal
+        per-command policy. This is the documented escape hatch for
+        scripted callers that need to inject high-priority work.
+        """
+        from deepagents_cli.command_registry import BypassTier
+
+        external = event.event
+        if external.kind == "signal":
+            await self._handle_external_signal(external.payload)
+            return
+
+        mode: InputMode = "command" if external.kind == "command" else "normal"
+        force_bypass = external.bypass is not BypassTier.QUEUED
+        await self._submit_input(external.payload, mode, force_bypass=force_bypass)
+
+    async def _handle_external_signal(self, payload: str) -> None:
+        """Dispatch an external signal payload to the corresponding action.
+
+        The wire-protocol decoder rejects unknown signal names before they
+        reach this method, so the `else` branch only fires when callers
+        construct an `ExternalEvent` directly with an unvalidated payload.
+        """
+        signal_name = payload.strip().lower()
+        if signal_name == "interrupt":
+            self.action_interrupt()
+        elif signal_name == "force-clear":
+            await self._submit_input("/force-clear", "command", force_bypass=True)
+        else:
+            logger.warning("Ignoring unknown external signal %r", payload)
 
     def on_chat_input_mode_changed(self, event: ChatInput.ModeChanged) -> None:
         """Update status bar when input mode changes."""
@@ -3770,7 +4372,12 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _handle_shell_command(self, command: str) -> None:
+    async def _handle_shell_command(
+        self,
+        command: str,
+        *,
+        incognito: bool = False,
+    ) -> None:
         """Handle a shell command (! prefix).
 
         Thin dispatcher that mounts the user message and spawns a worker
@@ -3778,19 +4385,21 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
+            incognito: Whether the command/output should remain local-only.
         """
-        await self._mount_message(UserMessage(f"!{command}"))
+        if not incognito:
+            await self._mount_message(UserMessage(f"!{command}"))
         self._shell_running = True
 
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
         self._shell_worker = self.run_worker(
-            self._run_shell_task(command),
+            self._run_shell_task(command, incognito=incognito),
             exclusive=False,
         )
 
-    async def _run_shell_task(self, command: str) -> None:
+    async def _run_shell_task(self, command: str, *, incognito: bool = False) -> None:
         """Run a shell command in a background worker.
 
         This mirrors `_run_agent_task`: running in a worker keeps the event
@@ -3799,6 +4408,7 @@ class DeepAgentsApp(App):
 
         Args:
             command: The shell command to execute.
+            incognito: Whether the command/output should remain local-only.
 
         Raises:
             CancelledError: If the command is interrupted by the user.
@@ -3837,9 +4447,14 @@ class DeepAgentsApp(App):
                 output += f"\n[stderr]\n{stderr_text}"
 
             if output:
-                msg = AssistantMessage(f"```\n{output}\n```")
-                await self._mount_message(msg)
-                await msg.write_initial_content()
+                if incognito:
+                    await self._mount_message(
+                        AppMessage(f"```\n{output}\n```", markdown=True)
+                    )
+                else:
+                    msg = AssistantMessage(f"```\n{output}\n```")
+                    await self._mount_message(msg)
+                    await msg.write_initial_content()
             else:
                 await self._mount_message(AppMessage("Command completed (no output)"))
 
@@ -3854,6 +4469,20 @@ class DeepAgentsApp(App):
             logger.exception("Failed to execute shell command: %s", command)
             err_msg = f"Failed to run command: {e}"
             await self._mount_message(ErrorMessage(err_msg))
+        except Exception:
+            # Defense in depth: a crash between subprocess read and
+            # `_mount_message` could leave the user with no signal that the
+            # command ran at all (privacy-sensitive in the incognito path).
+            # Surface a local-only error and re-raise so the worker layer
+            # records the failure.
+            logger.exception(
+                "Shell task crashed (incognito=%s): %s", incognito, command
+            )
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage("Shell command crashed; see logs.")
+                )
+            raise
         finally:
             await self._cleanup_shell_task(refresh_git_branch=not refresh_started)
 
@@ -4094,7 +4723,8 @@ class DeepAgentsApp(App):
         elif cmd == "/help":
             await self._mount_message(UserMessage(command))
             help_body = (
-                "Commands: /quit, /agents, /auth, /clear, /offload, /editor, "
+                "Commands: /quit, /agents, /auth, /clear, /force-clear, "
+                "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
@@ -4107,7 +4737,9 @@ class DeepAgentsApp(App):
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
-                "  !command        Run shell commands directly\n\n"
+                "  !command        Run shell commands directly\n"
+                "  !!command       Run shell commands without adding "
+                "command/output to model context\n\n"
                 "Docs: "
             )
             help_text = Content.assemble(
@@ -4118,12 +4750,14 @@ class DeepAgentsApp(App):
 
         elif cmd in {"/changelog", "/docs", "/feedback"}:
             await self._open_url_command(command, cmd)
-        elif cmd == "/version":
+        elif cmd in {"/version", "/about"}:
             await self._mount_message(UserMessage(command))
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd == "/clear":
+        elif cmd in {"/clear", "/force-clear"}:
+            if cmd == "/force-clear":
+                self._force_interrupt_active_work()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
@@ -4143,6 +4777,49 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
+        elif cmd == "/copy":
+            await self._mount_message(UserMessage(command))
+            # Reverse-scan for the newest assistant message that has finished
+            # streaming and contains visible text. Track whether we passed over
+            # an in-flight stream so we can explain the skip rather than say
+            # "No message to copy yet." misleadingly.
+            content: str | None = None
+            streaming_pending = False
+            for message in reversed(self._message_store.get_all_messages()):
+                if message.type != MessageType.ASSISTANT:
+                    continue
+                if not message.content.strip():
+                    continue
+                if message.is_streaming:
+                    streaming_pending = True
+                    continue
+                content = message.content
+                break
+
+            if content is None:
+                empty_msg = (
+                    "Latest assistant message is still streaming;"
+                    " try again in a moment."
+                    if streaming_pending
+                    else "No message to copy yet."
+                )
+                await self._mount_message(AppMessage(empty_msg))
+                return
+
+            from deepagents_cli.clipboard import copy_text_to_clipboard
+
+            success, error = copy_text_to_clipboard(self, content)
+            if success:
+                await self._mount_message(
+                    AppMessage("Copied latest assistant message to clipboard.")
+                )
+            else:
+                fail_msg = (
+                    f"Failed to copy latest assistant message to clipboard: {error}"
+                    if error
+                    else "Failed to copy latest assistant message to clipboard."
+                )
+                await self._mount_message(AppMessage(fail_msg))
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -4226,7 +4903,7 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
-        elif cmd == "/auth":
+        elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
             await self._show_theme_selector()
@@ -5275,7 +5952,7 @@ class DeepAgentsApp(App):
         This method also stores the message data and handles pruning
         when the widget count exceeds the maximum.
 
-        If the ``#messages`` container is not present (e.g. the screen has
+        If the `#messages` container is not present (e.g. the screen has
         been torn down during an interruption), the call is silently skipped
         to avoid cascading `NoMatches` errors.
 
@@ -5428,6 +6105,42 @@ class DeepAgentsApp(App):
         else:
             self.notify("Queued message discarded (input not empty)", timeout=3)
 
+    def _cleanup_external_event_source_sync(self) -> None:
+        """Synchronously close the external event listener and unlink its socket.
+
+        Called from `exit()` because the event loop is about to be torn
+        down and the task's async `finally` would never complete. Close
+        the asyncio server (releases the file descriptor) and unlink the
+        socket path so we never leave stale entries on disk.
+        """
+        source = self._external_event_source
+        if source is None:
+            return
+        from deepagents_cli.event_bus import UnixSocketEventSource
+
+        if isinstance(source, UnixSocketEventSource):
+            server = source._server  # synchronous teardown peer
+            source._server = None
+            if server is not None:
+                with suppress(Exception):
+                    server.close()
+            with suppress(FileNotFoundError):
+                from deepagents_cli.event_bus import _unlink_existing_socket
+
+                try:
+                    _unlink_existing_socket(source.path)
+                except FileExistsError:
+                    logger.warning(
+                        "Leaving non-socket entry at %s during exit",
+                        source.path,
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "Failed to unlink event socket %s: %s",
+                        source.path,
+                        exc,
+                    )
+
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
         self._pending_messages.clear()
@@ -5435,6 +6148,32 @@ class DeepAgentsApp(App):
             w.remove()
         self._queued_widgets.clear()
         self._deferred_actions.clear()
+
+    def _force_interrupt_active_work(self) -> None:
+        """Cancel in-flight work before the standard `/clear` path runs.
+
+        Rejects pending approvals, cancels pending ask-user prompts, kills
+        the shell worker, kills the agent worker, and drops the queued
+        message backlog. UI clearing itself happens in the calling
+        `/clear` handler. Each widget interaction is best-effort: a torn-
+        down widget should not abort the interrupt sequence, but the
+        underlying error is logged so regressions are visible.
+        """
+        if self._pending_approval_widget:
+            try:
+                self._pending_approval_widget.action_select_reject()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to reject pending approval")
+        if self._pending_ask_user_widget:
+            try:
+                self._pending_ask_user_widget.action_cancel()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to cancel pending ask-user")
+        if self._shell_running and self._shell_worker:
+            self._shell_worker.cancel()
+        if self._agent_running and self._agent_worker:
+            self._agent_worker.cancel()
+        self._discard_queue()
 
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.
@@ -5648,11 +6387,7 @@ class DeepAgentsApp(App):
         return_code: int = 0,
         message: Any = None,  # noqa: ANN401  # Dynamic LangGraph message type
     ) -> None:
-        """Exit the app, restoring iTerm2 cursor guide if applicable.
-
-        Overrides parent to restore iTerm2's cursor guide before Textual's
-        cleanup. The atexit handler serves as a fallback for abnormal
-        termination.
+        """Exit the app after shutting down background resources.
 
         Args:
             result: Return value passed to the app runner.
@@ -5684,6 +6419,15 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        if self._external_event_source_task is not None:
+            self._external_event_source_task.cancel()
+        # Cancellation alone is not enough: the task's `finally` block runs
+        # asynchronously, and the event loop is about to be torn down by
+        # `super().exit()`. Synchronously close the server and unlink the
+        # socket file so we never leave a stale entry on disk.
+        if self._external_event_source is not None:
+            self._cleanup_external_event_source_sync()
+            self._external_event_source = None
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
@@ -5699,7 +6443,7 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
-        _write_iterm_escape(_ITERM_CURSOR_GUIDE_ON)
+        restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
     def action_toggle_auto_approve(self) -> None:
@@ -5760,20 +6504,39 @@ class DeepAgentsApp(App):
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
-        # Try skill messages first (most recent collapsible content)
-        with suppress(NoMatches):
-            skill_messages = list(self.query(SkillMessage))
-            for skill_msg in reversed(skill_messages):
-                if skill_msg._stripped_body.strip():
-                    skill_msg.toggle_body()
-                    return
-        # Fall back to tool messages with output
-        with suppress(NoMatches):
-            tool_messages = list(self.query(ToolCallMessage))
+        # Pending ask_user takes precedence so Ctrl+O toggles the question card.
+        if self._pending_ask_user_widget is not None:
+            try:
+                tool_messages = list(self.query(ToolCallMessage))
+            except NoMatches:
+                tool_messages = []
             for tool_msg in reversed(tool_messages):
-                if tool_msg.has_output:
-                    tool_msg.toggle_output()
+                if tool_msg.has_expandable_args:
+                    tool_msg.toggle_args()
                     return
+
+        # Try skill messages first (most recent collapsible content)
+        try:
+            skill_messages = list(self.query(SkillMessage))
+        except NoMatches:
+            skill_messages = []
+        for skill_msg in reversed(skill_messages):
+            if skill_msg._stripped_body.strip():
+                skill_msg.toggle_body()
+                return
+
+        # Fall back to tool messages with output or expandable args
+        try:
+            tool_messages = list(self.query(ToolCallMessage))
+        except NoMatches:
+            tool_messages = []
+        for tool_msg in reversed(tool_messages):
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
+                return
+            if tool_msg.has_expandable_args:
+                tool_msg.toggle_args()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -5877,20 +6640,32 @@ class DeepAgentsApp(App):
             event.stop()
 
     def on_app_focus(self) -> None:
-        """Restore chat input focus when the terminal regains OS focus.
+        """Restore chat input focus and resume cursor blink on terminal focus regain.
 
         When the user opens a link via `webbrowser.open`, OS focus shifts to
         the browser. On returning to the terminal, Textual fires `AppFocus`
         (requires a terminal that supports FocusIn events). Re-focusing the chat
         input here keeps it ready for typing.
         """
-        if not self._chat_input:
+        if self._chat_input is None:
             return
+        self._chat_input.set_cursor_blink(blink=True)
         if isinstance(self.screen, ModalScreen):
             return
         if self._pending_approval_widget or self._pending_ask_user_widget:
             return
         self._chat_input.focus_input()
+
+    def on_app_blur(self) -> None:
+        """Pause the chat input cursor blink when the terminal loses OS focus.
+
+        `TextArea` pauses its own blink when its `has_focus` flips, but
+        `AppBlur` does not change widget focus, so we toggle `cursor_blink`
+        manually.
+        """
+        if self._chat_input is None:
+            return
+        self._chat_input.set_cursor_blink(blink=False)
 
     def on_click(self, event: Click) -> None:
         """Handle clicks anywhere in the terminal.
@@ -6076,12 +6851,13 @@ class DeepAgentsApp(App):
 
                 async def _persist() -> None:
                     try:
-                        ok = await asyncio.to_thread(save_theme_preference, result)
-                        if not ok:
+                        status = await asyncio.to_thread(
+                            _save_theme_preference_result, result
+                        )
+                        if status.message is not None:
                             self.notify(
-                                "Theme applied for this session but could not"
-                                " be saved. Check logs for details.",
-                                severity="warning",
+                                status.message,
+                                severity=status.severity,
                                 timeout=6,
                                 markup=False,
                             )
@@ -6091,8 +6867,7 @@ class DeepAgentsApp(App):
                             exc_info=True,
                         )
                         self.notify(
-                            "Theme applied for this session but could not"
-                            " be saved. Check logs for details.",
+                            "Theme applied for this session but could not be saved.",
                             severity="warning",
                             timeout=6,
                             markup=False,
@@ -6106,7 +6881,10 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
-        screen = ThemeSelectorScreen(current_theme=self.theme)
+        screen = ThemeSelectorScreen(
+            current_theme=self.theme,
+            terminal_default=_load_terminal_default(),
+        )
         self.push_screen(screen, handle_result)
 
     async def _show_agent_selector(self) -> None:
@@ -6547,6 +7325,7 @@ class DeepAgentsApp(App):
         *,
         severity: Literal["information", "warning", "error"] = "information",
         timeout: float | None = None,
+        action_hint: str = "Press ctrl+n to review and take action.",
     ) -> None:
         """Register *notification* and post its actionable toast.
 
@@ -6558,10 +7337,11 @@ class DeepAgentsApp(App):
             severity: Toast severity banner color.
             timeout: Seconds the toast stays on screen (defaults to
                 `App.NOTIFICATION_TIMEOUT`).
+            action_hint: Final call-to-action line for the toast.
         """
         self._notice_registry.add(notification)
 
-        toast_body = f"{notification.body}\n\nctrl+n for options"
+        toast_body = f"{notification.body}\n\n{action_hint}"
         effective_timeout = (
             timeout if timeout is not None else self.NOTIFICATION_TIMEOUT
         )
@@ -6619,7 +7399,8 @@ class DeepAgentsApp(App):
         update_notification = self._build_update_notification(
             latest="9.9.9",
             cli_version="0.0.1",
-            age_suffix=", released 2 days ago",
+            release_age=" (released 2 days ago)",
+            installed_age="",
             upgrade_cmd="uv tool upgrade deepagents-cli",
         )
         self._notice_registry.add(update_notification)
@@ -6740,8 +7521,8 @@ class DeepAgentsApp(App):
             # the user how to reach it.
             self._update_modal_pending.clear()
             self.notify(
-                "Update available. Close the current dialog, "
-                "then press ctrl+n to review it.",
+                "Update available. Your session will not be interrupted. "
+                "Press ctrl+n to review it.",
                 severity="information",
                 timeout=8,
                 markup=False,
@@ -6933,53 +7714,176 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.update_check import (
             clear_update_notified,
+            create_update_log_path,
             mark_update_notified,
             perform_upgrade,
             upgrade_command,
         )
 
         if action_id == ActionId.INSTALL:
-            self.notify(
-                f"Updating to v{payload.latest}...",
-                severity="information",
-                timeout=5,
-                markup=False,
-            )
-            success, output = await perform_upgrade()
-            if success:
-                self._notice_registry.remove(entry.key)
+            from deepagents_cli._env_vars import DEBUG_UPDATE
+
+            if self._update_install_running:
                 self.notify(
-                    f"Updated to v{payload.latest}. Restart to use the new version.",
+                    "Update already running.",
                     severity="information",
-                    timeout=10,
+                    timeout=4,
                     markup=False,
                 )
                 return
-            logger.warning(
-                "Auto-upgrade failed for v%s. Output:\n%s", payload.latest, output
-            )
-            self._notice_registry.remove(entry.key)
+
+            from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
             cmd = upgrade_command()
-            snippet = _truncate(output, limit=160) if output else ""
-            message = f"Auto-update failed. Run manually: {cmd}"
-            if snippet:
-                message = f"{message}\n{snippet}"
-            self.notify(
-                message,
-                severity="warning",
-                timeout=15,
-                markup=False,
+            log_path = create_update_log_path()
+            screen = UpdateProgressScreen(
+                latest=payload.latest,
+                command=cmd,
+                log_path=log_path,
             )
+            progress_modal_visible = not isinstance(self.screen, ModalScreen)
+            if progress_modal_visible:
+                await self.push_screen(screen)
+            else:
+                self.notify(
+                    f"Updating to v{payload.latest}... Logs: {log_path}",
+                    severity="information",
+                    timeout=8,
+                    markup=False,
+                )
+            self._update_install_running = True
+            try:
+                if os.environ.get(DEBUG_UPDATE):
+                    await self._run_debug_update_install(
+                        entry=entry,
+                        payload=payload,
+                        screen=screen,
+                        log_path=log_path,
+                        show_toast=not progress_modal_visible,
+                    )
+                    return
+                success, output = await perform_upgrade(
+                    progress=screen.append_line,
+                    log_path=log_path,
+                )
+                if success:
+                    self._notice_registry.remove(entry.key)
+                    screen.mark_success()
+                    if not progress_modal_visible:
+                        self.notify(
+                            f"Updated to v{payload.latest}. "
+                            "Restart to use the new version.",
+                            severity="information",
+                            timeout=10,
+                            markup=False,
+                        )
+                    return
+                logger.warning(
+                    "Auto-upgrade failed for v%s. Output:\n%s",
+                    payload.latest,
+                    output,
+                )
+                self._notice_registry.remove(entry.key)
+                screen.mark_failure(cmd)
+                snippet = _truncate(output, limit=160) if output else ""
+                message = f"Auto-update failed. Run manually: {cmd}"
+                if snippet:
+                    message = f"{message}\n{snippet}"
+                self.notify(
+                    message,
+                    severity="warning",
+                    timeout=15,
+                    markup=False,
+                )
+            finally:
+                self._update_install_running = False
             return
         if action_id == ActionId.SKIP_VERSION:
             await asyncio.to_thread(mark_update_notified, payload.latest)
             self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Skipped v{payload.latest}.",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
             return
         if action_id == ActionId.SKIP_ONCE:
             await asyncio.to_thread(clear_update_notified)
             self._notice_registry.remove(entry.key)
+            self.notify(
+                "We'll remind you next launch.",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
             return
         self._log_unknown_action(entry, action_id)
+
+    async def _run_debug_update_install(
+        self,
+        *,
+        entry: PendingNotification,
+        payload: UpdateAvailablePayload,
+        screen: UpdateProgressScreen,
+        log_path: Path,
+        show_toast: bool,
+    ) -> None:
+        """Exercise the update progress UI without invoking a package manager.
+
+        Args:
+            entry: The update notification entry to clear when complete.
+            payload: Update payload with the mocked target version.
+            screen: Progress modal to update.
+            log_path: Debug log path to write mock output into.
+            show_toast: Whether to show a completion toast.
+        """
+        steps = (
+            ("Debug mode: no package manager command was started.", 0.3),
+            (f"Resolving deepagents-cli v{payload.latest}...", 0.8),
+            ("Looking up compatible build tags...", 0.2),
+            ("Downloading wheel metadata...", 0.5),
+            ("Downloading deepagents_cli-9.9.9-py3-none-any.whl...", 0.2),
+            ("Downloading dependency metadata...", 0.2),
+            ("Unpacking wheel...", 0.9),
+            ("Checking installed entry points...", 0.2),
+            ("Removing previous console script...", 0.2),
+            ("Installing files...", 0.7),
+            ("Writing dist-info metadata...", 0.2),
+            ("Rebuilding executable shims...", 0.2),
+            ("Validating import metadata...", 0.2),
+            ("Verifying console script...", 0.4),
+            ("Cleaning temporary build directory...", 0.2),
+            ("Recording update receipt...", 0.2),
+            ("Update complete.", 0.2),
+        )
+        wrote_log = False
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("w", encoding="utf-8") as log:
+                log.write("$ debug mock update\n")
+                for line, delay in steps:
+                    log.write(f"{line}\n")
+                    log.flush()
+                    screen.append_line(line)
+                    await asyncio.sleep(delay)
+            wrote_log = True
+        except OSError:
+            logger.debug("Could not write debug update log", exc_info=True)
+
+        if not wrote_log:
+            for line, delay in steps:
+                screen.append_line(line)
+                await asyncio.sleep(delay)
+        self._notice_registry.remove(entry.key)
+        screen.mark_success()
+        if show_toast:
+            self.notify(
+                "Mock update complete (debug mode).",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
 
     async def _show_mcp_viewer(self) -> None:
         """Show read-only MCP server/tool viewer as a modal screen."""
@@ -7534,6 +8438,8 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    title: str | None = None,
+    sub_title: str | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -7577,6 +8483,11 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        title: Override the Textual `App.title` shown in the optional header
+            bar (gated on `DEEPAGENTS_CLI_SHOW_HEADER`). When `None`, the
+            default `"Deep Agents"` is used.
+        sub_title: Override the Textual `App.sub_title` shown in the optional
+            header bar.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -7599,6 +8510,8 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        title=title,
+        sub_title=sub_title,
     )
     try:
         await app.run_async()

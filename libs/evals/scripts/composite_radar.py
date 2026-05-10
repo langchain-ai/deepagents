@@ -1,6 +1,6 @@
 r"""Generate a composite radar chart by overlaying multiple GitHub Actions eval runs.
 
-Each `📊 Evals - GHA` run uploads an `evals-summary` artifact whose payload is a
+Each `📊 Evals` run uploads an `evals-summary` artifact whose payload is a
 JSON array of model results. To compare results across separate dispatches
 (e.g. a bake-off where each model was run as its own workflow dispatch), this
 script downloads each run's `evals-summary`, flattens them into one array, and

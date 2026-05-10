@@ -22,6 +22,7 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import BaseTool, ToolRuntime
+from langchain_core._api import beta
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
@@ -89,6 +90,7 @@ def _resolve_thread_id(fallback: str) -> str:
     return fallback
 
 
+@beta()
 class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a persistent JS REPL to the agent.
 
@@ -421,7 +423,10 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
         # Same tradeoff the TS package accepts; see the module docstring.
         exposed_names = frozenset(t.name for t in exposed)
         if self._ptc_prompt_cache is None or self._ptc_prompt_cache[0] != exposed_names:
-            self._ptc_prompt_cache = (exposed_names, render_ptc_prompt(exposed))
+            self._ptc_prompt_cache = (
+                exposed_names,
+                render_ptc_prompt(exposed, tool_name=self._tool_name),
+            )
         return self._base_system_prompt + self._ptc_prompt_cache[1]
 
     def _extend(

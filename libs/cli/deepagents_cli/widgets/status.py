@@ -24,6 +24,13 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult, RenderResult
     from textual.geometry import Size
 
+PROVIDER_PREFIX_STRIPS: dict[str, tuple[str, ...]] = {
+    "fireworks": ("accounts/fireworks/models/",),
+}
+"""Some providers (e.g. Fireworks) require fully-qualified IDs like
+`accounts/fireworks/models/...` that crowd out the rest of the status bar;
+strip the registered prefixes before display."""
+
 
 class ModelLabel(Widget):
     """A label that displays a model name, right-aligned with smart truncation.
@@ -35,6 +42,21 @@ class ModelLabel(Widget):
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+
+    def _clean_model(self) -> str:
+        """Strip the provider's registered prefix so the status bar stays compact.
+
+        Returns:
+            Model name with the provider's registered prefix removed if present,
+                otherwise the original name.
+        """
+        name = self.model
+        if not name or not self.provider:
+            return name
+        for prefix in PROVIDER_PREFIX_STRIPS.get(self.provider, ()):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
@@ -48,7 +70,8 @@ class ModelLabel(Widget):
         """
         if not self.model:
             return 0
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         return len(full)
 
     def render(self) -> RenderResult:
@@ -60,13 +83,14 @@ class ModelLabel(Widget):
         width = self.content_size.width
         if not self.model or width <= 0:
             return ""
-        full = f"{self.provider}:{self.model}" if self.provider else self.model
+        model = self._clean_model()
+        full = f"{self.provider}:{model}" if self.provider else model
         if len(full) <= width:
             return Content(full)
-        if len(self.model) <= width:
-            return Content(self.model)
+        if len(model) <= width:
+            return Content(model)
         if width > 1:
-            return Content("\u2026" + self.model[-(width - 1) :])
+            return Content("\u2026" + model[-(width - 1) :])
         return Content("\u2026")
 
 
@@ -98,6 +122,12 @@ class StatusBar(Horizontal):
     StatusBar .status-mode.command {
         background: $mode-command;
         color: white;
+    }
+
+    StatusBar .status-mode.shell-incognito {
+        background: $mode-incognito;
+        color: $background;
+        text-style: bold;
     }
 
     StatusBar .status-auto-approve {
@@ -188,7 +218,7 @@ class StatusBar(Horizontal):
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
-            "manual | shift+tab to cycle",
+            "manual",
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
@@ -246,11 +276,14 @@ class StatusBar(Horizontal):
             indicator = self.query_one("#mode-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("normal", "shell", "command")
+        indicator.remove_class("normal", "shell", "command", "shell-incognito")
 
         if mode == "shell":
             indicator.update("SHELL")
             indicator.add_class("shell")
+        elif mode == "shell_incognito":
+            indicator.update("SHELL")
+            indicator.add_class("shell-incognito")
         elif mode == "command":
             indicator.update("CMD")
             indicator.add_class("command")
@@ -267,10 +300,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto | shift+tab to cycle")
+            indicator.update("auto")
             indicator.add_class("on")
         else:
-            indicator.update("manual | shift+tab to cycle")
+            indicator.update("manual")
             indicator.add_class("off")
 
     def watch_cwd(self, new_value: str) -> None:
@@ -382,9 +415,10 @@ class StatusBar(Horizontal):
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
 
-        Forces a display refresh even when the value is unchanged, because
-        `hide_tokens` clears the widget text without updating the reactive
-        attribute.
+        Forces a display refresh even when the value is unchanged. During
+        streaming, `show_pending_tokens` replaces the widget text without
+        changing the reactive token value, so a later update with the same
+        count still needs to re-render the exact count.
 
         Args:
             count: Current context token count.
@@ -399,10 +433,10 @@ class StatusBar(Horizontal):
             # self._approximate for the suffix.
             self.tokens = count
 
-    def hide_tokens(self) -> None:
-        """Hide the token display (e.g., during streaming)."""
+    def show_pending_tokens(self) -> None:
+        """Show an unknown token count placeholder during streaming."""
         try:
-            self.query_one("#tokens-display", Static).update("")
+            self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:
             return
 

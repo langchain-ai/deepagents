@@ -64,6 +64,15 @@ at launch so the update-available flow can be exercised without waiting for a
 real PyPI release. Any non-empty value enables the flag (including `"0"` or
 `"false"`)."""
 
+EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET"
+"""Enable the local Unix-socket external event listener.
+
+Parsed by `is_env_truthy`; off by default. Wire format and behavior are
+considered experimental until the listener is documented in the CLI README."""
+
+EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH"
+"""Override the default Unix-socket path for the external event listener."""
+
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
@@ -91,11 +100,23 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+OLLAMA_DISCOVERY = "DEEPAGENTS_CLI_OLLAMA_DISCOVERY"
+"""Toggle Ollama model and profile discovery probes.
+
+Defaults to enabled. Suppress the probe when the daemon is intentionally
+offline or the probe latency is undesirable. The probe is lazy and never
+runs on the startup hot path. When enabled, discovery may call `/api/tags`
+and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
+values."""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CLI_SHELL_ALLOW_LIST"
 """Comma-separated shell commands to allow (or 'recommended'/'all')."""
+
+SHOW_HEADER = "DEEPAGENTS_CLI_SHOW_HEADER"
+"""Show Textual's native header bar at the top of the TUI when enabled."""
 
 THEME = "DEEPAGENTS_CLI_THEME"
 """Force the CLI to launch with this theme name when set."""

@@ -126,6 +126,9 @@ def generate() -> str:
 
     lines: list[str] = [_HEADER]
 
+    lines.append("Categories (for `--eval-category` filtering):\n")
+    lines.append(f"```txt\n{','.join(categories)}\n```\n")
+
     total = sum(len(catalog.get(cat, [])) for cat in categories)
     lines.append(f"**{total} evals** across **{len(categories)} categories**\n")
 

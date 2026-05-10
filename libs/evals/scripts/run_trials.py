@@ -52,6 +52,9 @@ _COUNT_FIELDS = ("passed", "failed", "skipped", "total")
 _MIN_SAMPLES_FOR_STDEV = 2
 """`statistics.stdev` requires at least two samples; below that we report None."""
 
+_MODEL_ENV_VAR = "DEEPAGENTS_EVALS_MODEL"
+"""When set, used as the default value for `--model` if the flag is omitted."""
+
 
 def _warn(message: str) -> None:
     """Emit a warning to stderr, prefixed with `::warning::` under GitHub Actions.
@@ -159,7 +162,7 @@ def _collect_numeric_values(
         if type(raw) not in (int, float):
             location = f"{nested_under}.{key}" if nested_under else key
             _warn(
-                f"trial {idx}: non-numeric value for {location!r}: {raw!r} "
+                f"trial {idx + 1}: non-numeric value for {location!r}: {raw!r} "
                 f"(type {type(raw).__name__}); excluded from stats"
             )
             continue
@@ -230,7 +233,7 @@ def aggregate_trials(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "category_scores": category_stats,
         "trials": [
             {
-                "trial_index": idx,
+                "trial_index": idx + 1,
                 "created_at": r.get("created_at"),
                 "passed": r.get("passed"),
                 "failed": r.get("failed"),
@@ -314,7 +317,7 @@ def _run_trial(
     """Execute a single trial.
 
     Args:
-        trial_index: Zero-based index of this trial in the sweep.
+        trial_index: One-based index of this trial in the sweep.
         n_trials: Total number of trials being run; only used for logging.
         args: Parsed CLI arguments (forwarded to `_build_pytest_args`).
         out_dir: Directory the trial's report file is written under.
@@ -332,7 +335,7 @@ def _run_trial(
     env["DEEPAGENTS_TRIAL_TOTAL"] = str(n_trials)
 
     print(
-        f"\n=== trial {trial_index + 1}/{n_trials} === model={args.model} report={report_path}",
+        f"\n=== trial {trial_index}/{n_trials} === model={args.model} report={report_path}",
         flush=True,
     )
     print(f"$ {' '.join(cmd)}", flush=True)
@@ -467,7 +470,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         required=False,
-        help="Model identifier, e.g. openai:gpt-5.5 (passed through to pytest). Required unless --aggregate-only is set.",
+        default=os.environ.get(_MODEL_ENV_VAR),
+        help=(
+            "Model identifier, e.g. openai:gpt-5.5 (passed through to pytest). "
+            f"Required unless --aggregate-only is set. Defaults to ${_MODEL_ENV_VAR} when set."
+        ),
     )
     parser.add_argument(
         "--trials",
@@ -521,6 +528,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"Where per-trial reports and the summary are written (default: {_DEFAULT_OUT_DIR}).",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help=(
+            "Emit the aggregated summary as compact JSON on stdout (in addition "
+            "to writing trials_summary.json). Useful for downstream agents."
+        ),
+    )
+    parser.add_argument(
         "pytest_extra",
         nargs=argparse.REMAINDER,
         help="Extra args to forward to pytest (use `--` to separate).",
@@ -529,7 +545,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     if args.aggregate_only is None:
         if not args.model:
-            parser.error("--model is required (unless --aggregate-only is set)")
+            parser.error(
+                f"--model is required (unless --aggregate-only is set). "
+                f"Set ${_MODEL_ENV_VAR} or pass --model. "
+                f"Run `deepagents-evals list models` for known specs."
+            )
         if args.trials is None:
             parser.error("--trials is required (unless --aggregate-only is set)")
         if not 1 <= args.trials <= _MAX_TRIALS:
@@ -573,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         report_paths = []
         for i in range(args.trials):
             outcome = _run_trial(
-                trial_index=i,
+                trial_index=i + 1,
                 n_trials=args.trials,
                 args=args,
                 out_dir=out_dir,
@@ -603,8 +623,15 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = args.summary_out or (out_dir / "trials_summary.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    _print_summary(summary)
-    print(f"\nwrote {summary_path}")
+    if args.json:
+        # Compact single-line JSON keeps stdout machine-parseable; the human
+        # summary still goes to the on-disk `trials_summary.json` and to
+        # stderr below for terminal users.
+        print(json.dumps(summary, sort_keys=True))
+        print(f"wrote {summary_path}", file=sys.stderr)
+    else:
+        _print_summary(summary)
+        print(f"\nwrote {summary_path}")
     return 0
 
 

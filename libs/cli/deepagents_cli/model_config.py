@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypedDict, cast
 from urllib.parse import urlparse
 
 import tomli_w
@@ -493,10 +493,9 @@ OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 OLLAMA_DISCOVERY_TIMEOUT_SECONDS = 1.0
 """Socket timeout for the `/api/tags` discovery probe.
 
-Kept short so a dead daemon does not stall switcher loading. The probe runs
-inside `asyncio.to_thread` from `ModelSelectorScreen.on_mount`, so the timeout
-caps the worst-case wait observable in the UI.
-"""
+Kept short so a dead daemon does not stall switcher loading. Discovery runs
+off the UI loop in a worker thread, so this caps the worst-case wait visible
+to the user."""
 
 
 # Module-level caches — cleared by `clear_caches()`.
@@ -505,6 +504,7 @@ _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
+_ollama_installed_models_cache: dict[str, list[str]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
 
@@ -519,6 +519,7 @@ def clear_caches() -> None:
     _builtin_providers_cache = None
     _default_config_cache = None
     _provider_profiles_cache.clear()
+    _ollama_installed_models_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
@@ -784,9 +785,10 @@ def get_available_models() -> dict[str, list[str]]:
 
     # `langchain-ollama` ships no profile data, so the steps above leave the
     # switcher empty unless the user hand-curates `models = […]`. Probe the
-    # daemon for the list of pulled models and merge it in. The result is
-    # cached alongside the rest of `available` and only refreshed on
-    # `clear_caches()` (e.g. via the `/reload` slash command).
+    # daemon for installed models and merge them in, preserving explicit
+    # config order (config wins) with discoveries appended. Cached alongside
+    # the rest of `available`; refresh by calling `clear_caches()` (e.g. via
+    # the `/reload` slash command).
     if (
         _ollama_discovery_enabled()
         and "ollama" in registry_providers
@@ -794,15 +796,17 @@ def get_available_models() -> dict[str, list[str]]:
         and importlib.util.find_spec("langchain_ollama") is not None
     ):
         endpoint = _get_provider_endpoint("ollama", config)
-        discovered = _fetch_ollama_installed_models(endpoint)
+        discovered = _get_ollama_installed_models(endpoint)
         if discovered:
-            existing_models = list(available.get("ollama", []))
-            existing_set = set(existing_models)
-            for name in discovered:
-                if name not in existing_set:
-                    existing_models.append(name)
-                    existing_set.add(name)
-            available["ollama"] = existing_models
+            available["ollama"] = list(
+                dict.fromkeys([*available.get("ollama", []), *discovered])
+            )
+        else:
+            logger.debug(
+                "Ollama discovery returned no models for %s; "
+                "daemon may be down or have no pulls",
+                endpoint or OLLAMA_DEFAULT_BASE_URL,
+            )
 
     _available_models_cache = available
     return available
@@ -961,6 +965,42 @@ def get_model_profiles(
                 )
                 result[spec] = _build_entry({}, overrides, cli_override)
 
+    # `langchain-ollama` does not ship static profile data. When discovery is
+    # enabled, ask the daemon for model metadata so the selector can show
+    # context length and capabilities for locally pulled models.
+    if (
+        _ollama_discovery_enabled()
+        and "ollama" in registry_providers
+        and config.is_provider_enabled("ollama")
+        and importlib.util.find_spec("langchain_ollama") is not None
+    ):
+        endpoint = _get_provider_endpoint("ollama", config)
+        discovered_model_names = _get_ollama_installed_models(endpoint)
+        configured_model_names = [
+            spec.removeprefix("ollama:")
+            for spec in result
+            if spec.startswith("ollama:")
+        ]
+        model_names = list(
+            dict.fromkeys([*configured_model_names, *discovered_model_names])
+        )
+        if model_names:
+            discovered_profiles = _fetch_ollama_installed_model_profiles(
+                endpoint,
+                model_names,
+            )
+            for model_name in model_names:
+                profile = discovered_profiles.get(model_name, {})
+                spec = f"ollama:{model_name}"
+                existing = result.get(spec)
+                base = dict(existing["profile"]) if existing is not None else {}
+                base.update(profile)
+                overrides = config.get_profile_overrides(
+                    "ollama", model_name=model_name
+                )
+                result[spec] = _build_entry(base, overrides, cli_override)
+                seen_specs.add(spec)
+
     frozen = MappingProxyType(result)
     if cli_override is None:
         _profiles_cache = frozen
@@ -1012,21 +1052,51 @@ def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
 
 
 _OLLAMA_DISCOVERY_FALSY: frozenset[str] = frozenset({"0", "false", "no", "off"})
+_OLLAMA_DISCOVERY_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 
 def _ollama_discovery_enabled() -> bool:
     """Return whether `/api/tags` discovery may run for the Ollama provider.
 
-    Defaults to enabled. Users who never start the Ollama daemon (or who do
-    not want the CLI probing it) can opt out by exporting
-    `DEEPAGENTS_CLI_OLLAMA_DISCOVERY` to a falsy value (`0`, `false`, `no`,
-    `off`). The env var is also resolved through the standard
-    `DEEPAGENTS_CLI_*` prefix override mechanism.
+    Defaults to enabled. Opt out via `_env_vars.OLLAMA_DISCOVERY` set to a
+    falsy value (`0`, `false`, `no`, `off`); truthy values (`1`, `true`,
+    `yes`, `on`) explicitly enable. Unrecognized values warn and fall through
+    to the default because the user clearly tried to configure something.
     """
     raw = resolve_env_var(_env_vars.OLLAMA_DISCOVERY)
     if raw is None:
         return True
-    return raw.strip().lower() not in _OLLAMA_DISCOVERY_FALSY
+    normalized = raw.strip().lower()
+    if normalized in _OLLAMA_DISCOVERY_FALSY:
+        return False
+    if normalized in _OLLAMA_DISCOVERY_TRUTHY:
+        return True
+    logger.warning(
+        "Unrecognized value for %s: %r; expected one of %s. Defaulting to enabled.",
+        _env_vars.OLLAMA_DISCOVERY,
+        raw,
+        sorted(_OLLAMA_DISCOVERY_FALSY | _OLLAMA_DISCOVERY_TRUTHY),
+    )
+    return True
+
+
+def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
+    """Return cached Ollama model names for `endpoint`.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`.
+
+    Returns:
+        Sorted list of model names reported by `/api/tags`.
+    """
+    key = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    cached = _ollama_installed_models_cache.get(key)
+    if cached is not None:
+        return list(cached)
+    models = _fetch_ollama_installed_models(endpoint)
+    _ollama_installed_models_cache[key] = models
+    return list(models)
 
 
 def _fetch_ollama_installed_models(
@@ -1060,45 +1130,216 @@ def _fetch_ollama_installed_models(
 
     base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
     if not base.startswith(("http://", "https://")):
-        logger.debug("Skipping Ollama discovery: unsupported scheme in %r", base)
+        logger.warning(
+            "Skipping Ollama discovery: %r has no http:// or https:// scheme. "
+            "Set base_url or OLLAMA_HOST to e.g. http://localhost:11434.",
+            base,
+        )
         return []
     url = f"{base}/api/tags"
 
-    headers: dict[str, str] = {"Accept": "application/json"}
-    optional_env = OPTIONAL_AUTH_ENV.get("ollama")
-    if optional_env:
-        api_key = resolve_env_var(optional_env)
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-
+    headers = _ollama_discovery_headers(content_type=False)
     request = Request(url, headers=headers)  # noqa: S310  # scheme guarded above
     # Catch-all is intentional: discovery is best-effort and must never break
-    # the model selector. Includes URL/transport errors plus environment-level
-    # blockers like `pytest-socket`'s `SocketBlockedError` (which inherits from
-    # `Exception`, not `OSError`) so unit tests run with `--disable-socket`
-    # don't have to special-case Ollama.
+    # the model selector. The narrow tuple is fully subsumed by `Exception`
+    # below; we keep it only to log expected transport failures at debug while
+    # surfacing unexpected ones at warning so a real bug doesn't disappear.
+    # Notably catches `pytest-socket`'s `SocketBlockedError`, which inherits
+    # from `Exception` (not `OSError`) and would otherwise propagate during
+    # unit tests run with `--disable-socket`. `KeyboardInterrupt` and
+    # `SystemExit` derive from `BaseException` and bypass both branches.
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310  # scheme guarded above
             payload = json.loads(response.read().decode("utf-8"))
     except (URLError, TimeoutError, OSError, ValueError) as exc:
         logger.debug("Ollama model discovery failed for %s: %s", url, exc)
         return []
     except Exception as exc:  # noqa: BLE001  # see comment above
-        logger.debug("Ollama model discovery failed for %s: %s", url, exc)
+        logger.warning(
+            "Ollama model discovery raised unexpected %s for %s: %s",
+            type(exc).__name__,
+            url,
+            exc,
+        )
         return []
 
-    raw_models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        logger.debug(
+            "Ollama discovery: %s returned unexpected payload shape (%s); "
+            "endpoint may not be an Ollama daemon",
+            url,
+            type(payload).__name__,
+        )
         return []
 
     names: list[str] = []
-    for entry in raw_models:
+    for entry in payload["models"]:
         if isinstance(entry, dict):
             name = entry.get("name")
             if isinstance(name, str) and name:
                 names.append(name)
     names.sort()
     return names
+
+
+def _ollama_discovery_headers(*, content_type: bool) -> dict[str, str]:
+    """Build headers for Ollama discovery requests.
+
+    Args:
+        content_type: Whether to include a JSON `Content-Type` header.
+
+    Returns:
+        HTTP headers including optional bearer auth when configured.
+    """
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    optional_env = OPTIONAL_AUTH_ENV.get("ollama")
+    if optional_env:
+        api_key = resolve_env_var(optional_env)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    """Return `value` as a positive integer, or `None` when unavailable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, float) and value > 0 and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _profile_from_ollama_show_payload(payload: object) -> dict[str, Any]:
+    """Extract LangChain-style profile fields from an Ollama `/api/show` payload.
+
+    Args:
+        payload: Decoded JSON response from `POST /api/show`.
+
+    Returns:
+        Profile fields understood by the model selector, such as
+        `max_input_tokens` and `tool_calling`.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    payload_dict = cast("dict[str, object]", payload)
+
+    profile: dict[str, Any] = {}
+    model_info = payload_dict.get("model_info")
+    if isinstance(model_info, dict):
+        context_lengths = [
+            length
+            for key, value in model_info.items()
+            if isinstance(key, str)
+            and (key == "context_length" or key.endswith(".context_length"))
+            and (length := _coerce_positive_int(value)) is not None
+        ]
+        if context_lengths:
+            profile["max_input_tokens"] = max(context_lengths)
+
+    capabilities = payload_dict.get("capabilities")
+    if isinstance(capabilities, list):
+        capability_names = {item for item in capabilities if isinstance(item, str)}
+        if "completion" in capability_names:
+            profile["text_inputs"] = True
+            profile["text_outputs"] = True
+        if "tools" in capability_names:
+            profile["tool_calling"] = True
+        if "thinking" in capability_names:
+            profile["reasoning_output"] = True
+
+    if not profile and ("model_info" in payload_dict or "capabilities" in payload_dict):
+        logger.debug(
+            "Ollama profile discovery returned a payload with no recognized "
+            "profile fields; top-level keys: %s",
+            sorted(str(key) for key in payload_dict),
+        )
+
+    return profile
+
+
+def _fetch_ollama_installed_model_profiles(
+    endpoint: str | None,
+    model_names: list[str],
+    *,
+    timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS,
+) -> dict[str, dict[str, Any]]:
+    """Discover profile metadata for installed Ollama models.
+
+    Issues `POST {endpoint}/api/show` for each model. The probe is best-effort:
+    failures for one model are logged and do not stop profile discovery for the
+    remaining models.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+        model_names: Model names to inspect.
+        timeout: Socket timeout in seconds.
+
+    Returns:
+        Mapping of model name to extracted profile fields.
+    """
+    import json
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        logger.warning(
+            "Skipping Ollama profile discovery: %r has no http:// or https:// scheme. "
+            "Set base_url or OLLAMA_HOST to e.g. http://localhost:11434.",
+            base,
+        )
+        return {}
+
+    url = f"{base}/api/show"
+    profiles: dict[str, dict[str, Any]] = {}
+    headers = _ollama_discovery_headers(content_type=True)
+
+    for model_name in model_names:
+        body = json.dumps({"model": model_name}).encode("utf-8")
+        request = Request(  # noqa: S310  # scheme guarded above
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310  # scheme guarded above
+                payload = json.loads(response.read().decode("utf-8"))
+        except (URLError, TimeoutError, OSError, ValueError) as exc:
+            logger.debug(
+                "Ollama profile discovery failed for %s via %s: %s",
+                model_name,
+                url,
+                exc,
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001  # see _fetch_ollama_installed_models
+            logger.warning(
+                "Ollama profile discovery raised unexpected %s for %s via %s: %s",
+                type(exc).__name__,
+                model_name,
+                url,
+                exc,
+            )
+            continue
+
+        profile = _profile_from_ollama_show_payload(payload)
+        if profile:
+            profiles[model_name] = profile
+
+    return profiles
 
 
 def _has_stored_credential(provider: str) -> bool:

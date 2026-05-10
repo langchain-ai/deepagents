@@ -103,10 +103,10 @@ NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 OLLAMA_DISCOVERY = "DEEPAGENTS_CLI_OLLAMA_DISCOVERY"
 """Toggle the Ollama `/api/tags` model-discovery probe.
 
-Defaults to enabled. Set to a falsy value (`0`, `false`, `no`, `off`) to
-suppress the probe — useful when the daemon is intentionally offline or
-when the probe latency is undesirable. The probe runs lazily inside the
-model selector and never on the startup hot path."""
+Defaults to enabled. Suppress the probe when the daemon is intentionally
+offline or the probe latency is undesirable. The probe is lazy and never
+runs on the startup hot path. See `_ollama_discovery_enabled` for accepted
+truthy/falsy values."""
 
 SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""

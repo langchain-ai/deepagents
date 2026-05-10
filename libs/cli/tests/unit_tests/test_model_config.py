@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -1481,6 +1481,167 @@ enabled = false
         fetch.assert_not_called()
         assert "ollama" not in models
 
+    def test_discovery_warns_on_unknown_env_value(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unrecognized env values warn and keep discovery enabled."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", "maybe")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config._ollama_discovery_enabled() is True
+
+        assert "Unrecognized value for DEEPAGENTS_CLI_OLLAMA_DISCOVERY" in caplog.text
+
+    def test_installed_model_discovery_cached_across_profile_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Available-model and profile loading share one `/api/tags` probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ) as fetch,
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={},
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            get_available_models()
+            get_model_profiles()
+
+        fetch.assert_called_once_with(None)
+
+    def test_model_profiles_include_discovered_context_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovered Ollama metadata populates model profile entries."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={
+                    "qwen3:4b": {
+                        "max_input_tokens": 262144,
+                        "text_inputs": True,
+                        "text_outputs": True,
+                        "tool_calling": True,
+                        "reasoning_output": True,
+                    },
+                },
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["ollama:qwen3:4b"]
+        assert entry["profile"]["max_input_tokens"] == 262144
+        assert entry["profile"]["tool_calling"] is True
+        assert entry["profile"]["reasoning_output"] is True
+        assert entry["overridden_keys"] == frozenset()
+
+    def test_model_profiles_apply_config_overrides_to_discovered_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config profile values still override Ollama-discovered metadata."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama.profile."qwen3:4b"]
+max_input_tokens = 4096
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={"qwen3:4b": {"max_input_tokens": 262144}},
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["ollama:qwen3:4b"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_model_profiles_fetch_configured_models_when_tags_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured Ollama models are inspected even when `/api/tags` is empty."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["qwen3:4b"]
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={"qwen3:4b": {"max_input_tokens": 262144}},
+            ) as fetch_profiles,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        fetch_profiles.assert_called_once_with(None, ["qwen3:4b"])
+        assert profiles["ollama:qwen3:4b"]["profile"]["max_input_tokens"] == 262144
+
 
 class _BytesContext:
     """Minimal context manager wrapping a bytes payload for fake `urlopen`."""
@@ -1601,6 +1762,147 @@ class TestFetchOllamaInstalledModels:
                 == []
             )
         fake.assert_not_called()
+
+
+class TestFetchOllamaInstalledModelProfiles:
+    """Tests for Ollama `/api/show` profile discovery."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (True, None),
+            (False, None),
+            (-1, None),
+            (0, None),
+            (1.5, None),
+            ("4096", 4096),
+            (None, None),
+        ],
+    )
+    def test_coerce_positive_int_edges(
+        self, value: object, expected: int | None
+    ) -> None:
+        """Only positive whole-number values are accepted."""
+        assert model_config._coerce_positive_int(value) == expected
+
+    def test_extracts_profile_from_show_payload(self) -> None:
+        """Context length and capabilities become selector profile fields."""
+        payload = {
+            "model_info": {
+                "general.architecture": "qwen3",
+                "qwen3.context_length": 262144,
+                "qwen3.embedding_length": 2560,
+            },
+            "capabilities": ["completion", "tools", "thinking"],
+        }
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {
+            "max_input_tokens": 262144,
+            "text_inputs": True,
+            "text_outputs": True,
+            "tool_calling": True,
+            "reasoning_output": True,
+        }
+
+    def test_extracts_max_from_multiple_context_lengths(self) -> None:
+        """When several context lengths are present, the largest is used."""
+        payload = {
+            "model_info": {
+                "context_length": 8192,
+                "draft.context_length": 4096,
+                "qwen3.context_length": 262144,
+            },
+        }
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {"max_input_tokens": 262144}
+
+    def test_non_dict_payload_returns_empty_profile(self) -> None:
+        """Malformed payloads are ignored."""
+        assert model_config._profile_from_ollama_show_payload([]) == {}
+
+    def test_missing_model_info_returns_capabilities_only(self) -> None:
+        """Capabilities can still be extracted without model metadata."""
+        payload = {"capabilities": ["tools"]}
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {"tool_calling": True}
+
+    def test_non_list_capabilities_ignored(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unexpected capability shape does not produce false flags."""
+        payload = {"model_info": {}, "capabilities": "tools"}
+
+        with caplog.at_level(logging.DEBUG):
+            profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {}
+        assert "no recognized profile fields" in caplog.text
+
+    def test_posts_model_names_to_show_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fetches `/api/show` for each model and parses context length."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+        captured_body: list[dict[str, str]] = []
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:
+            assert timeout == model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS
+            captured_url.append(request.full_url)
+            captured_headers.append(dict(request.header_items()))
+            data = cast("bytes", request.data)
+            captured_body.append(json.loads(data.decode("utf-8")))
+            payload = {
+                "model_info": {"qwen3.context_length": 262144},
+                "capabilities": ["completion", "tools"],
+            }
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+
+        assert profiles["qwen3:4b"]["max_input_tokens"] == 262144
+        assert profiles["qwen3:4b"]["tool_calling"] is True
+        assert captured_url == ["http://localhost:11434/api/show"]
+        assert captured_body == [{"model": "qwen3:4b"}]
+        assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_continues_after_per_model_failure(self) -> None:
+        """A failed model profile lookup does not abort the whole batch."""
+        import json
+        from urllib.error import URLError
+        from urllib.request import Request
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:  # noqa: ARG001
+            data = cast("bytes", request.data)
+            body = json.loads(data.decode("utf-8"))
+            if body["model"] == "broken":
+                msg = "not found"
+                raise URLError(msg)
+            payload = {"model_info": {"llama.context_length": 8192}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["broken", "llama3"],
+            )
+
+        assert profiles == {"llama3": {"max_input_tokens": 8192}}
 
 
 class TestDisabledProviders:

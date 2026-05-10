@@ -9,7 +9,7 @@ from rich.cells import cell_len
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Static
@@ -2038,6 +2038,46 @@ class TestThreadSelectorColumnConfig:
 
                 mock_populate.assert_awaited_once()
                 assert screen._threads[0]["initial_prompt"] == "loaded prompt"
+
+
+class TestThreadSelectorControlsOverflow:
+    """Tests for short-window overflow handling in the options pane."""
+
+    async def test_options_overflow_shows_ellipsis(self) -> None:
+        """A short options pane should show an ellipsis when controls are hidden."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(100, 12)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                scroll = screen.query_one("#thread-controls-scroll", VerticalScroll)
+                hint = screen.query_one("#thread-controls-overflow", Static)
+
+                assert scroll.max_scroll_y > 0
+                assert hint.display is True
+
+    async def test_options_overflow_ellipsis_hides_at_end(self) -> None:
+        """The options ellipsis should disappear after scrolling to the end."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(100, 12)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+
+                scroll = screen.query_one("#thread-controls-scroll", VerticalScroll)
+                hint = screen.query_one("#thread-controls-overflow", Static)
+                scroll.scroll_end(animate=False)
+                await pilot.pause()
+
+                assert scroll.scroll_y == scroll.max_scroll_y
+                assert hint.display is False
 
 
 def _get_widget_text(widget: Static) -> str:

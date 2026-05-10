@@ -48,8 +48,11 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
-from deepagents.profiles import GeneralPurposeSubagentProfile
-from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt, _harness_profile_for_model
+from deepagents.profiles.harness.harness_profiles import (
+    GeneralPurposeSubagentProfile,
+    _apply_profile_prompt,
+    _harness_profile_for_model,
+)
 
 logger = logging.getLogger(__name__)
 

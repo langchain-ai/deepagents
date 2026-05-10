@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
@@ -28,7 +29,13 @@ from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.subagents import SubAgentMiddleware
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
-from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
+from deepagents.profiles import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    ProfileSuffixContext,
+    register_harness_profile,
+)
+from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded
 from deepagents.profiles.harness.harness_profiles import (
     _HARNESS_PROFILES,
     _get_harness_profile,
@@ -455,7 +462,7 @@ class TestSystemPromptAssembly:
         assert prompt == ""
         assert BASE_AGENT_PROMPT not in prompt
 
-    def test_empty_string_suffix_still_appended(self) -> None:
+    def test_empty_string_suffix_treated_as_none(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
             HarnessProfile(
@@ -463,7 +470,7 @@ class TestSystemPromptAssembly:
                 system_prompt_suffix="",
             ),
         )
-        assert prompt == "Custom base.\n\n"
+        assert prompt == "Custom base."
 
 
 class TestToolExclusionMiddleware:
@@ -977,6 +984,37 @@ class TestMiddlewareExclusionWiring:
 
             mw_stack = mock_create.call_args.kwargs["middleware"]
             assert not any(type(m) is AsyncSubAgentMiddleware for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_todolist_removes_codex_plan_hygiene_prompt(self) -> None:
+        """Codex plan-hygiene guidance is omitted when `write_todos` is absent."""
+        _ensure_builtin_profiles_loaded()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "openai:gpt-5.3-codex",
+                HarnessProfile(excluded_middleware=frozenset({TodoListMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="openai:gpt-5.3-codex")
+
+            prompt = mock_create.call_args.kwargs["system_prompt"]
+            assert isinstance(prompt, str)
+            assert "## Codex-Specific Behavior" in prompt
+            assert "## Parallel Tool Use" in prompt
+            assert "## Plan Hygiene" not in prompt
+            assert "write_todos" not in prompt
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is TodoListMiddleware for m in mw_stack)
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
@@ -1890,6 +1928,67 @@ class TestSubagentSystemPromptWiring:
                 specs = self._capture_subagents(model="gpfallback:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
             assert gp["system_prompt"] == "Profile base.\n\nTrailer."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSuffixResolverPerStack:
+    """A `SuffixResolver` runs once per stack that resolves to the profile.
+
+    Main agent, general-purpose subagent, and each declarative subagent each
+    build their own post-exclusion `ProfileSuffixContext` and invoke the
+    resolver independently, so suffix decisions can branch on what each stack
+    actually has.
+    """
+
+    def test_resolver_invoked_per_stack_with_distinct_contexts(self) -> None:
+        recorded: list[frozenset[type[AgentMiddleware]]] = []
+
+        def resolver(ctx: ProfileSuffixContext) -> str:
+            recorded.append(ctx.middleware_classes)
+            return f"recorded({len(recorded)})"
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "rsprov",
+                HarnessProfile(system_prompt_suffix=resolver),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="rsprov:main-model",
+                    middleware=[_OtherStubMW()],
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "rsprov:worker-model",
+                            "middleware": [_StubMW()],
+                        }
+                    ],
+                )
+
+            assert len(recorded) == 3, f"expected 3 resolver invocations, got {len(recorded)}"
+            assert len(set(recorded)) == 3, "resolver saw the same context for multiple stacks"
+
+            main_snaps = [s for s in recorded if _OtherStubMW in s and _StubMW not in s]
+            sub_snaps = [s for s in recorded if _StubMW in s and _OtherStubMW not in s]
+            gp_snaps = [s for s in recorded if _StubMW not in s and _OtherStubMW not in s]
+
+            assert len(main_snaps) == 1
+            assert len(sub_snaps) == 1
+            assert len(gp_snaps) == 1
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

@@ -273,7 +273,7 @@ class TestModeIndicator:
             bar.set_mode("shell_incognito")
             await pilot.pause()
 
-            assert str(indicator.render()) == "INCOG"
+            assert str(indicator.render()) == "SHELL"
             assert indicator.has_class("shell-incognito")
 
 

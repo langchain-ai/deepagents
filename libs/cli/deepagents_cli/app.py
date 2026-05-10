@@ -1224,8 +1224,9 @@ class DeepAgentsApp(App):
 
         Most styling uses Textual's built-in variables (`$primary`,
         `$text-muted`, `$error-muted`, etc.).  This override injects the
-        app-specific variables (`$mode-bash`, `$mode-command`, `$skill`,
-        `$skill-hover`, `$tool`, `$tool-hover`) that have no Textual equivalent.
+        app-specific variables (`$mode-bash`, `$mode-command`,
+        `$mode-incognito`, `$skill`, `$skill-hover`, `$tool`, `$tool-hover`)
+        that have no Textual equivalent.
 
         Returns:
             Dict of CSS variable names to hex color values.
@@ -3992,16 +3993,7 @@ class DeepAgentsApp(App):
             command: The shell command to execute.
             incognito: Whether the command/output should remain local-only.
         """
-        if incognito:
-            await self._mount_message(
-                AppMessage(
-                    Content.from_markup(
-                        "Running incognito shell command: $cmd",
-                        cmd=command,
-                    )
-                )
-            )
-        else:
+        if not incognito:
             await self._mount_message(UserMessage(f"!{command}"))
         self._shell_running = True
 

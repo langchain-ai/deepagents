@@ -78,8 +78,8 @@ def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Production code defines these in `DeepAgentsApp.get_theme_variable_defaults`
     but many tests use lightweight `App[None]` subclasses that lack the override.
-    Patching the base class ensures `$mode-bash`, `$mode-command` resolve
-    everywhere without requiring each test app to opt in.
+    Patching the base class ensures custom mode variables resolve everywhere
+    without requiring each test app to opt in.
     """
     from textual.app import App
 

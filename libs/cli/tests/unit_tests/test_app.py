@@ -3239,10 +3239,8 @@ class TestShellCommandInterrupt:
 
         handler.assert_awaited_once_with("echo secret", incognito=True)
 
-    async def test_incognito_shell_command_header_is_app_message(self) -> None:
-        """Incognito shell commands should not be stored as user messages."""
-        from deepagents_cli.widgets.message_store import MessageType
-
+    async def test_incognito_shell_command_does_not_mount_header(self) -> None:
+        """Incognito shell commands should not echo the command before output."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -3252,14 +3250,8 @@ class TestShellCommandInterrupt:
                 await app._handle_shell_command("echo secret", incognito=True)
 
             messages = app._message_store.get_all_messages()
-            assert any(
-                msg.type == MessageType.APP
-                and "incognito shell command" in msg.content
-                and "echo secret" in msg.content
-                for msg in messages
-            )
             assert not any(
-                msg.type == MessageType.USER and "echo secret" in msg.content
+                "incognito shell command" in msg.content or "echo secret" in msg.content
                 for msg in messages
             )
 

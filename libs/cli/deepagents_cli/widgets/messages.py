@@ -97,7 +97,7 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     if not mode:
         return colors.primary
     if mode == "shell_incognito":
-        return colors.warning
+        return colors.mode_incognito
     if mode == "shell":
         return colors.mode_bash
     if mode == "command":

@@ -1004,7 +1004,9 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell-incognito {
-        border: solid $warning;
+        border: solid $mode-incognito;
+        border-title-color: $mode-incognito;
+        border-title-style: bold;
     }
 
     ChatInput .input-row {
@@ -1029,20 +1031,7 @@ class ChatInput(Vertical):
     }
 
     ChatInput.mode-shell-incognito .input-prompt {
-        color: $warning;
-    }
-
-    ChatInput .input-mode-label {
-        display: none;
-        height: 1;
-        width: auto;
-        padding: 0 1;
-        color: $warning;
-        text-style: bold;
-    }
-
-    ChatInput.mode-shell-incognito .input-mode-label {
-        display: block;
+        color: $mode-incognito;
     }
 
     ChatInput ChatTextArea {
@@ -1155,7 +1144,6 @@ class ChatInput(Vertical):
         """
         with Horizontal(classes="input-row"):
             yield Static(">", classes="input-prompt", id="prompt")
-            yield Static("", classes="input-mode-label", id="mode-label")
             yield ChatTextArea(id="chat-input")
 
         yield CompletionPopup(id="completion-popup")
@@ -1921,15 +1909,14 @@ class ChatInput(Vertical):
                 self.add_class(class_name)
             try:
                 prompt = self.query_one("#prompt", Static)
-                mode_label = self.query_one("#mode-label", Static)
             except NoMatches:
-                logger.warning("watch_mode._apply: prompt widgets not found")
+                logger.warning("watch_mode._apply: prompt widget not found")
                 return
             prompt.update(glyph or ">")
             if mode == "shell_incognito":
-                mode_label.update("Shell (incognito)")
+                self.border_title = "incognito"
             else:
-                mode_label.update("")
+                self.border_title = None
 
         self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))

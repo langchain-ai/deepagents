@@ -125,7 +125,7 @@ class StatusBar(Horizontal):
     }
 
     StatusBar .status-mode.shell-incognito {
-        background: $warning;
+        background: $mode-incognito;
         color: $background;
         text-style: bold;
     }
@@ -218,7 +218,7 @@ class StatusBar(Horizontal):
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
-            "manual | shift+tab to cycle",
+            "manual",
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
@@ -282,7 +282,7 @@ class StatusBar(Horizontal):
             indicator.update("SHELL")
             indicator.add_class("shell")
         elif mode == "shell_incognito":
-            indicator.update("INCOG")
+            indicator.update("SHELL")
             indicator.add_class("shell-incognito")
         elif mode == "command":
             indicator.update("CMD")
@@ -300,10 +300,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto | shift+tab to cycle")
+            indicator.update("auto")
             indicator.add_class("on")
         else:
-            indicator.update("manual | shift+tab to cycle")
+            indicator.update("manual")
             indicator.add_class("off")
 
     def watch_cwd(self, new_value: str) -> None:

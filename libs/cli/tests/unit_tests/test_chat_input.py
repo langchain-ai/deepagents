@@ -313,18 +313,17 @@ class TestPromptIndicator:
             assert chat_input.has_class("mode-shell")
 
     async def test_prompt_shows_shell_style_in_incognito_shell_mode(self) -> None:
-        """Mode 'shell_incognito' should show an explicit incognito cue."""
+        """Mode 'shell_incognito' should title the input border."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             prompt = chat_input.query_one("#prompt", Static)
-            mode_label = chat_input.query_one("#mode-label", Static)
 
             chat_input.mode = "shell_incognito"
             await pilot.pause()
 
             assert _prompt_text(prompt) == "$"
-            assert _prompt_text(mode_label) == "Shell (incognito)"
+            assert chat_input.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
 
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
@@ -354,6 +353,7 @@ class TestPromptIndicator:
             chat_input.mode = "normal"
             await pilot.pause()
             assert _prompt_text(prompt) == ">"
+            assert chat_input.border_title is None
             assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
 

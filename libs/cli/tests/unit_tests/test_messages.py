@@ -641,7 +641,7 @@ class TestUserMessageModeRendering:
         content = _render_content(UserMessage("!!ls"))
         assert content.plain == "$ ls"
         first_span = content._spans[0]
-        assert theme.DARK_COLORS.warning in str(first_span.style)
+        assert theme.DARK_COLORS.mode_incognito in str(first_span.style)
 
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""

@@ -1,6 +1,6 @@
 """Unit tests for message widgets markup safety."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
@@ -208,16 +208,10 @@ class TestMutedRichMarkdown:
 
     def test_strips_heading_and_table_colors(self) -> None:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
-        from rich.markdown import Markdown as RichMarkdown
-
-        baseline = self._render(RichMarkdown(self._DOC))
         muted = self._render(_MutedRichMarkdown(self._DOC))
 
-        # Default Rich theme paints `markdown.h3` magenta (ANSI code 35)
-        # and `markdown.table.*` cyan (ANSI code 36).
-        assert "\x1b[1;35m" in baseline
-        assert "\x1b[36m" in baseline
-
+        # Some Rich versions paint headings/tables magenta/cyan by default.
+        # The wrapper should not emit those hues regardless of Rich's baseline.
         assert "\x1b[35m" not in muted
         assert ";35m" not in muted
         assert "\x1b[36m" not in muted
@@ -246,6 +240,59 @@ class TestMutedRichMarkdown:
 
         rendered = self._render(wrapped)
         assert "body" in rendered
+
+
+class TestAssistantMessageMarkdownRendering:
+    """Tests for assistant markdown render lifecycle."""
+
+    async def test_write_initial_content_uses_full_markdown_update(self) -> None:
+        """Preloaded assistant messages should not keep stream state alive."""
+        msg = AssistantMessage("```python\nprint('hello')\n```")
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        msg._markdown = markdown
+
+        await msg.write_initial_content()
+
+        markdown.update.assert_awaited_once_with("```python\nprint('hello')\n```")
+        assert msg._stream is None
+
+    async def test_stop_stream_rerenders_complete_markdown(self) -> None:
+        """Completed streams should get a full parse after incremental updates."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "```python\nprint('wrapped text')\n```"
+
+        await msg.stop_stream()
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with(
+            "```python\nprint('wrapped text')\n```"
+        )
+        assert msg._stream is None
+
+    async def test_set_content_replaces_stream_with_single_update(self) -> None:
+        """Replacing content should cancel the stream and update exactly once."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "old streamed content"
+
+        await msg.set_content("```python\nnew content\n```")
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with("```python\nnew content\n```")
+        assert msg._stream is None
+        assert msg._content == "```python\nnew content\n```"
 
 
 class TestSummarizationMessage:

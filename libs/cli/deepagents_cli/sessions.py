@@ -271,6 +271,7 @@ async def list_threads(
     include_message_count: bool = False,
     sort_by: str = "updated",
     branch: str | None = None,
+    cwd: str | None = None,
 ) -> list[ThreadInfo]:
     """List threads from checkpoints table.
 
@@ -280,6 +281,8 @@ async def list_threads(
         include_message_count: Whether to include message counts.
         sort_by: Sort field — `"updated"` or `"created"`.
         branch: Optional filter by git branch name.
+        cwd: Optional filter by working directory. Threads whose stored
+            `cwd` metadata matches this path are returned.
 
     Returns:
         List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
@@ -307,6 +310,9 @@ async def list_threads(
         if branch:
             where_clauses.append("json_extract(metadata, '$.git_branch') = ?")
             params_list.append(branch)
+        if cwd:
+            where_clauses.append("json_extract(metadata, '$.cwd') = ?")
+            params_list.append(cwd)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -346,8 +352,8 @@ async def list_threads(
             await _populate_message_counts(conn, threads)
 
         # Only cache unfiltered results so the thread selector modal
-        # doesn't receive branch-filtered or differently-sorted data.
-        if sort_by == "updated" and branch is None:
+        # doesn't receive branch-/cwd-filtered or differently-sorted data.
+        if sort_by == "updated" and branch is None and cwd is None:
             _cache_recent_threads(agent_name, limit, threads)
         return threads
 
@@ -1065,6 +1071,7 @@ async def list_threads_command(
     limit: int | None = None,
     sort_by: str | None = None,
     branch: str | None = None,
+    cwd: str | None = None,
     verbose: bool = False,
     relative: bool | None = None,
     *,
@@ -1073,7 +1080,7 @@ async def list_threads_command(
     """CLI handler for `deepagents threads list`.
 
     Fetches and displays a table of recent conversation threads, optionally
-    filtered by agent name or git branch.
+    filtered by agent name, git branch, or working directory.
 
     Args:
         agent_name: Only show threads belonging to this agent.
@@ -1087,6 +1094,8 @@ async def list_threads_command(
 
             When `None`, reads from config (`~/.deepagents/config.toml`).
         branch: Only show threads from this git branch.
+        cwd: Only show threads created in this working directory. When `None`,
+            threads from all directories are shown.
         verbose: When `True`, show all columns (branch, created, prompt).
         relative: Show timestamps as relative time (e.g., '5m ago').
 
@@ -1114,6 +1123,7 @@ async def list_threads_command(
         include_message_count=True,
         sort_by=sort_by,
         branch=branch,
+        cwd=cwd,
     )
 
     if verbose and threads:
@@ -1139,6 +1149,8 @@ async def list_threads_command(
             filters.append(f"agent '{escape_markup(agent_name)}'")
         if branch:
             filters.append(f"branch '{escape_markup(branch)}'")
+        if cwd:
+            filters.append(f"cwd '{escape_markup(cwd)}'")
         if filters:
             console.print(
                 f"[yellow]No threads found for {' and '.join(filters)}.[/yellow]"
@@ -1153,6 +1165,8 @@ async def list_threads_command(
         title_parts.append(f"agent '{escape_markup(agent_name)}'")
     if branch:
         title_parts.append(f"branch '{escape_markup(branch)}'")
+    if cwd:
+        title_parts.append(f"cwd '{escape_markup(cwd)}'")
 
     title_filter = f" for {' and '.join(title_parts)}" if title_parts else ""
     sort_label = "created" if sort_by == "created" else "updated"

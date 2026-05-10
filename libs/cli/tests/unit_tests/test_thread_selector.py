@@ -135,7 +135,11 @@ class ThreadSelectorTestApp(App):
             self.result = result
             self.dismissed = True
 
-        screen = ThreadSelectorScreen(current_thread=self._current_thread)
+        # Disable the default cwd filter so tests don't need to populate the
+        # `cwd` field on every mock thread fixture.
+        screen = ThreadSelectorScreen(
+            current_thread=self._current_thread, filter_cwd=None
+        )
         self.push_screen(screen, handle_result)
 
 
@@ -169,7 +173,7 @@ class AppWithEscapeBinding(App):
             self.result = result
             self.dismissed = True
 
-        screen = ThreadSelectorScreen(current_thread="abc12345")
+        screen = ThreadSelectorScreen(current_thread="abc12345", filter_cwd=None)
         self.push_screen(screen, handle_result)
 
 
@@ -1277,7 +1281,10 @@ class TestThreadSelectorLimit:
                     await pilot.pause(0.05)
 
                 mock_lt.assert_awaited_once_with(
-                    limit=20, include_message_count=False, sort_by="updated"
+                    limit=20,
+                    include_message_count=False,
+                    sort_by="updated",
+                    cwd=None,
                 )
                 mock_populate.assert_awaited_once()
 
@@ -1344,7 +1351,8 @@ class TestThreadSelectorCheckpointDetailErrors:
                     "agent_name": "my-agent",
                     "updated_at": "2025-01-15T10:30:00",
                 }
-            ]
+            ],
+            filter_cwd=None,
         )
 
         with (
@@ -1408,6 +1416,7 @@ class TestThreadSelectorPrefetchedRows:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1471,6 +1480,7 @@ class TestThreadSelectorPrefetchedRows:
                             current_thread="abc12345",
                             thread_limit=20,
                             initial_threads=prefetched,
+                            filter_cwd=None,
                         )
                     )
                     await pilot.pause()
@@ -1504,6 +1514,7 @@ class TestThreadSelectorPrefetchedRows:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=[],
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1596,6 +1607,7 @@ class TestThreadSelectorInitialSortOrder:
                         current_thread=None,
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1637,6 +1649,7 @@ class TestThreadSelectorSearch:
         screen = ThreadSelectorScreen(
             current_thread=None,
             initial_threads=MOCK_THREADS,
+            filter_cwd=None,
         )
         screen._filter_text = ""
         screen._update_filtered_list()
@@ -1647,6 +1660,7 @@ class TestThreadSelectorSearch:
         screen = ThreadSelectorScreen(
             current_thread=None,
             initial_threads=MOCK_THREADS,
+            filter_cwd=None,
         )
         screen._filter_text = "def678"
         screen._update_filtered_list()
@@ -1689,7 +1703,9 @@ class TestThreadSelectorSearch:
                 "initial_prompt": "prompt two",
             },
         ]
-        screen = ThreadSelectorScreen(current_thread=None, initial_threads=threads)
+        screen = ThreadSelectorScreen(
+            current_thread=None, initial_threads=threads, filter_cwd=None
+        )
 
         screen._filter_text = "p"
         screen._update_filtered_list()
@@ -3030,6 +3046,7 @@ class TestThreadSelectorDomSkip:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
@@ -107,6 +108,17 @@ _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _CELL_PADDING_RIGHT = 1
+
+
+class _Sentinel:
+    """Type for module-level singleton sentinels."""
+
+
+_CWD_DEFAULT = _Sentinel()
+"""Sentinel for the default `filter_cwd` constructor arg.
+
+Distinguishes "caller did not specify" (use the current working directory) from
+an explicit `None` (start with no cwd filter)."""
 
 _FormatFns = tuple[
     "Callable[[str | None], str]",  # format_path
@@ -478,6 +490,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
+        Binding(
+            "ctrl+g",
+            "toggle_cwd_filter",
+            "Toggle cwd filter",
+            show=False,
+            priority=True,
+        ),
         Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
         Binding(
             "shift+tab",
@@ -678,6 +697,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         *,
         thread_limit: int | None = None,
         initial_threads: list[ThreadInfo] | None = None,
+        filter_cwd: str | _Sentinel | None = _CWD_DEFAULT,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
@@ -685,13 +705,28 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             current_thread: The currently active thread ID (to highlight).
             thread_limit: Maximum number of rows to fetch when querying DB.
             initial_threads: Optional preloaded rows to render immediately.
+            filter_cwd: Working-directory filter for the picker.
+
+                When the default sentinel, the picker mirrors Claude Code's
+                `/resume` and scopes to the current working directory; press
+                Ctrl+G in the picker to toggle "all directories". Pass an
+                explicit path to scope to that directory, or `None` to start
+                the picker with no cwd filter.
         """
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
-        self._threads: list[ThreadInfo] = (
-            list(initial_threads) if initial_threads is not None else []
-        )
+        if isinstance(filter_cwd, _Sentinel):
+            self._filter_cwd: str | None = str(Path.cwd())
+        else:
+            self._filter_cwd = filter_cwd
+        initial = list(initial_threads) if initial_threads is not None else []
+        # The cached `initial_threads` are unfiltered, so apply the active cwd
+        # filter here to avoid showing all threads on first paint when we are
+        # about to re-query with the filter active.
+        if self._filter_cwd is not None:
+            initial = [t for t in initial if t.get("cwd") == self._filter_cwd]
+        self._threads: list[ThreadInfo] = initial
         self._filtered_threads: list[ThreadInfo] = list(self._threads)
         self._has_initial_threads = initial_threads is not None
         self._selected_index = 0
@@ -784,8 +819,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
+            f" {glyphs.bullet} Ctrl+G "
+            f"{'show all dirs' if self._filter_cwd else 'filter to cwd'}"
             f" {glyphs.bullet} Esc cancel"
         )
+        scope = (
+            f"current directory ({self._filter_cwd})"
+            if self._filter_cwd
+            else "all directories"
+        )
+        lines += f"\nScope: {scope}"
         limit = self._effective_thread_limit()
         if len(self._threads) >= limit:
             lines += (
@@ -1182,10 +1225,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Concatenated searchable string, truncated to a safe length.
         """
+        # Include both the raw cwd and the home-collapsed display form so a
+        # user typing either "/Users/chesar/foo" or "~/foo" matches the row.
+        format_path, _, _ = _get_format_fns()
+        cwd = thread.get("cwd") or ""
         parts = [
             thread["thread_id"],
             thread.get("agent_name") or "",
             thread.get("git_branch") or "",
+            cwd,
+            format_path(cwd) if cwd else "",
             thread.get("initial_prompt") or "",
         ]
         text = " ".join(parts)
@@ -1358,7 +1407,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 limit = get_thread_limit()
             sort_by = "updated" if self._sort_by_updated else "created"
             self._threads = await list_threads(
-                limit=limit, include_message_count=False, sort_by=sort_by
+                limit=limit,
+                include_message_count=False,
+                sort_by=sort_by,
+                cwd=self._filter_cwd,
             )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
@@ -1800,6 +1852,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         self._persist_sort_order(
             "updated_at" if self._sort_by_updated else "created_at"
+        )
+
+    def action_toggle_cwd_filter(self) -> None:
+        """Toggle between filtering threads to the current cwd and showing all.
+
+        Mirrors Claude Code's `/resume` keyboard toggle: by default the picker
+        is scoped to the current working directory; pressing the bound key
+        widens the view to threads from all directories.
+        """
+        if self._confirming_delete:
+            return
+        if self._filter_cwd is None:
+            self._filter_cwd = str(Path.cwd())
+            self.app.notify(f"Showing threads from {self._filter_cwd}")
+        else:
+            self._filter_cwd = None
+            self.app.notify("Showing threads from all directories")
+        self._update_help_widgets()
+        self.run_worker(
+            self._load_threads, exclusive=True, group="thread-selector-load"
         )
 
     def _persist_sort_order(self, order: str) -> None:

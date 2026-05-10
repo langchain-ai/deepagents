@@ -152,6 +152,10 @@ UserMessage.-mode-shell {
     border-left: wide $mode-bash;
 }
 
+UserMessage.-mode-shell-incognito {
+    border-left: wide $mode-incognito;
+}
+
 UserMessage.-mode-command {
     border-left: wide $mode-command;
 }
@@ -163,6 +167,10 @@ UserMessage.-ascii {
 
 UserMessage.-ascii.-mode-shell {
     border-left: ascii $mode-bash;
+}
+
+UserMessage.-ascii.-mode-shell-incognito {
+    border-left: ascii $mode-incognito;
 }
 
 UserMessage.-ascii.-mode-command {

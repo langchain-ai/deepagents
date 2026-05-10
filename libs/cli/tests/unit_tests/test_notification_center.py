@@ -42,8 +42,8 @@ def _dep_entry(key: str = "dep:ripgrep") -> PendingNotification:
 def _update_entry() -> PendingNotification:
     return PendingNotification(
         key="update:available",
-        title="Update available: v2.0.0",
-        body="v2.0.0 is available (current: v1.0.0).",
+        title="Update available",
+        body="v2.0.0 is available.\nCurrently installed: 1.0.0.",
         actions=(
             NotificationAction(ActionId.INSTALL, "Install now", primary=True),
             NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),

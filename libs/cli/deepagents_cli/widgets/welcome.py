@@ -37,9 +37,10 @@ from deepagents_cli.config import (
 from deepagents_cli.widgets._links import open_style_link
 
 _TIPS: dict[str, int] = {
-    "Use @ to reference files and / for commands": 2,
+    "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
+    "Use /copy to copy the latest assistant message": 3,
     "Use /mcp to see your loaded tools and servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
@@ -48,12 +49,15 @@ _TIPS: dict[str, int] = {
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
     "Use /theme to customize the CLI colors and style": 1,
+    "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
     "Use /auto-update to toggle automatic CLI updates": 1,
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
+    "Press Shift+Tab to toggle auto-approve mode": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
     "Run deepagents --init to choose your name and model at launch": 1,
+    "Use !! for incognito shell commands that stay out of model context": 1,
     "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }

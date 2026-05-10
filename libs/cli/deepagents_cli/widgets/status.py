@@ -124,6 +124,12 @@ class StatusBar(Horizontal):
         color: white;
     }
 
+    StatusBar .status-mode.shell-incognito {
+        background: $mode-incognito;
+        color: $background;
+        text-style: bold;
+    }
+
     StatusBar .status-auto-approve {
         width: auto;
         padding: 0 1;
@@ -212,7 +218,7 @@ class StatusBar(Horizontal):
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
-            "manual | shift+tab to cycle",
+            "manual",
             classes="status-auto-approve off",
             id="auto-approve-indicator",
         )
@@ -270,11 +276,14 @@ class StatusBar(Horizontal):
             indicator = self.query_one("#mode-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("normal", "shell", "command")
+        indicator.remove_class("normal", "shell", "command", "shell-incognito")
 
         if mode == "shell":
             indicator.update("SHELL")
             indicator.add_class("shell")
+        elif mode == "shell_incognito":
+            indicator.update("SHELL")
+            indicator.add_class("shell-incognito")
         elif mode == "command":
             indicator.update("CMD")
             indicator.add_class("command")
@@ -291,10 +300,10 @@ class StatusBar(Horizontal):
         indicator.remove_class("on", "off")
 
         if new_value:
-            indicator.update("auto | shift+tab to cycle")
+            indicator.update("auto")
             indicator.add_class("on")
         else:
-            indicator.update("manual | shift+tab to cycle")
+            indicator.update("manual")
             indicator.add_class("off")
 
     def watch_cwd(self, new_value: str) -> None:
@@ -406,9 +415,10 @@ class StatusBar(Horizontal):
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
 
-        Forces a display refresh even when the value is unchanged, because
-        `hide_tokens` clears the widget text without updating the reactive
-        attribute.
+        Forces a display refresh even when the value is unchanged. During
+        streaming, `show_pending_tokens` replaces the widget text without
+        changing the reactive token value, so a later update with the same
+        count still needs to re-render the exact count.
 
         Args:
             count: Current context token count.
@@ -423,10 +433,10 @@ class StatusBar(Horizontal):
             # self._approximate for the suffix.
             self.tokens = count
 
-    def hide_tokens(self) -> None:
-        """Hide the token display (e.g., during streaming)."""
+    def show_pending_tokens(self) -> None:
+        """Show an unknown token count placeholder during streaming."""
         try:
-            self.query_one("#tokens-display", Static).update("")
+            self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:
             return
 

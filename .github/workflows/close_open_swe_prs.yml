@@ -1,0 +1,42 @@
+# Remind on open-swe PRs after one week and close them after two weeks.
+# Maintainers can bypass cleanup by adding the "do-not-close" label.
+
+name: Close Open SWE PRs
+
+on:
+  schedule:
+    - cron: "17 14 * * *"
+  workflow_dispatch:
+    inputs:
+      max_items:
+        description: "Maximum open-swe PRs to process"
+        default: "1000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  close-open-swe-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Remind or close stale open-swe PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          MAX_ITEMS: ${{ inputs.max_items || '1000' }}
+        with:
+          script: |
+            const { run } = require('./.github/scripts/close-open-swe-prs.js');
+            await run({ github, context, core });

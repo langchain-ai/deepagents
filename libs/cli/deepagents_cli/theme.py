@@ -5,8 +5,9 @@ Single source of truth for color values used in Python code (Rich markup,
 Textual CSS variables: built-in variables
 (`$primary`, `$background`, `$text-muted`, `$error-muted`, etc.) are set via
 `register_theme()` in `DeepAgentsApp.__init__`, while the few app-specific
-variables (`$mode-bash`, `$mode-command`, `$skill`, `$skill-hover`, `$tool`,
-`$tool-hover`) are backed by these constants via `App.get_theme_variable_defaults()`.
+variables (`$mode-bash`, `$mode-command`, `$mode-incognito`, `$skill`,
+`$skill-hover`, `$tool`, `$tool-hover`) are backed by these constants via
+`App.get_theme_variable_defaults()`.
 
 Code that needs custom CSS variable values should call
 `get_css_variable_defaults(dark=...)`. For the full semantic color palette, look
@@ -94,6 +95,10 @@ LC_TOOL = LC_AMBER
 LC_TOOL_HOVER = "#FFCB91"
 """Tool call hover — lighter variant for interactive feedback."""
 
+LC_INCOGNITO = "#2DD4BF"
+"""Incognito shell accent — teal, must read distinctly against `LC_PINK`
+shell and `error` warning border colors."""
+
 
 # ---------------------------------------------------------------------------
 # Brand palette — light
@@ -151,6 +156,9 @@ LC_LIGHT_TOOL = LC_LIGHT_AMBER
 
 LC_LIGHT_TOOL_HOVER = "#78350F"
 """Tool call hover (darkened for light bg contrast)."""
+
+LC_LIGHT_INCOGNITO = "#0F766E"
+"""Incognito shell accent (darkened for light bg contrast)."""
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +281,9 @@ class ThemeColors:
     mode_command: str
     """Command mode indicator — borders, prompts, and message prefixes."""
 
+    mode_incognito: str
+    """Incognito shell indicator — borders, prompts, and message prefixes."""
+
     skill: str
     """Skill invocation accent — border and header text."""
 
@@ -346,6 +357,7 @@ DARK_COLORS = ThemeColors(
     muted=LC_MUTED,
     mode_bash=LC_PINK,
     mode_command=LC_PURPLE,
+    mode_incognito=LC_INCOGNITO,
     skill=LC_SKILL,
     skill_hover=LC_SKILL_HOVER,
     tool=LC_TOOL,
@@ -367,6 +379,7 @@ LIGHT_COLORS = ThemeColors(
     muted=LC_LIGHT_MUTED,
     mode_bash=LC_LIGHT_PINK,
     mode_command=LC_LIGHT_PURPLE,
+    mode_incognito=LC_LIGHT_INCOGNITO,
     skill=LC_LIGHT_SKILL,
     skill_hover=LC_LIGHT_SKILL_HOVER,
     tool=LC_LIGHT_TOOL,
@@ -439,8 +452,9 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
     newly shipped Textual themes appear automatically. They are not registered
     via `register_theme()` — Textual's own `$primary`, `$background`, etc.
     apply. The `colors` field provides fallback values for app-specific CSS
-    vars (`$mode-bash`, `$mode-command`) and Python-side styling. For standard
-    properties (primary, secondary, etc.), `get_theme_colors()` dynamically
+    vars (`$mode-bash`, `$mode-command`, `$mode-incognito`) and Python-side
+    styling. For standard properties (primary, secondary, etc.),
+    `get_theme_colors()` dynamically
     resolves from the actual Textual theme at runtime so the Python and CSS
     color systems stay in sync.
 
@@ -726,6 +740,7 @@ def get_css_variable_defaults(
     return {
         "mode-bash": c.mode_bash,
         "mode-command": c.mode_command,
+        "mode-incognito": c.mode_incognito,
         "skill": c.skill,
         "skill-hover": c.skill_hover,
         "tool": c.tool,
@@ -753,13 +768,11 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
     """Construct `ThemeColors` from the app's active Textual theme.
 
     Reads standard properties (primary, secondary, etc.) from the resolved
-    theme so Python-side styling matches CSS.  `muted` falls back to the
-    dark/light base unconditionally (no Textual equivalent).
-    `mode_bash` is derived from the theme's `error` color, and `mode_command`
-    from `secondary`, falling back to the base palette when non-hex.
-
-    Non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected and fall
-    back to the base palette automatically.
+    theme so Python-side styling matches CSS. `muted` and `mode_incognito`
+    have no Textual equivalent and always source from the dark/light base
+    palette. `mode_bash` is derived from the theme's `error` color and
+    `mode_command` from `secondary`, both falling back to the base palette
+    when non-hex values (e.g. `ansi_blue` in the ANSI theme) are detected.
 
     Args:
         app: The Textual App instance.
@@ -797,6 +810,7 @@ def _colors_from_textual_theme(app: object) -> ThemeColors:
         muted=base.muted,
         mode_bash=_hex_or(ct.error, base.mode_bash),
         mode_command=_hex_or(ct.secondary, base.mode_command),
+        mode_incognito=base.mode_incognito,
         # No Textual equivalent — always use base palette.
         skill=base.skill,
         skill_hover=base.skill_hover,

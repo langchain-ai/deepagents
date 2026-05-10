@@ -312,6 +312,41 @@ class TestPromptIndicator:
             assert _prompt_text(prompt) == "$"
             assert chat_input.has_class("mode-shell")
 
+    async def test_prompt_shows_shell_style_in_incognito_shell_mode(self) -> None:
+        """Incognito shell mode sets the `$` prompt, border title, and class."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "shell_incognito"
+            await pilot.pause()
+
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.border_title == "incognito"
+            assert chat_input.has_class("mode-shell-incognito")
+
+    async def test_incognito_shell_to_shell_clears_incognito_styling(self) -> None:
+        """Transitioning out of incognito must clear the incognito styling.
+
+        Regression guard: a future change forgetting to drop the incognito
+        title or CSS class would leave stale styling on the input.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+
+            chat_input.mode = "shell_incognito"
+            await pilot.pause()
+            assert chat_input.border_title == "incognito"
+            assert chat_input.has_class("mode-shell-incognito")
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert chat_input.border_title is None
+            assert not chat_input.has_class("mode-shell-incognito")
+            assert chat_input.has_class("mode-shell")
+
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
         """Setting mode to 'command' should change prompt and styling."""
         app = _ChatInputTestApp()
@@ -339,6 +374,7 @@ class TestPromptIndicator:
             chat_input.mode = "normal"
             await pilot.pause()
             assert _prompt_text(prompt) == ">"
+            assert chat_input.border_title is None
             assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
 
@@ -1015,6 +1051,103 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!ls"
             assert app.submitted[0].mode == "shell"
 
+    async def test_submission_prepends_incognito_shell_prefix(self) -> None:
+        """Submitting in incognito shell mode should preserve the `'!!'` prefix."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "!!pwd"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "pwd"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
+
+    async def test_typing_second_bang_enters_incognito_shell_mode(self) -> None:
+        """Typing `!!pwd` as separate keypresses should submit incognito shell."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            chat._text_area.insert("pwd")
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
+
+    async def test_third_bang_stays_in_incognito_shell_mode(self) -> None:
+        """Typing `!`+`!`+`!` must not demote `shell_incognito` back to `shell`.
+
+        Regression guard for the privacy-sensitive parser path: a stray third
+        bang should be treated as command-body content, not as a mode change
+        out of incognito.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "!"
+
+            chat._text_area.insert("ls")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "shell_incognito"
+            assert app.submitted[0].value == "!!!ls"
+
+    async def test_pasted_three_bangs_routes_to_incognito(self) -> None:
+        """Pasting `!!!ls` must enter `shell_incognito` with body `!ls`."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "!!!ls"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "!ls"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "shell_incognito"
+            assert app.submitted[0].value == "!!!ls"
+
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
         app = _RecordingApp()
@@ -1381,6 +1514,28 @@ class TestHistorySlashPrefixRecall:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "/help"
             assert app.submitted[0].mode == "command"
+
+    async def test_history_incognito_shell_entry_enters_incognito_mode(self) -> None:
+        """Recalling a `!!` history entry should enter incognito shell mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("!!pwd")
+
+            await pilot.press("up")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "pwd"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
 
 
 class TestCompletionIndexToTextIndex:

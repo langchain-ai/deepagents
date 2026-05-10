@@ -195,33 +195,62 @@ class TestTokenDisplay:
             display = pilot.app.query_one("#tokens-display")
             assert "5.0K" in str(display.render())
 
-    async def test_hide_tokens_clears_display(self) -> None:
+    async def test_show_pending_tokens_shows_unknown_placeholder(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             await pilot.pause()
-            bar.hide_tokens()
+            bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == ""
+            assert str(display.render()) == "... tokens"
 
-    async def test_set_tokens_after_hide_restores_display(self) -> None:
+    async def test_show_pending_tokens_before_count_shows_placeholder(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.show_pending_tokens()
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "... tokens"
+
+    async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.
 
-        hide_tokens clears the widget text without updating the reactive,
-        so a subsequent set_tokens with the same value must still re-render.
+        `show_pending_tokens` replaces the widget text without updating the
+        reactive value, so a subsequent `set_tokens` with the same count must
+        still re-render.
         """
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             await pilot.pause()
-            bar.hide_tokens()
+            bar.show_pending_tokens()
             await pilot.pause()
             # Same value — previously skipped by reactive dedup
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             assert "5.0K" in str(display.render())
+
+    async def test_show_pending_tokens_after_count_change_keeps_placeholder(
+        self,
+    ) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            bar.set_tokens(7500)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "... tokens"
+
+    def test_show_pending_tokens_without_mount_is_noop(self) -> None:
+        bar = StatusBar()
+        bar.show_pending_tokens()
 
     async def test_approximate_appends_plus(self) -> None:
         """approximate=True should append '+' to the token count."""
@@ -233,13 +262,13 @@ class TestTokenDisplay:
             rendered = str(display.render())
             assert "5.0K+" in rendered
 
-    async def test_approximate_after_hide_restores_with_plus(self) -> None:
+    async def test_approximate_after_pending_restores_with_plus(self) -> None:
         """Interrupted restore: same value + approximate should show count with '+'."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             await pilot.pause()
-            bar.hide_tokens()
+            bar.show_pending_tokens()
             await pilot.pause()
             bar.set_tokens(5000, approximate=True)
             await pilot.pause()
@@ -259,6 +288,47 @@ class TestTokenDisplay:
             rendered = str(display.render())
             assert "8.0K" in rendered
             assert "+" not in rendered
+
+
+class TestModeIndicator:
+    """Tests for the input-mode indicator in the status bar."""
+
+    async def test_incognito_shell_mode_shows_indicator(self) -> None:
+        """Incognito shell mode renders the SHELL indicator with its own class."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+
+            assert str(indicator.render()) == "SHELL"
+            assert indicator.has_class("shell-incognito")
+
+    async def test_mode_transition_clears_incognito_class(self) -> None:
+        """Leaving `shell_incognito` must remove the badge class.
+
+        Regression guard: a future change forgetting to clear
+        `shell-incognito` on transition would leak the badge across modes.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+            assert indicator.has_class("shell-incognito")
+
+            bar.set_mode("normal")
+            await pilot.pause()
+            assert not indicator.has_class("shell-incognito")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+            bar.set_mode("shell")
+            await pilot.pause()
+            assert not indicator.has_class("shell-incognito")
+            assert indicator.has_class("shell")
 
 
 class TestModelLabelPrefixStripping:

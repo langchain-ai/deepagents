@@ -636,6 +636,13 @@ class TestUserMessageModeRendering:
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
+    def test_incognito_shell_prefix_renders_dollar_indicator(self) -> None:
+        """`UserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(UserMessage("!!ls"))
+        assert content.plain == "$ ls"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.mode_incognito in str(first_span.style)
+
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
         content = _render_content(UserMessage("/help"))
@@ -677,6 +684,11 @@ class TestQueuedUserMessageModeRendering:
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
         content = _render_content(QueuedUserMessage("!ls"))
+        assert content.plain == "$ ls"
+
+    def test_incognito_shell_prefix_renders_dimmed_dollar(self) -> None:
+        """`QueuedUserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(QueuedUserMessage("!!ls"))
         assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:

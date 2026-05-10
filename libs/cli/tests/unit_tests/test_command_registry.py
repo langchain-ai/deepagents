@@ -74,7 +74,9 @@ class TestBypassTiers:
 
     def test_aliases_in_correct_tier(self) -> None:
         assert "/q" in ALWAYS_IMMEDIATE
+        assert "/about" in BYPASS_WHEN_CONNECTING
         assert "/compact" in QUEUE_BOUND
+        assert "/connect" in IMMEDIATE_UI
 
     def test_every_command_classified(self) -> None:
         for cmd in COMMANDS:
@@ -135,6 +137,21 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestCopyCommand:
+    """Validate the `/copy` entry specifically."""
+
+    def test_copy_registered_for_autocomplete(self) -> None:
+        copy_entry = next(entry for entry in SLASH_COMMANDS if entry.name == "/copy")
+
+        assert copy_entry.description == "Copy latest assistant message to clipboard"
+
+    def test_copy_classified_as_side_effect_free(self) -> None:
+        copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
+
+        assert copy_cmd.description == "Copy latest assistant message to clipboard"
+        assert "/copy" in SIDE_EFFECT_FREE
+
+
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.
 
@@ -179,3 +196,26 @@ class TestHelpBodyDrift:
             f"Commands in /help body but missing from COMMANDS: {extra}\n"
             "Remove them from help_body or add to COMMANDS in command_registry.py."
         )
+
+    def test_help_body_describes_incognito_shell_prefix(self) -> None:
+        """The `/help` body should document local-only incognito shell mode."""
+        app_src = (
+            Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.py"
+        ).read_text()
+
+        # Locate the Interactive Features block where the `!!` row lives.
+        match = re.search(
+            r'"Interactive Features:\\n"(.*?)"\s*Docs:',
+            app_src,
+            re.DOTALL,
+        )
+        assert match, "Could not locate Interactive Features section in help_body"
+        section = match.group(1)
+
+        assert "!!command" in section, "Help body must show `!!command` literal"
+        # Concept-level checks rather than exact wording — independent of
+        # whether the sentence reads "command/output to model context" or
+        # "output and command to model context".
+        assert "model context" in section
+        assert "command" in section
+        assert "output" in section

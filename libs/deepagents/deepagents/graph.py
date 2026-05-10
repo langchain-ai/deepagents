@@ -299,9 +299,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
                 [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
                 — are available)
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
-            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 
@@ -670,17 +670,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 task_description=_profile.tool_description_overrides.get("task"),
             )
         )
+    if async_subagents:
+        # Async here means that we run these subagents in a non-blocking manner.
+        # Currently this supports agents deployed via LangSmith deployments.
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
     )
-
-    if async_subagents:
-        # Async here means that we run these subagents in a non-blocking manner.
-        # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     if middleware:
         deepagent_middleware.extend(middleware)

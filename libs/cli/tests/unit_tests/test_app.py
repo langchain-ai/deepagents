@@ -1796,6 +1796,28 @@ class TestMessageQueue:
             assert len(widgets) == 1
             assert len(app._queued_widgets) == 1
 
+    async def test_queued_incognito_shell_preserves_mode_on_drain(self) -> None:
+        """Queued incognito shell commands should drain as incognito shell."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            app.post_message(ChatInput.Submitted("!!echo hidden", "shell_incognito"))
+            await pilot.pause()
+
+            assert len(app._pending_messages) == 1
+            assert app._pending_messages[0].text == "!!echo hidden"
+            assert app._pending_messages[0].mode == "shell_incognito"
+
+            handler = AsyncMock()
+            app._handle_shell_command = handler  # type: ignore[method-assign]
+            app._agent_running = False
+
+            await app._process_next_from_queue()
+
+            handler.assert_awaited_once_with("echo hidden", incognito=True)
+
     async def test_immediate_processing_when_agent_idle(self) -> None:
         """Messages should process immediately when agent is not running."""
         app = DeepAgentsApp()
@@ -2513,6 +2535,210 @@ class TestTraceCommand:
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
 
+    async def test_connect_alias_routed_from_handle_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'/connect' should push the AuthManagerScreen modal."""
+        from deepagents_cli.widgets.auth import AuthManagerScreen
+
+        monkeypatch.setattr(
+            "deepagents_cli.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/connect")
+            await pilot.pause()
+            assert isinstance(app.screen, AuthManagerScreen)
+
+
+class TestCopyCommand:
+    """Tests for `/copy` command behavior."""
+
+    async def test_copy_latest_assistant_message_to_clipboard(self) -> None:
+        """`/copy` copies the latest stored assistant markdown exactly."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        markdown = "# Result\n\n- keep **markdown** source"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=markdown)
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, markdown)
+            assert any(w._content == "/copy" for w in app.query(UserMessage))
+            assert any(
+                str(w._content) == "Copied latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_skips_ineligible_newer_messages(self) -> None:
+        """`/copy` reverse-scans for the newest completed assistant text."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        expected = "older completed assistant"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=expected)
+        )
+        app._message_store.append(MessageData(type=MessageType.USER, content="thanks"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=""))
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="   ")
+        )
+        app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, expected)
+
+    async def test_copy_falls_back_when_only_streaming_assistant_present(self) -> None:
+        """`/copy` skips an in-flight stream and copies the prior completed reply."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        completed = "completed reply"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=completed)
+        )
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, completed)
+
+    async def test_copy_reports_streaming_pending_when_only_stream_present(
+        self,
+    ) -> None:
+        """`/copy` distinguishes in-flight streams from a truly empty history."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hi"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                "still streaming" in str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_empty_state_without_clipboard_call(self) -> None:
+        """`/copy` reports empty state when no assistant text is eligible."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hello"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=" "))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                str(w._content) == "No message to copy yet."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure_with_reason(self) -> None:
+        """`/copy` surfaces the backend error so users can self-diagnose."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(False, "no clipboard mechanism for your system"),
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard:"
+                " no clipboard mechanism for your system"
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure_without_reason(self) -> None:
+        """`/copy` falls back to a generic message when no error string is given."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(False, None),
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
@@ -3137,6 +3363,40 @@ class TestShellCommandInterrupt:
             error_msgs = app.query(ErrorMessage)
             assert any("timed out" in w._content for w in error_msgs)
 
+    async def test_incognito_timeout_feedback_is_not_model_visible(self) -> None:
+        """Incognito timeout feedback should stay out of user/assistant records."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.wait = AsyncMock()
+        mock_proc.terminate = MagicMock()
+        mock_proc.kill = MagicMock()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+            messages = app._message_store.get_all_messages()
+            assert any(
+                msg.type == MessageType.ERROR and "timed out" in msg.content
+                for msg in messages
+            )
+            assert not any(
+                msg.type in {MessageType.USER, MessageType.ASSISTANT}
+                and "secret" in msg.content
+                for msg in messages
+            )
+
     async def test_posix_killpg_called(self) -> None:
         """On POSIX, _kill_shell_process should use os.killpg with SIGTERM."""
         app = DeepAgentsApp()
@@ -3230,6 +3490,137 @@ class TestShellCommandInterrupt:
             # Close the unawaited coroutine to suppress RuntimeWarning
             coro = mock_rw.call_args[0][0]
             coro.close()
+
+    async def test_process_message_routes_incognito_shell_command(self) -> None:
+        """`shell_incognito` mode should strip `!!` and mark the shell run."""
+        app = DeepAgentsApp()
+        handler = AsyncMock()
+        app._handle_shell_command = handler  # type: ignore[method-assign]
+
+        await app._process_message("!!echo secret", "shell_incognito")
+
+        handler.assert_awaited_once_with("echo secret", incognito=True)
+
+    async def test_incognito_shell_command_does_not_mount_header(self) -> None:
+        """Incognito shell commands should not echo the command before output."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_rw:
+                mock_rw.return_value = MagicMock()
+                await app._handle_shell_command("echo secret", incognito=True)
+
+            messages = app._message_store.get_all_messages()
+            assert not any(
+                "incognito shell command" in msg.content or "echo secret" in msg.content
+                for msg in messages
+            )
+
+            # Close the unawaited coroutine to suppress RuntimeWarning.
+            coro = mock_rw.call_args[0][0]
+            coro.close()
+
+    async def test_incognito_shell_output_is_app_message(self) -> None:
+        """Incognito shell output should avoid assistant transcript records."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"secret\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # type: ignore[assignment]
+            app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
+            app._process_next_from_queue = AsyncMock()  # type: ignore[assignment]
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_cli.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ) as write_mock,
+            ):
+                await app._run_shell_task("echo secret", incognito=True)
+                await pilot.pause()
+
+        messages = app._message_store.get_all_messages()
+        assert any(
+            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
+        )
+        assert not any(
+            msg.type in {MessageType.USER, MessageType.ASSISTANT}
+            and "secret" in msg.content
+            for msg in messages
+        )
+        write_mock.assert_not_awaited()
+
+    async def test_incognito_nonzero_exit_keeps_stderr_out_of_model(self) -> None:
+        """A failing incognito command must not leak stderr to model records."""
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"secret leak"))
+        mock_proc.returncode = 1
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # type: ignore[assignment]
+            app._maybe_drain_deferred = AsyncMock()  # type: ignore[assignment]
+            app._process_next_from_queue = AsyncMock()  # type: ignore[assignment]
+
+            with patch(
+                "asyncio.create_subprocess_shell",
+                return_value=mock_proc,
+            ):
+                await app._run_shell_task("falsey", incognito=True)
+                await pilot.pause()
+
+        messages = app._message_store.get_all_messages()
+        assert not any(
+            msg.type in {MessageType.USER, MessageType.ASSISTANT}
+            and "secret leak" in msg.content
+            for msg in messages
+        )
+
+    async def test_unknown_input_mode_does_not_dispatch_to_agent(self) -> None:
+        """An unrecognized mode must surface an error rather than reach the LLM.
+
+        Regression guard for the privacy invariant: a typo or stale mode
+        literal must never silently fall through to `_handle_user_message`.
+        """
+        from deepagents_cli.widgets.message_store import MessageType
+
+        app = DeepAgentsApp()
+        user_handler = AsyncMock()
+        shell_handler = AsyncMock()
+        app._handle_user_message = user_handler  # type: ignore[method-assign]
+        app._handle_shell_command = shell_handler  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._process_message("!!echo secret", "shell_incognto")  # type: ignore[arg-type]
+            await pilot.pause()
+
+            user_handler.assert_not_awaited()
+            shell_handler.assert_not_awaited()
+
+            messages = app._message_store.get_all_messages()
+            assert any(
+                msg.type == MessageType.ERROR and "unknown input mode" in msg.content
+                for msg in messages
+            )
 
     async def test_kill_noop_when_already_exited(self) -> None:
         """_kill_shell_process should no-op if process already exited."""
@@ -4149,6 +4540,20 @@ class TestSlashCommandBypass:
             pm.assert_called_once_with("/version", "command")
             assert len(app._pending_messages) == 0
 
+    async def test_about_alias_executes_during_connecting(self) -> None:
+        """/about should process like the hidden alias for /version."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+
+            with patch.object(app, "_process_message", new_callable=AsyncMock) as pm:
+                app.post_message(ChatInput.Submitted("/about", "command"))
+                await pilot.pause()
+
+            pm.assert_called_once_with("/about", "command")
+            assert len(app._pending_messages) == 0
+
     async def test_version_queues_during_agent_running(self) -> None:
         """/version should still queue when agent is actively running."""
         app = DeepAgentsApp()
@@ -4591,6 +4996,18 @@ class TestDeferredActions:
             app._shell_running = False
             assert app._can_bypass_queue("/version") is False
 
+    async def test_can_bypass_queue_about_matches_version(self) -> None:
+        """/about follows the same connection-only bypass policy as /version."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._connecting = True
+            assert app._can_bypass_queue("/about") is True
+
+            app._agent_running = True
+            assert app._can_bypass_queue("/about") is False
+
     async def test_can_bypass_queue_bare_model_bypasses(self) -> None:
         """Bare /model should bypass the queue."""
         app = DeepAgentsApp()
@@ -4625,7 +5042,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -5431,6 +5848,26 @@ def _update_entry(latest: str = "2.0.0") -> PendingNotification:
     )
 
 
+def test_build_update_notification_uses_release_and_installed_age_copy() -> None:
+    """Update notices separate latest-release age from installed-version age."""
+    from deepagents_cli.app import DeepAgentsApp
+
+    notification = DeepAgentsApp._build_update_notification(
+        latest="2.0.0",
+        cli_version="1.0.0",
+        release_age=" (released 3d ago)",
+        installed_age=" (8 days old)",
+        upgrade_cmd="pip install",
+    )
+
+    assert notification.body == (
+        "v2.0.0 is available (released 3d ago).\n"
+        "Currently installed: 1.0.0 (8 days old).\n"
+        "Your session will not be interrupted."
+    )
+    assert notification.title == "Update available"
+
+
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
 
@@ -5914,6 +6351,46 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_debug_update_install_does_not_run_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug update modal can exercise Install now without changing packages."""
+        from deepagents_cli._env_vars import DEBUG_UPDATE
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setenv(DEBUG_UPDATE, "1")
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(return_value=(True, "Updated deepagents-cli")),
+            ) as mock_upgrade:
+                with patch(
+                    "deepagents_cli.app.asyncio.sleep",
+                    new=AsyncMock(),
+                ):
+                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateProgressScreen)
+
+        mock_upgrade.assert_not_called()
+        assert app._notice_registry.get("update:available") is None
+        assert not any("Mock update complete" in m for m in notified)
+
     async def test_install_failure_removes_entry_and_toasts_manual(self) -> None:
         """Failed install removes the stale entry and surfaces the manual command."""
         from deepagents_cli.notifications import ActionId
@@ -5944,6 +6421,43 @@ class TestNotificationCenterIntegration:
         assert any("Run manually" in m for m in notified)
         assert any("network unreachable" in m for m in notified)
 
+    async def test_install_immediate_failure_updates_mounted_modal(self) -> None:
+        """Immediate install failures still render the completed modal state."""
+        from deepagents_cli.config import get_glyphs
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        def fail_immediately(
+            **kwargs: Any,
+        ) -> tuple[bool, str]:
+            assert kwargs["progress"] is not None
+            assert kwargs["log_path"] is not None
+            assert isinstance(app.screen, UpdateProgressScreen)
+            assert app.screen._status_widget is not None
+            assert app.screen._tail_widget is not None
+            return False, "brew: command not found"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(side_effect=fail_immediately),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            details = app.screen.query(Static).filter(".up-details").first()
+            spinner = app.screen.query(Static).filter(".up-spinner").first()
+            assert "Update failed. Try manually:" in str(status.render())
+            assert details.display is True
+            assert str(spinner.render()) == get_glyphs().checkmark
+
     async def test_update_skip_once_clears_notified_marker(self) -> None:
         """'Remind me next launch' calls clear_update_notified and removes the entry."""
         from deepagents_cli.notifications import ActionId
@@ -5951,6 +6465,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry()
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.clear_update_notified",
@@ -5962,6 +6484,7 @@ class TestNotificationCenterIntegration:
 
         mock_clear.assert_called_once()
         assert app._notice_registry.get("update:available") is None
+        assert any("remind you next launch" in m for m in notified)
 
     async def test_update_skip_version_marks_notified_for_latest(self) -> None:
         """'Skip this version' marks the version notified and removes the entry."""
@@ -5970,6 +6493,14 @@ class TestNotificationCenterIntegration:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         entry = _update_entry(latest="3.1.4")
         app._notice_registry.add(entry)
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # type: ignore[method-assign]
 
         with patch(
             "deepagents_cli.update_check.mark_update_notified",
@@ -5983,6 +6514,7 @@ class TestNotificationCenterIntegration:
 
         mock_mark.assert_called_once_with("3.1.4")
         assert app._notice_registry.get("update:available") is None
+        assert any("Skipped v3.1.4" in m for m in notified)
 
     async def test_dispatcher_handler_exception_surfaces_action_label(self) -> None:
         """A handler raising OSError produces a warning toast naming the action."""
@@ -6198,7 +6730,11 @@ class TestNotificationCenterIntegration:
                 "deepagents_cli.update_check.mark_update_notified",
             ),
             patch(
-                "deepagents_cli.update_check.format_age_suffix",
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
                 return_value="",
             ),
             patch(
@@ -6211,6 +6747,59 @@ class TestNotificationCenterIntegration:
                 await app._check_for_updates()
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
+        """Hourly rechecks surface updates without interrupting the session."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        bodies: list[str] = []
+        original_notify_actionable = app._notify_actionable
+
+        def capture_notify_actionable(
+            entry: PendingNotification, **kwargs: Any
+        ) -> None:
+            bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
+            original_notify_actionable(entry, **kwargs)
+
+        app._notify_actionable = capture_notify_actionable  # type: ignore[method-assign]
+
+        with (
+            patch(
+                "deepagents_cli.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_cli.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_cli.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_cli.update_check.mark_update_notified",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+            patch(
+                "deepagents_cli.update_check.upgrade_command",
+                return_value="pip install -U deepagents-cli",
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+
+        entry = app._notice_registry.get("update:available")
+        assert entry is not None
+        assert any("session will not be interrupted" in body for body in bodies)
+        assert any("Press ctrl+n to install." in body for body in bodies)
 
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
@@ -6244,7 +6833,12 @@ class TestNotificationCenterIntegration:
 
         # Hint toast surfaced with ctrl+n pointer; pending event cleared so
         # subsequent missing-dep toasts aren't suppressed.
-        assert any("Update available" in m and "ctrl+n" in m for m in notified)
+        assert any(
+            "Update available" in m
+            and "session will not be interrupted" in m
+            and "ctrl+n" in m
+            for m in notified
+        )
         assert not app._update_modal_pending.is_set()
         assert app._notice_registry.get(entry.key) is entry
 

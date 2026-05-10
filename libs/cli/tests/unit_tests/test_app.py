@@ -6042,6 +6042,43 @@ class TestNotificationCenterIntegration:
         assert any("Run manually" in m for m in notified)
         assert any("network unreachable" in m for m in notified)
 
+    async def test_install_immediate_failure_updates_mounted_modal(self) -> None:
+        """Immediate install failures still render the completed modal state."""
+        from deepagents_cli.config import get_glyphs
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        def fail_immediately(
+            **kwargs: Any,
+        ) -> tuple[bool, str]:
+            assert kwargs["progress"] is not None
+            assert kwargs["log_path"] is not None
+            assert isinstance(app.screen, UpdateProgressScreen)
+            assert app.screen._status_widget is not None
+            assert app.screen._tail_widget is not None
+            return False, "brew: command not found"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(side_effect=fail_immediately),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            details = app.screen.query(Static).filter(".up-details").first()
+            spinner = app.screen.query(Static).filter(".up-spinner").first()
+            assert "Update failed. Try manually:" in str(status.render())
+            assert details.display is True
+            assert str(spinner.render()) == get_glyphs().checkmark
+
     async def test_update_skip_once_clears_notified_marker(self) -> None:
         """'Remind me next launch' calls clear_update_notified and removes the entry."""
         from deepagents_cli.notifications import ActionId

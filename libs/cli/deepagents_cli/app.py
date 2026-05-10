@@ -7364,7 +7364,7 @@ class DeepAgentsApp(App):
             )
             progress_modal_visible = not isinstance(self.screen, ModalScreen)
             if progress_modal_visible:
-                self.push_screen(screen)
+                await self.push_screen(screen)
             else:
                 self.notify(
                     f"Updating to v{payload.latest}... Logs: {log_path}",

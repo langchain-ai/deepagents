@@ -94,7 +94,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/copy",
         description="Copy latest assistant message to clipboard",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
     ),
     SlashCommand(
         name="/force-clear",

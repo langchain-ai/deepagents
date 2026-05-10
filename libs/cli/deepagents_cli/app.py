@@ -4353,30 +4353,47 @@ class DeepAgentsApp(App):
                 )
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
-            content = next(
-                (
-                    message.content
-                    for message in reversed(self._message_store.get_all_messages())
-                    if message.type == MessageType.ASSISTANT
-                    and not message.is_streaming
-                    and message.content.strip()
-                ),
-                None,
-            )
+            # Reverse-scan for the newest assistant message that has finished
+            # streaming and contains visible text. Track whether we passed over
+            # an in-flight stream so we can explain the skip rather than say
+            # "No message to copy yet." misleadingly.
+            content: str | None = None
+            streaming_pending = False
+            for message in reversed(self._message_store.get_all_messages()):
+                if message.type != MessageType.ASSISTANT:
+                    continue
+                if not message.content.strip():
+                    continue
+                if message.is_streaming:
+                    streaming_pending = True
+                    continue
+                content = message.content
+                break
+
             if content is None:
-                await self._mount_message(AppMessage("No message to copy yet."))
+                empty_msg = (
+                    "Latest assistant message is still streaming;"
+                    " try again in a moment."
+                    if streaming_pending
+                    else "No message to copy yet."
+                )
+                await self._mount_message(AppMessage(empty_msg))
                 return
 
             from deepagents_cli.clipboard import copy_text_to_clipboard
 
-            if copy_text_to_clipboard(self, content):
+            success, error = copy_text_to_clipboard(self, content)
+            if success:
                 await self._mount_message(
                     AppMessage("Copied latest assistant message to clipboard.")
                 )
             else:
-                await self._mount_message(
-                    AppMessage("Failed to copy latest assistant message to clipboard.")
+                fail_msg = (
+                    f"Failed to copy latest assistant message to clipboard: {error}"
+                    if error
+                    else "Failed to copy latest assistant message to clipboard."
                 )
+                await self._mount_message(AppMessage(fail_msg))
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:

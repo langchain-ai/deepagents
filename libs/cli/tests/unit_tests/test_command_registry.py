@@ -144,11 +144,11 @@ class TestCopyCommand:
 
         assert copy_entry.description == "Copy latest assistant message to clipboard"
 
-    def test_copy_classified_as_queue_bound(self) -> None:
+    def test_copy_classified_as_side_effect_free(self) -> None:
         copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
 
         assert copy_cmd.description == "Copy latest assistant message to clipboard"
-        assert "/copy" in QUEUE_BOUND
+        assert "/copy" in SIDE_EFFECT_FREE
 
 
 class TestHelpBodyDrift:

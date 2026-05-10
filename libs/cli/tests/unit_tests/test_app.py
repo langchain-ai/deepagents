@@ -2473,7 +2473,7 @@ class TestCopyCommand:
             await pilot.pause()
             with patch(
                 "deepagents_cli.clipboard.copy_text_to_clipboard",
-                return_value=True,
+                return_value=(True, None),
             ) as copy_mock:
                 await app._handle_command("/copy")
                 await pilot.pause()
@@ -2499,6 +2499,28 @@ class TestCopyCommand:
         app._message_store.append(
             MessageData(type=MessageType.ASSISTANT, content="   ")
         )
+        app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, expected)
+
+    async def test_copy_falls_back_when_only_streaming_assistant_present(self) -> None:
+        """`/copy` skips an in-flight stream and copies the prior completed reply."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        completed = "completed reply"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=completed)
+        )
         app._message_store.append(
             MessageData(
                 type=MessageType.ASSISTANT,
@@ -2506,18 +2528,47 @@ class TestCopyCommand:
                 is_streaming=True,
             )
         )
-        app._message_store.append(MessageData(type=MessageType.APP, content="status"))
 
         async with app.run_test() as pilot:
             await pilot.pause()
             with patch(
                 "deepagents_cli.clipboard.copy_text_to_clipboard",
-                return_value=True,
+                return_value=(True, None),
             ) as copy_mock:
                 await app._handle_command("/copy")
                 await pilot.pause()
 
-            copy_mock.assert_called_once_with(app, expected)
+            copy_mock.assert_called_once_with(app, completed)
+
+    async def test_copy_reports_streaming_pending_when_only_stream_present(
+        self,
+    ) -> None:
+        """`/copy` distinguishes in-flight streams from a truly empty history."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hi"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                "still streaming" in str(w._content) for w in app.query(AppMessage)
+            )
 
     async def test_copy_reports_empty_state_without_clipboard_call(self) -> None:
         """`/copy` reports empty state when no assistant text is eligible."""
@@ -2526,19 +2577,12 @@ class TestCopyCommand:
         app = DeepAgentsApp()
         app._message_store.append(MessageData(type=MessageType.USER, content="hello"))
         app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=" "))
-        app._message_store.append(
-            MessageData(
-                type=MessageType.ASSISTANT,
-                content="partial",
-                is_streaming=True,
-            )
-        )
 
         async with app.run_test() as pilot:
             await pilot.pause()
             with patch(
                 "deepagents_cli.clipboard.copy_text_to_clipboard",
-                return_value=True,
+                return_value=(True, None),
             ) as copy_mock:
                 await app._handle_command("/copy")
                 await pilot.pause()
@@ -2549,8 +2593,8 @@ class TestCopyCommand:
                 for w in app.query(AppMessage)
             )
 
-    async def test_copy_reports_clipboard_failure(self) -> None:
-        """`/copy` reports failure when no clipboard backend succeeds."""
+    async def test_copy_reports_clipboard_failure_with_reason(self) -> None:
+        """`/copy` surfaces the backend error so users can self-diagnose."""
         from deepagents_cli.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
@@ -2562,7 +2606,32 @@ class TestCopyCommand:
             await pilot.pause()
             with patch(
                 "deepagents_cli.clipboard.copy_text_to_clipboard",
-                return_value=False,
+                return_value=(False, "no clipboard mechanism for your system"),
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard:"
+                " no clipboard mechanism for your system"
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure_without_reason(self) -> None:
+        """`/copy` falls back to a generic message when no error string is given."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(False, None),
             ):
                 await app._handle_command("/copy")
                 await pilot.pause()
@@ -4663,7 +4732,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -4671,7 +4740,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/help", "/clear", "/copy", "/tokens"):
+            for cmd in ("/help", "/clear", "/tokens"):
                 assert app._can_bypass_queue(cmd) is False
 
     async def test_can_bypass_queue_empty_string(self) -> None:

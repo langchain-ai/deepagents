@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import tomli_w
 
-from deepagents_cli import auth_store
+from deepagents_cli import _env_vars, auth_store
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -487,6 +487,17 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
 
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+"""Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
+
+OLLAMA_DISCOVERY_TIMEOUT_SECONDS = 1.0
+"""Socket timeout for the `/api/tags` discovery probe.
+
+Kept short so a dead daemon does not stall switcher loading. The probe runs
+inside `asyncio.to_thread` from `ModelSelectorScreen.on_mount`, so the timeout
+caps the worst-case wait observable in the UI.
+"""
+
 
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
@@ -771,6 +782,28 @@ def get_available_models() -> dict[str, list[str]]:
                 if model not in existing:
                     available[provider_name].append(model)
 
+    # `langchain-ollama` ships no profile data, so the steps above leave the
+    # switcher empty unless the user hand-curates `models = […]`. Probe the
+    # daemon for the list of pulled models and merge it in. The result is
+    # cached alongside the rest of `available` and only refreshed on
+    # `clear_caches()` (e.g. via the `/reload` slash command).
+    if (
+        _ollama_discovery_enabled()
+        and "ollama" in registry_providers
+        and config.is_provider_enabled("ollama")
+        and importlib.util.find_spec("langchain_ollama") is not None
+    ):
+        endpoint = _get_provider_endpoint("ollama", config)
+        discovered = _fetch_ollama_installed_models(endpoint)
+        if discovered:
+            existing_models = list(available.get("ollama", []))
+            existing_set = set(existing_models)
+            for name in discovered:
+                if name not in existing_set:
+                    existing_models.append(name)
+                    existing_set.add(name)
+            available["ollama"] = existing_models
+
     _available_models_cache = available
     return available
 
@@ -976,6 +1009,96 @@ def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
     if not host_env:
         return None
     return resolve_env_var(host_env)
+
+
+_OLLAMA_DISCOVERY_FALSY: frozenset[str] = frozenset({"0", "false", "no", "off"})
+
+
+def _ollama_discovery_enabled() -> bool:
+    """Return whether `/api/tags` discovery may run for the Ollama provider.
+
+    Defaults to enabled. Users who never start the Ollama daemon (or who do
+    not want the CLI probing it) can opt out by exporting
+    `DEEPAGENTS_CLI_OLLAMA_DISCOVERY` to a falsy value (`0`, `false`, `no`,
+    `off`). The env var is also resolved through the standard
+    `DEEPAGENTS_CLI_*` prefix override mechanism.
+    """
+    raw = resolve_env_var(_env_vars.OLLAMA_DISCOVERY)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in _OLLAMA_DISCOVERY_FALSY
+
+
+def _fetch_ollama_installed_models(
+    endpoint: str | None,
+    *,
+    timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS,
+) -> list[str]:
+    """Discover models installed in a local or hosted Ollama daemon.
+
+    Issues a `GET {endpoint}/api/tags` and returns the sorted list of model
+    names reported by the daemon. The probe is best-effort: any error
+    (timeout, connection refused, malformed JSON) yields an empty list and is
+    logged at debug level so the model switcher can fall back gracefully.
+
+    When `OLLAMA_API_KEY` (or the `DEEPAGENTS_CLI_`-prefixed variant) is set,
+    its value is forwarded as a `Bearer` token so hosted Ollama Cloud / gateway
+    deployments can answer the probe.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+        timeout: Socket timeout in seconds.
+
+    Returns:
+        Sorted list of model names; empty when the daemon is unreachable or
+        returns no models.
+    """
+    import json
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        logger.debug("Skipping Ollama discovery: unsupported scheme in %r", base)
+        return []
+    url = f"{base}/api/tags"
+
+    headers: dict[str, str] = {"Accept": "application/json"}
+    optional_env = OPTIONAL_AUTH_ENV.get("ollama")
+    if optional_env:
+        api_key = resolve_env_var(optional_env)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+    request = Request(url, headers=headers)  # noqa: S310  # scheme guarded above
+    # Catch-all is intentional: discovery is best-effort and must never break
+    # the model selector. Includes URL/transport errors plus environment-level
+    # blockers like `pytest-socket`'s `SocketBlockedError` (which inherits from
+    # `Exception`, not `OSError`) so unit tests run with `--disable-socket`
+    # don't have to special-case Ollama.
+    try:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        logger.debug("Ollama model discovery failed for %s: %s", url, exc)
+        return []
+    except Exception as exc:  # noqa: BLE001  # see comment above
+        logger.debug("Ollama model discovery failed for %s: %s", url, exc)
+        return []
+
+    raw_models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        return []
+
+    names: list[str] = []
+    for entry in raw_models:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    names.sort()
+    return names
 
 
 def _has_stored_credential(provider: str) -> bool:

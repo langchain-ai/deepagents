@@ -1,7 +1,9 @@
 """Tests for model_config module."""
 
+import io
 import logging
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import patch
@@ -1309,6 +1311,296 @@ api_key_env = "SOME_KEY"
             models = get_available_models()
 
         assert "empty" not in models
+
+
+class TestOllamaModelDiscovery:
+    """Tests for auto-populating the switcher from a running Ollama daemon."""
+
+    @staticmethod
+    def _patch_registry() -> AbstractContextManager[object]:
+        """Patch the langchain registry so `ollama` is a known provider."""
+        return patch(
+            "deepagents_cli.model_config._get_builtin_providers",
+            return_value={
+                "ollama": ("langchain_ollama.chat_models", "ChatOllama"),
+            },
+        )
+
+    @staticmethod
+    def _empty_profiles_loader(module_path: str) -> dict[str, Any]:
+        """Pretend `langchain_ollama` ships no profile data."""
+        if module_path == "langchain_ollama.data._profiles":
+            return {}
+        msg = "not installed"
+        raise ImportError(msg)
+
+    def test_discovery_merges_models_into_switcher(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Daemon-reported models populate `available["ollama"]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["llama3", "qwen3:4b"],
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models.get("ollama") == ["llama3", "qwen3:4b"]
+
+    def test_discovery_unions_with_explicit_config_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit `models = […]` config still wins / supplements discovery."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["my-finetune"]
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["llama3", "my-finetune"],
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        # Explicit config first, then newly discovered names; no duplicates.
+        assert models["ollama"] == ["my-finetune", "llama3"]
+
+    def test_discovery_skipped_when_package_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No HTTP probe when `langchain-ollama` is not installed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+    def test_discovery_disabled_via_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CLI_OLLAMA_DISCOVERY=0` opts out of the probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.setenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", "0")
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+    def test_discovery_skipped_when_provider_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`enabled = false` for ollama prevents the probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+enabled = false
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+
+class _BytesContext:
+    """Minimal context manager wrapping a bytes payload for fake `urlopen`."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = io.BytesIO(body)
+
+    def __enter__(self) -> io.BytesIO:
+        return self._body
+
+    def __exit__(self, *_exc: object) -> None:
+        self._body.close()
+
+
+class TestFetchOllamaInstalledModels:
+    """Tests for the `_fetch_ollama_installed_models` HTTP probe."""
+
+    def test_returns_sorted_names_from_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Parses `{"models": [{"name": ...}]}` and sorts results."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+        captured_timeout: list[float] = []
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:
+            captured_url.append(request.full_url)
+            captured_timeout.append(timeout)
+            captured_headers.append(dict(request.header_items()))
+            payload = {"models": [{"name": "qwen3:4b"}, {"name": "llama3"}]}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == ["llama3", "qwen3:4b"]
+        assert captured_url == ["http://localhost:11434/api/tags"]
+        assert captured_timeout == [model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS]
+        assert "Authorization" not in {k.title() for k in captured_headers[0]}
+
+    def test_silent_on_connection_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Connection errors yield an empty list without raising."""
+        from urllib.error import URLError
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        url_error = URLError("connection refused")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise url_error
+
+        with patch("urllib.request.urlopen", side_effect=boom):
+            assert model_config._fetch_ollama_installed_models(None) == []
+
+    def test_uses_default_endpoint_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falls back to `OLLAMA_DEFAULT_BASE_URL` when no endpoint is given."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_url.append(request.full_url)
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            assert model_config._fetch_ollama_installed_models(None) == []
+
+        assert captured_url[0].startswith(model_config.OLLAMA_DEFAULT_BASE_URL)
+        assert captured_url[0].endswith("/api/tags")
+
+    def test_forwards_optional_api_key_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`OLLAMA_API_KEY` is forwarded as `Authorization: Bearer …`."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            model_config._fetch_ollama_installed_models("http://localhost:11434")
+
+        # Header names are title-cased by urllib.
+        assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_rejects_unsupported_scheme(self) -> None:
+        """Non-http(s) endpoints are skipped without invoking the network."""
+        with patch("urllib.request.urlopen") as fake:
+            assert (
+                model_config._fetch_ollama_installed_models("ftp://localhost:11434")
+                == []
+            )
+        fake.assert_not_called()
 
 
 class TestDisabledProviders:

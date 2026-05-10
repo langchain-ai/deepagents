@@ -12,7 +12,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.sessions import ThreadInfo
@@ -445,6 +445,7 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 thread_id_switch = screen.query_one(
                     f"#{ThreadSelectorScreen._switch_id('thread_id')}",
@@ -460,6 +461,10 @@ class TestThreadSelectorTabSort:
                 )
 
                 assert filter_input.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
@@ -496,12 +501,21 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 assert filter_input.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
+                assert scope_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
                 assert sort_switch.has_focus
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert scope_select.has_focus
 
                 await pilot.press("shift+tab")
                 await pilot.pause()
@@ -519,6 +533,7 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 controls = screen._filter_focus_order()
                 event = MagicMock()
@@ -537,7 +552,8 @@ class TestThreadSelectorTabSort:
                 ):
                     assert screen._filter_focus_order() == controls
                     assert controls[0] is filter_input
-                    assert controls[1] is sort_switch
+                    assert controls[1] is scope_select
+                    assert controls[2] is sort_switch
 
                     screen.on_key(event)
 
@@ -559,6 +575,7 @@ class TestThreadSelectorTabSort:
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -583,6 +600,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -610,6 +628,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -639,6 +658,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus

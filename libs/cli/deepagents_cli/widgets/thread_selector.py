@@ -19,7 +19,7 @@ from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -107,6 +107,9 @@ _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
+_SCOPE_SELECT_ID = "thread-scope-select"
+_SCOPE_VALUE_CWD = "cwd"
+_SCOPE_VALUE_ALL = "all"
 _CELL_PADDING_RIGHT = 1
 
 
@@ -490,13 +493,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("ctrl+d", "delete_thread", "Delete", show=False, priority=True),
-        Binding(
-            "ctrl+y",
-            "toggle_cwd_filter",
-            "Toggle cwd filter",
-            show=False,
-            priority=True,
-        ),
         Binding("tab", "focus_next_filter", "Next filter", show=False, priority=True),
         Binding(
             "shift+tab",
@@ -575,6 +571,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-controls-help {
         color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    ThreadSelectorScreen .thread-controls-label {
+        color: $text-muted;
+        margin-top: 0;
+    }
+
+    ThreadSelectorScreen .thread-scope-select {
+        width: 1fr;
+        height: auto;
         margin-bottom: 1;
     }
 
@@ -708,10 +715,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             filter_cwd: Working-directory filter for the picker.
 
                 When the default sentinel, the picker mirrors Claude Code's
-                `/resume` and scopes to the current working directory; press
-                Ctrl+Y in the picker to toggle "all directories". Pass an
-                explicit path to scope to that directory, or `None` to start
-                the picker with no cwd filter.
+                `/resume` and scopes to the current working directory; the
+                "Show threads from" select in the Options panel widens the
+                view to "all directories". Pass an explicit path to scope to
+                that directory, or `None` to start the picker with no cwd
+                filter.
         """
         super().__init__()
         self._current_thread = current_thread
@@ -735,7 +743,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
-        self._filter_controls: list[Input | Checkbox] | None = None
+        self._filter_controls: list[Input | Checkbox | Select[str]] | None = None
         self._cell_text: dict[tuple[str, str], str] = {}
 
         from deepagents_cli.model_config import load_thread_config
@@ -819,16 +827,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
             f" {glyphs.bullet} Ctrl+D delete"
-            f" {glyphs.bullet} Ctrl+Y "
-            f"{'show all dirs' if self._filter_cwd else 'filter to cwd'}"
             f" {glyphs.bullet} Esc cancel"
         )
-        scope = (
-            f"current directory ({self._filter_cwd})"
-            if self._filter_cwd
-            else "all directories"
-        )
-        lines += f"\nScope: {scope}"
         limit = self._effective_thread_limit()
         if len(self._threads) >= limit:
             lines += (
@@ -856,10 +856,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filter_input = self.query_one("#thread-filter", Input)
         return self._filter_input
 
-    def _filter_focus_order(self) -> list[Input | Checkbox]:
+    def _filter_focus_order(self) -> list[Input | Checkbox | Select[str]]:
         """Return the cached tab order for filter controls in the side panel."""
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
+            scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
             sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
             column_switches = [
@@ -868,6 +869,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             ]
             self._filter_controls = [
                 filter_input,
+                scope_select,
                 sort_switch,
                 relative_switch,
                 *column_switches,
@@ -935,6 +937,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         ),
                         classes="thread-controls-help",
                         markup=False,
+                    )
+                    yield Static(
+                        "Show threads from:",
+                        classes="thread-controls-label",
+                        markup=False,
+                    )
+                    yield Select(
+                        [
+                            ("Current directory", _SCOPE_VALUE_CWD),
+                            ("All directories", _SCOPE_VALUE_ALL),
+                        ],
+                        value=(
+                            _SCOPE_VALUE_CWD
+                            if self._filter_cwd is not None
+                            else _SCOPE_VALUE_ALL
+                        ),
+                        allow_blank=False,
+                        compact=True,
+                        id=_SCOPE_SELECT_ID,
+                        classes="thread-scope-select",
                     )
                     yield Checkbox(
                         self._format_sort_toggle_label(),
@@ -1824,7 +1846,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             controls[0].focus()
             return
 
-        index = controls.index(cast("Input | Checkbox", focused))
+        index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index + 1) % len(controls)].focus()
 
     def action_focus_previous_filter(self) -> None:
@@ -1837,7 +1859,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             controls[-1].focus()
             return
 
-        index = controls.index(cast("Input | Checkbox", focused))
+        index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index - 1) % len(controls)].focus()
 
     def action_toggle_sort(self) -> None:
@@ -1854,21 +1876,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             "updated_at" if self._sort_by_updated else "created_at"
         )
 
-    def action_toggle_cwd_filter(self) -> None:
-        """Toggle between filtering threads to the current cwd and showing all.
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle the scope `Select` dropdown in the Options panel.
 
-        Mirrors Claude Code's `/resume` keyboard toggle: by default the picker
-        is scoped to the current working directory; pressing the bound key
-        widens the view to threads from all directories.
+        Mirrors Claude Code's `/resume`: the picker is scoped to the current
+        working directory by default; choosing "All directories" widens the
+        view to threads from every cwd.
         """
+        if event.select.id != _SCOPE_SELECT_ID:
+            return
         if self._confirming_delete:
             return
-        if self._filter_cwd is None:
-            self._filter_cwd = str(Path.cwd())
-            self.app.notify(f"Showing threads from {self._filter_cwd}")
-        else:
-            self._filter_cwd = None
-            self.app.notify("Showing threads from all directories")
+
+        new_cwd = str(Path.cwd()) if event.value == _SCOPE_VALUE_CWD else None
+        if new_cwd == self._filter_cwd:
+            return
+        self._filter_cwd = new_cwd
         self._update_help_widgets()
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"

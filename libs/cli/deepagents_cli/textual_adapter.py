@@ -280,8 +280,8 @@ class TextualUIAdapter:
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
 
-        self._on_tokens_hide: Callable[[], None] | None = None
-        """Called to hide the token display during streaming."""
+        self._on_tokens_pending: Callable[[], None] | None = None
+        """Called to show an unknown token count during streaming."""
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
@@ -478,21 +478,21 @@ async def execute_task_textual(
     # should be set together to avoid inconsistent status-bar behavior.
     token_cbs = (
         adapter._on_tokens_update,
-        adapter._on_tokens_hide,
+        adapter._on_tokens_pending,
         adapter._on_tokens_show,
     )
     if any(token_cbs) and not all(token_cbs):
         logger.warning(
-            "Token callbacks partially wired (update=%s, hide=%s, show=%s); "
+            "Token callbacks partially wired (update=%s, pending=%s, show=%s); "
             "token display may behave inconsistently",
             adapter._on_tokens_update is not None,
-            adapter._on_tokens_hide is not None,
+            adapter._on_tokens_pending is not None,
             adapter._on_tokens_show is not None,
         )
 
-    # Hide token display during streaming (will be shown with accurate count at end)
-    if adapter._on_tokens_hide:
-        adapter._on_tokens_hide()
+    # Show unknown token count during streaming; the accurate count arrives at turn end.
+    if adapter._on_tokens_pending:
+        adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
@@ -1252,6 +1252,14 @@ async def execute_task_textual(
                     )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    await _report_and_persist_tokens(
+                        adapter,
+                        agent,
+                        config,
+                        captured_input_tokens,
+                        captured_output_tokens,
+                        shield=True,
+                    )
                     return turn_stats
 
                 stream_input = Command(resume=resume_payload)

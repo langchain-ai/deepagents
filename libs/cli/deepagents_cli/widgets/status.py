@@ -406,9 +406,10 @@ class StatusBar(Horizontal):
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
 
-        Forces a display refresh even when the value is unchanged, because
-        `hide_tokens` clears the widget text without updating the reactive
-        attribute.
+        Forces a display refresh even when the value is unchanged. During
+        streaming, `show_pending_tokens` replaces the widget text without
+        changing the reactive token value, so a later update with the same
+        count still needs to re-render the exact count.
 
         Args:
             count: Current context token count.
@@ -423,10 +424,10 @@ class StatusBar(Horizontal):
             # self._approximate for the suffix.
             self.tokens = count
 
-    def hide_tokens(self) -> None:
-        """Hide the token display (e.g., during streaming)."""
+    def show_pending_tokens(self) -> None:
+        """Show an unknown token count placeholder during streaming."""
         try:
-            self.query_one("#tokens-display", Static).update("")
+            self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:
             return
 

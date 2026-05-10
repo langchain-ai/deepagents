@@ -1553,7 +1553,7 @@ class DeepAgentsApp(App):
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
-        self._ui_adapter._on_tokens_hide = self._hide_tokens
+        self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
 
         # Fire-and-forget workers — none of these block the event loop.
@@ -2751,10 +2751,10 @@ class DeepAgentsApp(App):
             approximate=self._tokens_approximate,
         )
 
-    def _hide_tokens(self) -> None:
-        """Hide the token display during streaming."""
+    def _show_pending_tokens(self) -> None:
+        """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
-            self._status_bar.hide_tokens()
+            self._status_bar.show_pending_tokens()
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.

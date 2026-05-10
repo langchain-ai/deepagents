@@ -37,9 +37,10 @@ from deepagents_cli.config import (
 from deepagents_cli.widgets._links import open_style_link
 
 _TIPS: dict[str, int] = {
-    "Use @ to reference files and / for commands": 2,
+    "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
+    "Use /copy to copy the latest assistant message": 3,
     "Use /mcp to see your loaded tools and servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,

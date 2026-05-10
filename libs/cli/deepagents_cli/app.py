@@ -1554,7 +1554,7 @@ class DeepAgentsApp(App):
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
-        self._ui_adapter._on_tokens_hide = self._hide_tokens
+        self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
 
         # Fire-and-forget workers — none of these block the event loop.
@@ -2752,10 +2752,10 @@ class DeepAgentsApp(App):
             approximate=self._tokens_approximate,
         )
 
-    def _hide_tokens(self) -> None:
-        """Hide the token display during streaming."""
+    def _show_pending_tokens(self) -> None:
+        """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
-            self._status_bar.hide_tokens()
+            self._status_bar.show_pending_tokens()
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
@@ -4395,7 +4395,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/offload, /editor, "
+                "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /skill:<name>, /remember, "
                 "/skill-creator, /theme, /tokens, /threads, /trace, "
@@ -4448,6 +4448,49 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     AppMessage(f"Started new thread: {new_thread_id}")
                 )
+        elif cmd == "/copy":
+            await self._mount_message(UserMessage(command))
+            # Reverse-scan for the newest assistant message that has finished
+            # streaming and contains visible text. Track whether we passed over
+            # an in-flight stream so we can explain the skip rather than say
+            # "No message to copy yet." misleadingly.
+            content: str | None = None
+            streaming_pending = False
+            for message in reversed(self._message_store.get_all_messages()):
+                if message.type != MessageType.ASSISTANT:
+                    continue
+                if not message.content.strip():
+                    continue
+                if message.is_streaming:
+                    streaming_pending = True
+                    continue
+                content = message.content
+                break
+
+            if content is None:
+                empty_msg = (
+                    "Latest assistant message is still streaming;"
+                    " try again in a moment."
+                    if streaming_pending
+                    else "No message to copy yet."
+                )
+                await self._mount_message(AppMessage(empty_msg))
+                return
+
+            from deepagents_cli.clipboard import copy_text_to_clipboard
+
+            success, error = copy_text_to_clipboard(self, content)
+            if success:
+                await self._mount_message(
+                    AppMessage("Copied latest assistant message to clipboard.")
+                )
+            else:
+                fail_msg = (
+                    f"Failed to copy latest assistant message to clipboard: {error}"
+                    if error
+                    else "Failed to copy latest assistant message to clipboard."
+                )
+                await self._mount_message(AppMessage(fail_msg))
         elif cmd == "/editor":
             await self.action_open_editor()
         elif cmd in {"/offload", "/compact"}:
@@ -7435,7 +7478,7 @@ class DeepAgentsApp(App):
             )
             progress_modal_visible = not isinstance(self.screen, ModalScreen)
             if progress_modal_visible:
-                self.push_screen(screen)
+                await self.push_screen(screen)
             else:
                 self.notify(
                     f"Updating to v{payload.latest}... Logs: {log_path}",

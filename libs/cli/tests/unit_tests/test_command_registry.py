@@ -136,6 +136,21 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestCopyCommand:
+    """Validate the `/copy` entry specifically."""
+
+    def test_copy_registered_for_autocomplete(self) -> None:
+        copy_entry = next(entry for entry in SLASH_COMMANDS if entry.name == "/copy")
+
+        assert copy_entry.description == "Copy latest assistant message to clipboard"
+
+    def test_copy_classified_as_side_effect_free(self) -> None:
+        copy_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/copy")
+
+        assert copy_cmd.description == "Copy latest assistant message to clipboard"
+        assert "/copy" in SIDE_EFFECT_FREE
+
+
 class TestHelpBodyDrift:
     """Ensure the /help body in app.py stays in sync with COMMANDS.
 

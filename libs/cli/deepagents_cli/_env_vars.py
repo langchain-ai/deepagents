@@ -100,6 +100,15 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+OLLAMA_DISCOVERY = "DEEPAGENTS_CLI_OLLAMA_DISCOVERY"
+"""Toggle Ollama model and profile discovery probes.
+
+Defaults to enabled. Suppress the probe when the daemon is intentionally
+offline or the probe latency is undesirable. The probe is lazy and never
+runs on the startup hot path. When enabled, discovery may call `/api/tags`
+and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
+values."""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CLI_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 

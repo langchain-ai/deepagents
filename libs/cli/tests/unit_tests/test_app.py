@@ -2478,6 +2478,193 @@ class TestTraceCommand:
             assert isinstance(app.screen, AuthManagerScreen)
 
 
+class TestCopyCommand:
+    """Tests for `/copy` command behavior."""
+
+    async def test_copy_latest_assistant_message_to_clipboard(self) -> None:
+        """`/copy` copies the latest stored assistant markdown exactly."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        markdown = "# Result\n\n- keep **markdown** source"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=markdown)
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, markdown)
+            assert any(w._content == "/copy" for w in app.query(UserMessage))
+            assert any(
+                str(w._content) == "Copied latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_skips_ineligible_newer_messages(self) -> None:
+        """`/copy` reverse-scans for the newest completed assistant text."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        expected = "older completed assistant"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=expected)
+        )
+        app._message_store.append(MessageData(type=MessageType.USER, content="thanks"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=""))
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="   ")
+        )
+        app._message_store.append(MessageData(type=MessageType.APP, content="status"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, expected)
+
+    async def test_copy_falls_back_when_only_streaming_assistant_present(self) -> None:
+        """`/copy` skips an in-flight stream and copies the prior completed reply."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        completed = "completed reply"
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content=completed)
+        )
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_called_once_with(app, completed)
+
+    async def test_copy_reports_streaming_pending_when_only_stream_present(
+        self,
+    ) -> None:
+        """`/copy` distinguishes in-flight streams from a truly empty history."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hi"))
+        app._message_store.append(
+            MessageData(
+                type=MessageType.ASSISTANT,
+                content="partial response",
+                is_streaming=True,
+            )
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                "still streaming" in str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_empty_state_without_clipboard_call(self) -> None:
+        """`/copy` reports empty state when no assistant text is eligible."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(MessageData(type=MessageType.USER, content="hello"))
+        app._message_store.append(MessageData(type=MessageType.ASSISTANT, content=" "))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            copy_mock.assert_not_called()
+            assert any(
+                str(w._content) == "No message to copy yet."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure_with_reason(self) -> None:
+        """`/copy` surfaces the backend error so users can self-diagnose."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(False, "no clipboard mechanism for your system"),
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard:"
+                " no clipboard mechanism for your system"
+                for w in app.query(AppMessage)
+            )
+
+    async def test_copy_reports_clipboard_failure_without_reason(self) -> None:
+        """`/copy` falls back to a generic message when no error string is given."""
+        from deepagents_cli.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="assistant text")
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.clipboard.copy_text_to_clipboard",
+                return_value=(False, None),
+            ):
+                await app._handle_command("/copy")
+                await pilot.pause()
+
+            assert any(
+                str(w._content)
+                == "Failed to copy latest assistant message to clipboard."
+                for w in app.query(AppMessage)
+            )
+
+
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
@@ -4732,7 +4919,7 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            for cmd in ("/changelog", "/docs", "/feedback", "/mcp"):
+            for cmd in ("/changelog", "/copy", "/docs", "/feedback", "/mcp"):
                 assert app._can_bypass_queue(cmd) is True
 
     async def test_queued_commands_do_not_bypass(self) -> None:
@@ -6110,6 +6297,43 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("update:available") is None
         assert any("Run manually" in m for m in notified)
         assert any("network unreachable" in m for m in notified)
+
+    async def test_install_immediate_failure_updates_mounted_modal(self) -> None:
+        """Immediate install failures still render the completed modal state."""
+        from deepagents_cli.config import get_glyphs
+        from deepagents_cli.notifications import ActionId
+        from deepagents_cli.widgets.update_progress import UpdateProgressScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        def fail_immediately(
+            **kwargs: Any,
+        ) -> tuple[bool, str]:
+            assert kwargs["progress"] is not None
+            assert kwargs["log_path"] is not None
+            assert isinstance(app.screen, UpdateProgressScreen)
+            assert app.screen._status_widget is not None
+            assert app.screen._tail_widget is not None
+            return False, "brew: command not found"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_cli.update_check.perform_upgrade",
+                new=AsyncMock(side_effect=fail_immediately),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            details = app.screen.query(Static).filter(".up-details").first()
+            spinner = app.screen.query(Static).filter(".up-spinner").first()
+            assert "Update failed. Try manually:" in str(status.render())
+            assert details.display is True
+            assert str(spinner.render()) == get_glyphs().checkmark
 
     async def test_update_skip_once_clears_notified_marker(self) -> None:
         """'Remind me next launch' calls clear_update_notified and removes the entry."""

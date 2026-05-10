@@ -93,7 +93,7 @@ class TestTextualUIAdapterInit:
             request_approval=_mock_approval,
         )
         assert adapter._on_tokens_update is None
-        assert adapter._on_tokens_hide is None
+        assert adapter._on_tokens_pending is None
         assert adapter._on_tokens_show is None
 
     def test_on_tool_complete_defaults_to_none_and_accepts_callback(self) -> None:
@@ -125,17 +125,17 @@ class TestTextualUIAdapterInit:
         def update_cb(count: int, *, approximate: bool = False) -> None:
             pass
 
-        def hide_cb() -> None:
+        def pending_cb() -> None:
             pass
 
         def show_cb(*, approximate: bool = False) -> None:
             pass
 
         adapter._on_tokens_update = update_cb
-        adapter._on_tokens_hide = hide_cb
+        adapter._on_tokens_pending = pending_cb
         adapter._on_tokens_show = show_cb
         assert adapter._on_tokens_update is update_cb
-        assert adapter._on_tokens_hide is hide_cb
+        assert adapter._on_tokens_pending is pending_cb
         assert adapter._on_tokens_show is show_cb
 
     def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
@@ -473,6 +473,12 @@ class _SequencedAgent:
 
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
     """Build an updates-stream chunk containing one ask_user interrupt."""
+    interrupt = SimpleNamespace(id="interrupt-1", value=payload)
+    return ((), "updates", {"__interrupt__": [interrupt]})
+
+
+def _hitl_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
+    """Build an updates-stream chunk containing one HITL interrupt."""
     interrupt = SimpleNamespace(id="interrupt-1", value=payload)
     return ((), "updates", {"__interrupt__": [interrupt]})
 
@@ -1239,6 +1245,7 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_cancelled_marks_row_rejected_and_halts(self) -> None:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
+        token_events: list[str] = []
         future: asyncio.Future[object] = asyncio.Future()
         future.set_result({"type": "cancelled"})
 
@@ -1272,6 +1279,10 @@ class TestExecuteTaskTextualAskUser:
             request_approval=_mock_approval,
             request_ask_user=request_ask_user,
         )
+        adapter._on_tokens_pending = lambda: token_events.append("pending")
+        adapter._on_tokens_show = lambda *, approximate=False: token_events.append(
+            f"show:{approximate}"
+        )
 
         await execute_task_textual(
             user_input="hello",
@@ -1286,6 +1297,69 @@ class TestExecuteTaskTextualAskUser:
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert len(app_messages) == 1
         assert "Question cancelled" in str(app_messages[0]._content)
+        assert token_events == ["pending", "show:False"]
+
+    async def test_hitl_rejection_restores_token_display_before_halt(self) -> None:
+        """Rejected approval should restore tokens before returning early."""
+        mounted: list[object] = []
+        token_events: list[str] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "reject"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "read_file", "args": {"path": "notes.txt"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "read_file",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+        adapter._on_tokens_pending = lambda: token_events.append("pending")
+        adapter._on_tokens_show = lambda *, approximate=False: token_events.append(
+            f"show:{approximate}"
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(agent.stream_inputs) == 1
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert len(app_messages) == 1
+        assert "Command rejected" in str(app_messages[0]._content)
+        assert token_events == ["pending", "show:False"]
 
     async def test_ask_user_invalid_answers_payload_marks_row_error(self) -> None:
         """Non-list answers should mark row as error and pop it."""

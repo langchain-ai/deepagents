@@ -484,9 +484,9 @@ jobs:
             else
               echo "_none_"
             fi
-            echo ""
-            echo "### Failed (${#FAILED[@]})"
             if [ "${#FAILED[@]}" -gt 0 ]; then
+              echo ""
+              echo "### Failed (${#FAILED[@]})"
               for p in "${FAILED[@]}"; do echo "- \`$p\`"; done
               echo ""
               echo "Recover with:"
@@ -496,8 +496,6 @@ jobs:
                 echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
               done
               echo '```'
-            else
-              echo "_none_"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.8...deepagents==0.5.9) (2026-05-10)
+
+### Bug Fixes
+
+* Import profile symbols directly from `harness_profiles` ([#3291](https://github.com/langchain-ai/deepagents/issues/3291)) ([503453c](https://github.com/langchain-ai/deepagents/commit/503453c06f7e0545914789a07ddba6ca6b0c8ec5))
+
 ## [0.5.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.7...deepagents==0.5.8) (2026-05-08)
 
 ### Bug Fixes

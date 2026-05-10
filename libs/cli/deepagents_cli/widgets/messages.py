@@ -584,7 +584,13 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
-    the full content on each update.
+    the full content on each update. Once a stream finishes, the message
+    is re-rendered from the complete source via `Markdown.update()` to
+    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
+    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
+    the first chunk, so any later recompose (click, focus change, theme
+    update) re-yields the stale value and wrapped fenced-code bodies vanish.
+    A full re-parse rebuilds every fence with correct internal state.
     """
 
     DEFAULT_CSS = """
@@ -670,24 +676,28 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
         if self._content:
-            stream = self._ensure_stream()
-            await stream.write(self._content)
+            await self._get_markdown().update(self._content)
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
+            await self._get_markdown().update(self._content)
 
     async def set_content(self, content: str) -> None:
         """Set the full message content.
 
-        This stops any active stream and sets content directly.
+        Cancels any active stream and renders the new content with a
+        single `Markdown.update()` (avoiding a redundant intermediate
+        update of the in-flight content).
 
         Args:
             content: The markdown content to display
         """
-        await self.stop_stream()
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
         self._content = content
         if self._markdown:
             await self._markdown.update(content)

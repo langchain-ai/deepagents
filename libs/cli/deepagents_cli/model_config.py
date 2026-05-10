@@ -787,11 +787,11 @@ def get_available_models() -> dict[str, list[str]]:
                     available[provider_name].append(model)
 
     # `langchain-ollama` ships no profile data, so the steps above leave the
-    # switcher empty unless the user hand-curates `models = […]`. Probe the
-    # daemon for installed models and merge them in, preserving explicit
-    # config order (config wins) with discoveries appended. Cached alongside
-    # the rest of `available`; refresh by calling `clear_caches()` (e.g. via
-    # the `/reload` slash command).
+    # switcher empty unless the user hand-curates `models = [...]` in config.
+    # Probe the daemon for installed models and merge them in,
+    # preserving explicit config order (config wins) with discoveries appended.
+    # Cached alongside the rest of `available`; refresh by
+    # calling `clear_caches()` (e.g. via the `/reload` slash command).
     if (
         _ollama_discovery_enabled()
         and "ollama" in registry_providers
@@ -1055,7 +1055,10 @@ def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
 
 
 _OLLAMA_DISCOVERY_FALSY: frozenset[str] = frozenset({"0", "false", "no", "off"})
+"""Normalized values that disable Ollama discovery when set in `OLLAMA_DISCOVERY`."""
+
 _OLLAMA_DISCOVERY_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+"""Normalized values that enable Ollama discovery when set in `OLLAMA_DISCOVERY`."""
 
 
 def _ollama_discovery_enabled() -> bool:
@@ -1126,7 +1129,7 @@ def _fetch_ollama_installed_models(
 
     Returns:
         Sorted list of model names; empty when the daemon is unreachable or
-        returns no models.
+            returns no models.
     """
     import json
     from urllib.error import URLError

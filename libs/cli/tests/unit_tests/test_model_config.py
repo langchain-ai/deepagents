@@ -1733,7 +1733,7 @@ class TestFetchOllamaInstalledModels:
     def test_forwards_optional_api_key_header(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """`OLLAMA_API_KEY` is forwarded as `Authorization: Bearer …`."""
+        """`OLLAMA_API_KEY` is forwarded to local discovery endpoints."""
         import json
         from urllib.request import Request
 
@@ -1753,6 +1753,29 @@ class TestFetchOllamaInstalledModels:
 
         # Header names are title-cased by urllib.
         assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_does_not_forward_optional_api_key_to_remote_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovery does not send credentials to non-local endpoints."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            model_config._fetch_ollama_installed_models("https://ollama.example.com")
+
+        assert "Authorization" not in captured_headers[0]
 
     def test_rejects_unsupported_scheme(self) -> None:
         """Non-http(s) endpoints are skipped without invoking the network."""
@@ -1847,7 +1870,7 @@ class TestFetchOllamaInstalledModelProfiles:
     def test_posts_model_names_to_show_endpoint(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fetches `/api/show` for each model and parses context length."""
+        """Fetches local `/api/show` with bearer auth and parses context length."""
         import json
         from urllib.request import Request
 
@@ -1880,6 +1903,34 @@ class TestFetchOllamaInstalledModelProfiles:
         assert captured_url == ["http://localhost:11434/api/show"]
         assert captured_body == [{"model": "qwen3:4b"}]
         assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_show_does_not_forward_optional_api_key_to_remote_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Profile discovery does not send credentials to non-local endpoints."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            payload = {"model_info": {"qwen3.context_length": 262144}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "https://ollama.example.com",
+                ["qwen3:4b"],
+            )
+
+        assert profiles["qwen3:4b"]["max_input_tokens"] == 262144
+        assert "Authorization" not in captured_headers[0]
 
     def test_continues_after_per_model_failure(self) -> None:
         """A failed model profile lookup does not abort the whole batch."""

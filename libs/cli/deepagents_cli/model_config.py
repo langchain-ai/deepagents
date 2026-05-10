@@ -1111,9 +1111,9 @@ def _fetch_ollama_installed_models(
     (timeout, connection refused, malformed JSON) yields an empty list and is
     logged at debug level so the model switcher can fall back gracefully.
 
-    When `OLLAMA_API_KEY` (or the `DEEPAGENTS_CLI_`-prefixed variant) is set,
-    its value is forwarded as a `Bearer` token so hosted Ollama Cloud / gateway
-    deployments can answer the probe.
+    When probing a local endpoint and `OLLAMA_API_KEY` (or the
+    `DEEPAGENTS_CLI_`-prefixed variant) is set, its value is forwarded as a
+    `Bearer` token. Discovery never forwards credentials to non-local endpoints.
 
     Args:
         endpoint: Base URL of the Ollama daemon. When `None`, defaults to
@@ -1138,7 +1138,7 @@ def _fetch_ollama_installed_models(
         return []
     url = f"{base}/api/tags"
 
-    headers = _ollama_discovery_headers(content_type=False)
+    headers = _ollama_discovery_headers(base, content_type=False)
     request = Request(url, headers=headers)  # noqa: S310  # scheme guarded above
     # Catch-all is intentional: discovery is best-effort and must never break
     # the model selector. The narrow tuple is fully subsumed by `Exception`
@@ -1182,20 +1182,21 @@ def _fetch_ollama_installed_models(
     return names
 
 
-def _ollama_discovery_headers(*, content_type: bool) -> dict[str, str]:
+def _ollama_discovery_headers(endpoint: str, *, content_type: bool) -> dict[str, str]:
     """Build headers for Ollama discovery requests.
 
     Args:
+        endpoint: Base URL for the discovery request.
         content_type: Whether to include a JSON `Content-Type` header.
 
     Returns:
-        HTTP headers including optional bearer auth when configured.
+        HTTP headers including optional bearer auth for local endpoints.
     """
     headers: dict[str, str] = {"Accept": "application/json"}
     if content_type:
         headers["Content-Type"] = "application/json"
     optional_env = OPTIONAL_AUTH_ENV.get("ollama")
-    if optional_env:
+    if optional_env and _is_local_endpoint(endpoint):
         api_key = resolve_env_var(optional_env)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -1304,7 +1305,7 @@ def _fetch_ollama_installed_model_profiles(
 
     url = f"{base}/api/show"
     profiles: dict[str, dict[str, Any]] = {}
-    headers = _ollama_discovery_headers(content_type=True)
+    headers = _ollama_discovery_headers(base, content_type=True)
 
     for model_name in model_names:
         body = json.dumps({"model": model_name}).encode("utf-8")

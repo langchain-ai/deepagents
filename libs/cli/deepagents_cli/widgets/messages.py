@@ -21,7 +21,7 @@ from textual.widgets import Static
 from deepagents_cli import theme
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
-    PREFIX_TO_MODE,
+    detect_mode_prefix,
     get_glyphs,
     is_ascii_mode,
 )
@@ -96,6 +96,8 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     colors = theme.get_theme_colors(widget_or_app)
     if not mode:
         return colors.primary
+    if mode == "shell_incognito":
+        return colors.mode_incognito
     if mode == "shell":
         return colors.mode_bash
     if mode == "command":
@@ -188,9 +190,10 @@ class UserMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        if mode:
-            self.add_class(f"-mode-{mode}")
+        mode_match = detect_mode_prefix(self._content)
+        if mode_match:
+            _prefix, mode = mode_match
+            self.add_class(f"-mode-{mode.replace('_', '-')}")
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -207,11 +210,12 @@ class UserMessage(_TimestampClickMixin, Static):
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             parts.append(("> ", f"bold {colors.primary}"))
 
@@ -288,11 +292,12 @@ class QueuedUserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             prefix = (f"{glyph} ", f"bold {colors.muted}")
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             prefix = ("> ", f"bold {colors.muted}")
         return Content.assemble(prefix, (content, colors.muted))

@@ -192,6 +192,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/version",
         description="Show version",
         bypass_tier=BypassTier.CONNECTING,
+        aliases=("/about",),
     ),
     SlashCommand(
         name="/feedback",

@@ -426,6 +426,10 @@ class TestBuildWelcomeFooter:
         """New `--startup-cmd` flag must have a discoverability tip."""
         assert any("--startup-cmd" in tip for tip in _TIPS)
 
+    def test_incognito_shell_tip_registered(self) -> None:
+        """New `!!` shell mode must have a discoverability tip."""
+        assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)
+
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command must have a discoverability tip."""
         assert "Use /copy to copy the latest assistant message" in _TIPS

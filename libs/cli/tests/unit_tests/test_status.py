@@ -290,6 +290,47 @@ class TestTokenDisplay:
             assert "+" not in rendered
 
 
+class TestModeIndicator:
+    """Tests for the input-mode indicator in the status bar."""
+
+    async def test_incognito_shell_mode_shows_indicator(self) -> None:
+        """Incognito shell mode renders the SHELL indicator with its own class."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+
+            assert str(indicator.render()) == "SHELL"
+            assert indicator.has_class("shell-incognito")
+
+    async def test_mode_transition_clears_incognito_class(self) -> None:
+        """Leaving `shell_incognito` must remove the badge class.
+
+        Regression guard: a future change forgetting to clear
+        `shell-incognito` on transition would leak the badge across modes.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            indicator = pilot.app.query_one("#mode-indicator")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+            assert indicator.has_class("shell-incognito")
+
+            bar.set_mode("normal")
+            await pilot.pause()
+            assert not indicator.has_class("shell-incognito")
+
+            bar.set_mode("shell_incognito")
+            await pilot.pause()
+            bar.set_mode("shell")
+            await pilot.pause()
+            assert not indicator.has_class("shell-incognito")
+            assert indicator.has_class("shell")
+
+
 class TestModelLabelPrefixStripping:
     """Tests for provider-specific model prefix stripping in ModelLabel."""
 

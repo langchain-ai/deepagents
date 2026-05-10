@@ -1525,6 +1525,17 @@ enabled = false
 
         fetch.assert_called_once_with(None)
 
+    def test_empty_installed_model_discovery_not_cached(self) -> None:
+        """Empty `/api/tags` results do not block later recovery."""
+        with patch(
+            "deepagents_cli.model_config._fetch_ollama_installed_models",
+            side_effect=[[], ["qwen3:4b"]],
+        ) as fetch:
+            assert model_config._get_ollama_installed_models(None) == []
+            assert model_config._get_ollama_installed_models(None) == ["qwen3:4b"]
+
+        assert fetch.call_count == 2
+
     def test_model_profiles_include_discovered_context_length(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1689,6 +1700,50 @@ class TestFetchOllamaInstalledModels:
         assert captured_url == ["http://localhost:11434/api/tags"]
         assert captured_timeout == [model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS]
         assert "Authorization" not in {k.title() for k in captured_headers[0]}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"models": "qwen3:4b"},
+        ],
+    )
+    def test_returns_empty_for_unexpected_payload_shape(
+        self, payload: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing or non-list `models` payloads are ignored."""
+        import json
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == []
+
+    def test_returns_empty_for_malformed_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Malformed JSON is treated as discovery failure."""
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            return _BytesContext(b"{not json")
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == []
 
     def test_silent_on_connection_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Connection errors yield an empty list without raising."""
@@ -1931,6 +1986,36 @@ class TestFetchOllamaInstalledModelProfiles:
 
         assert profiles["qwen3:4b"]["max_input_tokens"] == 262144
         assert "Authorization" not in captured_headers[0]
+
+    def test_successful_profiles_are_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated profile discovery reuses successful `/api/show` results."""
+        import json
+
+        calls = 0
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            nonlocal calls
+            calls += 1
+            payload = {"model_info": {"qwen3.context_length": 262144}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            first = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+            second = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+
+        assert first == second == {"qwen3:4b": {"max_input_tokens": 262144}}
+        assert calls == 1
 
     def test_continues_after_per_model_failure(self) -> None:
         """A failed model profile lookup does not abort the whole batch."""
@@ -4111,8 +4196,16 @@ max_input_tokens = 4096
             get_model_profiles()
 
         assert model_config._profiles_cache is not None
+        model_config._ollama_installed_models_cache["http://localhost:11434"] = [
+            "qwen3:4b"
+        ]
+        model_config._ollama_model_profiles_cache[
+            "http://localhost:11434", "qwen3:4b"
+        ] = {"max_input_tokens": 262144}
         clear_caches()
         assert model_config._profiles_cache is None
+        assert model_config._ollama_installed_models_cache == {}
+        assert model_config._ollama_model_profiles_cache == {}
 
     def test_overridden_keys_subset_of_profile(self, tmp_path: Path) -> None:
         """overridden_keys is always a subset of profile keys."""

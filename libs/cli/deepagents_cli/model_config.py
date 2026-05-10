@@ -491,11 +491,12 @@ OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
 
 OLLAMA_DISCOVERY_TIMEOUT_SECONDS = 1.0
-"""Socket timeout for the `/api/tags` discovery probe.
+"""Socket timeout for Ollama discovery probes.
 
 Kept short so a dead daemon does not stall switcher loading. Discovery runs
-off the UI loop in a worker thread, so this caps the worst-case wait visible
-to the user."""
+off the UI loop in a worker thread and may call `/api/tags` and `/api/show`,
+so this caps the worst-case wait visible to the user.
+"""
 
 
 # Module-level caches — cleared by `clear_caches()`.
@@ -505,6 +506,7 @@ _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
 _ollama_installed_models_cache: dict[str, list[str]] = {}
+_ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
 
@@ -520,6 +522,7 @@ def clear_caches() -> None:
     _default_config_cache = None
     _provider_profiles_cache.clear()
     _ollama_installed_models_cache.clear()
+    _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
@@ -1056,7 +1059,7 @@ _OLLAMA_DISCOVERY_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 
 
 def _ollama_discovery_enabled() -> bool:
-    """Return whether `/api/tags` discovery may run for the Ollama provider.
+    """Return whether Ollama model/profile discovery may run.
 
     Defaults to enabled. Opt out via `_env_vars.OLLAMA_DISCOVERY` set to a
     falsy value (`0`, `false`, `no`, `off`); truthy values (`1`, `true`,
@@ -1095,7 +1098,8 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     if cached is not None:
         return list(cached)
     models = _fetch_ollama_installed_models(endpoint)
-    _ollama_installed_models_cache[key] = models
+    if models:
+        _ollama_installed_models_cache[key] = models
     return list(models)
 
 
@@ -1308,6 +1312,12 @@ def _fetch_ollama_installed_model_profiles(
     headers = _ollama_discovery_headers(base, content_type=True)
 
     for model_name in model_names:
+        cache_key = (base, model_name)
+        cached = _ollama_model_profiles_cache.get(cache_key)
+        if cached is not None:
+            profiles[model_name] = dict(cached)
+            continue
+
         body = json.dumps({"model": model_name}).encode("utf-8")
         request = Request(  # noqa: S310  # scheme guarded above
             url,
@@ -1338,6 +1348,7 @@ def _fetch_ollama_installed_model_profiles(
 
         profile = _profile_from_ollama_show_payload(payload)
         if profile:
+            _ollama_model_profiles_cache[cache_key] = profile
             profiles[model_name] = profile
 
     return profiles

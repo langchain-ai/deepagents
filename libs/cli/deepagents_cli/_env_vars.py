@@ -113,6 +113,14 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 
+OFFLINE = "DEEPAGENTS_CLI_OFFLINE"
+"""Disable network downloads of managed binaries (e.g. ripgrep).
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled. When
+truthy, `managed_tools.ensure_ripgrep` will not attempt to download a binary
+and falls back to the existing missing-tool notification + slow Python regex
+path."""
+
 OLLAMA_DISCOVERY = "DEEPAGENTS_CLI_OLLAMA_DISCOVERY"
 """Toggle Ollama model and profile discovery probes.
 

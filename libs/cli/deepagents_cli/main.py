@@ -485,6 +485,14 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
+    # Make a previously-installed managed `rg` discoverable *before* any
+    # agent code runs. Cheap (env-var mutation only — no urllib/tarfile
+    # imports) and works even when offline because the actual download
+    # path lives behind `ensure_ripgrep` in the background worker.
+    from deepagents_cli.managed_tools import prepend_managed_bin_to_path
+
+    prepend_managed_bin_to_path()
+
     from deepagents_cli._constants import DEFAULT_AGENT_NAME
     from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.mcp_commands import setup_mcp_parsers
@@ -2060,7 +2068,21 @@ def cli_main() -> None:
             else:
                 try:
                     warn_console = _Console(stderr=True)
-                    for tool in check_optional_tools():
+                    missing_tools = check_optional_tools()
+                    if "ripgrep" in missing_tools:
+                        from deepagents_cli.managed_tools import (
+                            ensure_ripgrep,
+                            prepend_managed_bin_to_path,
+                        )
+
+                        warn_console.print("Installing ripgrep...")
+                        installed = asyncio.run(ensure_ripgrep())
+                        if installed is not None:
+                            prepend_managed_bin_to_path()
+                            missing_tools = [
+                                tool for tool in missing_tools if tool != "ripgrep"
+                            ]
+                    for tool in missing_tools:
                         warn_console.print(
                             f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
                         )

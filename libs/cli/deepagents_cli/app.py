@@ -2063,6 +2063,10 @@ class DeepAgentsApp(App):
                 build_missing_tool_notification,
                 check_optional_tools,
             )
+            from deepagents_cli.managed_tools import (
+                ensure_ripgrep,
+                prepend_managed_bin_to_path,
+            )
             from deepagents_cli.update_check import is_update_check_enabled
         except ImportError:
             logger.warning(
@@ -2088,6 +2092,12 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             return
+
+        if "ripgrep" in missing:
+            installed = await ensure_ripgrep()
+            if installed is not None:
+                prepend_managed_bin_to_path()
+                missing = [tool for tool in missing if tool != "ripgrep"]
 
         if not missing:
             return

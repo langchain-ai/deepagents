@@ -407,6 +407,13 @@
 - **Description**: The `"env"` field in stdio MCP server definitions (`.mcp.json`) accepts an arbitrary key-value dict. `mcp_tools._validate_server_config` only checks that the field is a dict — it does not filter key names or values. The dict is forwarded directly to `StdioConnection(env=...)` which passes it to the subprocess. An attacker who can modify a project-level `.mcp.json` could set `PATH` to redirect command resolution, `LD_PRELOAD` to inject shared libraries, or `PYTHONPATH` to hijack Python imports in the MCP subprocess.
 - **Preconditions**: (1) Attacker has write access to a project-level `.mcp.json`; (2) The project MCP config must be trusted by the user (fingerprint approval gate via `mcp_trust`). For user-level `~/.deepagents/.mcp.json`, the attacker already has home directory write access. Note: the `env` dict from MCP config is passed to `StdioConnection` — whether it replaces or merges with `os.environ` depends on the `langchain_mcp_adapters` library implementation.
 
+#### T11: Auto-Installed ripgrep Binary from Upstream Release
+
+- **Flow**: First-run download performed by `managed_tools.ensure_ripgrep` when `rg` is not on `PATH`.
+- **Description**: On first invocation without a system `rg`, the CLI fetches the pinned ripgrep release tarball from `github.com/BurntSushi/ripgrep/releases/...`, verifies it against an in-tree SHA-256 (`RIPGREP_ASSETS`), extracts it under a `TemporaryDirectory`, and atomically moves the binary into `~/.deepagents/bin/rg`. The binary then runs unsandboxed, inheriting the same trust as a user-installed `rg` (the SDK invokes it via `subprocess.run(["rg", ...])`).
+- **Mitigations**: (1) SHA-256 verified against the pinned hash table before move — a mismatch aborts the install and leaves `BIN_DIR` clean. (2) Network egress is limited to `github.com`. (3) Opt-out via `DEEPAGENTS_CLI_OFFLINE` for air-gapped environments. (4) Pinned version + checksums are bumped in-tree, so a compromised upstream release is detected on the next CLI release rather than silently propagating. (5) Atomic move-into-place avoids partial installs when concurrent CLI invocations race.
+- **Preconditions**: User has not installed `rg` via their package manager, `DEEPAGENTS_CLI_OFFLINE` is unset, and the host can reach `github.com`. The pinned SHA-256 in `RIPGREP_ASSETS` would need to be incorrect (a supply-chain compromise of the deepagents-cli release) for a tampered binary to be installed.
+
 ---
 
 ## Input Source Coverage

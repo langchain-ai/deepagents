@@ -58,6 +58,7 @@ _TIPS: dict[str, int] = {
     "Use --startup-cmd to run a shell command before the first prompt": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,
+    "Set DEEPAGENTS_CLI_OFFLINE=1 to skip auto-installing ripgrep on first run": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
 """Rotating tips shown in the welcome footer, with relative selection weights.

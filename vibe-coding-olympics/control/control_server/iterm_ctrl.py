@@ -1,9 +1,9 @@
 """Async helpers for targeting `play.sh`-launched player sessions.
 
-Single source of truth for the iTerm2 session-discovery contract.
-Both the `vibe-players` CLI and the `vibe-control` web server import
-these helpers; `play.sh` is the producer side of the same contract
-(tagging new sessions with `user.vibe_player` + matching name).
+Single source of truth for the iTerm2 session-discovery contract. The
+`vibe-control` web server imports these helpers; `play.sh` is the producer side
+of the same contract (tagging new sessions with `user.vibe_player` + matching
+name).
 """
 
 from __future__ import annotations
@@ -313,7 +313,7 @@ async def players_ready(ports: list[str] | None) -> list[str]:
                 socket_path,
                 kind="signal",
                 payload="players-ready",
-                correlation_prefix="vibe-players-ready",
+                correlation_prefix="vibe-control-players-ready",
             )
         except (OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
             logger.warning(

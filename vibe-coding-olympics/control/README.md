@@ -1,17 +1,18 @@
-# `control/` — Vibe Olympics control plane
+# Vibe Olympics control plane
 
-Two entry points backed by the same iTerm2 discovery logic:
+Operator commands go through one control surface:
 
 - `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
-- `vibe-players` — CLI for scripting / SSH: `vibe-players list|prompt|times-up|clear|reset`.
 - `vibe-player-hook` — Deep Agents hook adapter. Reports player names from `user.name.set` into the control panel.
 
-```
+Current player command dispatch uses local iTerm2 session discovery and the player CLI's Unix-domain event socket. That works for same-machine smoke tests.
+
+For separate player laptops on the event LAN, see `LAN_COMMAND_CHANNEL.md` for the relay design needed to send prompt/reset/times-up commands over the network.
+
+```txt
 browser ──POST /api/…──▶ vibe-control ──POST /transition──▶ obs runner ──▶ OBS
                               │
                               ├──iterm2 API──▶ player CLIs
-                              │
-shell ──vibe-players ─────────┘   (CLI path reuses the same iterm_ctrl helpers)
 ```
 
 ## Install
@@ -23,16 +24,16 @@ uv sync
 
 ## Run
 
-For the full day-of startup checklist, use `../README.md`. The controller
-machine runs both the OBS runner and this control panel; player machines run
-`../play.sh <port>`.
+The live setup assumes the controller and player laptops are on the same LAN.
+
+The controller machine runs both the OBS runner and this control panel.
 
 Bring the OBS runner up first because it owns game state:
 
 ```bash
 # terminal 1
 cd vibe-coding-olympics/obs
-uv run vibe-obs                                  # http://localhost:8765
+uv run vibe-obs  # http://localhost:8765
 ```
 
 Then the control panel:
@@ -40,40 +41,49 @@ Then the control panel:
 ```bash
 # terminal 2
 cd vibe-coding-olympics/control
-uv run vibe-control                              # http://localhost:8766
+VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control  # http://localhost:8766
 ```
 
-Open `http://localhost:8766` in a browser.
+Open `http://localhost:8766` in a browser on the controller machine, or
+`http://<controller-static-ip>:8766` from another machine on the event LAN.
 
 On player computers:
 
 ```bash
 cd vibe-coding-olympics
+export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3001                                  # player 1
 ./play.sh 3002                                  # player 2, on the other computer
 ```
 
-### CLI
-
-Same venv, different entry point. Runs one-shot and exits:
+If port `8766` is unavailable, override the control server bind port and use the same port in `VIBE_CONTROL_API` on every player laptop:
 
 ```bash
-cd control
-uv run vibe-players list
-uv run vibe-players prompt "a website for a taco truck" --all
-uv run vibe-players times-up --all
-uv run vibe-players clear --port 3001
-uv run vibe-players clear --all
-uv run vibe-players reset --port 3001
-uv run vibe-players reset --all
+cd vibe-coding-olympics/control
+VIBE_CONTROL_HOST=0.0.0.0 VIBE_CONTROL_PORT=8876 uv run vibe-control
 ```
 
-In normal event flow, run `../play.sh <port>` once per player computer at the
-start of the day. It starts the Vite server, opens the browser preview once,
-and leaves the CLI waiting for controller prompts. Use the web UI's
-**Reset round all** button, or `vibe-players clear --all`, between rounds; it
-resets CLI thread/readiness state without restarting Vite or reopening the
-browser.
+```bash
+cd vibe-coding-olympics
+export VIBE_CONTROL_API=http://<controller-static-ip>:8876
+./play.sh 3001
+```
+
+If port `8765` is unavailable for the OBS runner, override the runner bind port and tell the control server where to reach it:
+
+```bash
+# terminal 1
+cd vibe-coding-olympics/obs
+VIBE_OBS_API_PORT=8875 uv run vibe-obs
+
+# terminal 2
+cd vibe-coding-olympics/control
+VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
+```
+
+In normal event flow, run `../play.sh <port>` once per player computer at the start of the day. It starts the Vite server, opens the browser preview once, and leaves the CLI waiting for controller prompts. Use the web UI's
+
+**Reset round all** button between rounds; it resets CLI thread/readiness state without restarting Vite or reopening the browser.
 
 ## Endpoints
 
@@ -110,10 +120,7 @@ browser.
 
 ## Player readiness hook
 
-Deep Agents CLI already emits `user.name.set` after the player submits their
-name during launch setup. `../play.sh` now writes a round-local hook config
-and points the launched CLI at it automatically, so normal event laptops do
-not need to edit `~/.deepagents/hooks.json`.
+Deep Agents CLI already emits `user.name.set` after the player submits their name during launch setup. `../play.sh` now writes a round-local hook config and points the launched CLI at it automatically, so normal event laptops do not need to edit `~/.deepagents/hooks.json`.
 
 For manual launches, configure the hook on each player laptop:
 
@@ -134,11 +141,8 @@ For manual launches, configure the hook on each player laptop:
 }
 ```
 
-Write that to `~/.deepagents/hooks.json` and set `VIBE_CONTROL_API` before
-launching if the control panel is not on localhost from the player's point of
-view. When using `play.sh`, set `VIBE_CONTROL_API` before running the script;
-the value is exported into the player terminal.
+Write that to `~/.deepagents/hooks.json` and set `VIBE_CONTROL_API` before launching if the control panel is not on localhost from the player's point of view. When using `play.sh`, set `VIBE_CONTROL_API` before running the script; the value is exported into the player terminal.
 
 ## Session-discovery contract
 
-`play.sh` tags each new iTerm2 session it creates with a player user-variable (`user.vibe_player=<port>`), a socket user-variable (`user.vibe_event_socket=<path>`), and a session name (`vibe-player-<port>`). `control_server/iterm_ctrl.py` is the single source of truth that reads those tags; both the web panel and `vibe-players` CLI delegate to it. If you ever change the tagging convention, update `play.sh` and `iterm_ctrl.py` together.
+`play.sh` tags each new iTerm2 session it creates with a player user-variable (`user.vibe_player=<port>`), a socket user-variable (`user.vibe_event_socket=<path>`), and a session name (`vibe-player-<port>`). `control_server/iterm_ctrl.py` is the single source of truth that reads those tags for the web panel. If you ever change the tagging convention, update `play.sh` and `iterm_ctrl.py` together.

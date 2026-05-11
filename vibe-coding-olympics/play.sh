@@ -197,8 +197,8 @@ async def main(connection):
         raise RuntimeError("new iterm2 tab has no sessions")
     top = sessions[0]
 
-    # Tag this session so vibe-players / vibe-control can find it later by
-    # port. Tag is both the session name (shown in iTerm2's title bar) and a
+    # Tag this session so vibe-control can find it later by port. Tag is both
+    # the session name (shown in iTerm2's title bar) and a
     # user-variable so the shell's auto-title can't silently clobber it.
     tag = f"vibe-player-{PORT}"
     await top.async_set_name(tag)

@@ -926,6 +926,21 @@ class TestThreadsListCwdArgparse:
 class TestCheckMcpProjectTrustPrompt:
     """The project MCP approval prompt should surface a docs link."""
 
+    def test_debug_env_helper_uses_truthy_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The debug helper treats common falsy strings as disabled."""
+        from deepagents_cli._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_cli.main import _debug_mcp_project_trust_enabled
+
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "0")
+
+        assert _debug_mcp_project_trust_enabled() is False
+
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        assert _debug_mcp_project_trust_enabled() is True
+
     def test_debug_env_forces_prompt_without_project_config(
         self,
         capsys: pytest.CaptureFixture[str],

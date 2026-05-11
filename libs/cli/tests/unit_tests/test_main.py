@@ -921,3 +921,83 @@ class TestThreadsListCwdArgparse:
         """`--cwd /some/path` stores the literal value as-is."""
         ns = self._parse(["threads", "list", "--cwd", "/some/path"])
         assert ns.cwd == "/some/path"
+
+
+class TestCheckMcpProjectTrustDedupe:
+    """Regression tests for the project MCP approval prompt deduplication.
+
+    When the same server name appears in multiple project-level configs
+    (e.g. both `.mcp.json` and `.deepagents/.mcp.json`), the approval
+    prompt must list it once — not once per file.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def test_duplicate_server_across_configs_listed_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A server defined in both project configs appears once in the prompt."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        server = {
+            "fs": {
+                "command": "uvx",
+                "args": ["mcp-server-filesystem", "/tmp"],
+            }
+        }
+        self._write_config(tmp_path / ".mcp.json", server)
+        self._write_config(tmp_path / ".deepagents" / ".mcp.json", server)
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+            lambda *_a, **_k: False,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert combined.count('"fs"') == 1, combined
+
+    def test_distinct_servers_across_configs_all_listed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Different servers from different project configs are all shown."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        self._write_config(
+            tmp_path / ".mcp.json",
+            {"alpha": {"command": "uvx", "args": ["alpha"]}},
+        )
+        self._write_config(
+            tmp_path / ".deepagents" / ".mcp.json",
+            {"beta": {"command": "uvx", "args": ["beta"]}},
+        )
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+            lambda *_a, **_k: False,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert combined.count('"alpha"') == 1, combined
+        assert combined.count('"beta"') == 1, combined

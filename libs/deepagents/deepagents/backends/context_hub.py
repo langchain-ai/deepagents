@@ -12,6 +12,8 @@ from langsmith.schemas import FileEntry
 from langsmith.utils import LangSmithNotFoundError
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
     BackendProtocol,
     EditResult,
     FileData,
@@ -85,7 +87,10 @@ class ContextHubBackend(BackendProtocol):
         """Load the file tree if not yet loaded."""
         if self._cache is None:
             self._load_tree()
-        return self._cache  # type: ignore[return-value]
+        if self._cache is None:
+            msg = "Context Hub cache failed to initialize"
+            raise RuntimeError(msg)
+        return self._cache
 
     def get_linked_entries(self) -> dict[str, str]:
         """Return linked-entry paths mapped to their repo handles."""
@@ -298,7 +303,7 @@ class ContextHubBackend(BackendProtocol):
         results: list[FileUploadResponse] = []
         for path, text in decoded:
             if text is None:
-                results.append(FileUploadResponse(path=path, error="invalid_path"))
+                results.append(FileUploadResponse(path=path, error=INVALID_PATH))
             elif commit_error is not None:
                 # Backend-specific error string per protocol docs
                 # (FileOperationError literal union doesn't cover hub failures).
@@ -326,5 +331,5 @@ class ContextHubBackend(BackendProtocol):
             if content is not None:
                 results.append(FileDownloadResponse(path=path, content=content.encode("utf-8")))
             else:
-                results.append(FileDownloadResponse(path=path, error="file_not_found"))
+                results.append(FileDownloadResponse(path=path, error=FILE_NOT_FOUND))
         return results

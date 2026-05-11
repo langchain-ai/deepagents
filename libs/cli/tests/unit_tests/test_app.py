@@ -30,6 +30,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_cli._version import CHANGELOG_URL
 from deepagents_cli.app import (
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
@@ -37,6 +38,7 @@ from deepagents_cli.app import (
     ExternalInput,
     QueuedMessage,
     TextualSessionState,
+    _build_whats_new_message,
 )
 from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -57,6 +59,22 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
         await asyncio.sleep(0.01)
     msg = f"Timed out waiting for branch {branch!r}"
     raise AssertionError(msg)
+
+
+class TestWhatsNewMessage:
+    """Tests for the post-upgrade banner content."""
+
+    def test_changelog_url_is_clickable(self) -> None:
+        """The changelog URL should be carried as a Textual link span."""
+        content = _build_whats_new_message("Updated to v1.2.3")
+
+        assert content.plain == f"Updated to v1.2.3\nSee what's new: {CHANGELOG_URL}"
+        links = [
+            link
+            for span in content.spans
+            if (link := getattr(span.style, "link", None))
+        ]
+        assert links == [CHANGELOG_URL]
 
 
 class TestInitialPromptOnMount:
@@ -147,6 +165,72 @@ class TestInitialPromptOnMount:
             await asyncio.sleep(0)
 
         assert submitted == [("code-review", "review this diff", None)]
+
+    async def test_deferred_start_preserves_initial_prompt_until_server_ready(
+        self,
+    ) -> None:
+        """No-credentials startup should not consume `-m` before connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="hello after auth",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+        submitted: list[str] = []
+
+        async def capture(msg: str) -> None:  # noqa: RUF029
+            submitted.append(msg)
+
+        app._handle_user_message = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert submitted == []
+            assert app._has_initial_submission()
+
+            app._server_startup_deferred = False
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await pilot.pause()
+
+        assert submitted == ["hello after auth"]
+
+    async def test_deferred_start_mounts_auth_guidance(self) -> None:
+        """First launch without credentials should show next-step guidance."""
+        app = DeepAgentsApp(
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+        messages: list[AppMessage] = []
+
+        async def capture(message: AppMessage) -> None:  # noqa: RUF029
+            messages.append(message)
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args, kwargs
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app._mount_message = capture  # type: ignore[assignment]
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.update_check.is_update_check_enabled",
+            return_value=False,
+        ):
+            await app._post_paint_init()
+
+        assert len(messages) == 1
+        assert "/model" in str(messages[0].content)
+        assert "credentials" in str(messages[0].content)
 
 
 class TestStartupSequence:
@@ -1385,6 +1469,8 @@ class TestModalScreenShiftTabHandling:
 
     async def test_shift_tab_moves_backward_in_thread_selector(self) -> None:
         """Shift+Tab should move backward in the thread selector controls."""
+        from textual.widgets import Select
+
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         app = DeepAgentsApp()
@@ -1408,11 +1494,20 @@ class TestModalScreenShiftTabHandling:
 
             assert app._auto_approve is False
             filter_input = screen.query_one("#thread-filter", Input)
+            scope_select = screen.query_one("#thread-scope-select", Select)
             sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
             await pilot.press("tab")
             await pilot.pause()
+            assert scope_select.has_focus
+
+            await pilot.press("tab")
+            await pilot.pause()
             assert sort_switch.has_focus
+
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert scope_select.has_focus
 
             await pilot.press("shift+tab")
             await pilot.pause()
@@ -2476,6 +2571,42 @@ class TestTraceCommand:
             await app._handle_command("/connect")
             await pilot.pause()
             assert isinstance(app.screen, AuthManagerScreen)
+
+
+class TestClearCommand:
+    """Test /clear slash command."""
+
+    async def test_clear_syncs_thread_id_and_schedules_link_upgrade(self) -> None:
+        """/clear should render the new ID like the resumed-thread footer."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_cli.app._new_thread_id", return_value="new-thread"),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            assert app._session_state.thread_id == "new-thread"
+            assert app._lc_thread_id == "new-thread"
+
+            app_msgs = list(app.query(AppMessage))
+            assert any(
+                str(widget._content) == "Started new thread: new-thread"
+                for widget in app_msgs
+            )
+            schedule.assert_called_once()
+            widget = schedule.call_args.args[0]
+            assert isinstance(widget, AppMessage)
+            assert widget in app_msgs
+            assert schedule.call_args.kwargs == {
+                "prefix": "Started new thread",
+                "thread_id": "new-thread",
+            }
 
 
 class TestCopyCommand:
@@ -7577,6 +7708,43 @@ class TestHeaderAndTitle:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert not app.query(Header)
+
+
+class TestSandboxSubTitle:
+    """sub_title reflects the active sandbox provider."""
+
+    async def test_sandbox_sets_sub_title(self) -> None:
+        """When a sandbox is active, sub_title shows the provider name."""
+        app = DeepAgentsApp(server_kwargs={"sandbox_type": "daytona"})
+        assert app.sub_title == "Sandbox: Daytona"
+
+    async def test_sandbox_sub_title_proper_casing(self) -> None:
+        """Provider display names use proper casing."""
+        app = DeepAgentsApp(server_kwargs={"sandbox_type": "langsmith"})
+        assert app.sub_title == "Sandbox: LangSmith"
+
+        app2 = DeepAgentsApp(server_kwargs={"sandbox_type": "agentcore"})
+        assert app2.sub_title == "Sandbox: AgentCore"
+
+    async def test_explicit_sub_title_overrides_sandbox(self) -> None:
+        """An explicitly passed sub_title is not overwritten by sandbox info."""
+        app = DeepAgentsApp(sub_title="custom", server_kwargs={"sandbox_type": "modal"})
+        assert app.sub_title == "custom"
+
+    async def test_no_sandbox_leaves_sub_title_default(self) -> None:
+        """Without a sandbox, sub_title remains at its Textual default."""
+        app = DeepAgentsApp()
+        assert app.sub_title == ""
+
+    async def test_sandbox_none_does_not_set_sub_title(self) -> None:
+        """The argparse default `'none'` is treated as no sandbox."""
+        app = DeepAgentsApp(server_kwargs={"sandbox_type": "none"})
+        assert app.sub_title == ""
+
+    async def test_unknown_provider_uses_title_case_fallback(self) -> None:
+        """An unrecognized provider falls back to `.title()` casing."""
+        app = DeepAgentsApp(server_kwargs={"sandbox_type": "kubernetes"})
+        assert app.sub_title == "Sandbox: Kubernetes"
 
 
 class TestHandleExternalSignal:

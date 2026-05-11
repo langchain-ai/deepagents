@@ -145,7 +145,9 @@ class UpdateProgressScreen(ModalScreen[None]):
             yield Static("Updating Deep Agents CLI", classes="up-title")
             with Horizontal(classes="up-status-row"):
                 self._spinner_widget = Static(
-                    self._spinner.current_frame(), classes="up-spinner"
+                    self._spinner.current_frame(),
+                    classes="up-spinner",
+                    markup=False,
                 )
                 yield self._spinner_widget
                 self._status_widget = Static(

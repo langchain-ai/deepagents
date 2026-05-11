@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
@@ -18,7 +19,11 @@ from textual.fuzzy import Matcher
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets._select import (
+    SelectCurrent,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
+    SelectOverlay,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -106,9 +111,44 @@ _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
 _SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
+_SCOPE_SELECT_ID = "thread-scope-select"
+_SCOPE_VALUE_CWD = "cwd"
+_SCOPE_VALUE_ALL = "all"
 _CONTROLS_SCROLL_ID = "thread-controls-scroll"
 _CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
+
+
+class _Sentinel:
+    """Type for module-level singleton sentinels."""
+
+
+_CWD_DEFAULT = _Sentinel()
+"""Sentinel for the default `filter_cwd` constructor arg.
+
+Distinguishes "caller did not specify" (use the current working directory) from
+an explicit `None` (start with no cwd filter)."""
+
+
+def _safe_cwd_string() -> str | None:
+    """Return `str(Path.cwd())` or `None` if the working directory is unreadable.
+
+    `Path.cwd()` raises `OSError` (typically `FileNotFoundError`) when the
+    process's working directory has been deleted or is otherwise inaccessible.
+    Treating that as "no cwd filter" matches the storage convention used by
+    `build_run_metadata` and lets the picker degrade to "All directories"
+    instead of crashing the Textual event loop.
+    """
+    try:
+        return str(Path.cwd())
+    except OSError:
+        logger.warning(
+            "Could not determine working directory for thread picker; "
+            "falling back to All directories",
+            exc_info=True,
+        )
+        return None
+
 
 _FormatFns = tuple[
     "Callable[[str | None], str]",  # format_path
@@ -476,6 +516,82 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+_SCOPE_OVERLAY_CONSUMED_KEYS = frozenset(
+    {"tab", "shift+tab", "up", "down", "pageup", "pagedown", "home", "end"}
+)
+
+
+class ThreadScopeSelectOverlay(SelectOverlay):
+    """Scope dropdown overlay that consumes option navigation while focused."""
+
+    def key_tab(self, event: Key) -> None:
+        """Move to the next option without leaving the dropdown."""
+        event.prevent_default()
+        event.stop()
+        self.action_cursor_down()
+
+    def key_shift_tab(self, event: Key) -> None:
+        """Move to the previous option without leaving the dropdown."""
+        event.prevent_default()
+        event.stop()
+        self.action_cursor_up()
+
+    def check_consume_key(self, key: str, character: str | None = None) -> bool:
+        """Report option navigation consumption so ancestor bindings stay hidden.
+
+        Args:
+            key: Pressed key identifier.
+            character: Printable character for the key, when present.
+
+        Returns:
+            `True` when the overlay consumes the key.
+        """
+        if key in _SCOPE_OVERLAY_CONSUMED_KEYS:
+            return True
+        return super().check_consume_key(key, character)
+
+
+class ThreadScopeSelect(Select[str]):
+    """Scope dropdown that keeps focus contained while its menu is open."""
+
+    def compose(self) -> ComposeResult:
+        """Compose the select with a scope-specific overlay.
+
+        Yields:
+            Current value display and dropdown overlay widgets.
+        """
+        yield SelectCurrent(self.prompt)
+        yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
+            compact=Select.compact
+        )
+
+    def key_tab(self, event: Key) -> None:
+        """Prevent focus traversal while the dropdown menu is open."""
+        if self.expanded:
+            event.prevent_default()
+            event.stop()
+
+    def key_shift_tab(self, event: Key) -> None:
+        """Prevent reverse focus traversal while the dropdown menu is open."""
+        if self.expanded:
+            event.prevent_default()
+            event.stop()
+
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        """Report Tab consumption while expanded so global bindings stay hidden.
+
+        Args:
+            key: Pressed key identifier.
+            character: Printable character for the key, when present.
+
+        Returns:
+            `True` when the open dropdown consumes the key.
+        """
+        if self.expanded and key in {"tab", "shift+tab"}:
+            return True
+        return super().check_consume_key(key, character)
+
+
 class ThreadSelectorScreen(ModalScreen[str | None]):
     """Modal dialog for browsing and resuming threads.
 
@@ -577,6 +693,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-controls-help {
         color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    ThreadSelectorScreen .thread-controls-label {
+        color: $text-muted;
+        margin-top: 0;
+    }
+
+    ThreadSelectorScreen .thread-scope-select {
+        width: 1fr;
+        height: auto;
         margin-bottom: 1;
     }
 
@@ -705,6 +832,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         *,
         thread_limit: int | None = None,
         initial_threads: list[ThreadInfo] | None = None,
+        filter_cwd: str | _Sentinel | None = _CWD_DEFAULT,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
@@ -712,13 +840,29 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             current_thread: The currently active thread ID (to highlight).
             thread_limit: Maximum number of rows to fetch when querying DB.
             initial_threads: Optional preloaded rows to render immediately.
+            filter_cwd: Working-directory filter for the picker.
+
+                When the default sentinel, the picker mirrors Claude Code's
+                `/resume` and scopes to the current working directory; the
+                "Show threads from" select in the Options panel widens the
+                view to "all directories". Pass an explicit path to scope to
+                that directory, or `None` to start the picker with no cwd
+                filter.
         """
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
-        self._threads: list[ThreadInfo] = (
-            list(initial_threads) if initial_threads is not None else []
-        )
+        if isinstance(filter_cwd, _Sentinel):
+            self._filter_cwd: str | None = _safe_cwd_string()
+        else:
+            self._filter_cwd = filter_cwd
+        initial = list(initial_threads) if initial_threads is not None else []
+        # The cached `initial_threads` are unfiltered, so apply the active cwd
+        # filter here to avoid showing all threads on first paint when we are
+        # about to re-query with the filter active.
+        if self._filter_cwd is not None:
+            initial = [t for t in initial if t.get("cwd") == self._filter_cwd]
+        self._threads: list[ThreadInfo] = initial
         self._filtered_threads: list[ThreadInfo] = list(self._threads)
         self._has_initial_threads = initial_threads is not None
         self._selected_index = 0
@@ -727,7 +871,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
-        self._filter_controls: list[Input | Checkbox] | None = None
+        self._filter_controls: list[Input | Checkbox | Select[str]] | None = None
         self._cell_text: dict[tuple[str, str], str] = {}
 
         from deepagents_cli.model_config import load_thread_config
@@ -840,10 +984,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filter_input = self.query_one("#thread-filter", Input)
         return self._filter_input
 
-    def _filter_focus_order(self) -> list[Input | Checkbox]:
+    def _filter_focus_order(self) -> list[Input | Checkbox | Select[str]]:
         """Return the cached tab order for filter controls in the side panel."""
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
+            scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
             sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
             column_switches = [
@@ -852,11 +997,37 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             ]
             self._filter_controls = [
                 filter_input,
+                scope_select,
                 sort_switch,
                 relative_switch,
                 *column_switches,
             ]
         return self._filter_controls
+
+    def _get_scope_select(self) -> Select[str]:
+        """Return the scope dropdown widget."""
+        return self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+
+    def _is_scope_select_expanded(self) -> bool:
+        """Return whether the scope dropdown menu is currently open."""
+        try:
+            return self._get_scope_select().expanded
+        except NoMatches:
+            return False
+
+    def _close_scope_select(self) -> None:
+        """Close the scope dropdown and restore focus to the select control."""
+        scope_select = self._get_scope_select()
+        scope_select.expanded = False
+        scope_select.focus()
+
+    def _select_scope_highlight(self) -> None:
+        """Select the currently highlighted option in the open scope dropdown."""
+        action_select = getattr(self.focused, "action_select", None)
+        if callable(action_select):
+            action_select()
+            return
+        self._close_scope_select()
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -919,6 +1090,26 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         ),
                         classes="thread-controls-help",
                         markup=False,
+                    )
+                    yield Static(
+                        "Show threads from:",
+                        classes="thread-controls-label",
+                        markup=False,
+                    )
+                    yield ThreadScopeSelect(
+                        [
+                            ("Current directory", _SCOPE_VALUE_CWD),
+                            ("All directories", _SCOPE_VALUE_ALL),
+                        ],
+                        value=(
+                            _SCOPE_VALUE_CWD
+                            if self._filter_cwd is not None
+                            else _SCOPE_VALUE_ALL
+                        ),
+                        allow_blank=False,
+                        compact=True,
+                        id=_SCOPE_SELECT_ID,
+                        classes="thread-scope-select",
                     )
                     with ThreadControlsScroll(
                         id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
@@ -1031,6 +1222,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             event: The key event.
         """
         if self._confirming_delete:
+            return
+
+        if event.key in {"tab", "shift+tab"} and self._is_scope_select_expanded():
+            event.prevent_default()
+            event.stop()
             return
 
         filter_input = self._get_filter_input()
@@ -1229,10 +1425,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Concatenated searchable string, truncated to a safe length.
         """
+        # Include both the raw cwd and the home-collapsed display form so a
+        # user typing either "/Users/chesar/foo" or "~/foo" matches the row.
+        format_path, _, _ = _get_format_fns()
+        cwd = thread.get("cwd") or ""
         parts = [
             thread["thread_id"],
             thread.get("agent_name") or "",
             thread.get("git_branch") or "",
+            cwd,
+            format_path(cwd) if cwd else "",
             thread.get("initial_prompt") or "",
         ]
         text = " ".join(parts)
@@ -1405,14 +1607,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 limit = get_thread_limit()
             sort_by = "updated" if self._sort_by_updated else "created"
             self._threads = await list_threads(
-                limit=limit, include_message_count=False, sort_by=sort_by
+                limit=limit,
+                include_message_count=False,
+                sort_by=sort_by,
+                cwd=self._filter_cwd,
             )
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
-            await self._show_mount_error(str(exc))
-            return
-        except Exception as exc:
-            logger.exception("Unexpected error loading threads for thread selector")
             await self._show_mount_error(str(exc))
             return
 
@@ -1816,6 +2017,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Confirm the highlighted thread and dismiss the selector."""
         if self._confirming_delete:
             return
+        if self._is_scope_select_expanded():
+            self._select_scope_highlight()
+            return
+        scope_select = self._get_scope_select()
+        if self.focused is scope_select:
+            scope_select.action_show_overlay()
+            return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
@@ -1824,18 +2032,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
             return
+        if self._is_scope_select_expanded():
+            return
         controls = self._filter_focus_order()
         focused = self.focused
         if focused not in controls:
             controls[0].focus()
             return
 
-        index = controls.index(cast("Input | Checkbox", focused))
+        index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index + 1) % len(controls)].focus()
 
     def action_focus_previous_filter(self) -> None:
         """Move focus backward through the filter and column-toggle controls."""
         if self._confirming_delete:
+            return
+        if self._is_scope_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -1843,7 +2055,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             controls[-1].focus()
             return
 
-        index = controls.index(cast("Input | Checkbox", focused))
+        index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index - 1) % len(controls)].focus()
 
     def action_toggle_sort(self) -> None:
@@ -1858,6 +2070,39 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         self._persist_sort_order(
             "updated_at" if self._sort_by_updated else "created_at"
+        )
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle the scope `Select` dropdown in the Options panel.
+
+        Mirrors Claude Code's `/resume`: the picker is scoped to the current
+        working directory by default; choosing "All directories" widens the
+        view to threads from every cwd.
+        """
+        if event.select.id != _SCOPE_SELECT_ID:
+            return
+        if self._confirming_delete:
+            return
+
+        if event.value == _SCOPE_VALUE_CWD:
+            new_cwd = _safe_cwd_string()
+            if new_cwd is None:
+                # Working directory is gone or unreadable. Tell the user
+                # rather than silently re-querying with no filter.
+                self.app.notify(
+                    "Could not determine the current working directory; "
+                    "showing all directories instead.",
+                    severity="warning",
+                    markup=False,
+                )
+        else:
+            new_cwd = None
+        if new_cwd == self._filter_cwd:
+            return
+        self._filter_cwd = new_cwd
+        self._update_help_widgets()
+        self.run_worker(
+            self._load_threads, exclusive=True, group="thread-selector-load"
         )
 
     def _persist_sort_order(self, order: str) -> None:
@@ -1977,4 +2222,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
+        if self._is_scope_select_expanded():
+            self._close_scope_select()
+            return
         self.dismiss(None)

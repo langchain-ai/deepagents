@@ -92,6 +92,11 @@ from deepagents_cli.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
+_DEFERRED_START_NOTICE = (
+    "No model is configured yet. Run `/model` to choose one. "
+    "Deep Agents will ask for credentials for the selected provider."
+)
+
 # Serializes process-local read-modify-write operations for `config.toml`.
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
@@ -807,6 +812,26 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
     return f"Failed to switch model: {exc}"
 
 
+def _build_whats_new_message(heading: str) -> Content:
+    """Build the post-upgrade banner with a clickable changelog URL.
+
+    Args:
+        heading: First line of the post-upgrade banner.
+
+    Returns:
+        Styled banner content with the changelog URL embedded as a link.
+    """
+    return Content.assemble(
+        (heading, TStyle(dim=True, italic=True)),
+        "\n",
+        ("See what's new: ", TStyle(dim=True, italic=True)),
+        (
+            CHANGELOG_URL,
+            TStyle(dim=True, italic=True, underline=True, link=CHANGELOG_URL),
+        ),
+    )
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -862,6 +887,15 @@ _COMMAND_URLS: dict[str, str] = {
     "/feedback": "https://github.com/langchain-ai/deepagents/issues/new/choose",
 }
 """Slash-command to URL mapping for commands that just open a browser."""
+
+_SANDBOX_DISPLAY_NAMES: dict[str, str] = {
+    "agentcore": "AgentCore",
+    "daytona": "Daytona",
+    "langsmith": "LangSmith",
+    "modal": "Modal",
+    "runloop": "Runloop",
+}
+"""Human-readable display names for sandbox providers."""
 
 
 _toast_internals_warned: list[bool] = [False]
@@ -1034,6 +1068,7 @@ class DeepAgentsApp(App):
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
         **kwargs: Any,
@@ -1086,6 +1121,8 @@ class DeepAgentsApp(App):
 
                 When provided, model creation runs in a background worker after
                 first paint instead of blocking startup.
+            defer_server_start: Whether to keep CLI-owned server startup paused
+                until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
                 header bar.
 
@@ -1250,11 +1287,20 @@ class DeepAgentsApp(App):
         """Cached kwargs for `start_server_and_get_agent`.
 
         When non-`None`, startup is deferred and the UI begins in
-        "Connecting..." state.
+        "Connecting..." state unless `_server_startup_deferred` is set.
 
         Re-used so downstream features that restart the server (e.g. `/agents`)
         start from the same config.
         """
+
+        self._server_startup_deferred = defer_server_start
+        """True when no model can be selected yet, usually first launch with
+        no credentials. The TUI is usable, but server startup waits for
+        `/auth`, `/reload`, or `/model`.
+        """
+
+        self._server_startup_deferred_notice_shown = False
+        """Whether the first-launch no-model guidance has been mounted."""
 
         self._mcp_preload_kwargs = mcp_preload_kwargs
         """Kwargs for `_preload_session_mcp_server_info`, run concurrently
@@ -1277,6 +1323,12 @@ class DeepAgentsApp(App):
 
         self._sandbox_type: str | None = raw if raw and raw != "none" else None
         """Normalized sandbox type (or `None`), attached to trace metadata."""
+
+        if sub_title is None and self._sandbox_type is not None:
+            display = _SANDBOX_DISPLAY_NAMES.get(
+                self._sandbox_type, self._sandbox_type.title()
+            )
+            self.sub_title = f"Sandbox: {display}"
 
         # Per-turn model overrides
         self._model_override: str | None = None
@@ -1336,7 +1388,9 @@ class DeepAgentsApp(App):
         """
 
         # Lifecycle flags & re-entry guards
-        self._connecting = server_kwargs is not None
+        self._connecting = (
+            server_kwargs is not None and not self._server_startup_deferred
+        )
         """True while the backing server is being started or restarted.
 
         Gates message handling so user input is queued until the agent is
@@ -1886,6 +1940,9 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
 
+        if self._server_startup_deferred:
+            await self._mount_deferred_start_notice()
+
         # Fire-and-forget workers — none of these block the event loop.
 
         # Discover skills first so /skill: autocomplete is ready as early
@@ -1899,7 +1956,7 @@ class DeepAgentsApp(App):
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
 
         # Server startup (model creation + server process)
-        if self._server_kwargs is not None:
+        if self._server_kwargs is not None and not self._server_startup_deferred:
             self.run_worker(
                 self._start_server_background,
                 exclusive=True,
@@ -1968,7 +2025,7 @@ class DeepAgentsApp(App):
         # `on_deep_agents_app_server_ready` fires; otherwise run it now so the
         # non-connecting path (pre-built agent) also honors `--startup-cmd` and
         # serializes startup against user input.
-        if not self._connecting:
+        if not self._connecting and not self._server_startup_deferred:
             self.call_after_refresh(
                 lambda: asyncio.create_task(self._run_session_start_sequence())
             )
@@ -2820,9 +2877,7 @@ class DeepAgentsApp(App):
             else:
                 heading = f"Updated to v{cli_version}"
 
-            await self._mount_message(
-                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
-            )
+            await self._mount_message(AppMessage(_build_whats_new_message(heading)))
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)
             return
@@ -3720,6 +3775,9 @@ class DeepAgentsApp(App):
         startup command before any user-facing agent work guarantees the
         agent never observes input until the command has completed.
         """
+        if self._server_startup_deferred:
+            return
+
         if self._launch_init_requested:
             self._ensure_launch_init_task()
         launch_init_task = self._launch_init_task
@@ -4769,13 +4827,18 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
+                self._lc_thread_id = new_thread_id
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
                 except NoMatches:
                     pass
-                await self._mount_message(
-                    AppMessage(f"Started new thread: {new_thread_id}")
+                thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
+                await self._mount_message(thread_msg_widget)
+                self._schedule_thread_message_link(
+                    thread_msg_widget,
+                    prefix="Started new thread",
+                    thread_id=new_thread_id,
                 )
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
@@ -5030,6 +5093,7 @@ class DeepAgentsApp(App):
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
             await self._mount_message(AppMessage(report))
+            await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
@@ -5458,6 +5522,8 @@ class DeepAgentsApp(App):
                 self._run_agent_task(message, message_kwargs=message_kwargs),
                 exclusive=False,
             )
+        elif self._server_startup_deferred:
+            await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
         elif not self._server_startup_error:
             # When a server-startup failure is in flight, the chat
             # `ErrorMessage` mounted by `on_deep_agents_app_server_start_failed`
@@ -5465,6 +5531,13 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage("Agent not configured for this session.")
             )
+
+    async def _mount_deferred_start_notice(self) -> None:
+        """Tell first-launch users how to configure model credentials."""
+        if self._server_startup_deferred_notice_shown:
+            return
+        self._server_startup_deferred_notice_shown = True
+        await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
 
     async def _run_agent_task(
         self,
@@ -6924,6 +6997,8 @@ class DeepAgentsApp(App):
         def handle_result(_result: None) -> None:
             if self._chat_input:
                 self._chat_input.focus_input()
+            task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
+            task.add_done_callback(_log_task_exception)
 
         self.push_screen(AuthManagerScreen(), handle_result)
 
@@ -8138,14 +8213,13 @@ class DeepAgentsApp(App):
                         timeout=3,
                     )
                     return
-                # Recover from a failed startup (e.g., `MissingCredentialsError`).
-                # The server never came up, so the only way out without
-                # restarting the CLI is to retry startup with the new model.
-                # Only valid for CLI-owned servers.
+                # Recover from a startup that has not produced a server yet:
+                # either a deferred first launch with no credentials, or a
+                # failed startup such as `MissingCredentialsError`.
                 if (
-                    self._server_startup_error is not None
-                    and self._server_kwargs is not None
-                ):
+                    self._server_startup_deferred
+                    or self._server_startup_error is not None
+                ) and self._server_kwargs is not None:
                     await self._retry_startup_with_model(
                         model_spec, extra_kwargs=extra_kwargs
                     )
@@ -8319,6 +8393,7 @@ class DeepAgentsApp(App):
 
         self._server_startup_error = None
         self._server_startup_missing_credentials_provider = None
+        self._server_startup_deferred = False
         self._connecting = True
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
@@ -8347,6 +8422,32 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="server-startup",
         )
+
+    async def _maybe_start_deferred_server_from_default(self) -> bool:
+        """Start a deferred first-launch server once a default model resolves.
+
+        Returns:
+            `True` when startup was kicked off, otherwise `False`.
+        """
+        if not self._server_startup_deferred:
+            return False
+
+        from deepagents_cli.config import _get_default_model_spec
+        from deepagents_cli.model_config import (
+            ModelConfigError,
+            NoCredentialsConfiguredError,
+        )
+
+        try:
+            model_spec = _get_default_model_spec()
+        except NoCredentialsConfiguredError:
+            return False
+        except ModelConfigError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return False
+
+        await self._retry_startup_with_model(model_spec)
+        return True
 
     async def _set_default_model(self, model_spec: str) -> None:
         """Set the default model in config without switching the current session.
@@ -8438,6 +8539,7 @@ async def run_textual_app(
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
+    defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
 ) -> AppResult:
@@ -8483,6 +8585,8 @@ async def run_textual_app(
 
             When provided, model creation runs in a background worker after
             first paint so the splash screen appears immediately.
+        defer_server_start: Whether to keep CLI-owned server startup paused
+            until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
             bar (gated on `DEEPAGENTS_CLI_SHOW_HEADER`). When `None`, the
             default `"Deep Agents"` is used.
@@ -8510,6 +8614,7 @@ async def run_textual_app(
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
+        defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,
     )

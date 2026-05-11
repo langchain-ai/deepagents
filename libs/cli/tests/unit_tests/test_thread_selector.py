@@ -1,6 +1,7 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
+from collections.abc import Coroutine
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,12 +13,13 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, Select, Static
 
 from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets.thread_selector import (
     DeleteThreadConfirmScreen,
+    ThreadScopeSelectOverlay,
     ThreadSelectorScreen,
 )
 
@@ -135,7 +137,11 @@ class ThreadSelectorTestApp(App):
             self.result = result
             self.dismissed = True
 
-        screen = ThreadSelectorScreen(current_thread=self._current_thread)
+        # Disable the default cwd filter so tests don't need to populate the
+        # `cwd` field on every mock thread fixture.
+        screen = ThreadSelectorScreen(
+            current_thread=self._current_thread, filter_cwd=None
+        )
         self.push_screen(screen, handle_result)
 
 
@@ -169,7 +175,7 @@ class AppWithEscapeBinding(App):
             self.result = result
             self.dismissed = True
 
-        screen = ThreadSelectorScreen(current_thread="abc12345")
+        screen = ThreadSelectorScreen(current_thread="abc12345", filter_cwd=None)
         self.push_screen(screen, handle_result)
 
 
@@ -441,6 +447,7 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 thread_id_switch = screen.query_one(
                     f"#{ThreadSelectorScreen._switch_id('thread_id')}",
@@ -456,6 +463,10 @@ class TestThreadSelectorTabSort:
                 )
 
                 assert filter_input.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
@@ -492,12 +503,21 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 assert filter_input.has_focus
 
                 await pilot.press("tab")
                 await pilot.pause()
+                assert scope_select.has_focus
+
+                await pilot.press("tab")
+                await pilot.pause()
                 assert sort_switch.has_focus
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert scope_select.has_focus
 
                 await pilot.press("shift+tab")
                 await pilot.pause()
@@ -515,6 +535,7 @@ class TestThreadSelectorTabSort:
                 assert isinstance(screen, ThreadSelectorScreen)
 
                 filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 controls = screen._filter_focus_order()
                 event = MagicMock()
@@ -533,7 +554,8 @@ class TestThreadSelectorTabSort:
                 ):
                     assert screen._filter_focus_order() == controls
                     assert controls[0] is filter_input
-                    assert controls[1] is sort_switch
+                    assert controls[1] is scope_select
+                    assert controls[2] is sort_switch
 
                     screen.on_key(event)
 
@@ -555,6 +577,7 @@ class TestThreadSelectorTabSort:
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
                 filter_input = screen.query_one("#thread-filter", Input)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -579,6 +602,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -606,6 +630,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -635,6 +660,7 @@ class TestThreadSelectorTabSort:
                 filter_input = screen.query_one("#thread-filter", Input)
                 sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
 
+                await pilot.press("tab")
                 await pilot.press("tab")
                 await pilot.pause()
                 assert sort_switch.has_focus
@@ -711,6 +737,250 @@ class TestThreadSelectorPageNavigation:
                 await pilot.press("pageup")
                 await pilot.pause()
                 assert screen._selected_index == 0
+
+
+class _ThreadSelectorScopedTestApp(App):
+    """Test app that mounts the picker with an explicit `filter_cwd`."""
+
+    def __init__(self, filter_cwd: str | None) -> None:
+        super().__init__()
+        self._filter_cwd = filter_cwd
+        self.result: str | None = None
+        self.dismissed = False
+
+    def compose(self) -> ComposeResult:
+        yield Container(id="main")
+
+    def show_selector(self) -> None:
+        """Mount the selector with a caller-supplied cwd filter."""
+
+        def handle_result(result: str | None) -> None:
+            self.result = result
+            self.dismissed = True
+
+        screen = ThreadSelectorScreen(current_thread=None, filter_cwd=self._filter_cwd)
+        self.push_screen(screen, handle_result)
+
+
+class TestThreadSelectorScopeSelect:
+    """Tests for the cwd scope `Select` in the Options panel."""
+
+    async def test_enter_opens_scope_select_without_resuming_thread(self) -> None:
+        """Enter on the focused scope control should open its dropdown."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.has_focus
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert scope_select.expanded
+                assert not app.dismissed
+
+    async def test_tab_keys_move_open_scope_select_highlight(self) -> None:
+        """Tab and Shift+Tab should move the dropdown highlight while open."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 1
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert scope_select.expanded
+                assert overlay.highlighted == 0
+                assert not filter_input.has_focus
+                assert not app.dismissed
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.expanded
+                assert overlay.highlighted == 1
+                assert not sort_switch.has_focus
+                assert not app.dismissed
+
+    async def test_arrow_keys_move_open_scope_select_not_thread_list(self) -> None:
+        """Normal dropdown navigation should not move the thread highlight."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                screen._selected_index = 1
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 1
+
+                await pilot.press("up")
+                await pilot.pause()
+                assert overlay.highlighted == 0
+                assert screen._selected_index == 1
+
+                await pilot.press("down")
+                await pilot.pause()
+                assert overlay.highlighted == 1
+                assert screen._selected_index == 1
+
+                await pilot.press("pageup")
+                await pilot.pause()
+                assert overlay.highlighted == 0
+                assert screen._selected_index == 1
+
+                await pilot.press("pagedown")
+                await pilot.pause()
+                assert overlay.highlighted == 1
+                assert screen._selected_index == 1
+                assert not app.dismissed
+
+    async def test_escape_closes_open_scope_select_without_dismissing(self) -> None:
+        """Esc should close the dropdown before it cancels the selector."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert not scope_select.expanded
+                assert scope_select.has_focus
+                assert not app.dismissed
+
+    async def test_enter_selects_open_scope_select_without_resuming(self) -> None:
+        """Enter should choose the highlighted dropdown option while open."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert not scope_select.expanded
+                assert scope_select.has_focus
+                assert not app.dismissed
+
+    async def test_select_toggle_requeries_with_new_cwd(self) -> None:
+        """Switching the scope dropdown reloads threads with the new cwd kwarg."""
+        starting_cwd = "/home/user/project-a"
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+
+        with (
+            patch("deepagents_cli.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_cli.widgets.thread_selector._safe_cwd_string",
+                return_value=starting_cwd,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._filter_cwd == starting_cwd
+
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                # Sanity: initial query carried the cwd filter.
+                assert mock_list.await_count >= 1
+                initial_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") == starting_cwd for kw in initial_kwargs), (
+                    f"expected starting cwd, got {initial_kwargs}"
+                )
+
+                mock_list.reset_mock()
+                scope_select.value = "all"
+                await pilot.pause()
+                await pilot.pause()
+                assert screen._filter_cwd is None
+                toggled_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") is None for kw in toggled_kwargs), (
+                    f"expected re-query with cwd=None, got {toggled_kwargs}"
+                )
+
+                mock_list.reset_mock()
+                scope_select.value = "cwd"
+                await pilot.pause()
+                await pilot.pause()
+                assert screen._filter_cwd == starting_cwd
+                back_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") == starting_cwd for kw in back_kwargs), (
+                    f"expected re-query with cwd={starting_cwd!r}, got {back_kwargs}"
+                )
+
+    async def test_select_same_value_does_not_requery(self) -> None:
+        """Setting the dropdown to its current value is a no-op."""
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        with (
+            patch("deepagents_cli.sessions.list_threads", mock_list),
+            _patch_columns(),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                mock_list.reset_mock()
+                # Re-setting to "all" (the active value) must not re-query.
+                scope_select.value = "all"
+                await pilot.pause()
+                mock_list.assert_not_awaited()
 
 
 class TestThreadSelectorClickHandling:
@@ -1277,7 +1547,10 @@ class TestThreadSelectorLimit:
                     await pilot.pause(0.05)
 
                 mock_lt.assert_awaited_once_with(
-                    limit=20, include_message_count=False, sort_by="updated"
+                    limit=20,
+                    include_message_count=False,
+                    sort_by="updated",
+                    cwd=None,
                 )
                 mock_populate.assert_awaited_once()
 
@@ -1344,7 +1617,8 @@ class TestThreadSelectorCheckpointDetailErrors:
                     "agent_name": "my-agent",
                     "updated_at": "2025-01-15T10:30:00",
                 }
-            ]
+            ],
+            filter_cwd=None,
         )
 
         with (
@@ -1408,6 +1682,7 @@ class TestThreadSelectorPrefetchedRows:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1471,6 +1746,7 @@ class TestThreadSelectorPrefetchedRows:
                             current_thread="abc12345",
                             thread_limit=20,
                             initial_threads=prefetched,
+                            filter_cwd=None,
                         )
                     )
                     await pilot.pause()
@@ -1504,6 +1780,7 @@ class TestThreadSelectorPrefetchedRows:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=[],
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1596,6 +1873,7 @@ class TestThreadSelectorInitialSortOrder:
                         current_thread=None,
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()
@@ -1637,6 +1915,7 @@ class TestThreadSelectorSearch:
         screen = ThreadSelectorScreen(
             current_thread=None,
             initial_threads=MOCK_THREADS,
+            filter_cwd=None,
         )
         screen._filter_text = ""
         screen._update_filtered_list()
@@ -1647,6 +1926,7 @@ class TestThreadSelectorSearch:
         screen = ThreadSelectorScreen(
             current_thread=None,
             initial_threads=MOCK_THREADS,
+            filter_cwd=None,
         )
         screen._filter_text = "def678"
         screen._update_filtered_list()
@@ -1689,7 +1969,9 @@ class TestThreadSelectorSearch:
                 "initial_prompt": "prompt two",
             },
         ]
-        screen = ThreadSelectorScreen(current_thread=None, initial_threads=threads)
+        screen = ThreadSelectorScreen(
+            current_thread=None, initial_threads=threads, filter_cwd=None
+        )
 
         screen._filter_text = "p"
         screen._update_filtered_list()
@@ -2722,10 +3004,14 @@ class TestBuildThreadMessage:
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""
         app = DeepAgentsApp()
-        with patch(
-            "deepagents_cli.app.asyncio.wait_for",
-            side_effect=TimeoutError,
-        ):
+
+        async def _raise_timeout(  # noqa: RUF029  # async signature required to match asyncio.wait_for
+            coro: Coroutine[Any, Any, Any], *_: Any, **__: Any
+        ) -> None:
+            coro.close()
+            raise TimeoutError
+
+        with patch("deepagents_cli.app.asyncio.wait_for", new=_raise_timeout):
             result = await app._build_thread_message("Resumed thread", "t-1")
 
         assert isinstance(result, str)
@@ -3070,6 +3356,7 @@ class TestThreadSelectorDomSkip:
                         current_thread="abc12345",
                         thread_limit=20,
                         initial_threads=prefetched,
+                        filter_cwd=None,
                     )
                 )
                 await pilot.pause()

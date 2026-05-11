@@ -107,6 +107,18 @@ class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
 
 
+class NoCredentialsConfiguredError(ModelConfigError):
+    """Raised when no credentials are configured for any default-resolvable provider.
+
+    Distinct from `MissingCredentialsError` (which targets a specific provider
+    the user has selected): this fires from `_get_default_model_spec()` when
+    auto-detection finds no usable credentials at all. Callers (the deferred-
+    start path in the TUI and CLI) `isinstance`-check this type to recover by
+    launching the TUI with model creation deferred, rather than string-matching
+    the formatted message.
+    """
+
+
 class UnknownProviderError(ModelConfigError):
     """Raised when neither the CLI nor `init_chat_model` can infer a provider.
 

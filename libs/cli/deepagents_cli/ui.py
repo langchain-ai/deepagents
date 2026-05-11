@@ -527,6 +527,7 @@ def show_threads_list_help() -> None:
     _print_option_section(
         "  --agent NAME              Filter by agent name",
         "  --branch TEXT             Filter by git branch name",
+        "  --cwd [PATH]              Filter by working directory (no value = current)",
         "  --sort {created,updated}  Sort order (default: from config, or updated)",
         "  -n, --limit N             Maximum threads to display (default: 20)",
         "  -v, --verbose             Show all columns (branch, created, prompt)",
@@ -539,6 +540,7 @@ def show_threads_list_help() -> None:
     console.print("  deepagents threads list -n 10")
     console.print("  deepagents threads list --agent mybot")
     console.print("  deepagents threads list --branch main -v")
+    console.print("  deepagents threads list --cwd")
     console.print("  deepagents threads list --sort created --limit 50")
     console.print("  deepagents threads list -r")
     console.print()

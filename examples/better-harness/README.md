@@ -1,6 +1,6 @@
 # better-harness
 
-System for autonomous harness optimization. Inspired by previous harness engineering work at LangChain in [Improving Deep Agents with Harness Engineering](https://blog.langchain.com/improving-deep-agents-with-harness-engineering/) and [Meta-Harness](https://arxiv.org/abs/2603.28052).
+System for autonomous harness optimization. Inspired by previous harness engineering work at LangChain in [Improving Deep Agents with Harness Engineering](https://blog.langchain.com/improving-deep-agents-with-harness-engineering/), [karpathy/autoresearch](https://github.com/karpathy/autoresearch), and [Meta-Harness](https://arxiv.org/abs/2603.28052).
 
 `better-harness` lets one [Deep Agent](https://github.com/langchain-ai/deepagents) improve another agent harness with evals.
 

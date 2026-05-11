@@ -921,3 +921,62 @@ class TestThreadsListCwdArgparse:
         """`--cwd /some/path` stores the literal value as-is."""
         ns = self._parse(["threads", "list", "--cwd", "/some/path"])
         assert ns.cwd == "/some/path"
+
+
+class TestCheckMcpProjectTrustPrompt:
+    """The project MCP approval prompt should surface a docs link."""
+
+    def test_prompt_includes_docs_link(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """When the prompt fires, it should print the project-level-trust docs URL."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_cli.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
+                },
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.extract_project_server_summaries",
+                return_value=[("fs", "stdio", "node server.js")],
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        captured = capsys.readouterr()
+        flattened = captured.err.replace("\n", "")
+        assert (
+            "https://docs.langchain.com/oss/python/deepagents/cli/"
+            "mcp-tools#project-level-trust" in flattened
+        )
+        assert "Learn more:" in captured.err

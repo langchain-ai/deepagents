@@ -1501,6 +1501,10 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     # Interactive prompt
     from rich.console import Console as _Console
 
+    docs_url = (
+        "https://docs.langchain.com/oss/python/deepagents/cli/"
+        "mcp-tools#project-level-trust"
+    )
     prompt_console = _Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
@@ -1508,6 +1512,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     )
     for name, kind, summary in all_servers:
         prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
+    prompt_console.print()
+    prompt_console.print(f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]")
     prompt_console.print()
 
     try:

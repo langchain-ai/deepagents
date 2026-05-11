@@ -1165,6 +1165,12 @@ class TestAppBindings:
         bindings_by_key = {b.key: b for b in bindings}
         assert "ctrl+e" not in bindings_by_key
 
+    def test_ctrl_d_not_bound(self) -> None:
+        """Ctrl+D must not be bound as a global quit shortcut."""
+        bindings = [b for b in DeepAgentsApp.BINDINGS if isinstance(b, Binding)]
+        bindings_by_key = {b.key: b for b in bindings}
+        assert "ctrl+d" not in bindings_by_key
+
 
 class TestModalScreenEscapeDismissal:
     """Test that escape key dismisses modal screens."""
@@ -1230,10 +1236,10 @@ class TestModalScreenEscapeDismissal:
 
 
 class TestModalScreenCtrlDHandling:
-    """Tests for app-level Ctrl+D behavior while modals are open."""
+    """Tests for local Ctrl+D behavior while modals are open."""
 
     async def test_ctrl_d_deletes_in_thread_selector_instead_of_quitting(self) -> None:
-        """App-level quit binding should delegate to thread delete in the modal."""
+        """The thread selector's own Ctrl+D binding should open delete confirm."""
         from deepagents_cli.widgets.thread_selector import ThreadSelectorScreen
 
         mock_threads: list[ThreadInfo] = [
@@ -1312,8 +1318,8 @@ class TestModalScreenCtrlDHandling:
                 assert app.screen is screen
                 assert screen.is_delete_confirmation_open is False
 
-    async def test_ctrl_d_twice_quits_from_delete_confirmation(self) -> None:
-        """Ctrl+D should use a double-press quit flow inside delete confirmation."""
+    async def test_ctrl_d_does_not_quit_from_delete_confirmation(self) -> None:
+        """Ctrl+D should be ignored inside delete confirmation."""
         from deepagents_cli.widgets.thread_selector import (
             DeleteThreadConfirmScreen,
             ThreadSelectorScreen,
@@ -1355,17 +1361,13 @@ class TestModalScreenCtrlDHandling:
                 ):
                     await pilot.press("ctrl+d")
                     await pilot.pause()
-                    notify_mock.assert_called_once_with(
-                        "Press Ctrl+D again to quit",
-                        timeout=3,
-                        markup=False,
-                    )
-                    assert app._quit_pending is True
+                    notify_mock.assert_not_called()
+                    assert app._quit_pending is False
                     exit_mock.assert_not_called()
 
                     await pilot.press("ctrl+d")
                     await pilot.pause()
-                    exit_mock.assert_called_once()
+                    exit_mock.assert_not_called()
 
     async def test_ctrl_c_still_works_from_delete_confirmation(self) -> None:
         """Ctrl+C should preserve the normal double-press quit flow in confirmation."""
@@ -1420,10 +1422,10 @@ class TestModalScreenCtrlDHandling:
                     app.action_quit_or_interrupt()
                     exit_mock.assert_called_once()
 
-    async def test_ctrl_d_quits_from_model_selector_with_input_focused(
+    async def test_ctrl_d_does_not_quit_from_model_selector_with_input_focused(
         self,
     ) -> None:
-        """Ctrl+D should not be swallowed or ignored in the model selector."""
+        """Ctrl+D should no longer quit from the model selector."""
         from deepagents_cli.widgets.model_selector import ModelSelectorScreen
 
         app = DeepAgentsApp()
@@ -1444,10 +1446,10 @@ class TestModalScreenCtrlDHandling:
                 await pilot.press("ctrl+d")
                 await pilot.pause()
 
-            exit_mock.assert_called_once()
+            exit_mock.assert_not_called()
 
-    async def test_ctrl_d_quits_from_mcp_viewer(self) -> None:
-        """Ctrl+D should still quit while the MCP viewer modal is open."""
+    async def test_ctrl_d_does_not_quit_from_mcp_viewer(self) -> None:
+        """Ctrl+D should no longer quit while the MCP viewer modal is open."""
         from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
         from deepagents_cli.widgets.mcp_viewer import MCPViewerScreen
 
@@ -1476,7 +1478,7 @@ class TestModalScreenCtrlDHandling:
                 await pilot.press("ctrl+d")
                 await pilot.pause()
 
-            exit_mock.assert_called_once()
+            exit_mock.assert_not_called()
 
     async def test_ctrl_d_opens_delete_confirm_in_auth_prompt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1507,10 +1509,10 @@ class TestModalScreenCtrlDHandling:
             assert isinstance(app.screen, DeleteCredentialConfirmScreen)
             exit_mock.assert_not_called()
 
-    async def test_ctrl_d_in_auth_confirm_arms_quit(
+    async def test_ctrl_d_in_auth_confirm_does_not_arm_quit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ctrl+D inside the auth confirm modal arms the double-press quit."""
+        """Ctrl+D inside the auth confirm modal should be ignored."""
         from deepagents_cli import auth_store
         from deepagents_cli.widgets.auth import AuthPromptScreen
 
@@ -1532,11 +1534,11 @@ class TestModalScreenCtrlDHandling:
                 await pilot.press("ctrl+d")
                 await pilot.pause()
                 exit_mock.assert_not_called()
-                assert app._quit_pending is True
+                assert app._quit_pending is False
 
                 await pilot.press("ctrl+d")
                 await pilot.pause()
-                exit_mock.assert_called_once()
+                exit_mock.assert_not_called()
 
 
 class TestModalScreenShiftTabHandling:

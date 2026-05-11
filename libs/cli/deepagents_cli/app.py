@@ -985,7 +985,6 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
         Binding(
             "shift+tab",
@@ -1484,7 +1483,7 @@ class DeepAgentsApp(App):
         """Stats for the currently executing turn.
 
         Held here so `exit()` can merge them synchronously before the event loop
-        tears down (e.g. `Ctrl+D` during a pending tool call).
+        tears down (e.g. quit during a pending tool call).
         """
 
         self._inflight_turn_start: float = 0.0
@@ -5798,7 +5797,7 @@ class DeepAgentsApp(App):
 
         # Create the stats object up-front and store on the app so
         # exit() can merge it synchronously if the worker is cancelled
-        # before this method can return (e.g. Ctrl+D during HITL).
+        # before this method can return (e.g. quit during HITL).
         turn_stats = SessionStats()
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
@@ -6345,7 +6344,7 @@ class DeepAgentsApp(App):
         except NoMatches:
             return
 
-        # During shutdown (e.g. Ctrl+D mid-stream) the container may still
+        # During shutdown (e.g. quit mid-stream) the container may still
         # be in the DOM tree but already detached, so mount() would raise
         # MountError. Bail out silently — the app is exiting anyway.
         if not messages.is_attached:
@@ -6796,34 +6795,6 @@ class DeepAgentsApp(App):
             self._cancel_worker(self._agent_worker)
             return
 
-    def action_quit_app(self) -> None:
-        """Handle quit action (Ctrl+D)."""
-        from deepagents_cli.widgets.auth import (
-            AuthPromptScreen,
-            DeleteCredentialConfirmScreen,
-        )
-        from deepagents_cli.widgets.thread_selector import (
-            DeleteThreadConfirmScreen,
-            ThreadSelectorScreen,
-        )
-
-        if isinstance(self.screen, ThreadSelectorScreen):
-            self.screen.action_delete_thread()
-            return
-        if isinstance(self.screen, AuthPromptScreen):
-            self.screen.action_delete_stored()
-            return
-        if isinstance(
-            self.screen,
-            (DeleteThreadConfirmScreen, DeleteCredentialConfirmScreen),
-        ):
-            if self._quit_pending:
-                self.exit()
-                return
-            self._arm_quit_pending("Ctrl+D")
-            return
-        self.exit()
-
     def exit(
         self,
         result: Any = None,  # noqa: ANN401  # Dynamic LangGraph stream result type
@@ -6838,7 +6809,7 @@ class DeepAgentsApp(App):
             message: Optional message to display on exit.
         """
         # Merge in-flight turn stats before any cleanup that might raise.
-        # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
+        # When the agent worker is cancelled (e.g. quit during a pending tool
         # call), the worker's finally block will see _inflight_turn_stats is
         # already None and skip the merge.
         inflight = self._inflight_turn_stats

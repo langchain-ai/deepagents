@@ -98,7 +98,7 @@ Library calls are pure — no files written, no LangSmith calls. Caller opts in.
 | `interpretation_quality` | LLM + both | Defensible reading of the (often vague) prompt |
 | `accessibility` | axe-core | WCAG 2.0 A/AA violations, serious-impact doubled |
 
-Judge model: `openai:gpt-5.4` (hard-coded in `evaluators.py`).
+Judge model: `openai:gpt-5.5` (hard-coded in `evaluators.py`).
 
 ## Aggregation
 

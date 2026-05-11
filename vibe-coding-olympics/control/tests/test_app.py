@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -9,21 +10,21 @@ from control_server import app as app_mod
 
 
 class TestReadyPlayers(unittest.TestCase):
-    def setUp(self) -> None:
+    def _reset_state(self) -> None:
         app_mod._connected_ports.clear()
         app_mod._ready_players.clear()
         app_mod._model_ready_ports.clear()
         app_mod._prompt_pool.clear()
         app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
         app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
+        app_mod._round_context.clear()
+        app_mod._last_eval_results.clear()
+
+    def setUp(self) -> None:
+        self._reset_state()
 
     def tearDown(self) -> None:
-        app_mod._connected_ports.clear()
-        app_mod._ready_players.clear()
-        app_mod._model_ready_ports.clear()
-        app_mod._prompt_pool.clear()
-        app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
-        app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
+        self._reset_state()
 
     def test_ready_players_forward_to_obs_in_submission_order(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -172,20 +173,35 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("Prompt pool is empty.", response.text)
 
-    def test_round_end_early_signals_players_then_ends_round(self) -> None:
+    def test_round_end_early_runs_judge_and_forwards_scores(self) -> None:
+        from control_server import eval_runner
+
         client = TestClient(app_mod.create_app())
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
-        calls: list[str] = []
+        app_mod._round_context.update(
+            {
+                "prompt": "build a taco truck",
+                "round_num": 1,
+                "contestants": ["Alice", "Bob"],
+            }
+        )
 
-        async def times_up(ports: list[str] | None) -> list[str]:
-            calls.append("times-up")
-            self.assertEqual(ports, ["3001", "3002"])
-            return ["3001", "3002"]
+        async def fake_run_eval(
+            *, url: str, site_name: str, prompt: str, round_num: int, work_dir: Any
+        ) -> eval_runner.EvalResult:
+            del url, prompt, round_num, work_dir
+            axes = {axis: 0.5 for axis in eval_runner.LLM_AXES}
+            return eval_runner.EvalResult(
+                site_name=site_name,
+                url="http://example/x",
+                prompt="p",
+                round_num=1,
+                axes=axes,
+                overall=0.5,
+            )
 
-        async def forward(event: str, payload: dict[str, object]) -> dict[str, str]:
-            calls.append(event)
-            self.assertEqual(payload, {"scores": {"Alice": 8.2, "Bob": 7.5}})
-            return {"phase": "scoreboard"}
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        times_up = AsyncMock(return_value=["3001", "3002"])
 
         with (
             patch(
@@ -193,17 +209,27 @@ class TestReadyPlayers(unittest.TestCase):
                 new=AsyncMock(return_value={"phase": "coding"}),
             ),
             patch("control_server.app._forward", forward),
+            patch(
+                "control_server.app.site_urls.site_url_for",
+                lambda port: f"http://192.168.1.{port[-1]}:{port}",
+            ),
             patch("control_server.player_dispatch.times_up_players", times_up),
+            patch("control_server.eval_runner.run_eval", new=fake_run_eval),
         ):
-            response = client.post(
-                "/api/round/end-early",
-                json={"scores": {"Alice": 8.2, "Bob": 7.5}},
-            )
+            response = client.post("/api/round/end-early", json={})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["times_up_sent"], ["3001", "3002"])
-        self.assertEqual(response.json()["state"], {"phase": "scoreboard"})
-        self.assertEqual(calls, ["times-up", "end"])
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 5.0, "Bob": 5.0}},
+        )
+        body = response.json()
+        names = sorted(entry["name"] for entry in body["results"])
+        self.assertEqual(names, ["Alice", "Bob"])
+        for entry in body["results"]:
+            self.assertEqual(entry["overall"], 0.5)
+            self.assertEqual(entry["obs_score"], 5.0)
+            self.assertFalse(entry["fallback"])
 
     def test_round_end_early_rejects_when_not_coding(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -219,7 +245,7 @@ class TestReadyPlayers(unittest.TestCase):
                 new=AsyncMock(),
             ) as times_up,
         ):
-            response = client.post("/api/round/end-early", json={"scores": {}})
+            response = client.post("/api/round/end-early", json={})
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Cannot end early while OBS is in phase `idle`.", response.text)
@@ -422,9 +448,13 @@ class TestReadyPlayers(unittest.TestCase):
         )
         self.assertIn('aria-disabled="true">Start</button>', response.text)
         self.assertIn(
-            'id="btn-end-early" aria-disabled="true">End early</button>',
+            'id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>',
             response.text,
         )
+        self.assertIn('id="btn-open-override"', response.text)
+        self.assertIn('id="override-modal"', response.text)
+        self.assertIn('id="timer-clock"', response.text)
+        self.assertIn('id="eval-results"', response.text)
         self.assertIn('id="end-error"', response.text)
         self.assertIn('id="obs-phase">unknown</span>', response.text)
         self.assertIn('id="state-summary"', response.text)
@@ -438,6 +468,119 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("edit.textContent = 'Edit'", response.text)
         self.assertIn("save.textContent = 'Save'", response.text)
         self.assertNotIn("Send prompt to all", response.text)
+
+
+class TestRoundOverrideEnd(unittest.TestCase):
+    def setUp(self) -> None:
+        app_mod._connected_ports.clear()
+        app_mod._ready_players.clear()
+        app_mod._model_ready_ports.clear()
+        app_mod._round_context.clear()
+        app_mod._last_eval_results.clear()
+
+    def tearDown(self) -> None:
+        self.setUp()
+
+    def test_override_end_forwards_supplied_scores_without_judge(self) -> None:
+        client = TestClient(app_mod.create_app())
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        run_eval = AsyncMock()
+
+        with (
+            patch("control_server.app._forward", forward),
+            patch("control_server.eval_runner.run_eval", new=run_eval),
+        ):
+            response = client.post(
+                "/api/round/override-end",
+                json={"scores": {"Alice": 9.5, "Bob": 4.2}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 9.5, "Bob": 4.2}},
+        )
+        run_eval.assert_not_awaited()
+
+
+class TestRoundEvalFallback(unittest.TestCase):
+    def setUp(self) -> None:
+        app_mod._connected_ports.clear()
+        app_mod._ready_players.clear()
+        app_mod._model_ready_ports.clear()
+        app_mod._round_context.clear()
+        app_mod._last_eval_results.clear()
+
+    def tearDown(self) -> None:
+        self.setUp()
+
+    def test_missing_site_url_yields_fallback_results(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._round_context.update(
+            {
+                "prompt": "build something",
+                "round_num": 1,
+                "contestants": ["Alice", "Bob"],
+            }
+        )
+
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        times_up = AsyncMock(return_value=[])
+
+        async def never_called(
+            *, url: str, site_name: str, prompt: str, round_num: int, work_dir: Any
+        ) -> object:
+            raise AssertionError("run_eval should not be called when site URL is missing")
+
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "coding"}),
+            ),
+            patch("control_server.app._forward", forward),
+            patch(
+                "control_server.app.site_urls.site_url_for",
+                lambda port: None,
+            ),
+            patch("control_server.player_dispatch.times_up_players", times_up),
+            patch("control_server.eval_runner.run_eval", new=never_called),
+        ):
+            response = client.post("/api/round/end-early", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["results"]), 2)
+        for entry in body["results"]:
+            self.assertTrue(entry["fallback"])
+            self.assertEqual(entry["fallback_reason"], "no site URL configured for port")
+            self.assertEqual(entry["url"], "")
+        forward.assert_awaited_once()
+        forwarded_event, forwarded_payload = forward.await_args.args
+        self.assertEqual(forwarded_event, "end")
+        self.assertEqual(set(forwarded_payload["scores"].keys()), {"Alice", "Bob"})
+
+
+class TestStateExposesTimerAndEval(unittest.TestCase):
+    def setUp(self) -> None:
+        app_mod._round_context.clear()
+        app_mod._last_eval_results.clear()
+
+    def tearDown(self) -> None:
+        self.setUp()
+
+    def test_state_includes_timer_and_eval_keys(self) -> None:
+        client = TestClient(app_mod.create_app())
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(return_value={"phase": "idle"}),
+        ):
+            response = client.get("/api/state")
+        body = response.json()
+        self.assertIn("timer", body)
+        self.assertIn("eval", body)
+        self.assertEqual(body["timer"]["running"], False)
+        self.assertEqual(body["eval"]["results"], [])
 
 
 if __name__ == "__main__":

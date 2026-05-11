@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 # Must support vision — evaluators send page screenshots as image_url content blocks.
-_JUDGE_MODEL = "openai:gpt-5.4"
+_JUDGE_MODEL = "openai:gpt-5.5"
 
 _ROLE_PREAMBLE = (
     "You are an expert web designer judging a 5-minute vibe coding competition. "

@@ -48,9 +48,17 @@ DEBUG_FILE = "DEEPAGENTS_CLI_DEBUG_FILE"
 """Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CLI_DEBUG_MCP_PROJECT_TRUST"
-"""Force the project MCP approval prompt with sample data for manual UI testing.
+"""Force the project MCP approval prompt for manual UI testing.
 
-Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled."""
+Set to a truthy value when launching the interactive CLI to render the
+project-level MCP trust prompt without relying on an untrusted config state. If
+project MCP servers are discovered, the prompt shows those real servers;
+otherwise it shows a sample server. The CLI exits after the prompt response so
+the debug run does not continue into TUI or server startup, and it does not
+persist trust decisions.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
 
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS"
 """Inject sample missing-dependency notifications at launch so the notification

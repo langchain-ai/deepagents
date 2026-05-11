@@ -133,6 +133,9 @@ class MessageData:
     tool_expanded: bool = False
     """Whether the tool output section is expanded in the UI."""
 
+    tool_reject_reason: str | None = None
+    """User-supplied reason attached to a HITL reject decision (if any)."""
+
     # ---
 
     diff_file_path: str | None = None
@@ -233,6 +236,7 @@ class MessageData:
                 widget._deferred_status = self.tool_status
                 widget._deferred_output = self.tool_output
                 widget._deferred_expanded = self.tool_expanded
+                widget._deferred_reject_reason = self.tool_reject_reason
                 return widget
 
             case MessageType.SKILL:
@@ -345,6 +349,7 @@ class MessageData:
                 tool_status=tool_status,
                 tool_output=widget._output,
                 tool_expanded=widget._expanded,
+                tool_reject_reason=widget._reject_reason,
             )
 
         if isinstance(widget, ErrorMessage):

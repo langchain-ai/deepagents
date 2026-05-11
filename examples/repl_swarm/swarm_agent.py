@@ -25,7 +25,7 @@ from deepagents import create_deep_agent
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 SKILLS_DIR = str(Path(__file__).parent / "skills")
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -53,7 +53,7 @@ def _build_agent(model: str) -> object:
         backend=backend,
         skills=["/skills/"],
         middleware=[
-            REPLMiddleware(
+            CodeInterpreterMiddleware(
                 ptc=["task"],
                 skills_backend=backend,
                 timeout=None,

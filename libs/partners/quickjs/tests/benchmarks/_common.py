@@ -11,7 +11,7 @@ from deepagents import create_deep_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
 
 if TYPE_CHECKING:
@@ -74,7 +74,7 @@ def finite_script(code: str, *, repeats: int) -> Iterator[AIMessage]:
 def make_agent(
     *,
     code: str,
-    middleware: REPLMiddleware,
+    middleware: CodeInterpreterMiddleware,
     repeats: int,
 ) -> Any:
     """Create a deep agent with a scripted fake chat model."""
@@ -113,7 +113,9 @@ def run_counter_turns(
     snapshot_between_turns: bool,
 ) -> list[str]:
     """Run `turn_count` REPL turns and return counter values per turn."""
-    middleware = REPLMiddleware(snapshot_between_turns=snapshot_between_turns)
+    middleware = CodeInterpreterMiddleware(
+        snapshot_between_turns=snapshot_between_turns
+    )
     state: REPLState = {}
     runtime: Any = None  # hooks ignore runtime; `None` keeps this path lightweight
     values: list[str] = []

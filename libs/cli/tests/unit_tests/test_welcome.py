@@ -106,6 +106,7 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner(project_url=None)
 
         assert "Thread: 12345" in banner.plain
+        assert "\n  Thread: 12345\n" in banner.plain
 
         # Verify no link style on the thread portion
         thread_start = banner.plain.index("Thread: 12345")
@@ -120,6 +121,7 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner(project_url=project_url)
 
         assert "Thread: 99999" in banner.plain
+        assert "\n  Thread: 99999\n" in banner.plain
 
         # Find a span with a link on the thread ID text
         thread_id_start = banner.plain.index("99999")
@@ -164,6 +166,7 @@ class TestBuildBannerThreadLink:
 
         assert "my-project" in banner.plain
         assert "Thread: 77777" in banner.plain
+        assert "\n  Thread: 77777\n" in banner.plain
 
         thread_id_start = banner.plain.index("77777")
         thread_id_end = thread_id_start + len("77777")

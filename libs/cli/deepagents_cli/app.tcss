@@ -224,6 +224,13 @@ ToolCallMessage.-ascii:hover {
     margin-top: 0;
 }
 
+/* Free-text reject reason input (Tab on Reject) */
+.approval-menu .approval-reason-input {
+    margin: 1 0 0 0;
+    border: solid $warning;
+    background: $surface;
+}
+
 /* Ask user widget */
 .ask-user-menu {
     height: auto;

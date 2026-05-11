@@ -11,7 +11,7 @@ Both invocation paths are exercised:
 - ``agent.invoke`` (sync path)
 - ``agent.ainvoke`` (async path)
 
-``REPLMiddleware`` routes both paths through async QuickJS eval under
+``CodeInterpreterMiddleware`` routes both paths through async QuickJS eval under
 the hood so PTC host-function bridges work consistently in either mode.
 
 Requires ``ANTHROPIC_API_KEY`` in the environment. Run with
@@ -29,7 +29,7 @@ from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"),
@@ -96,7 +96,7 @@ async def test_ptc_spawns_subagent_through_eval(invoke_mode: InvokeMode) -> None
                 backend=None,  # not used by this trivial subagent
                 subagents=[_researcher_subagent()],
             ),
-            REPLMiddleware(ptc=["task"]),
+            CodeInterpreterMiddleware(ptc=["task"]),
         ],
     )
 
@@ -147,7 +147,7 @@ async def test_ptc_respects_allowlist_config(invoke_mode: InvokeMode) -> None:
                 backend=None,
                 subagents=[_researcher_subagent()],
             ),
-            REPLMiddleware(ptc=[]),
+            CodeInterpreterMiddleware(ptc=[]),
         ],
     )
 

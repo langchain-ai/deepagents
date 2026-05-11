@@ -1,5 +1,23 @@
 # Deep Agents CLI Changelog
 
+## [0.0.56](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.55...deepagents-cli==0.0.56) (2026-05-11)
+
+### Features
+
+* Free-text reject reason on HITL approval prompt ([#3344](https://github.com/langchain-ai/deepagents/issues/3344)) ([dcc48f4](https://github.com/langchain-ai/deepagents/commit/dcc48f48d20757f17011e65b61363dd0347af164))
+* Add docs link to project MCP approval prompt ([#3341](https://github.com/langchain-ai/deepagents/issues/3341)) ([b5c1228](https://github.com/langchain-ai/deepagents/commit/b5c12280e47bc37938290a4219317f47c1abfa8a))
+
+### Bug Fixes
+
+* Dedupe MCP servers in project trust approval prompt ([#3342](https://github.com/langchain-ai/deepagents/issues/3342)) ([73484ea](https://github.com/langchain-ai/deepagents/commit/73484ea551189985190f52cb26b299819d3fc37d))
+* Remove legacy shell tool aliases and harden HITL widget cleanup ([#3340](https://github.com/langchain-ai/deepagents/issues/3340)) ([398f7f4](https://github.com/langchain-ai/deepagents/commit/398f7f4512182a8e51cbdfbfb9dc211c77014e2b))
+* Truncate multi-line shell commands in HITL approval ([#3314](https://github.com/langchain-ai/deepagents/issues/3314)) ([7ab6e14](https://github.com/langchain-ai/deepagents/commit/7ab6e14565d6dd9d9c9e76d9d6677e5568a727f7))
+* (Deploy) Add `together` provider to bundler deps and optional extras ([#2670](https://github.com/langchain-ai/deepagents/issues/2670)) ([4290953](https://github.com/langchain-ai/deepagents/commit/4290953e44570ec02399e4d423ab4ffd24e97609))
+
+### Performance Improvements
+
+* Gate dropped-path detection on multi-character insert size ([#3343](https://github.com/langchain-ai/deepagents/issues/3343)) ([06a21e8](https://github.com/langchain-ai/deepagents/commit/06a21e8a69738b7ba055d2f13dae4cd9fab353cd))
+
 ## [0.0.55](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.54...deepagents-cli==0.0.55) (2026-05-11)
 
 ### Bug Fixes

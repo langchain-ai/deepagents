@@ -36,8 +36,50 @@ from deepagents_cli.widgets.tool_renderers import get_renderer
 
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
+# Max number of lines for truncated shell command display
+_SHELL_COMMAND_TRUNCATE_LINES: int = 5
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
+
+
+def _is_command_too_long(command: str) -> bool:
+    """Whether a shell command exceeds the display thresholds (char or line).
+
+    Args:
+        command: The shell command string to check.
+
+    Returns:
+        `True` if the command is longer than `_SHELL_COMMAND_TRUNCATE_LENGTH`
+        characters or has more than `_SHELL_COMMAND_TRUNCATE_LINES` lines.
+    """
+    if len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+        return True
+    return command.count("\n") + 1 > _SHELL_COMMAND_TRUNCATE_LINES
+
+
+def _truncate_command(command: str) -> str:
+    """Truncate a shell command for compact display.
+
+    Applies line truncation first (keeping at most `_SHELL_COMMAND_TRUNCATE_LINES`
+    lines), then character truncation, so multi-line commands collapse before
+    long single lines are cut. A single ellipsis is appended at the end.
+
+    Args:
+        command: The shell command string to truncate.
+
+    Returns:
+        The truncated command string, with a trailing ellipsis if any truncation
+        was applied; otherwise the original command unchanged.
+    """
+    ellipsis = get_glyphs().ellipsis
+    lines = command.split("\n")
+    truncated = len(lines) > _SHELL_COMMAND_TRUNCATE_LINES
+    if truncated:
+        command = "\n".join(lines[:_SHELL_COMMAND_TRUNCATE_LINES])
+    if len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+        command = command[:_SHELL_COMMAND_TRUNCATE_LENGTH]
+        truncated = True
+    return command + ellipsis if truncated else command
 
 
 class ApprovalMenu(Container):
@@ -143,7 +185,7 @@ class ApprovalMenu(Container):
         if req.get("name", "") not in SHELL_TOOL_NAMES:
             return False
         command = str(req.get("args", {}).get("command", ""))
-        return len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH
+        return _is_command_too_long(command)
 
     def _get_command_display(self, *, expanded: bool) -> Content:
         """Get the command display content (truncated or full).
@@ -165,14 +207,13 @@ class ApprovalMenu(Container):
         command = strip_dangerous_unicode(command_raw)
         issues = detect_dangerous_unicode(command_raw)
 
-        if expanded or len(command) <= _SHELL_COMMAND_TRUNCATE_LENGTH:
+        too_long = _is_command_too_long(command)
+        if expanded or not too_long:
             command_display = command
         else:
-            command_display = (
-                command[:_SHELL_COMMAND_TRUNCATE_LENGTH] + get_glyphs().ellipsis
-            )
+            command_display = _truncate_command(command)
 
-        if not expanded and len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+        if not expanded and too_long:
             display = Content.from_markup(
                 "[bold]$cmd[/bold] [dim](press 'e' to expand)[/dim]",
                 cmd=command_display,

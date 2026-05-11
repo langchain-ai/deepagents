@@ -5,6 +5,7 @@
 #   tab 1 — starts the Vite dev server once, then launches Deep Agents CLI
 #           waiting for the controller or auto-invoking web-vibe with PROMPT
 #   tab 2 — tail -f of the Vite log, so server activity is visible
+#   tab 3 — starts the player HTTP relay for controller commands
 #
 # Requires (one-time per laptop):
 #   - iTerm2 installed
@@ -60,6 +61,9 @@ HOOKS_FILE="$DIR/hooks.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTROL_DIR="$SCRIPT_DIR/control"
 CONTROL_API="${VIBE_CONTROL_API:-http://localhost:8766}"
+RELAY_HOST="${VIBE_RELAY_HOST:-0.0.0.0}"
+RELAY_PORT="${VIBE_RELAY_PORT:-9771}"
+LAUNCH_RELAY="${VIBE_LAUNCH_RELAY:-1}"
 REPO_DEEPAGENTS="$(cd "$SCRIPT_DIR/.." && pwd)/.deepagents"
 if [ -d "$REPO_DEEPAGENTS" ]; then
   ln -s "$REPO_DEEPAGENTS" "$DIR/.deepagents"
@@ -101,6 +105,12 @@ echo "Log:        $LOG"
 echo "Socket:     $EVENT_SOCKET"
 echo "Hooks:      $HOOKS_FILE"
 echo "Control:    $CONTROL_API"
+if [ "$LAUNCH_RELAY" = "1" ]; then
+  echo "Relay:      http://$RELAY_HOST:$RELAY_PORT"
+  if [ -z "${VIBE_PLAYER_TOKEN:-}" ]; then
+    echo "warning: VIBE_PLAYER_TOKEN is not set; relay commands will fail until it is configured" >&2
+  fi
+fi
 if [ "$WAIT_FOR_CONTROLLER" -eq 1 ]; then
   echo "Mode:       waiting for controller prompt"
 fi
@@ -109,6 +119,9 @@ export VIBE_PORT="$PORT" VIBE_DIR="$DIR" VIBE_PROMPT="$PROMPT" VIBE_LOG="$LOG"
 export VIBE_EVENT_SOCKET="$EVENT_SOCKET"
 export DEEPAGENTS_CLI_HOOKS_PATH="$HOOKS_FILE" VIBE_CONTROL_API="$CONTROL_API"
 export VIBE_WAIT_FOR_CONTROLLER="$WAIT_FOR_CONTROLLER"
+export VIBE_RELAY_HOST="$RELAY_HOST" VIBE_RELAY_PORT="$RELAY_PORT"
+export VIBE_LAUNCH_RELAY="$LAUNCH_RELAY"
+export VIBE_CONTROL_DIR="$CONTROL_DIR"
 
 # Best-effort controller signal: the player process has launched. Later CLI
 # hooks report name submission and model-selection readiness.
@@ -172,6 +185,7 @@ PROMPT = os.environ["VIBE_PROMPT"].strip()
 LOG = os.environ["VIBE_LOG"]
 EVENT_SOCKET = os.environ["VIBE_EVENT_SOCKET"]
 HEARTBEAT_BODY = json.dumps({"port": PORT}, separators=(",", ":"))
+LAUNCH_RELAY = os.environ["VIBE_LAUNCH_RELAY"] == "1"
 WAIT_FOR_CONTROLLER = os.environ["VIBE_WAIT_FOR_CONTROLLER"] == "1"
 if WAIT_FOR_CONTROLLER:
     STARTUP_SUBHEADER = (
@@ -262,6 +276,27 @@ async def main(connection):
     if log_tab is None or not log_tab.sessions:
         raise RuntimeError("iterm2 did not return a log tab with sessions")
     await log_tab.sessions[0].async_send_text(f"tail -f {shlex.quote(LOG)}\n")
+
+    if LAUNCH_RELAY:
+        relay_tab = await window.async_create_tab()
+        if relay_tab is None or not relay_tab.sessions:
+            raise RuntimeError("iterm2 did not return a relay tab with sessions")
+        relay = relay_tab.sessions[0]
+        await relay.async_set_name(f"vibe-relay-{PORT}")
+        await relay.async_send_text(
+            "export "
+            f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
+            f"VIBE_PLAYER_TOKEN={shlex.quote(os.environ.get('VIBE_PLAYER_TOKEN', ''))} "
+            f"VIBE_RELAY_HOST={shlex.quote(os.environ['VIBE_RELAY_HOST'])} "
+            f"VIBE_RELAY_PORT={shlex.quote(os.environ['VIBE_RELAY_PORT'])}\n"
+        )
+        await relay.async_send_text(
+            "cd "
+            f"{shlex.quote(os.environ['VIBE_DIR'])} && "
+            "uv run --project "
+            f"{shlex.quote(os.environ['VIBE_CONTROL_DIR'])} "
+            "vibe-player-relay\n"
+        )
 
     # Refocus tab 1 — creating the log tab leaves it active otherwise.
     await tab.async_activate()

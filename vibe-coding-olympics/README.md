@@ -43,13 +43,6 @@ cd vibe-coding-olympics
 export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3001
-
-# terminal 2 on the same player laptop
-VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3001.sock \
-  VIBE_PLAYER_TOKEN=<shared-token> \
-  VIBE_RELAY_HOST=0.0.0.0 \
-  VIBE_RELAY_PORT=9771 \
-  uv run --project control vibe-player-relay
 ```
 
 ```bash
@@ -57,18 +50,16 @@ cd vibe-coding-olympics
 export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3002
-
-# terminal 2 on the same player laptop
-VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3002.sock \
-  VIBE_PLAYER_TOKEN=<shared-token> \
-  VIBE_RELAY_HOST=0.0.0.0 \
-  VIBE_RELAY_PORT=9771 \
-  uv run --project control vibe-player-relay
 ```
 
 `play.sh` instruments a Deep Agents CLI hook that reports the player's name and model-ready status back to `vibe-control` using `VIBE_CONTROL_API`.
-`vibe-player-relay` lets the controller send prompt, times-up, and clear
-commands back to each player laptop over the LAN.
+It also starts a heartbeat loop and launches `vibe-player-relay` in a separate
+iTerm tab so the controller can send prompt, times-up, and clear commands back
+to each player laptop over the LAN.
+
+Set `VIBE_LAUNCH_RELAY=0` before running `play.sh` to skip the relay tab, or
+override `VIBE_RELAY_HOST` / `VIBE_RELAY_PORT` if the default `0.0.0.0:9771`
+does not work on a player laptop.
 
 If port `8766` is unavailable on the controller machine, override both the control server bind port and the URL used by player laptops:
 

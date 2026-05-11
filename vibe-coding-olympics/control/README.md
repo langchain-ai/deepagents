@@ -61,17 +61,10 @@ export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3002                                  # player 2, on the other computer
 ```
 
-Start `vibe-player-relay` in a second terminal on each player laptop. Use the
-matching `VIBE_EVENT_SOCKET` path for that player's port:
-
-```bash
-cd vibe-coding-olympics
-VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3001.sock \
-  VIBE_PLAYER_TOKEN=<shared-token> \
-  VIBE_RELAY_HOST=0.0.0.0 \
-  VIBE_RELAY_PORT=9771 \
-  uv run --project control vibe-player-relay
-```
+`play.sh` starts a heartbeat loop and launches `vibe-player-relay` in a
+separate iTerm tab. Set `VIBE_LAUNCH_RELAY=0` before running `play.sh` to skip
+that tab, or override `VIBE_RELAY_HOST` / `VIBE_RELAY_PORT` if the default
+`0.0.0.0:9771` does not work on a player laptop.
 
 If port `8766` is unavailable, override the control server bind port and use the same port in `VIBE_CONTROL_API` on every player laptop:
 
@@ -135,6 +128,9 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_CONTROL_API` | `http://localhost:8766` | URL used by `vibe-player-hook` from player machines |
 | `VIBE_PLAYER_<port>_RELAY` | _(unset)_ | Controller-side URL for a player laptop relay, e.g. `VIBE_PLAYER_3001_RELAY` |
 | `VIBE_PLAYER_TOKEN` | _(unset)_ | Shared bearer token used by controller-to-relay commands |
+| `VIBE_LAUNCH_RELAY` | `1` | Whether `play.sh` should launch the player relay tab |
+| `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
+| `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
 
 ## Player readiness hook
 

@@ -88,11 +88,11 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 class ShellAllowListMiddleware(AgentMiddleware):
     """Validate shell commands against an allow-list without HITL interrupts.
 
-    When the agent invokes a shell tool (any tool in `SHELL_TOOL_NAMES`),
-    this middleware checks the command against the configured allow-list
-    **before execution**. Rejected commands are returned as error `ToolMessage`
-    objects — the graph never pauses, so LangSmith traces stay as a single
-    continuous run.
+    When the agent invokes the `execute` shell tool, this middleware checks
+    the command against the configured allow-list **before execution**.
+    Rejected commands are returned as error `ToolMessage` objects — the
+    graph never pauses, so LangSmith traces stay as a single continuous
+    run.
 
     Use this middleware in non-interactive mode to avoid the
     interrupt/resume cycle that fragments traces.
@@ -135,10 +135,9 @@ class ShellAllowListMiddleware(AgentMiddleware):
         """
         from langchain_core.messages import ToolMessage as LCToolMessage
 
-        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
+        from deepagents_cli.config import is_shell_command_allowed
 
-        tool_name = request.tool_call["name"]
-        if tool_name not in SHELL_TOOL_NAMES:
+        if request.tool_call["name"] != "execute":
             return None
 
         args = request.tool_call.get("args") or {}
@@ -155,7 +154,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
                 f"Allowed commands: {allowed_str}. "
                 f"Please use an allowed command or try another approach."
             ),
-            name=tool_name,
+            name="execute",
             tool_call_id=request.tool_call["id"],
             status="error",
         )

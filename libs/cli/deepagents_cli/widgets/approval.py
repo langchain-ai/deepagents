@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 from deepagents_cli import theme
 from deepagents_cli.config import (
-    SHELL_TOOL_NAMES,
     get_glyphs,
     is_ascii_mode,
 )
@@ -128,7 +127,7 @@ class ApprovalMenu(Container):
             self.decision = decision
 
     # Tools that don't need detailed info display (already shown in tool call)
-    _MINIMAL_TOOLS: ClassVar[frozenset[str]] = SHELL_TOOL_NAMES
+    _MINIMAL_TOOLS: ClassVar[frozenset[str]] = frozenset({"execute"})
 
     def __init__(
         self,
@@ -161,7 +160,7 @@ class ApprovalMenu(Container):
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
         self._tool_info_container: Vertical | None = None
-        # Minimal display if ALL tools are bash/shell
+        # Minimal display if ALL tools are shell-execution tools
         self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
         # For expandable shell commands
         self._command_expanded = False
@@ -182,7 +181,7 @@ class ApprovalMenu(Container):
         if len(self._action_requests) != 1:
             return False
         req = self._action_requests[0]
-        if req.get("name", "") not in SHELL_TOOL_NAMES:
+        if req.get("name", "") != "execute":
             return False
         command = str(req.get("args", {}).get("command", ""))
         return _is_command_too_long(command)

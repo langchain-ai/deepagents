@@ -3378,7 +3378,6 @@ class DeepAgentsApp(App):
             A Future that resolves to the user's decision.
         """
         from deepagents_cli.config import (
-            SHELL_TOOL_NAMES,
             is_shell_command_allowed,
             settings,
         )
@@ -3392,7 +3391,7 @@ class DeepAgentsApp(App):
             approved_commands = []
 
             for req in action_requests:
-                if req.get("name") in SHELL_TOOL_NAMES:
+                if req.get("name") == "execute":
                     command = req.get("args", {}).get("command", "")
                     if is_shell_command_allowed(command, settings.shell_allow_list):
                         approved_commands.append(command)

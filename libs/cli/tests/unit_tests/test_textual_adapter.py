@@ -1139,6 +1139,212 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         )
 
 
+class TestExecuteTaskTextualHITLShellSuppression:
+    """Tests for shell-tool widget suppression during HITL approval."""
+
+    async def _run_with_decision(
+        self,
+        *,
+        tool_call_name: str,
+        tool_call_id: str,
+        approval_decision: dict[str, Any],
+        extra_tool_calls: list[tuple[str, dict[str, Any], str]] | None = None,
+    ) -> tuple[
+        TextualUIAdapter,
+        list[object],
+        dict[str, tuple[bool, bool]],
+    ]:
+        """Drive a HITL flow and snapshot widget visibility during the await.
+
+        Returns the adapter, the mounted widgets, and a mapping of
+        `tool_call_id -> (display, _awaiting_approval)` captured while the
+        approval future is pending.
+        """
+        mounted: list[object] = []
+        snapshots: dict[str, tuple[bool, bool]] = {}
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        future: asyncio.Future[object] = asyncio.Future()
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            for tid, tool_msg in adapter._current_tool_messages.items():
+                snapshots[tid] = (
+                    bool(tool_msg.display),
+                    tool_msg._awaiting_approval,
+                )
+            future.set_result(approval_decision)
+            return future
+
+        message_chunks: list[tuple[Any, ...]] = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        tool_call_name, {"command": "echo hi"}, tool_call_id
+                    ),
+                    {},
+                ),
+            )
+        ]
+        for name, args, tid in extra_tool_calls or []:
+            message_chunks.append(
+                ((), "messages", (_tool_call_message(name, args, tid), {}))
+            )
+
+        action_requests = [{"name": tool_call_name, "args": {"command": "echo hi"}}]
+        for name, args, _tid in extra_tool_calls or []:
+            action_requests.append({"name": name, "args": args})
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    *message_chunks,
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": req["name"],
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                                for req in action_requests
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+        return adapter, mounted, snapshots
+
+    async def test_shell_tool_widget_suppressed_during_approval(self) -> None:
+        """`execute` widget should be hidden during the await and restored after."""
+        _adapter, mounted, snapshots = await self._run_with_decision(
+            tool_call_name="execute",
+            tool_call_id="tool-shell",
+            approval_decision={"type": "approve"},
+        )
+        tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_rows) == 1
+        # While the future was pending, the widget was hidden.
+        assert snapshots["tool-shell"] == (False, True)
+        # After the finally block, it was restored.
+        assert tool_rows[0].display is True
+        assert tool_rows[0]._awaiting_approval is False
+
+    async def test_non_shell_tool_widget_not_suppressed(self) -> None:
+        """`read_file` widget should stay visible — only shell tools are hidden."""
+        _adapter, mounted, snapshots = await self._run_with_decision(
+            tool_call_name="read_file",
+            tool_call_id="tool-read",
+            approval_decision={"type": "approve"},
+        )
+        tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_rows) == 1
+        # Visible the whole time, never marked as awaiting approval.
+        assert snapshots["tool-read"] == (True, False)
+        assert tool_rows[0].display is True
+        assert tool_rows[0]._awaiting_approval is False
+
+    async def test_mixed_batch_only_shell_suppressed(self) -> None:
+        """Parallel shell + non-shell tools: only the shell row is hidden."""
+        _adapter, _mounted, snapshots = await self._run_with_decision(
+            tool_call_name="execute",
+            tool_call_id="tool-shell",
+            approval_decision={"type": "approve"},
+            extra_tool_calls=[("read_file", {"path": "notes.txt"}, "tool-read")],
+        )
+        assert snapshots["tool-shell"] == (False, True)
+        assert snapshots["tool-read"] == (True, False)
+
+    async def test_shell_widget_restored_when_approval_raises(self) -> None:
+        """`finally` must restore the widget even if approval raises."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-shell"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_rows) == 1
+        assert tool_rows[0].display is True
+        assert tool_rows[0]._awaiting_approval is False
+
+
 class TestExecuteTaskTextualAskUser:
     """Tests for ask_user interrupt handling in the Textual adapter."""
 

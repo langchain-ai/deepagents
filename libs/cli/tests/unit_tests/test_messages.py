@@ -637,7 +637,7 @@ class TestToolCallMessageShellCommand:
         long_cmd = "pip install " + " ".join(f"package{i}" for i in range(50))
         assert len(long_cmd) > 120  # Exceeds truncation limit
 
-        msg = ToolCallMessage("shell", {"command": long_cmd})
+        msg = ToolCallMessage("execute", {"command": long_cmd})
         msg.set_error("Command not found: pip")
 
         # The error output should include the full command
@@ -646,28 +646,10 @@ class TestToolCallMessageShellCommand:
     def test_shell_error_command_prefix(self) -> None:
         """Error output should have shell prompt prefix."""
         cmd = "echo hello"
-        msg = ToolCallMessage("shell", {"command": cmd})
+        msg = ToolCallMessage("execute", {"command": cmd})
         msg.set_error("Permission denied")
 
         # Output should have shell prompt prefix
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_bash_error_includes_full_command(self) -> None:
-        """Error output should include full command for bash tool too."""
-        cmd = "make build"
-        msg = ToolCallMessage("bash", {"command": cmd})
-        msg.set_error("make: *** No rule to make target")
-
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_execute_error_includes_full_command(self) -> None:
-        """Error output should include full command for execute tool too."""
-        cmd = "docker build ."
-        msg = ToolCallMessage("execute", {"command": cmd})
-        msg.set_error("Cannot connect to Docker daemon")
-
         assert msg._output.startswith("$ ")
         assert cmd in msg._output
 
@@ -682,7 +664,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_none_command(self) -> None:
         """Shell tool with None command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": None})
+        msg = ToolCallMessage("execute", {"command": None})
         error = "Some error"
         msg.set_error(error)
 
@@ -691,7 +673,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_empty_command(self) -> None:
         """Shell tool with empty command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": ""})
+        msg = ToolCallMessage("execute", {"command": ""})
         error = "Some error"
         msg.set_error(error)
 
@@ -700,7 +682,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_whitespace_command(self) -> None:
         """Shell tool with whitespace command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": "   "})
+        msg = ToolCallMessage("execute", {"command": "   "})
         error = "Some error"
         msg.set_error(error)
 
@@ -708,7 +690,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_no_command_key(self) -> None:
         """Shell tool with no command key should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"other_arg": "value"})
+        msg = ToolCallMessage("execute", {"other_arg": "value"})
         error = "Some error"
         msg.set_error(error)
 
@@ -717,7 +699,7 @@ class TestToolCallMessageShellCommand:
 
     def test_format_shell_output_styles_only_first_line_dim(self) -> None:
         """Shell output formatting should only style the first command line in dim."""
-        msg = ToolCallMessage("shell", {"command": "echo test"})
+        msg = ToolCallMessage("execute", {"command": "echo test"})
         output = "$ echo test\ntest output\n$ not a command"
         result = msg._format_shell_output(output, is_preview=False)
 
@@ -729,6 +711,56 @@ class TestToolCallMessageShellCommand:
         # Subsequent lines should NOT be dim
         assert lines[2].plain == "$ not a command"
         assert "dim" not in lines[2].markup
+
+
+class TestToolCallMessageAwaitingApproval:
+    """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
+
+    def test_set_awaiting_approval_hides_widget(self) -> None:
+        """`set_awaiting_approval` should mark the widget as hidden."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        assert msg._awaiting_approval is False
+        msg.set_awaiting_approval()
+        assert msg._awaiting_approval is True
+        assert msg.display is False
+
+    def test_clear_awaiting_approval_restores_widget(self) -> None:
+        """`clear_awaiting_approval` should restore visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.set_awaiting_approval()
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+        assert msg.display is True
+
+    def test_clear_awaiting_approval_no_op_when_not_set(self) -> None:
+        """Clearing before setting should not touch widget visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+
+    async def test_awaiting_approval_round_trip_in_mounted_widget(self) -> None:
+        """Mounted widget should hide on set, reappear on clear."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg.display is True
+            msg.set_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is False
+            msg.clear_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is True
 
 
 class TestUserMessageHighlighting:

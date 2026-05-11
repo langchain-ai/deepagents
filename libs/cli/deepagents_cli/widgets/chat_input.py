@@ -1124,6 +1124,11 @@ class ChatInput(Vertical):
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
 
+        # Text area content from the previous Changed event. Used to skip
+        # blocking filesystem path-detection on single-keystroke edits while
+        # still detecting replacement edits that insert a full path payload.
+        self._prev_text = ""
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -1236,6 +1241,13 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+        # Drag-drop / bracketed paste arrive as one Changed event with a
+        # multi-character inserted span. Normal typing arrives one character at
+        # a time. Checking the changed span (rather than net length delta)
+        # preserves replacement edits where selected text is replaced by a path
+        # of similar length.
+        should_check_path_payload = self._should_check_path_payload(text)
+        self._prev_text = text
         self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
@@ -1255,13 +1267,17 @@ class ChatInput(Vertical):
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False
-        elif self._apply_inline_dropped_path_replacement(text):
+        elif should_check_path_payload and self._apply_inline_dropped_path_replacement(
+            text
+        ):
             return
 
         # Checked after the guards above so we skip the (potentially slow)
         # filesystem lookup when the text change came from history navigation
         # or prefix stripping, which never need path detection.
-        is_path_payload = self._is_dropped_path_payload(text)
+        is_path_payload = should_check_path_payload and self._is_dropped_path_payload(
+            text
+        )
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
@@ -1316,6 +1332,30 @@ class ChatInput(Vertical):
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    def _should_check_path_payload(self, text: str) -> bool:
+        """Return whether a text change may contain a pasted path payload."""
+        old = self._prev_text
+        if text == old:
+            return False
+
+        prefix_len = 0
+        max_prefix_len = min(len(old), len(text))
+        while prefix_len < max_prefix_len and old[prefix_len] == text[prefix_len]:
+            prefix_len += 1
+
+        old_suffix = len(old)
+        text_suffix = len(text)
+        while (
+            old_suffix > prefix_len
+            and text_suffix > prefix_len
+            and old[old_suffix - 1] == text[text_suffix - 1]
+        ):
+            old_suffix -= 1
+            text_suffix -= 1
+
+        inserted_len = text_suffix - prefix_len
+        return inserted_len > 1
 
     @staticmethod
     def _parse_dropped_path_payload(

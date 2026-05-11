@@ -2562,6 +2562,42 @@ class TestTraceCommand:
             assert isinstance(app.screen, AuthManagerScreen)
 
 
+class TestClearCommand:
+    """Test /clear slash command."""
+
+    async def test_clear_syncs_thread_id_and_schedules_link_upgrade(self) -> None:
+        """/clear should render the new ID like the resumed-thread footer."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_cli.app._new_thread_id", return_value="new-thread"),
+                patch.object(app, "_schedule_thread_message_link") as schedule,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            assert app._session_state.thread_id == "new-thread"
+            assert app._lc_thread_id == "new-thread"
+
+            app_msgs = list(app.query(AppMessage))
+            assert any(
+                str(widget._content) == "Started new thread: new-thread"
+                for widget in app_msgs
+            )
+            schedule.assert_called_once()
+            widget = schedule.call_args.args[0]
+            assert isinstance(widget, AppMessage)
+            assert widget in app_msgs
+            assert schedule.call_args.kwargs == {
+                "prefix": "Started new thread",
+                "thread_id": "new-thread",
+            }
+
+
 class TestCopyCommand:
     """Tests for `/copy` command behavior."""
 

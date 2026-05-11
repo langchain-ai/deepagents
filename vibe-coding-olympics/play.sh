@@ -218,6 +218,7 @@ async def main(connection):
     await top.async_set_name(tag)
     await top.async_set_variable("user.vibe_player", PORT)
     await top.async_set_variable("user.vibe_event_socket", EVENT_SOCKET)
+    await top.async_set_variable("user.vibe_dir", DIR)
 
     # Prime env + cwd in the CLI pane so the agent's shell-outs see VIBE_* vars.
     await top.async_send_text(
@@ -285,6 +286,7 @@ async def main(connection):
         await relay.async_set_name(f"vibe-relay-{PORT}")
         await relay.async_send_text(
             "export "
+            f"VIBE_DIR={shlex.quote(DIR)} "
             f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
             f"VIBE_PLAYER_TOKEN={shlex.quote(os.environ.get('VIBE_PLAYER_TOKEN', ''))} "
             f"VIBE_RELAY_HOST={shlex.quote(os.environ['VIBE_RELAY_HOST'])} "

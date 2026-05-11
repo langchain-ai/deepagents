@@ -93,7 +93,7 @@ VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 3. The controller chooses or draws a prompt, then clicks **Start**.
 4. If the round must stop before the timer, click **End early**.
 5. At the end of the timer, enter scores and click **End**.
-6. Between rounds, click **Reset round all**.
+6. Between rounds, click **Reset round all** to blank player pages and reset readiness.
 
 ## More Detail
 

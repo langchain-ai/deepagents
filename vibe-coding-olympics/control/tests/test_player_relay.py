@@ -40,7 +40,7 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
                     "VIBE_PLAYER_TOKEN": "test-token",
                 },
                 clear=True,
-            ):
+            ), patch("control_server.deepagents_config.clear_recent_model") as clear:
                 async with httpx.AsyncClient(
                     transport=transport,
                     base_url="http://relay",
@@ -56,10 +56,75 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
             tmp_dir.cleanup()
 
         self.assertEqual(response.status_code, 200)
+        clear.assert_not_called()
         self.assertEqual(response.json(), {"ok": True})
         self.assertEqual(received[0]["kind"], "signal")
         self.assertEqual(received[0]["payload"], "times-up")
         self.assertTrue(received[0]["correlation_id"].startswith("vibe-lan-"))
+
+    async def test_force_clear_clears_recent_model_before_forwarding(self) -> None:
+        tmp_dir = tempfile.TemporaryDirectory(dir="/tmp")
+        path = Path(tmp_dir.name) / "events.sock"
+        project = Path(tmp_dir.name) / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "package.json").write_text("{}", encoding="utf-8")
+        (project / "index.html").write_text("<h1>old</h1>", encoding="utf-8")
+        (project / "src" / "main.js").write_text("old", encoding="utf-8")
+        (project / "src" / "style.css").write_text("old", encoding="utf-8")
+        (project / "src" / "counter.js").write_text("old", encoding="utf-8")
+        received: list[dict[str, Any]] = []
+
+        async def handle_client(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            received.append(json.loads(await reader.readline()))
+            writer.write(b'{"ok":true}\n')
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle_client, path=str(path))
+        app = player_relay.create_app()
+        transport = httpx.ASGITransport(app=app)
+        try:
+            with (
+                patch.dict(
+                    "os.environ",
+                    {
+                        "VIBE_EVENT_SOCKET": str(path),
+                        "VIBE_DIR": str(project),
+                        "VIBE_PLAYER_TOKEN": "test-token",
+                    },
+                    clear=True,
+                ),
+                patch(
+                    "control_server.deepagents_config.clear_recent_model",
+                    return_value=True,
+                ) as clear,
+            ):
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://relay",
+                ) as client:
+                    response = await client.post(
+                        "/command",
+                        json={"kind": "signal", "payload": "force-clear"},
+                        headers={"authorization": "Bearer test-token"},
+                    )
+                index_html = (project / "index.html").read_text(encoding="utf-8")
+                main_js = (project / "src" / "main.js").read_text(encoding="utf-8")
+        finally:
+            server.close()
+            await server.wait_closed()
+            tmp_dir.cleanup()
+
+        self.assertEqual(response.status_code, 200)
+        clear.assert_called_once_with()
+        self.assertEqual(received[0]["payload"], "force-clear")
+        self.assertNotIn("old", index_html)
+        self.assertIn("localStorage.clear();", main_js)
+        self.assertIn("sessionStorage.clear();", main_js)
 
     async def test_command_requires_valid_bearer_token(self) -> None:
         app = player_relay.create_app()

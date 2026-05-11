@@ -154,10 +154,10 @@ class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
 
     async def test_no_message_when_switching_to_same_model(self) -> None:
-        """Switching to the already-active model should not print 'Switched to'.
+        """Switching to the already-active model should not print confirmation.
 
         This is a regression test for the bug where selecting the same model
-        from the model selector would print "Switched to X" even though no
+        from the model selector would print confirmation even though no
         actual switch occurred.
         """
         app = DeepAgentsApp()
@@ -186,12 +186,12 @@ class TestModelSwitchNoOp:
             # Attempt to switch to the same model
             await app._switch_model("anthropic:claude-opus-4-5")
 
-        # Should show "Already using" message, not "Switched to"
+        # Should show "Already using" message, not selection confirmation.
         # Type checker doesn't track that _mount_message was replaced with mock
         app._mount_message.assert_called_once()  # type: ignore[union-attr]
         assert len(captured_messages) == 1
         assert "Already using" in captured_messages[0]
-        assert "Switched to" not in captured_messages[0]
+        assert "model selected:" not in captured_messages[0]
         assert app._model_switching is False
 
     async def test_same_model_can_skip_unchanged_message(self) -> None:
@@ -367,7 +367,7 @@ class TestModelSwitchErrorHandling:
         assert "~/.deepagents/" in captured_errors[0]
 
         # Should NOT show success message when save fails
-        assert not any("Switched to" in m for m in captured_messages)
+        assert not any("model selected:" in m for m in captured_messages)
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
     async def test_remote_agent_sets_model_override(self) -> None:
@@ -403,7 +403,7 @@ class TestModelSwitchErrorHandling:
         mock_save.assert_called_once()
         assert settings.model_name == "claude-sonnet-4-5"
         assert settings.model_provider == "anthropic"
-        assert any("Switched to" in m for m in captured_messages)
+        assert any("model selected:" in m for m in captured_messages)
 
     async def test_remote_agent_refreshes_model_metadata(
         self, mock_create_model: Mock
@@ -466,8 +466,8 @@ class TestModelSwitchErrorHandling:
             "max_tokens": 1024,
         }
 
-    async def test_switched_to_message_echoes_params(self) -> None:
-        """The 'Switched to' confirmation should echo `--model-params`."""
+    async def test_model_selected_message_echoes_params(self) -> None:
+        """The model-selection confirmation should echo `--model-params`."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
@@ -496,7 +496,7 @@ class TestModelSwitchErrorHandling:
             )
 
         assert any(
-            m == "Switched to anthropic:claude-sonnet-4-5 with model params "
+            m == "model selected: anthropic:claude-sonnet-4-5 with model params "
             '{"num_ctx": 16384, "temperature": 0.7}'
             for m in captured_messages
         )
@@ -812,7 +812,7 @@ api_key_env = "FIREWORKS_API_KEY"
         assert settings.model_provider == "fireworks"
         # Should succeed, not show "Unknown provider"
         assert any(
-            "Switched to fireworks:llama-v3p1-70b" in m for m in captured_messages
+            "model selected: fireworks:llama-v3p1-70b" in m for m in captured_messages
         )
         assert not any("Unknown provider" in m for m in captured_messages)
 
@@ -884,7 +884,7 @@ models = ["llama3"]
         assert app._model_override == "ollama:llama3"
         assert settings.model_name == "llama3"
         assert settings.model_provider == "ollama"
-        assert any("Switched to ollama:llama3" in m for m in captured_messages)
+        assert any("model selected: ollama:llama3" in m for m in captured_messages)
 
 
 class TestModelSwitchBareModelName:
@@ -923,7 +923,7 @@ class TestModelSwitchBareModelName:
         assert app._model_override == "openai:gpt-4o"
         assert settings.model_name == "gpt-4o"
         assert settings.model_provider == "openai"
-        assert any("Switched to openai:gpt-4o" in m for m in captured_messages)
+        assert any("model selected: openai:gpt-4o" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""

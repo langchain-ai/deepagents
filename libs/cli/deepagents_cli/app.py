@@ -8803,7 +8803,7 @@ class DeepAgentsApp(App):
             else:
                 params_suffix = _format_model_params(extra_kwargs)
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}")
+                    AppMessage(f"model selected: {display}{params_suffix}")
                 )
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",

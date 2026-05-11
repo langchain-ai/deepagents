@@ -501,7 +501,7 @@ test = [
 requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.8.0" },
     { name = "deepagents", editable = "../deepagents" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
 ]
 
 [package.metadata.requires-dev]

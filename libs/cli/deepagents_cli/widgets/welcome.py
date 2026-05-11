@@ -55,7 +55,6 @@ _TIPS: dict[str, int] = {
     "Use /agents to browse and switch between your available agents": 2,
     "In /agents, press Ctrl+S to set the highlighted agent as your default": 1,
     "Press Shift+Tab to toggle auto-approve mode": 2,
-    "On an approval prompt, press Tab on Reject to add a free-text reason": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,

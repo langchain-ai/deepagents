@@ -30,6 +30,27 @@ class TestRoundTimer(unittest.TestCase):
 
         self.assertEqual(asyncio.run(scenario()), 1)
 
+    def test_start_delay_does_not_consume_visible_round_time(self) -> None:
+        async def scenario() -> tuple[float, int]:
+            calls = 0
+
+            async def on_expire() -> None:
+                nonlocal calls
+                calls += 1
+
+            timer = RoundTimer()
+            await timer.start(0.05, on_expire, start_delay_secs=0.1)
+            remaining = timer.snapshot().remaining_secs
+            await asyncio.sleep(0.07)
+            delayed_calls = calls
+            await asyncio.sleep(0.15)
+            return remaining, delayed_calls
+
+        remaining, delayed_calls = asyncio.run(scenario())
+        self.assertLessEqual(remaining, 0.05)
+        self.assertGreater(remaining, 0.0)
+        self.assertEqual(delayed_calls, 0)
+
     def test_cancel_prevents_callback(self) -> None:
         async def scenario() -> int:
             calls = 0
@@ -125,6 +146,18 @@ class TestRoundTimer(unittest.TestCase):
                 return None
 
             await timer.start(-1.0, noop)
+
+        with self.assertRaises(ValueError):
+            asyncio.run(scenario())
+
+    def test_start_rejects_negative_start_delay(self) -> None:
+        async def scenario() -> None:
+            timer = RoundTimer()
+
+            async def noop() -> None:
+                return None
+
+            await timer.start(1.0, noop, start_delay_secs=-1.0)
 
         with self.assertRaises(ValueError):
             asyncio.run(scenario())

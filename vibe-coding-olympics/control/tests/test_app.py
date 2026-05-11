@@ -217,6 +217,10 @@ class TestReadyPlayers(unittest.TestCase):
         timer_start.assert_awaited_once()
         duration_arg = timer_start.await_args.args[0]
         self.assertEqual(duration_arg, 120.0)
+        self.assertEqual(
+            timer_start.await_args.kwargs["start_delay_secs"],
+            app_mod._PLAYER_LAUNCH_COUNTDOWN_SECS,
+        )
         self.assertEqual(response.json()["duration_secs"], 120.0)
         self.assertEqual(response.json()["round_num"], 1)
 

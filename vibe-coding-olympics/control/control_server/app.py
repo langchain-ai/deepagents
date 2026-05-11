@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
 PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
 _DEFAULT_ROUND_DURATION_SECS = 300.0
+_PLAYER_LAUNCH_COUNTDOWN_SECS = 5.0
+"""Seconds the CLI blocks on `LaunchCountdownScreen` after controller start."""
 
 
 def _round_duration_config() -> tuple[float, str | None]:
@@ -544,6 +546,7 @@ async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
             "ports": _round_player_ports(),
             "started_at": time.time(),
             "duration_secs": _round_duration_secs(),
+            "start_delay_secs": _PLAYER_LAUNCH_COUNTDOWN_SECS,
         }
     )
 
@@ -554,7 +557,11 @@ async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
         except Exception:
             logger.exception("Auto-eval on timer expiry failed.")
 
-    await _round_timer.start(_round_duration_secs(), _on_expire)
+    await _round_timer.start(
+        _round_duration_secs(),
+        _on_expire,
+        start_delay_secs=_PLAYER_LAUNCH_COUNTDOWN_SECS,
+    )
 
 
 def _resolve_ports(target: PlayerTarget) -> list[str] | None:

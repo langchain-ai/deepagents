@@ -85,6 +85,7 @@ class _ActiveCountdown:
     task: asyncio.Task[None]
     started_at: float
     duration_secs: float
+    start_delay_secs: float
 
 
 class RoundTimer:
@@ -112,7 +113,7 @@ class RoundTimer:
         active = self._active
         if active is None or active.task.done():
             return TimerSnapshot.idle(duration_secs=self._last_duration_secs)
-        elapsed = time.monotonic() - active.started_at
+        elapsed = max(0.0, time.monotonic() - active.started_at)
         remaining = max(0.0, active.duration_secs - elapsed)
         return TimerSnapshot.active(
             duration_secs=active.duration_secs,
@@ -124,6 +125,8 @@ class RoundTimer:
         self,
         duration_secs: float,
         on_expire: Callable[[], Awaitable[None]],
+        *,
+        start_delay_secs: float = 0.0,
     ) -> None:
         """Cancel any in-flight countdown and arm a new one.
 
@@ -131,22 +134,30 @@ class RoundTimer:
             duration_secs: Round duration in seconds. Must be non-negative.
             on_expire: Awaitable called exactly once if the timer
                 reaches zero without being cancelled.
+            start_delay_secs: Seconds to wait before the visible round
+                timer begins. This lets launch countdowns finish before
+                player time is consumed.
 
         Raises:
-            ValueError: If `duration_secs` is negative.
+            ValueError: If `duration_secs` or `start_delay_secs` is negative.
         """
         if duration_secs < 0:
             msg = f"duration_secs must be non-negative, got {duration_secs}"
             raise ValueError(msg)
+        if start_delay_secs < 0:
+            msg = f"start_delay_secs must be non-negative, got {start_delay_secs}"
+            raise ValueError(msg)
         duration = float(duration_secs)
+        delay = float(start_delay_secs)
         async with self._get_lock():
             await self._cancel_locked()
             self._last_duration_secs = duration
-            task = asyncio.create_task(self._run(duration, on_expire))
+            task = asyncio.create_task(self._run(duration, on_expire, delay))
             self._active = _ActiveCountdown(
                 task=task,
-                started_at=time.monotonic(),
+                started_at=time.monotonic() + delay,
                 duration_secs=duration,
+                start_delay_secs=delay,
             )
 
     async def cancel(self) -> None:
@@ -177,9 +188,12 @@ class RoundTimer:
         self,
         duration_secs: float,
         on_expire: Callable[[], Awaitable[None]],
+        start_delay_secs: float,
     ) -> None:
         """Sleep for `duration_secs`, then call `on_expire`."""
         try:
+            if start_delay_secs:
+                await asyncio.sleep(start_delay_secs)
             await asyncio.sleep(duration_secs)
         except asyncio.CancelledError:
             raise

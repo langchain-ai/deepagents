@@ -102,7 +102,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/` | GET | — | Serves the HTML control panel |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
 | `/api/eval/last` | GET | — | Returns the latest per-player judge results |
-| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, and arms the server-authoritative round timer |
+| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
 | `/api/round/end` | POST | `{}` | Cancels the timer, runs the LLM judge against every player site, and forwards `end` to the FSM |
 | `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, then fires `end` |
 | `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and forwards the supplied scores without invoking the judge |
@@ -134,7 +134,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_LAUNCH_RELAY` | `1` | Whether `play.sh` should launch the player relay tab |
 | `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
 | `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
-| `VIBE_ROUND_SECONDS` | `300` | Round length in seconds; armed on `/api/round/start` and triggers the judge on expiry |
+| `VIBE_ROUND_SECONDS` | `300` | Player coding time in seconds; starts after the CLI launch countdown and triggers the judge on expiry |
 | `VIBE_EVAL_DIR` | _(bundled `vibe-coding-olympics/eval`)_ | Override path to the eval workspace, useful for local development |
 | `VIBE_EVAL_RESULTS_DIR` | system temp dir | Parent directory for `round-N-<name>.json` files written by the judge |
 | `VIBE_DEEPAGENTS_CONFIG_PATH` | `~/.deepagents/config.toml` | Deep Agents CLI config mutated by player reset cleanup |

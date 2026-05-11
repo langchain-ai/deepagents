@@ -41,7 +41,6 @@ from deepagents_cli._version import __version__
 from deepagents_cli.agent import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     SHELL_ALLOW_ALL,
-    SHELL_TOOL_NAMES,
     build_langsmith_thread_url,
     create_model,
     is_shell_command_allowed,
@@ -470,7 +469,7 @@ def _make_hitl_decision(
 
     action_name = action_request.get("name", "")
 
-    if action_name in SHELL_TOOL_NAMES:
+    if action_name == "execute":
         if not settings.shell_allow_list:
             command = action_request.get("args", {}).get("command", "")
             console.print(

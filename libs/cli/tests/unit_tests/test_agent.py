@@ -2234,6 +2234,114 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 f"Expected shell middleware on subagent {name!r}"
             )
 
+    def test_model_switch_middleware_added_to_inherited_model_subagents(
+        self, tmp_path: Path
+    ) -> None:
+        """Subagents without a model should inherit runtime model switches."""
+        from deepagents_cli.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": None,
+        }
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        assert subagents is not None
+
+        subagents_by_name = {subagent["name"]: subagent for subagent in subagents}
+        assert "researcher" in subagents_by_name
+        assert "general-purpose" in subagents_by_name
+
+        for name in ("researcher", "general-purpose"):
+            middleware = subagents_by_name[name]["middleware"]
+            assert any(
+                isinstance(mw, ConfigurableModelMiddleware) for mw in middleware
+            ), f"Expected configurable model middleware on subagent {name!r}"
+
+    def test_model_switch_middleware_skipped_for_explicit_subagent_model(
+        self, tmp_path: Path
+    ) -> None:
+        """Subagent-specific models should not be overridden by runtime switches."""
+        from deepagents_cli.configurable_model import ConfigurableModelMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        subagent_meta = {
+            "name": "researcher",
+            "description": "Researches things",
+            "system_prompt": "Investigate the task thoroughly.",
+            "model": "openai:gpt-5",
+        }
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_cli.agent.list_subagents",
+                return_value=[subagent_meta],
+            ),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=True,
+            )
+
+        _, kwargs = mock_create.call_args
+        subagents = kwargs["subagents"]
+        researcher = next(
+            subagent for subagent in subagents if subagent["name"] == "researcher"
+        )
+        middleware = researcher.get("middleware", [])
+        assert not any(isinstance(mw, ConfigurableModelMiddleware) for mw in middleware)
+
     def test_no_duplicate_general_purpose_when_user_defined(
         self, tmp_path: Path
     ) -> None:

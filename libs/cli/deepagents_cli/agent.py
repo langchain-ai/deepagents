@@ -1062,40 +1062,50 @@ def create_cli_agent(
         else settings.get_project_agents_dir()
     )
 
+    def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
+        middleware: list[AgentMiddleware] = []
+        if not has_explicit_model:
+            middleware.append(ConfigurableModelMiddleware())
+        if restrictive_shell_allow_list is not None:
+            middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        return middleware
+
     for subagent_meta in list_subagents(
         user_agents_dir=user_agents_dir,
         project_agents_dir=project_agents_dir,
     ):
+        model_spec = subagent_meta["model"]
+        has_explicit_model = model_spec is not None
         subagent: SubAgent = {
             "name": subagent_meta["name"],
             "description": subagent_meta["description"],
             "system_prompt": subagent_meta["system_prompt"],
         }
-        if subagent_meta["model"]:
-            subagent["model"] = subagent_meta["model"]
-        if restrictive_shell_allow_list is not None:
-            subagent["middleware"] = [
-                ShellAllowListMiddleware(restrictive_shell_allow_list)
-            ]
+        if model_spec is not None:
+            subagent["model"] = model_spec
+        subagent_middleware = _subagent_cli_middleware(
+            has_explicit_model=has_explicit_model
+        )
+        if subagent_middleware:
+            subagent["middleware"] = subagent_middleware
         custom_subagents.append(subagent)
 
-    if restrictive_shell_allow_list is not None:
-        from deepagents.middleware.subagents import (
-            GENERAL_PURPOSE_SUBAGENT,
-            SubAgent as RuntimeSubAgent,
-        )
+    from deepagents.middleware.subagents import (
+        GENERAL_PURPOSE_SUBAGENT,
+        SubAgent as RuntimeSubAgent,
+    )
 
-        if not any(
-            subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
-            for subagent in custom_subagents
-        ):
-            general_purpose_subagent: RuntimeSubAgent = {
-                "name": GENERAL_PURPOSE_SUBAGENT["name"],
-                "description": GENERAL_PURPOSE_SUBAGENT["description"],
-                "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
-                "middleware": [ShellAllowListMiddleware(restrictive_shell_allow_list)],
-            }
-            custom_subagents.append(general_purpose_subagent)
+    if not any(
+        subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
+        for subagent in custom_subagents
+    ):
+        general_purpose_subagent: RuntimeSubAgent = {
+            "name": GENERAL_PURPOSE_SUBAGENT["name"],
+            "description": GENERAL_PURPOSE_SUBAGENT["description"],
+            "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+            "middleware": _subagent_cli_middleware(has_explicit_model=False),
+        }
+        custom_subagents.append(general_purpose_subagent)
 
     # Build middleware stack based on enabled features
     agent_middleware = []

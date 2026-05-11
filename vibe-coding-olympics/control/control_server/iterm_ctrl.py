@@ -12,13 +12,13 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from uuid import uuid4
 
 import iterm2
 
+from control_server.event_socket import send_socket_event
+
 SESSION_PREFIX = "vibe-player-"
 SOCKET_VARIABLE = "user.vibe_event_socket"
-SOCKET_TIMEOUT_SECS = 2.0
 
 logger = logging.getLogger(__name__)
 
@@ -163,35 +163,12 @@ async def _send_socket_event(
         RuntimeError: If the CLI returns a negative acknowledgement.
         json.JSONDecodeError: If the CLI returns malformed JSON.
     """
-    correlation_id = f"{correlation_prefix}-{uuid4().hex}"
-    envelope = {
-        "kind": kind,
-        "payload": payload,
-        "correlation_id": correlation_id,
-    }
-    reader, writer = await asyncio.wait_for(
-        asyncio.open_unix_connection(str(socket_path)),
-        timeout=SOCKET_TIMEOUT_SECS,
+    await send_socket_event(
+        socket_path,
+        kind=kind,
+        payload=payload,
+        correlation_prefix=correlation_prefix,
     )
-    try:
-        writer.write(json.dumps(envelope).encode("utf-8") + b"\n")
-        await asyncio.wait_for(writer.drain(), timeout=SOCKET_TIMEOUT_SECS)
-        line = await asyncio.wait_for(reader.readline(), timeout=SOCKET_TIMEOUT_SECS)
-    finally:
-        writer.close()
-        await writer.wait_closed()
-
-    if not line:
-        msg = f"External event socket {socket_path} closed without an ACK"
-        raise RuntimeError(msg)
-    response = json.loads(line)
-    if not isinstance(response, dict):
-        msg = f"External event socket {socket_path} returned a non-object ACK"
-        raise RuntimeError(msg)
-    if response.get("ok") is not True:
-        error = response.get("error", "unknown error")
-        msg = f"External event socket {socket_path} rejected {kind}: {error}"
-        raise RuntimeError(msg)
 
 
 async def clear_players(ports: list[str] | None) -> list[str]:

@@ -55,7 +55,7 @@ class TestReadyPlayers(unittest.TestCase):
         with (
             patch("control_server.app._forward", forward),
             patch(
-                "control_server.iterm_ctrl.send_prompt_to_players",
+                "control_server.player_dispatch.send_prompt_to_players",
                 new=send_prompt,
             ),
         ):
@@ -112,7 +112,7 @@ class TestReadyPlayers(unittest.TestCase):
         with (
             patch("control_server.app._forward", forward),
             patch(
-                "control_server.iterm_ctrl.send_prompt_to_players",
+                "control_server.player_dispatch.send_prompt_to_players",
                 new=send_prompt,
             ),
         ):
@@ -139,7 +139,7 @@ class TestReadyPlayers(unittest.TestCase):
         with (
             patch("control_server.app._forward", forward),
             patch(
-                "control_server.iterm_ctrl.send_prompt_to_players",
+                "control_server.player_dispatch.send_prompt_to_players",
                 new=AsyncMock(return_value=["3001", "3002"]),
             ),
         ):
@@ -193,7 +193,7 @@ class TestReadyPlayers(unittest.TestCase):
                 new=AsyncMock(return_value={"phase": "coding"}),
             ),
             patch("control_server.app._forward", forward),
-            patch("control_server.iterm_ctrl.times_up_players", times_up),
+            patch("control_server.player_dispatch.times_up_players", times_up),
         ):
             response = client.post(
                 "/api/round/end-early",
@@ -215,7 +215,7 @@ class TestReadyPlayers(unittest.TestCase):
             ),
             patch("control_server.app._forward", new=AsyncMock()) as forward,
             patch(
-                "control_server.iterm_ctrl.times_up_players",
+                "control_server.player_dispatch.times_up_players",
                 new=AsyncMock(),
             ) as times_up,
         ):
@@ -338,7 +338,7 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
 
         with patch(
-            "control_server.iterm_ctrl.players_ready",
+            "control_server.player_dispatch.players_ready",
             new=AsyncMock(return_value=[]),
         ) as players_ready:
             response = client.post("/api/players/model-ready", json={"port": "3001"})
@@ -355,7 +355,7 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._model_ready_ports.add("3001")
 
         with patch(
-            "control_server.iterm_ctrl.players_ready",
+            "control_server.player_dispatch.players_ready",
             new=AsyncMock(return_value=["3001", "3002"]),
         ) as players_ready:
             response = client.post("/api/players/model-ready", json={"port": "3002"})
@@ -392,7 +392,7 @@ class TestReadyPlayers(unittest.TestCase):
         with (
             patch("control_server.app._forward", forward),
             patch(
-                "control_server.iterm_ctrl.clear_players",
+                "control_server.player_dispatch.clear_players",
                 new=AsyncMock(return_value=["3001", "3002"]),
             ) as clear_players,
         ):

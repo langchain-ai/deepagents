@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
-from control_server import iterm_ctrl
+from control_server import iterm_ctrl, player_dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ async def _end_round_early(scores: dict[str, float]) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=msg)
 
     ports = _round_player_ports()
-    times_up_sent = await iterm_ctrl.times_up_players(ports or None)
+    times_up_sent = await player_dispatch.times_up_players(ports or None)
     ended = await _forward("end", {"scores": scores})
     return {
         "state": ended,
@@ -1071,7 +1071,7 @@ def create_app() -> FastAPI:
             "start",
             {"prompt": prompt, "contestants": contestants},
         )
-        sent = await iterm_ctrl.send_prompt_to_players(_round_player_ports(), prompt)
+        sent = await player_dispatch.send_prompt_to_players(_round_player_ports(), prompt)
         return {"state": state, "prompt": prompt, "prompt_sent": sent}
 
     @app.post("/api/round/end")
@@ -1144,7 +1144,9 @@ def create_app() -> FastAPI:
         _model_ready_ports.add(req.port)
         players_ready_sent: list[str] = []
         if _all_named_players_model_ready():
-            players_ready_sent = await iterm_ctrl.players_ready(_round_player_ports())
+            players_ready_sent = await player_dispatch.players_ready(
+                _round_player_ports()
+            )
         return {
             "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
@@ -1155,17 +1157,17 @@ def create_app() -> FastAPI:
     @app.post("/api/players/prompt")
     async def players_prompt(req: PlayerPromptRequest) -> dict[str, list[str]]:
         ports = _resolve_ports(req)
-        return {"sent": await iterm_ctrl.send_prompt_to_players(ports, req.prompt)}
+        return {"sent": await player_dispatch.send_prompt_to_players(ports, req.prompt)}
 
     @app.post("/api/players/times-up")
     async def players_times_up(target: PlayerTarget) -> dict[str, list[str]]:
         ports = _resolve_ports(target)
-        return {"sent": await iterm_ctrl.times_up_players(ports)}
+        return {"sent": await player_dispatch.times_up_players(ports)}
 
     @app.post("/api/players/clear")
     async def players_clear(target: PlayerTarget) -> dict[str, Any]:
         ports = _resolve_ports(target)
-        cleared = await iterm_ctrl.clear_players(ports)
+        cleared = await player_dispatch.clear_players(ports)
         _clear_player_readiness(ports)
         obs_state: dict[str, Any] | None = None
         obs_error: str | None = None
@@ -1187,7 +1189,7 @@ def create_app() -> FastAPI:
     async def players_reset(target: PlayerTarget) -> dict[str, list[str]]:
         ports = _resolve_ports(target)
         _clear_player_readiness(ports)
-        return {"reset": await iterm_ctrl.reset_players(ports)}
+        return {"reset": await player_dispatch.reset_players(ports)}
 
     return app
 

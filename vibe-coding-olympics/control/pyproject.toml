@@ -14,6 +14,7 @@ dependencies = [
 [project.scripts]
 vibe-control = "control_server.main:main"
 vibe-player-hook = "control_server.hook:main"
+vibe-player-relay = "control_server.player_relay:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -18,6 +18,9 @@ uv run vibe-obs
 
 # terminal 2
 cd vibe-coding-olympics/control
+export VIBE_PLAYER_TOKEN=<shared-token>
+export VIBE_PLAYER_3001_RELAY=http://<player-1-static-ip>:9771
+export VIBE_PLAYER_3002_RELAY=http://<player-2-static-ip>:9771
 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 ```
 
@@ -37,17 +40,35 @@ On the two player computers, after cloning the repo, from the root:
 
 ```bash
 cd vibe-coding-olympics
+export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3001
+
+# terminal 2 on the same player laptop
+VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3001.sock \
+  VIBE_PLAYER_TOKEN=<shared-token> \
+  VIBE_RELAY_HOST=0.0.0.0 \
+  VIBE_RELAY_PORT=9771 \
+  uv run --project control vibe-player-relay
 ```
 
 ```bash
 cd vibe-coding-olympics
+export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3002
+
+# terminal 2 on the same player laptop
+VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3002.sock \
+  VIBE_PLAYER_TOKEN=<shared-token> \
+  VIBE_RELAY_HOST=0.0.0.0 \
+  VIBE_RELAY_PORT=9771 \
+  uv run --project control vibe-player-relay
 ```
 
 `play.sh` instruments a Deep Agents CLI hook that reports the player's name and model-ready status back to `vibe-control` using `VIBE_CONTROL_API`.
+`vibe-player-relay` lets the controller send prompt, times-up, and clear
+commands back to each player laptop over the LAN.
 
 If port `8766` is unavailable on the controller machine, override both the control server bind port and the URL used by player laptops:
 
@@ -86,5 +107,6 @@ VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 ## More Detail
 
 - `control/README.md` documents the controller API and player dispatch path.
-- `control/LAN_COMMAND_CHANNEL.md` drafts the LAN relay needed for controller-to-player commands on separate laptops.
+- `control/LAN_COMMAND_CHANNEL.md` documents the LAN relay for
+  controller-to-player commands on separate laptops.
 - `obs/README.md` documents the OBS runner, scene setup, and transition API.

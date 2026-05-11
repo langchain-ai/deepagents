@@ -5,14 +5,15 @@ Operator commands go through one control surface:
 - `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
 - `vibe-player-hook` — Deep Agents hook adapter that runs on each player laptop. It reports player names and model-ready status back to `vibe-control`.
 
-Current player command dispatch uses local iTerm2 session discovery and the player CLI's Unix-domain event socket. That works for same-machine smoke tests.
-
-For separate player laptops on the event LAN, see `LAN_COMMAND_CHANNEL.md` for the relay design needed to send prompt/reset/times-up commands over the network.
+Player command dispatch uses LAN relays when `VIBE_PLAYER_<port>_RELAY` is
+configured, with local iTerm2 session discovery as a same-machine fallback. See
+`LAN_COMMAND_CHANNEL.md` for the relay details.
 
 ```txt
 browser ──POST /api/…──▶ vibe-control ──POST /transition──▶ obs runner ──▶ OBS
                               │
-                              ├──iterm2 API──▶ player CLIs
+                              ├──HTTP──▶ player relays ──Unix socket──▶ player CLIs
+                              └──iterm2 API──▶ local player CLIs
 ```
 
 ## Install
@@ -41,6 +42,9 @@ Then the control panel:
 ```bash
 # terminal 2
 cd vibe-coding-olympics/control
+export VIBE_PLAYER_TOKEN=<shared-token>
+export VIBE_PLAYER_3001_RELAY=http://<player-1-static-ip>:9771
+export VIBE_PLAYER_3002_RELAY=http://<player-2-static-ip>:9771
 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control  # http://localhost:8766
 ```
 
@@ -51,9 +55,22 @@ On player computers:
 
 ```bash
 cd vibe-coding-olympics
+export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3001                                  # player 1
 ./play.sh 3002                                  # player 2, on the other computer
+```
+
+Start `vibe-player-relay` in a second terminal on each player laptop. Use the
+matching `VIBE_EVENT_SOCKET` path for that player's port:
+
+```bash
+cd vibe-coding-olympics
+VIBE_EVENT_SOCKET=/tmp/deepagents-vibe-3001.sock \
+  VIBE_PLAYER_TOKEN=<shared-token> \
+  VIBE_RELAY_HOST=0.0.0.0 \
+  VIBE_RELAY_PORT=9771 \
+  uv run --project control vibe-player-relay
 ```
 
 If port `8766` is unavailable, override the control server bind port and use the same port in `VIBE_CONTROL_API` on every player laptop:
@@ -117,6 +134,8 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_CONTROL_HOST` | `127.0.0.1` | Bind host for the control panel |
 | `VIBE_CONTROL_PORT` | `8766` | Bind port for the control panel |
 | `VIBE_CONTROL_API` | `http://localhost:8766` | URL used by `vibe-player-hook` from player machines |
+| `VIBE_PLAYER_<port>_RELAY` | _(unset)_ | Controller-side URL for a player laptop relay, e.g. `VIBE_PLAYER_3001_RELAY` |
+| `VIBE_PLAYER_TOKEN` | _(unset)_ | Shared bearer token used by controller-to-relay commands |
 
 ## Player readiness hook
 

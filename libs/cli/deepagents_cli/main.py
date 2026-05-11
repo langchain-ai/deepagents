@@ -81,6 +81,24 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
     return DEFAULT_AGENT_NAME
 
 
+def _normalize_cwd_filter(cwd: str | None) -> str | None:
+    """Normalize the `threads list --cwd` filter for metadata matching.
+
+    Args:
+        cwd: Parsed `--cwd` value. An empty string means the flag was passed
+            without a value and should use the current working directory.
+
+    Returns:
+        Absolute path string for filtering, or `None` when no filter was
+        requested.
+    """
+    if cwd is None:
+        return None
+    if cwd == "":  # noqa: PLC1901
+        return str(Path.cwd())
+    return str(Path(cwd).expanduser().resolve())
+
+
 def _recent_agent_is_valid(name: str) -> bool:
     """Return `True` when `~/.deepagents/<name>/` still exists on disk.
 
@@ -1936,12 +1954,7 @@ def cli_main() -> None:
             # "ls" is an argparse alias for "list" — argparse stores the
             # alias as-is in the namespace, so we must match both values.
             if args.threads_command in {"list", "ls"}:
-                cwd_filter = getattr(args, "cwd", None)
-                # Empty string is the argparse `const` sentinel meaning the
-                # flag was passed without a value, i.e. "use the current
-                # directory". Distinct from `None` (flag not passed at all).
-                if cwd_filter == "":  # noqa: PLC1901
-                    cwd_filter = str(Path.cwd())
+                cwd_filter = _normalize_cwd_filter(getattr(args, "cwd", None))
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),

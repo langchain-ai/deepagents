@@ -789,6 +789,59 @@ class TestExecuteTaskTextualParallelToolSpinner:
 
         assert statuses[-1] == "Thinking"
 
+    async def test_edit_file_tool_keeps_thinking_spinner_while_pending(self) -> None:
+        """`edit_file` should not leave a visual gap before approval/execution."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": "example.py",
+                            "old_string": "old",
+                            "new_string": "new",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(content="edited", tool_call_id="tool-1"),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        assert statuses[:2] == ["Thinking", "Thinking"]
+        assert None not in statuses
+
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Three parallel tools completed out of order; Thinking after all."""
         statuses: list[str | None] = []

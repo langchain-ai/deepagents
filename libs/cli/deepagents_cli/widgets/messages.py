@@ -6,6 +6,7 @@ import ast
 import json
 import logging
 import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -15,6 +16,7 @@ from textual import on
 from textual.containers import Vertical
 from textual.content import Content
 from textual.events import Click
+from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.widgets import Static
 
@@ -123,6 +125,8 @@ _MAX_INLINE_ARGS = 3
 
 # Truncation limits for display
 _MAX_TODO_CONTENT_LEN = 70
+_DEFAULT_TODO_WRAP_WIDTH = 80
+_TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
 # Tools that have their key info already in the header (no need for args line)
@@ -1063,6 +1067,8 @@ class ToolCallMessage(Vertical):
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
             return
+        if not self._expanded and not self._has_expandable_output():
+            return
         self._expanded = not self._expanded
         self._update_output_display()
 
@@ -1135,6 +1141,21 @@ class ToolCallMessage(Vertical):
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
 
+    def _has_expandable_output(self) -> bool:
+        """Return whether collapsed output has hidden content to expand."""
+        output = self._output.strip()
+        if not output:
+            return False
+
+        lines = output.split("\n")
+        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
+            return True
+
+        if self._tool_name == "write_todos":
+            return self._format_output(output, is_preview=True).truncation is not None
+
+        return False
+
     def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
 
@@ -1177,13 +1198,37 @@ class ToolCallMessage(Vertical):
             lines.extend([Content.assemble("    ", stats), Content("")])
 
         # Format each item
-        lines.extend(self._format_single_todo(item) for item in items[:max_items])
+        lines.extend(
+            self._format_single_todo(item, is_preview=is_preview)
+            for item in items[:max_items]
+        )
 
         truncation = None
-        if is_preview and len(items) > max_items:
-            truncation = f"{len(items) - max_items} more"
+        if is_preview:
+            hidden_items = len(items) - max_items
+            if hidden_items > 0:
+                truncation = f"{hidden_items} more"
+            elif any(
+                len(self._todo_text(item)) > _MAX_TODO_CONTENT_LEN
+                for item in items[:max_items]
+            ):
+                truncation = "full todo text"
 
         return FormattedOutput(content=Content("\n").join(lines), truncation=truncation)
+
+    @staticmethod
+    def _todo_text(item: dict | str) -> str:
+        """Return display text for a todo item.
+
+        Args:
+            item: Todo item dictionary or plain string.
+
+        Returns:
+            Todo content text.
+        """
+        if isinstance(item, dict):
+            return str(item.get("content", str(item)))
+        return str(item)
 
     def _parse_todo_items(self, output: str) -> list | None:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Parse todo items from output.
@@ -1227,37 +1272,113 @@ class ToolCallMessage(Vertical):
             parts.append(Content.styled(f"{completed} done", colors.success))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> Content:
+    def _todo_content_width(self, indent_width: int) -> int:
+        """Return the todo content wrap width for the current widget size.
+
+        Args:
+            indent_width: Display width before todo content starts.
+
+        Returns:
+            Width available for todo content wrapping.
+        """
+        display_width = 0
+        for widget in (self._full_widget, self._preview_widget, self):
+            if widget and widget.is_mounted and widget.size.width > 0:
+                display_width = widget.size.width
+                break
+
+        if not display_width:
+            try:
+                display_width = self.app.size.width
+            except NoActiveAppError:
+                display_width = _DEFAULT_TODO_WRAP_WIDTH
+
+        output_prefix_width = len(get_glyphs().output_prefix) + 1
+        available = (
+            display_width
+            - output_prefix_width
+            - indent_width
+            - _TODO_WRAP_GUARD_COLUMNS
+        )
+        return max(20, available)
+
+    def _format_todo_line(
+        self,
+        prefix: Content,
+        text: str,
+        *,
+        is_preview: bool,
+        text_style: str | None = None,
+    ) -> Content:
+        """Format a todo row, wrapping expanded content under the text column.
+
+        Args:
+            prefix: Styled status prefix before todo content.
+            text: Todo text to render.
+            is_preview: Whether the compact preview is being rendered.
+            text_style: Optional style for todo content.
+
+        Returns:
+            Styled `Content` for one todo row.
+        """
+        if is_preview and len(text) > _MAX_TODO_CONTENT_LEN:
+            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
+
+        if is_preview:
+            content = Content.styled(text, text_style) if text_style else Content(text)
+            return Content.assemble(prefix, content)
+
+        indent = " " * len(prefix.plain)
+        wrapped = textwrap.wrap(
+            text,
+            width=self._todo_content_width(len(prefix.plain)),
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+        parts: list[Content] = [prefix]
+        for index, line in enumerate(wrapped):
+            if index:
+                parts.append(Content("\n" + indent))
+            content = Content.styled(line, text_style) if text_style else Content(line)
+            parts.append(content)
+        return Content.assemble(*parts)
+
+    def _format_single_todo(self, item: dict | str, *, is_preview: bool) -> Content:
         """Format a single todo item.
+
+        Args:
+            item: Todo item dictionary or plain string.
+            is_preview: Whether the compact preview is being rendered.
 
         Returns:
             Styled `Content` with checkbox and status styling.
         """
         colors = theme.get_theme_colors(self)
         if isinstance(item, dict):
-            text = item.get("content", str(item))
+            text = self._todo_text(item)
             status = item.get("status", "pending")
         else:
-            text = str(item)
+            text = self._todo_text(item)
             status = "pending"
-
-        if len(text) > _MAX_TODO_CONTENT_LEN:
-            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
         glyphs = get_glyphs()
         if status == "completed":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.checkmark} done", colors.success),
-                Content.styled(f"   {text}", "dim"),
+            return self._format_todo_line(
+                Content.styled(f"    {glyphs.checkmark} done   ", colors.success),
+                text,
+                is_preview=is_preview,
+                text_style="dim",
             )
         if status == "in_progress":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.circle_filled} active", colors.warning),
-                f" {text}",
+            return self._format_todo_line(
+                Content.styled(f"    {glyphs.circle_filled} active ", colors.warning),
+                text,
+                is_preview=is_preview,
             )
-        return Content.assemble(
-            Content.styled(f"    {glyphs.circle_empty} todo", "dim"),
-            f"   {text}",
+        return self._format_todo_line(
+            Content.styled(f"    {glyphs.circle_empty} todo   ", "dim"),
+            text,
+            is_preview=is_preview,
         )
 
     def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
@@ -1574,11 +1695,24 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             elif output_stripped:
                 # Output fits in preview, show formatted
-                result = self._format_output(output_stripped, is_preview=False)
+                is_tool_preview = self._tool_name == "write_todos"
+                result = self._format_output(
+                    output_stripped,
+                    is_preview=is_tool_preview,
+                )
                 prefixed = self._prefix_output(result.content)
                 self._preview_widget.update(prefixed)
                 self._preview_widget.display = True
-                self._hint_widget.display = False
+                if result.truncation:
+                    ellipsis = get_glyphs().ellipsis
+                    hint = Content.styled(
+                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
+                        "dim",
+                    )
+                    self._hint_widget.update(hint)
+                    self._hint_widget.display = True
+                else:
+                    self._hint_widget.display = False
             else:
                 self._preview_widget.display = False
                 self._hint_widget.display = False

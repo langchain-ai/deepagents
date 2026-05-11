@@ -2,10 +2,9 @@
 
 ## [0.0.55](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.54...deepagents-cli==0.0.55) (2026-05-11)
 
-
 ### Bug Fixes
 
-* **cli:** keep Thinking spinner during `edit_file` approval ([#3310](https://github.com/langchain-ai/deepagents/issues/3310)) ([d06133f](https://github.com/langchain-ai/deepagents/commit/d06133f8dd7cb924c82e46ece3e165d561ef7d9e))
+* Keep Thinking spinner during `edit_file` approval ([#3310](https://github.com/langchain-ai/deepagents/issues/3310)) ([d06133f](https://github.com/langchain-ai/deepagents/commit/d06133f8dd7cb924c82e46ece3e165d561ef7d9e))
 
 ## [0.0.54](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.53...deepagents-cli==0.0.54) (2026-05-11)
 

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 from deepagents_cli import theme
 from deepagents_cli.config import is_ascii_mode
 
-TIME_UP_INPUT_DISABLED_MESSAGE = "Time is up. Input is disabled for this session."
+TIME_UP_INPUT_DISABLED_MESSAGE = "Time is up."
 """Shared warning shown when input is attempted after the time limit."""
 
 

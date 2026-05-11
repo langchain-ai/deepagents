@@ -1,6 +1,7 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
+from collections.abc import Coroutine
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2722,10 +2723,14 @@ class TestBuildThreadMessage:
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""
         app = DeepAgentsApp()
-        with patch(
-            "deepagents_cli.app.asyncio.wait_for",
-            side_effect=TimeoutError,
-        ):
+
+        async def _raise_timeout(  # noqa: RUF029  # async signature required to match asyncio.wait_for
+            coro: Coroutine[Any, Any, Any], *_: Any, **__: Any
+        ) -> None:
+            coro.close()
+            raise TimeoutError
+
+        with patch("deepagents_cli.app.asyncio.wait_for", new=_raise_timeout):
             result = await app._build_thread_message("Resumed thread", "t-1")
 
         assert isinstance(result, str)

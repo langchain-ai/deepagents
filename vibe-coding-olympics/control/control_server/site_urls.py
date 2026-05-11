@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,20 @@ RELAY_ENV_SUFFIX = "_RELAY"
 SITE_URL_ENV_SUFFIX = "_SITE_URL"
 
 
+@dataclass(frozen=True, slots=True)
+class SiteUrlResult:
+    """Resolution outcome for one player port.
+
+    `url` is the controller-reachable site URL when configuration is
+    valid, otherwise `None`. `reason` carries a short diagnostic
+    explaining the miss — distinct strings for unconfigured vs.
+    malformed relay, so the operator UI can tell them apart.
+    """
+
+    url: str | None
+    reason: str | None
+
+
 def _override_for(port: str) -> str | None:
     """Return an explicit site URL override for `port`, if configured."""
     raw = os.environ.get(f"{RELAY_ENV_PREFIX}{port}{SITE_URL_ENV_SUFFIX}", "")
@@ -31,24 +46,8 @@ def _override_for(port: str) -> str | None:
     return url or None
 
 
-def _host_from_relay(port: str) -> str | None:
-    """Extract the LAN host portion of the configured relay URL for `port`."""
-    raw = os.environ.get(f"{RELAY_ENV_PREFIX}{port}{RELAY_ENV_SUFFIX}", "")
-    relay = raw.strip()
-    if not relay:
-        return None
-    parsed = urlparse(relay)
-    host = parsed.hostname
-    if not host:
-        logger.warning(
-            "Could not parse host from relay URL %r for port %s", relay, port
-        )
-        return None
-    return host
-
-
-def site_url_for(port: str) -> str | None:
-    """Return the controller-reachable site URL for one player port.
+def resolve(port: str) -> SiteUrlResult:
+    """Return the resolution outcome for one player port.
 
     Lookup order:
         1. `VIBE_PLAYER_<PORT>_SITE_URL` — explicit override, used as-is.
@@ -58,16 +57,48 @@ def site_url_for(port: str) -> str | None:
         port: The `play.sh` port assigned to the player (e.g. `"3001"`).
 
     Returns:
-        Site URL with no trailing slash, or `None` if neither env var
-        is configured for this port.
+        A `SiteUrlResult` whose `url` is the controller-reachable site
+        URL (no trailing slash) or `None` if neither env var resolves to
+        a usable address. When `url is None`, `reason` is set.
     """
     override = _override_for(port)
     if override:
-        return override
-    host = _host_from_relay(port)
-    if host is None:
-        return None
-    return f"http://{host}:{port}"
+        return SiteUrlResult(url=override, reason=None)
+    relay_raw = os.environ.get(
+        f"{RELAY_ENV_PREFIX}{port}{RELAY_ENV_SUFFIX}", ""
+    ).strip()
+    if not relay_raw:
+        return SiteUrlResult(
+            url=None,
+            reason=(
+                f"neither {RELAY_ENV_PREFIX}{port}{SITE_URL_ENV_SUFFIX} nor "
+                f"{RELAY_ENV_PREFIX}{port}{RELAY_ENV_SUFFIX} configured"
+            ),
+        )
+    parsed = urlparse(relay_raw)
+    host = parsed.hostname
+    if not host:
+        logger.warning(
+            "Could not parse host from relay URL %r for port %s", relay_raw, port
+        )
+        return SiteUrlResult(
+            url=None,
+            reason=(
+                f"{RELAY_ENV_PREFIX}{port}{RELAY_ENV_SUFFIX}={relay_raw!r} is not "
+                "a parseable URL"
+            ),
+        )
+    return SiteUrlResult(url=f"http://{host}:{port}", reason=None)
+
+
+def site_url_for(port: str) -> str | None:
+    """Return the controller-reachable site URL for one player port.
+
+    Convenience wrapper around `resolve(port).url` for callers that
+    don't need the diagnostic reason. Returns `None` if the port has
+    no usable configuration.
+    """
+    return resolve(port).url
 
 
 def site_urls(ports: list[str]) -> dict[str, str]:

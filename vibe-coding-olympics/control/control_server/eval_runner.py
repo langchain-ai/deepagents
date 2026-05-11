@@ -18,7 +18,6 @@ import logging
 import os
 import random
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -38,6 +37,18 @@ LLM_AXES: tuple[str, ...] = (
     "accessibility",
 )
 
+_AXIS_WEIGHTS: dict[str, float] = {
+    "color": 0.10,
+    "typography": 0.10,
+    "layout": 0.20,
+    "content_completeness": 0.20,
+    "creativity": 0.15,
+    "interpretation_quality": 0.15,
+    "accessibility": 0.10,
+}
+
+_importability_check_done = False
+
 
 def _default_eval_project_dir() -> Path:
     """Return the path to the bundled `eval/` workspace."""
@@ -52,9 +63,20 @@ def _eval_project_dir() -> Path:
     return _default_eval_project_dir()
 
 
-@dataclass(slots=True)
+def _random_axes() -> dict[str, float | None]:
+    """Return a synthetic axis-score dict so the composite always renders."""
+    return {axis: round(random.uniform(0.45, 0.85), 3) for axis in LLM_AXES}  # noqa: S311  # not cryptographic
+
+
+@dataclass(frozen=True, slots=True)
 class EvalResult:
-    """Per-site evaluation outcome, suitable for JSON serialization."""
+    """Per-site evaluation outcome, suitable for JSON serialization.
+
+    Frozen so `run_eval`'s many fallback branches must each construct a
+    complete, valid result up-front instead of mutating a half-built
+    instance. Use `EvalResult.success(...)` or `EvalResult.fallback_for(...)`
+    rather than the raw constructor when possible.
+    """
 
     site_name: str
     url: str
@@ -65,10 +87,61 @@ class EvalResult:
     fallback: bool = False
     fallback_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        """Enforce shape invariants the run_eval consumers rely on."""
+        if self.fallback and not self.fallback_reason:
+            msg = "fallback EvalResult requires a non-empty fallback_reason"
+            raise ValueError(msg)
+        if self.overall is not None and not 0.0 <= self.overall <= 1.0:
+            msg = f"overall must be in [0, 1], got {self.overall}"
+            raise ValueError(msg)
+        unknown = set(self.axes) - set(LLM_AXES)
+        if unknown:
+            msg = f"unknown axes in EvalResult: {sorted(unknown)}"
+            raise ValueError(msg)
 
-def _random_axes() -> dict[str, float | None]:
-    """Return a synthetic axis-score dict so the composite always renders."""
-    return {axis: round(random.uniform(0.45, 0.85), 3) for axis in LLM_AXES}  # noqa: S311  # not cryptographic
+    @classmethod
+    def success(
+        cls,
+        *,
+        site_name: str,
+        url: str,
+        prompt: str,
+        round_num: int,
+        axes: dict[str, float | None],
+    ) -> EvalResult:
+        """Build a non-fallback result with `overall` derived from `axes`."""
+        return cls(
+            site_name=site_name,
+            url=url,
+            prompt=prompt,
+            round_num=round_num,
+            axes=axes,
+            overall=aggregate(axes),
+        )
+
+    @classmethod
+    def fallback_for(
+        cls,
+        *,
+        site_name: str,
+        url: str,
+        prompt: str,
+        round_num: int,
+        reason: str,
+    ) -> EvalResult:
+        """Build a fallback result with randomized axes and a stamped reason."""
+        axes = _random_axes()
+        return cls(
+            site_name=site_name,
+            url=url,
+            prompt=prompt,
+            round_num=round_num,
+            axes=axes,
+            overall=aggregate(axes),
+            fallback=True,
+            fallback_reason=reason,
+        )
 
 
 def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
@@ -90,22 +163,22 @@ def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
 
 
 def aggregate(axes: dict[str, float | None]) -> float:
-    """Default-weighted mean of present axes, in `[0, 1]`."""
-    weights = {
-        "color": 0.10,
-        "typography": 0.10,
-        "layout": 0.20,
-        "content_completeness": 0.20,
-        "creativity": 0.15,
-        "interpretation_quality": 0.15,
-        "accessibility": 0.10,
-    }
-    total = sum(weights[axis] for axis in weights if axis in axes)
-    if total == 0:
+    """Weighted mean of present axes, in `[0, 1]`.
+
+    Axes whose value is `None` are excluded from both the numerator and
+    the denominator so a missing axis does not silently penalize the
+    overall score. Returns `0.0` when no axis has a numeric value.
+    """
+    total = 0.0
+    weighted = 0.0
+    for axis, weight in _AXIS_WEIGHTS.items():
+        value = axes.get(axis)
+        if value is None:
+            continue
+        total += weight
+        weighted += value * weight
+    if total == 0.0:
         return 0.0
-    weighted = sum(
-        (axes[axis] or 0.0) * weights[axis] for axis in weights if axis in axes
-    )
     return weighted / total
 
 
@@ -165,6 +238,25 @@ async def _spawn_judge(
     return proc.returncode or 0, stdout, stderr
 
 
+def _check_eval_importable_once() -> None:
+    """Warn (once) if the bundled eval workspace is missing.
+
+    Deferred from import time so the warning routes through the
+    operator's logging configuration and respects late changes to
+    `VIBE_EVAL_DIR`.
+    """
+    global _importability_check_done
+    if _importability_check_done:
+        return
+    _importability_check_done = True
+    project_dir = _eval_project_dir()
+    if not (project_dir / "judge.py").exists():
+        logger.warning(
+            "No judge.py at %s; auto-eval will fall back to random scores.",
+            project_dir,
+        )
+
+
 async def run_eval(
     *,
     url: str,
@@ -192,13 +284,14 @@ async def run_eval(
     Returns:
         An `EvalResult` for this site. Never raises.
     """
+    _check_eval_importable_once()
     work_dir.mkdir(parents=True, exist_ok=True)
-    result = EvalResult(
-        site_name=site_name,
-        url=url,
-        prompt=prompt,
-        round_num=round_num,
-    )
+    fallback_kwargs = {
+        "site_name": site_name,
+        "url": url,
+        "prompt": prompt,
+        "round_num": round_num,
+    }
 
     try:
         rc, stdout, stderr = await _spawn_judge(
@@ -210,70 +303,41 @@ async def run_eval(
         )
     except (FileNotFoundError, TimeoutError) as exc:
         logger.warning("Judge subprocess failed for %s: %s", site_name, exc)
-        result.fallback = True
-        result.fallback_reason = str(exc)
-        result.axes = _random_axes()
-        result.overall = aggregate(result.axes)
-        return result
+        return EvalResult.fallback_for(**fallback_kwargs, reason=str(exc))
 
     if rc != 0:
         tail = stderr[-2048:].decode("utf-8", errors="replace") if stderr else ""
         logger.warning("Judge exited %d for %s. stderr tail: %s", rc, site_name, tail)
-        result.fallback = True
-        result.fallback_reason = f"judge exit {rc}"
-        result.axes = _random_axes()
-        result.overall = aggregate(result.axes)
-        return result
+        return EvalResult.fallback_for(**fallback_kwargs, reason=f"judge exit {rc}")
 
     result_path = work_dir / f"round-{round_num}-{_safe_site_filename(site_name)}.json"
     if not result_path.exists():
         logger.warning(
             "Judge JSON missing at %s; stdout: %s", result_path, stdout[-512:]
         )
-        result.fallback = True
-        result.fallback_reason = "judge output JSON missing"
-        result.axes = _random_axes()
-        result.overall = aggregate(result.axes)
-        return result
+        return EvalResult.fallback_for(
+            **fallback_kwargs, reason="judge output JSON missing"
+        )
 
     try:
         raw = json.loads(result_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Could not read judge JSON at %s: %s", result_path, exc)
-        result.fallback = True
-        result.fallback_reason = "judge output JSON unreadable"
-        result.axes = _random_axes()
-        result.overall = aggregate(result.axes)
-        return result
+        return EvalResult.fallback_for(
+            **fallback_kwargs, reason="judge output JSON unreadable"
+        )
 
     axes_raw = raw.get("axes") if isinstance(raw, dict) else None
     if not isinstance(axes_raw, dict):
         logger.warning("Judge JSON missing `axes` mapping in %s", result_path)
-        result.fallback = True
-        result.fallback_reason = "judge output JSON missing axes"
-        result.axes = _random_axes()
-        result.overall = aggregate(result.axes)
-        return result
+        return EvalResult.fallback_for(
+            **fallback_kwargs, reason="judge output JSON missing axes"
+        )
 
-    result.axes = _sanitize_axes(axes_raw)
-    result.overall = aggregate(result.axes)
-    return result
+    sanitized = _sanitize_axes(axes_raw)
+    return EvalResult.success(**fallback_kwargs, axes=sanitized)
 
 
 def to_obs_score(overall: float) -> float:
     """Scale an aggregated `[0, 1]` result to the OBS scoreboard's 0..10 range."""
     return round(max(0.0, min(1.0, overall)) * 10.0, 2)
-
-
-def _ensure_eval_importable() -> None:
-    """Best-effort sanity check that the bundled eval workspace exists."""
-    project_dir = _eval_project_dir()
-    if not (project_dir / "judge.py").exists():
-        print(
-            f"[eval_runner] warning: no judge.py at {project_dir}; "
-            "auto-eval will fall back to random scores.",
-            file=sys.stderr,
-        )
-
-
-_ensure_eval_importable()

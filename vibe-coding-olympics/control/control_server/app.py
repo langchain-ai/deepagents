@@ -18,7 +18,7 @@ import random
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -32,19 +32,41 @@ logger = logging.getLogger(__name__)
 
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
 PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
+_DEFAULT_ROUND_DURATION_SECS = 300.0
+
+
+def _round_duration_config() -> tuple[float, str | None]:
+    """Return `(duration_secs, warning)` parsed from `VIBE_ROUND_SECONDS`.
+
+    `warning` is non-None when the env var is set but unusable, so the
+    operator UI can surface "configured value was rejected, using
+    default" rather than silently running a 5-minute round.
+    """
+    raw = os.environ.get("VIBE_ROUND_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_ROUND_DURATION_SECS, None
+    try:
+        value = float(raw)
+    except ValueError:
+        return (
+            _DEFAULT_ROUND_DURATION_SECS,
+            f"Invalid VIBE_ROUND_SECONDS={raw!r}; using "
+            f"{_DEFAULT_ROUND_DURATION_SECS:g}s.",
+        )
+    if value <= 0:
+        return (
+            _DEFAULT_ROUND_DURATION_SECS,
+            f"VIBE_ROUND_SECONDS={raw!r} must be positive; using "
+            f"{_DEFAULT_ROUND_DURATION_SECS:g}s.",
+        )
+    return value, None
 
 
 def _round_duration_secs() -> float:
     """Round length in seconds. Override with `VIBE_ROUND_SECONDS`."""
-    raw = os.environ.get("VIBE_ROUND_SECONDS", "").strip()
-    if not raw:
-        return 300.0
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning("Invalid VIBE_ROUND_SECONDS=%r; falling back to 300", raw)
-        return 300.0
-    return value if value > 0 else 300.0
+    duration, _ = _round_duration_config()
+    return duration
+
 
 DEFAULT_PROMPTS = (
     "taco truck",
@@ -139,10 +161,6 @@ class StartRequest(BaseModel):
         return prompt or None
 
 
-class EndRequest(BaseModel):
-    scores: dict[str, float] = Field(default_factory=dict)
-
-
 class PromptRequest(BaseModel):
     """Prompt pool entry created or edited by the controller."""
 
@@ -213,10 +231,6 @@ _round_context: dict[str, Any] = {}
 _round_counter = 0
 _last_eval_results: list[dict[str, Any]] = []
 _eval_lock: asyncio.Lock | None = None
-_eval_workdir = Path(
-    os.environ.get("VIBE_EVAL_RESULTS_DIR", "").strip()
-    or tempfile.gettempdir(),
-) / "vibe-eval-results"
 
 
 def _get_eval_lock() -> asyncio.Lock:
@@ -227,10 +241,28 @@ def _get_eval_lock() -> asyncio.Lock:
     return _eval_lock
 
 
-class OverrideScoresRequest(BaseModel):
-    """Manual smoke-test override: bypass the judge and force OBS scores."""
+def _eval_workdir() -> Path:
+    """Return the per-process eval results directory, resolved lazily.
 
-    scores: dict[str, float] = Field(default_factory=dict)
+    Read on each call (rather than at import time) so tests and
+    operators can override `VIBE_EVAL_RESULTS_DIR` after the module has
+    already loaded.
+    """
+    base = os.environ.get("VIBE_EVAL_RESULTS_DIR", "").strip() or tempfile.gettempdir()
+    return Path(base) / "vibe-eval-results"
+
+
+class OverrideScoresRequest(BaseModel):
+    """Manual smoke-test override: bypass the judge and force OBS scores.
+
+    Scores are constrained to the OBS scoreboard's 0..10 scale; `ge`/`le`
+    bounds also reject `NaN` and `inf` payloads, so a malformed POST is
+    a 422 rather than a poisoned scoreboard.
+    """
+
+    scores: dict[str, Annotated[float, Field(ge=0, le=10)]] = Field(
+        default_factory=dict,
+    )
 
 
 def _reset_round_state() -> None:
@@ -295,9 +327,7 @@ async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{VIBE_OBS_API}/transition"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            response = await client.post(
-                url, json={"event": event, "payload": payload}
-            )
+            response = await client.post(url, json={"event": event, "payload": payload})
         except httpx.HTTPError as exc:
             msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
             raise HTTPException(status_code=502, detail=msg) from exc
@@ -331,36 +361,46 @@ async def _get_obs_state() -> dict[str, Any]:
     return response.json()
 
 
-async def _end_round_early(scores: dict[str, float]) -> dict[str, Any]:
-    """Signal active players that time is up, then end a live round."""
-    state = await _get_obs_state()
-    phase = state.get("phase")
-    if phase != "coding":
-        msg = f"Cannot end early while OBS is in phase `{phase}`."
-        raise HTTPException(status_code=409, detail=msg)
-
-    ports = _round_player_ports()
-    times_up_sent = await player_dispatch.times_up_players(ports or None)
-    ended = await _forward("end", {"scores": scores})
-    return {
-        "state": ended,
-        "times_up_sent": times_up_sent,
-    }
-
-
 def _round_player_targets() -> list[dict[str, str]]:
     """Return per-player eval targets captured from current state.
 
     Each entry has `port`, `name`, and `url`. Players missing a site
-    URL (no relay configured) are still returned so the caller can log
-    a fallback for them.
+    URL (no relay configured, or a malformed relay) are still returned
+    so the caller can log a fallback for them. When the resolver
+    surfaced a diagnostic reason, it is carried in `url_reason` so the
+    eventual fallback can name the actual cause rather than "no URL".
     """
     targets: list[dict[str, str]] = []
     for port in _round_player_ports():
         name = _ready_players.get(port, port)
-        url = site_urls.site_url_for(port) or ""
-        targets.append({"port": port, "name": name, "url": url})
+        resolved = site_urls.resolve(port)
+        target: dict[str, str] = {
+            "port": port,
+            "name": name,
+            "url": resolved.url or "",
+        }
+        if resolved.reason:
+            target["url_reason"] = resolved.reason
+        targets.append(target)
     return targets
+
+
+def _eval_to_payload(result: eval_runner.EvalResult, *, port: str) -> dict[str, Any]:
+    """Coerce an `EvalResult` to the JSON shape the OBS UI consumes."""
+    return {
+        "port": port,
+        "name": result.site_name,
+        "url": result.url,
+        "axes": result.axes,
+        "overall": result.overall,
+        "obs_score": (
+            eval_runner.to_obs_score(result.overall)
+            if result.overall is not None
+            else 0.0
+        ),
+        "fallback": result.fallback,
+        "fallback_reason": result.fallback_reason,
+    }
 
 
 async def _evaluate_one(
@@ -375,19 +415,13 @@ async def _evaluate_one(
     name = target["name"]
     url = target["url"]
     if not url:
-        fallback_axes = {
-            axis: round(random.uniform(0.45, 0.85), 3)  # noqa: S311  # not cryptographic
-            for axis in eval_runner.LLM_AXES
-        }
-        result = eval_runner.EvalResult(
+        reason = target.get("url_reason") or "no site URL configured for port"
+        result = eval_runner.EvalResult.fallback_for(
             site_name=name,
             url="",
             prompt=prompt,
             round_num=round_num,
-            axes=fallback_axes,
-            overall=eval_runner.aggregate(fallback_axes),
-            fallback=True,
-            fallback_reason="no site URL configured for port",
+            reason=reason,
         )
     else:
         result = await eval_runner.run_eval(
@@ -405,18 +439,7 @@ async def _evaluate_one(
             url or "<none>",
             result.fallback_reason,
         )
-    return {
-        "port": port,
-        "name": name,
-        "url": url,
-        "axes": result.axes,
-        "overall": result.overall,
-        "obs_score": (
-            eval_runner.to_obs_score(result.overall) if result.overall is not None else 0.0
-        ),
-        "fallback": result.fallback,
-        "fallback_reason": result.fallback_reason,
-    }
+    return _eval_to_payload(result, port=port)
 
 
 async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
@@ -439,42 +462,70 @@ async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
             logger.info("Skipping eval (%s): no round players.", reason)
             return []
 
-        _eval_workdir.mkdir(parents=True, exist_ok=True)
-        round_dir = _eval_workdir / f"round-{round_num}"
+        workdir = _eval_workdir()
+        workdir.mkdir(parents=True, exist_ok=True)
+        round_dir = workdir / f"round-{round_num}"
 
         ports = [t["port"] for t in targets]
         try:
             await player_dispatch.times_up_players(ports or None)
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed to send times-up to players before eval.")
+            _round_context["times_up_error"] = repr(exc)
+        else:
+            _round_context.pop("times_up_error", None)
 
-        per_site = await asyncio.gather(
+        raw_results = await asyncio.gather(
             *[
                 _evaluate_one(
                     target,
                     prompt=prompt,
                     round_num=round_num,
-                    work_dir=round_dir,
+                    # Isolate per-player so two players with the same
+                    # sanitized site name cannot overwrite each other's
+                    # judge JSON within a single round.
+                    work_dir=round_dir / target["port"],
                 )
                 for target in targets
             ],
-            return_exceptions=False,
+            return_exceptions=True,
         )
 
-        obs_scores: dict[str, float] = {}
-        for entry in per_site:
-            obs_scores[entry["name"]] = entry["obs_score"]
+        per_site: list[dict[str, Any]] = []
+        for target, item in zip(targets, raw_results, strict=True):
+            if isinstance(item, BaseException):
+                logger.exception(
+                    "Eval task crashed for %s (port %s)",
+                    target["name"],
+                    target["port"],
+                    exc_info=item,
+                )
+                synthetic = eval_runner.EvalResult.fallback_for(
+                    site_name=target["name"],
+                    url=target["url"],
+                    prompt=prompt,
+                    round_num=round_num,
+                    reason=f"eval crashed: {item!r}",
+                )
+                per_site.append(_eval_to_payload(synthetic, port=target["port"]))
+            else:
+                per_site.append(item)
 
+        obs_scores = {entry["name"]: entry["obs_score"] for entry in per_site}
+
+        obs_state: dict[str, Any] | None = None
+        obs_error: str | None = None
         try:
             obs_state = await _forward("end", {"scores": obs_scores})
         except HTTPException as exc:
+            obs_error = str(exc.detail)
             logger.warning("Could not forward eval scores to OBS: %s", exc.detail)
-            obs_state = None
 
         _last_eval_results.clear()
         _last_eval_results.extend(per_site)
         _round_context["last_reason"] = reason
         _round_context["obs_state"] = obs_state
+        _round_context["obs_error"] = obs_error
         _round_context["completed_at"] = time.time()
         return per_site
 
@@ -1459,13 +1510,19 @@ def create_app() -> FastAPI:
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
+        obs: dict[str, Any] = {}
+        obs_error: dict[str, Any] | None = None
         try:
             obs = await _get_obs_state()
         except HTTPException as exc:
-            obs = {"error": str(exc.detail), "status": exc.status_code}
+            # Namespaced so a real OBS payload key like "error" or
+            # "status" cannot silently shadow the diagnostic.
+            obs_error = {"detail": str(exc.detail), "status": exc.status_code}
         snapshot = _round_timer.snapshot()
+        _, duration_warning = _round_duration_config()
         return {
             **obs,
+            "obs_error": obs_error,
             "timer": {
                 "running": snapshot.running,
                 "duration_secs": snapshot.duration_secs,
@@ -1478,6 +1535,9 @@ def create_app() -> FastAPI:
                 "started_at": _round_context.get("started_at"),
                 "completed_at": _round_context.get("completed_at"),
                 "last_reason": _round_context.get("last_reason"),
+                "obs_error": _round_context.get("obs_error"),
+                "times_up_error": _round_context.get("times_up_error"),
+                "duration_warning": duration_warning,
             },
             "eval": {
                 "results": list(_last_eval_results),
@@ -1531,7 +1591,9 @@ def create_app() -> FastAPI:
             "start",
             {"prompt": prompt, "contestants": contestants},
         )
-        sent = await player_dispatch.send_prompt_to_players(_round_player_ports(), prompt)
+        sent = await player_dispatch.send_prompt_to_players(
+            _round_player_ports(), prompt
+        )
         await _start_round_timer(prompt, contestants)
         return {
             "state": state,
@@ -1547,6 +1609,7 @@ def create_app() -> FastAPI:
         results = await _run_round_eval(reason="end_now")
         return {
             "state": _round_context.get("obs_state"),
+            "obs_error": _round_context.get("obs_error"),
             "results": results,
         }
 
@@ -1561,18 +1624,17 @@ def create_app() -> FastAPI:
         results = await _run_round_eval(reason="end_early")
         return {
             "state": _round_context.get("obs_state"),
+            "obs_error": _round_context.get("obs_error"),
             "results": results,
         }
 
     @app.post("/api/round/override-end")
     async def round_override_end(req: OverrideScoresRequest) -> dict[str, Any]:
         await _round_timer.cancel()
-        try:
-            obs_state = await _forward("end", {"scores": req.scores})
-        except HTTPException:
-            raise
+        obs_state = await _forward("end", {"scores": req.scores})
         _round_context["last_reason"] = "override"
         _round_context["obs_state"] = obs_state
+        _round_context["obs_error"] = None
         _round_context["completed_at"] = time.time()
         return {"state": obs_state, "scores": req.scores}
 

@@ -17,15 +17,20 @@ class TestEvalRunner(unittest.TestCase):
         self.assertEqual(eval_runner.to_obs_score(2.0), 10.0)
 
     def test_aggregate_weighted_mean(self) -> None:
-        axes = dict.fromkeys(eval_runner.LLM_AXES, 0.5)
-        self.assertAlmostEqual(eval_runner.aggregate(axes), 0.5, places=3)
+        axes: dict[str, float | None] = dict.fromkeys(eval_runner.LLM_AXES, 0.5)
+        self.assertAlmostEqual(eval_runner.aggregate(axes), 0.5, places=6)
 
-    def test_aggregate_skips_none_axes(self) -> None:
+    def test_aggregate_skips_none_axes_from_numerator_and_denominator(self) -> None:
+        # Color is excluded from both sides of the weighted mean, so the
+        # result should match the present-axes mean exactly (0.6) instead
+        # of being biased downward by treating the missing color as 0.
         axes: dict[str, float | None] = dict.fromkeys(eval_runner.LLM_AXES, 0.6)
         axes["color"] = None
-        result = eval_runner.aggregate(axes)
-        self.assertGreater(result, 0.0)
-        self.assertLess(result, 1.0)
+        self.assertAlmostEqual(eval_runner.aggregate(axes), 0.6, places=6)
+
+    def test_aggregate_returns_zero_when_no_axes_have_values(self) -> None:
+        axes: dict[str, float | None] = dict.fromkeys(eval_runner.LLM_AXES, None)
+        self.assertEqual(eval_runner.aggregate(axes), 0.0)
 
     def test_sanitize_axes_coerces_strings_and_drops_unknowns(self) -> None:
         raw = {
@@ -41,6 +46,38 @@ class TestEvalRunner(unittest.TestCase):
         self.assertIsNone(sanitized["layout"])
         self.assertIsNone(sanitized["creativity"])
         self.assertNotIn("junk_axis", sanitized)
+
+    def test_eval_result_rejects_fallback_without_reason(self) -> None:
+        with self.assertRaises(ValueError):
+            eval_runner.EvalResult(
+                site_name="Alice",
+                url="",
+                prompt="",
+                round_num=1,
+                fallback=True,
+                fallback_reason=None,
+            )
+
+    def test_eval_result_rejects_overall_outside_unit_interval(self) -> None:
+        with self.assertRaises(ValueError):
+            eval_runner.EvalResult(
+                site_name="Alice",
+                url="",
+                prompt="",
+                round_num=1,
+                axes={},
+                overall=1.5,
+            )
+
+    def test_eval_result_rejects_unknown_axes(self) -> None:
+        with self.assertRaises(ValueError):
+            eval_runner.EvalResult(
+                site_name="Alice",
+                url="",
+                prompt="",
+                round_num=1,
+                axes={"bogus_axis": 0.5},
+            )
 
     def test_run_eval_returns_fallback_when_judge_exits_nonzero(self) -> None:
         async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:
@@ -59,9 +96,141 @@ class TestEvalRunner(unittest.TestCase):
                 )
 
         self.assertTrue(result.fallback)
-        self.assertIn("judge exit", result.fallback_reason or "")
+        self.assertEqual(result.fallback_reason, "judge exit 17")
         self.assertEqual(set(result.axes.keys()), set(eval_runner.LLM_AXES))
         self.assertIsNotNone(result.overall)
+
+    def test_run_eval_falls_back_when_uv_binary_missing(self) -> None:
+        async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:
+            msg = "uv binary not found on PATH; cannot invoke the judge"
+            raise FileNotFoundError(msg)
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertIn("uv binary not found", result.fallback_reason or "")
+
+    def test_run_eval_falls_back_on_subprocess_timeout(self) -> None:
+        async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:
+            msg = "judge subprocess exceeded 180s"
+            raise TimeoutError(msg)
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertIn("exceeded", result.fallback_reason or "")
+
+    def test_run_eval_falls_back_when_judge_output_json_missing(self) -> None:
+        async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:
+            # Judge exits cleanly but writes nothing.
+            return 0, b"", b""
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_reason, "judge output JSON missing")
+
+    def test_run_eval_falls_back_when_judge_output_is_malformed(self) -> None:
+        async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:
+            work_dir = kwargs["work_dir"]
+            round_num = kwargs["round_num"]
+            name = kwargs["name"]
+            path = Path(work_dir) / f"round-{round_num}-{name}.json"
+            path.write_text("{not json")
+            return 0, b"", b""
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_reason, "judge output JSON unreadable")
+
+    def test_run_eval_falls_back_when_axes_key_missing(self) -> None:
+        async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:
+            work_dir = kwargs["work_dir"]
+            round_num = kwargs["round_num"]
+            name = kwargs["name"]
+            path = Path(work_dir) / f"round-{round_num}-{name}.json"
+            path.write_text(json.dumps({"other": 1}))
+            return 0, b"", b""
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_reason, "judge output JSON missing axes")
+
+    def test_run_eval_falls_back_when_axes_is_not_a_mapping(self) -> None:
+        async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:
+            work_dir = kwargs["work_dir"]
+            round_num = kwargs["round_num"]
+            name = kwargs["name"]
+            path = Path(work_dir) / f"round-{round_num}-{name}.json"
+            path.write_text(json.dumps({"axes": [0.5, 0.6]}))
+            return 0, b"", b""
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_reason, "judge output JSON missing axes")
 
     def test_run_eval_reads_judge_json(self) -> None:
         async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:

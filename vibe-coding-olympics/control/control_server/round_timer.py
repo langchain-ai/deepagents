@@ -20,14 +20,71 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class TimerSnapshot:
-    """Serializable view of the current timer for `/api/state`."""
+    """Serializable view of the current timer for `/api/state`.
+
+    Construct via `TimerSnapshot.idle(...)` or `TimerSnapshot.active(...)`
+    so the `running` / `started_at` invariant is enforced at the call
+    site rather than by ad-hoc consumer code.
+    """
 
     running: bool
     duration_secs: float
     remaining_secs: float
     started_at: float | None
+
+    def __post_init__(self) -> None:
+        """Reject internally inconsistent snapshots."""
+        if self.running and self.started_at is None:
+            msg = "running snapshot must have a started_at timestamp"
+            raise ValueError(msg)
+        if not self.running and self.started_at is not None:
+            msg = "idle snapshot must not have a started_at timestamp"
+            raise ValueError(msg)
+        if self.duration_secs < 0 or self.remaining_secs < 0:
+            msg = "duration_secs and remaining_secs must be non-negative"
+            raise ValueError(msg)
+
+    @classmethod
+    def idle(cls, *, duration_secs: float) -> TimerSnapshot:
+        """Return a snapshot for an idle (or just-cancelled) timer."""
+        return cls(
+            running=False,
+            duration_secs=duration_secs,
+            remaining_secs=0.0,
+            started_at=None,
+        )
+
+    @classmethod
+    def active(
+        cls,
+        *,
+        duration_secs: float,
+        remaining_secs: float,
+        started_at: float,
+    ) -> TimerSnapshot:
+        """Return a snapshot for a running countdown."""
+        return cls(
+            running=True,
+            duration_secs=duration_secs,
+            remaining_secs=remaining_secs,
+            started_at=started_at,
+        )
+
+
+@dataclass(slots=True)
+class _ActiveCountdown:
+    """Grouped state for an in-flight countdown.
+
+    Held atomically on `RoundTimer._active` so `snapshot()` reads one
+    reference rather than three correlated fields (preventing torn
+    reads during cancellation).
+    """
+
+    task: asyncio.Task[None]
+    started_at: float
+    duration_secs: float
 
 
 class RoundTimer:
@@ -35,33 +92,32 @@ class RoundTimer:
 
     def __init__(self) -> None:
         """Initialize an idle timer (no countdown running)."""
-        self._task: asyncio.Task[None] | None = None
-        self._started_at: float | None = None
-        self._duration_secs: float = 0.0
+        self._active: _ActiveCountdown | None = None
+        self._last_duration_secs: float = 0.0
         self._lock: asyncio.Lock | None = None
 
     def _get_lock(self) -> asyncio.Lock:
-        """Return the asyncio lock, lazy-initialized inside the running loop."""
+        """Return the asyncio lock, lazy-bound to the running loop.
+
+        Not strictly thread-safe for concurrent first-callers, but FastAPI
+        runs on a single event loop so the first `await` happens before
+        any second task observes `self._lock is None`.
+        """
         if self._lock is None:
             self._lock = asyncio.Lock()
         return self._lock
 
     def snapshot(self) -> TimerSnapshot:
         """Return the current timer state for HTTP polling."""
-        if self._task is None or self._task.done() or self._started_at is None:
-            return TimerSnapshot(
-                running=False,
-                duration_secs=self._duration_secs,
-                remaining_secs=0.0,
-                started_at=None,
-            )
-        elapsed = time.monotonic() - self._started_at
-        remaining = max(0.0, self._duration_secs - elapsed)
-        return TimerSnapshot(
-            running=True,
-            duration_secs=self._duration_secs,
+        active = self._active
+        if active is None or active.task.done():
+            return TimerSnapshot.idle(duration_secs=self._last_duration_secs)
+        elapsed = time.monotonic() - active.started_at
+        remaining = max(0.0, active.duration_secs - elapsed)
+        return TimerSnapshot.active(
+            duration_secs=active.duration_secs,
             remaining_secs=remaining,
-            started_at=self._started_at,
+            started_at=active.started_at,
         )
 
     async def start(
@@ -72,15 +128,26 @@ class RoundTimer:
         """Cancel any in-flight countdown and arm a new one.
 
         Args:
-            duration_secs: Round duration in seconds.
+            duration_secs: Round duration in seconds. Must be non-negative.
             on_expire: Awaitable called exactly once if the timer
                 reaches zero without being cancelled.
+
+        Raises:
+            ValueError: If `duration_secs` is negative.
         """
+        if duration_secs < 0:
+            msg = f"duration_secs must be non-negative, got {duration_secs}"
+            raise ValueError(msg)
+        duration = float(duration_secs)
         async with self._get_lock():
             await self._cancel_locked()
-            self._duration_secs = float(duration_secs)
-            self._started_at = time.monotonic()
-            self._task = asyncio.create_task(self._run(duration_secs, on_expire))
+            self._last_duration_secs = duration
+            task = asyncio.create_task(self._run(duration, on_expire))
+            self._active = _ActiveCountdown(
+                task=task,
+                started_at=time.monotonic(),
+                duration_secs=duration,
+            )
 
     async def cancel(self) -> None:
         """Cancel the in-flight countdown, if any. Safe to call when idle."""
@@ -89,17 +156,19 @@ class RoundTimer:
 
     async def _cancel_locked(self) -> None:
         """Cancel the in-flight task; assumes `self._lock` is held."""
-        task = self._task
-        self._task = None
-        self._started_at = None
-        if task is None or task.done():
+        active = self._active
+        self._active = None
+        if active is None or active.task.done():
             return
-        task.cancel()
+        active.task.cancel()
         try:
-            await task
+            await active.task
         except asyncio.CancelledError:
             pass
         except RuntimeError:
+            # TestClient teardown swaps event loops between requests; awaiting
+            # a task bound to the prior loop raises RuntimeError. Safe to
+            # ignore in that narrow case.
             logger.debug("Round timer task awaited across loops; ignoring.")
         except Exception:
             logger.exception("Round timer task raised on cancellation")

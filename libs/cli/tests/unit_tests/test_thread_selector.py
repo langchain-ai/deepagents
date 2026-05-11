@@ -18,6 +18,7 @@ from deepagents_cli.app import DeepAgentsApp
 from deepagents_cli.sessions import ThreadInfo
 from deepagents_cli.widgets.thread_selector import (
     DeleteThreadConfirmScreen,
+    ThreadScopeSelectOverlay,
     ThreadSelectorScreen,
 )
 
@@ -762,6 +763,152 @@ class _ThreadSelectorScopedTestApp(App):
 
 class TestThreadSelectorScopeSelect:
     """Tests for the cwd scope `Select` in the Options panel."""
+
+    async def test_enter_opens_scope_select_without_resuming_thread(self) -> None:
+        """Enter on the focused scope control should open its dropdown."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.has_focus
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert scope_select.expanded
+                assert not app.dismissed
+
+    async def test_tab_keys_move_open_scope_select_highlight(self) -> None:
+        """Tab and Shift+Tab should move the dropdown highlight while open."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                filter_input = screen.query_one("#thread-filter", Input)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                sort_switch = screen.query_one("#thread-sort-toggle", Checkbox)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 1
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert scope_select.expanded
+                assert overlay.highlighted == 0
+                assert not filter_input.has_focus
+                assert not app.dismissed
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert scope_select.expanded
+                assert overlay.highlighted == 1
+                assert not sort_switch.has_focus
+                assert not app.dismissed
+
+    async def test_arrow_keys_move_open_scope_select_not_thread_list(self) -> None:
+        """Normal dropdown navigation should not move the thread highlight."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                screen._selected_index = 1
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+                overlay = scope_select.query_one(ThreadScopeSelectOverlay)
+                assert overlay.highlighted == 1
+
+                await pilot.press("up")
+                await pilot.pause()
+                assert overlay.highlighted == 0
+                assert screen._selected_index == 1
+
+                await pilot.press("down")
+                await pilot.pause()
+                assert overlay.highlighted == 1
+                assert screen._selected_index == 1
+
+                await pilot.press("pageup")
+                await pilot.pause()
+                assert overlay.highlighted == 0
+                assert screen._selected_index == 1
+
+                await pilot.press("pagedown")
+                await pilot.pause()
+                assert overlay.highlighted == 1
+                assert screen._selected_index == 1
+                assert not app.dismissed
+
+    async def test_escape_closes_open_scope_select_without_dismissing(self) -> None:
+        """Esc should close the dropdown before it cancels the selector."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+
+                await pilot.press("escape")
+                await pilot.pause()
+
+                assert not scope_select.expanded
+                assert scope_select.has_focus
+                assert not app.dismissed
+
+    async def test_enter_selects_open_scope_select_without_resuming(self) -> None:
+        """Enter should choose the highlighted dropdown option while open."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+
+                await pilot.press("tab")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert scope_select.expanded
+
+                await pilot.press("enter")
+                await pilot.pause()
+
+                assert not scope_select.expanded
+                assert scope_select.has_focus
+                assert not app.dismissed
 
     async def test_select_toggle_requeries_with_new_cwd(self) -> None:
         """Switching the scope dropdown reloads threads with the new cwd kwarg."""

@@ -20,6 +20,10 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets._select import (
+    SelectCurrent,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
+    SelectOverlay,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -512,6 +516,82 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+_SCOPE_OVERLAY_CONSUMED_KEYS = frozenset(
+    {"tab", "shift+tab", "up", "down", "pageup", "pagedown", "home", "end"}
+)
+
+
+class ThreadScopeSelectOverlay(SelectOverlay):
+    """Scope dropdown overlay that consumes option navigation while focused."""
+
+    def key_tab(self, event: Key) -> None:
+        """Move to the next option without leaving the dropdown."""
+        event.prevent_default()
+        event.stop()
+        self.action_cursor_down()
+
+    def key_shift_tab(self, event: Key) -> None:
+        """Move to the previous option without leaving the dropdown."""
+        event.prevent_default()
+        event.stop()
+        self.action_cursor_up()
+
+    def check_consume_key(self, key: str, character: str | None = None) -> bool:
+        """Report option navigation consumption so ancestor bindings stay hidden.
+
+        Args:
+            key: Pressed key identifier.
+            character: Printable character for the key, when present.
+
+        Returns:
+            `True` when the overlay consumes the key.
+        """
+        if key in _SCOPE_OVERLAY_CONSUMED_KEYS:
+            return True
+        return super().check_consume_key(key, character)
+
+
+class ThreadScopeSelect(Select[str]):
+    """Scope dropdown that keeps focus contained while its menu is open."""
+
+    def compose(self) -> ComposeResult:
+        """Compose the select with a scope-specific overlay.
+
+        Yields:
+            Current value display and dropdown overlay widgets.
+        """
+        yield SelectCurrent(self.prompt)
+        yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
+            compact=Select.compact
+        )
+
+    def key_tab(self, event: Key) -> None:
+        """Prevent focus traversal while the dropdown menu is open."""
+        if self.expanded:
+            event.prevent_default()
+            event.stop()
+
+    def key_shift_tab(self, event: Key) -> None:
+        """Prevent reverse focus traversal while the dropdown menu is open."""
+        if self.expanded:
+            event.prevent_default()
+            event.stop()
+
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        """Report Tab consumption while expanded so global bindings stay hidden.
+
+        Args:
+            key: Pressed key identifier.
+            character: Printable character for the key, when present.
+
+        Returns:
+            `True` when the open dropdown consumes the key.
+        """
+        if self.expanded and key in {"tab", "shift+tab"}:
+            return True
+        return super().check_consume_key(key, character)
+
+
 class ThreadSelectorScreen(ModalScreen[str | None]):
     """Modal dialog for browsing and resuming threads.
 
@@ -924,6 +1004,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             ]
         return self._filter_controls
 
+    def _get_scope_select(self) -> Select[str]:
+        """Return the scope dropdown widget."""
+        return self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+
+    def _is_scope_select_expanded(self) -> bool:
+        """Return whether the scope dropdown menu is currently open."""
+        try:
+            return self._get_scope_select().expanded
+        except NoMatches:
+            return False
+
+    def _close_scope_select(self) -> None:
+        """Close the scope dropdown and restore focus to the select control."""
+        scope_select = self._get_scope_select()
+        scope_select.expanded = False
+        scope_select.focus()
+
+    def _select_scope_highlight(self) -> None:
+        """Select the currently highlighted option in the open scope dropdown."""
+        action_select = getattr(self.focused, "action_select", None)
+        if callable(action_select):
+            action_select()
+            return
+        self._close_scope_select()
+
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
 
@@ -991,7 +1096,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-label",
                         markup=False,
                     )
-                    yield Select(
+                    yield ThreadScopeSelect(
                         [
                             ("Current directory", _SCOPE_VALUE_CWD),
                             ("All directories", _SCOPE_VALUE_ALL),
@@ -1117,6 +1222,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             event: The key event.
         """
         if self._confirming_delete:
+            return
+
+        if event.key in {"tab", "shift+tab"} and self._is_scope_select_expanded():
+            event.prevent_default()
+            event.stop()
             return
 
         filter_input = self._get_filter_input()
@@ -1907,6 +2017,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Confirm the highlighted thread and dismiss the selector."""
         if self._confirming_delete:
             return
+        if self._is_scope_select_expanded():
+            self._select_scope_highlight()
+            return
+        scope_select = self._get_scope_select()
+        if self.focused is scope_select:
+            scope_select.action_show_overlay()
+            return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
             self.dismiss(thread_id)
@@ -1914,6 +2031,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def action_focus_next_filter(self) -> None:
         """Move focus through the filter and column-toggle controls."""
         if self._confirming_delete:
+            return
+        if self._is_scope_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -1927,6 +2046,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def action_focus_previous_filter(self) -> None:
         """Move focus backward through the filter and column-toggle controls."""
         if self._confirming_delete:
+            return
+        if self._is_scope_select_expanded():
             return
         controls = self._filter_focus_order()
         focused = self.focused
@@ -2101,4 +2222,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
+        if self._is_scope_select_expanded():
+            self._close_scope_select()
+            return
         self.dismiss(None)

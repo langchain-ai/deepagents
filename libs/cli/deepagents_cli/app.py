@@ -154,6 +154,9 @@ backend cannot trap the user inside a finished launch-init modal forever.
 _COMPETITION_START_COUNTDOWN_SECONDS = 5
 """Countdown shown after the controller starts a competition round."""
 
+_VIBE_SERVER_RESET_TIMEOUT_SECONDS = 20.0
+"""Maximum seconds to wait for the web-vibe dev server to restart."""
+
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for CLI updates."""
 
@@ -4931,6 +4934,7 @@ class DeepAgentsApp(App):
                 self._force_interrupt_active_work()
                 await self._dismiss_modals_for_reset()
                 await self._reset_times_up_state()
+                await self._reset_vibe_dev_server()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()
@@ -6594,6 +6598,119 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
                 break
+
+    async def _reset_vibe_dev_server(self) -> None:
+        """Restart the web-vibe Vite server when running in player mode."""
+        port = os.environ.get("VIBE_PORT")
+        vibe_dir = os.environ.get("VIBE_DIR")
+        if not port or not vibe_dir:
+            return
+
+        try:
+            port_num = int(port)
+        except ValueError:
+            logger.warning("Skipping Vite reset because VIBE_PORT=%r is invalid", port)
+            return
+        if not 0 < port_num <= 65535:  # noqa: PLR2004  # TCP port range.
+            logger.warning(
+                "Skipping Vite reset because VIBE_PORT=%r is out of range",
+                port,
+            )
+            return
+
+        script = (
+            Path(vibe_dir) / ".deepagents" / "skills" / "web-vibe" / "start-server.sh"
+        )
+        if not script.exists():
+            logger.debug("Skipping Vite reset because %s does not exist", script)
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._restart_vibe_dev_server_process(port_num, script),
+                timeout=_VIBE_SERVER_RESET_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("Timed out resetting Vite dev server on port %s", port_num)
+            self.notify(
+                f"Timed out resetting Vite dev server on port {port_num}.",
+                severity="warning",
+                markup=False,
+            )
+        except Exception as exc:
+            logger.warning("Failed to reset Vite dev server", exc_info=True)
+            self.notify(
+                f"Could not reset Vite dev server: {exc}",
+                severity="warning",
+                markup=False,
+            )
+
+    async def _restart_vibe_dev_server_process(self, port: int, script: Path) -> None:
+        """Kill the existing Vite listener and re-run web-vibe startup.
+
+        Args:
+            port: Vite dev server port.
+            script: Path to the web-vibe startup script.
+
+        Raises:
+            RuntimeError: If the startup script exits unsuccessfully.
+        """
+        pids = await self._vibe_server_pids(port)
+        for pid in pids:
+            with suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGKILL)
+        if pids:
+            await asyncio.sleep(0.3)
+
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            str(script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            detail = stderr.decode(errors="replace").strip()
+            if not detail:
+                detail = stdout.decode(errors="replace").strip()
+            msg = detail or f"start-server.sh exited with {process.returncode}"
+            raise RuntimeError(msg)
+
+    @staticmethod
+    async def _vibe_server_pids(port: int) -> list[int]:
+        """Return PIDs listening on the web-vibe Vite port.
+
+        Args:
+            port: Vite dev server port.
+
+        Returns:
+            Process IDs listening on the port.
+
+        Raises:
+            RuntimeError: If `lsof` is unavailable or fails unexpectedly.
+        """
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "lsof",
+                "-ti",
+                f":{port}",
+                "-sTCP:LISTEN",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except FileNotFoundError as exc:
+            msg = "lsof is not installed"
+            raise RuntimeError(msg) from exc
+        stdout, _stderr = await process.communicate()
+        if process.returncode not in {0, 1}:
+            msg = f"lsof exited with {process.returncode}"
+            raise RuntimeError(msg)
+
+        pids: list[int] = []
+        for line in stdout.decode().splitlines():
+            with suppress(ValueError):
+                pids.append(int(line.strip()))
+        return pids
 
     def _handle_times_up(self) -> None:
         """Enter the terminal time-limit state for this session."""

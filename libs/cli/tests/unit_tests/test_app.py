@@ -8330,6 +8330,44 @@ class TestTimesUpState:
             assert app.sub_title == ""
             assert not app.query(Header)
 
+    async def test_vibe_reset_restarts_dev_server(self, tmp_path: Path) -> None:
+        """The web-vibe reset restarts Vite when player env is present."""
+        script = tmp_path / ".deepagents" / "skills" / "web-vibe" / "start-server.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text("#!/usr/bin/env bash\n")
+
+        app = DeepAgentsApp()
+        with (
+            patch.dict(
+                os.environ,
+                {"VIBE_DIR": str(tmp_path), "VIBE_PORT": "3001"},
+                clear=False,
+            ),
+            patch.object(
+                app,
+                "_restart_vibe_dev_server_process",
+                new_callable=AsyncMock,
+            ) as restart,
+        ):
+            await app._reset_vibe_dev_server()
+
+        restart.assert_awaited_once_with(3001, script)
+
+    async def test_vibe_reset_skips_without_player_env(self) -> None:
+        """Normal CLI sessions should not restart any dev server."""
+        app = DeepAgentsApp()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                app,
+                "_restart_vibe_dev_server_process",
+                new_callable=AsyncMock,
+            ) as restart,
+        ):
+            await app._reset_vibe_dev_server()
+
+        restart.assert_not_awaited()
+
 
 class TestExternalBypassFieldHonored:
     """`event.bypass` overrides queue when set on a prompt event."""

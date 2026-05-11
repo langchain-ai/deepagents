@@ -4812,13 +4812,18 @@ class DeepAgentsApp(App):
             # Reset thread to start fresh conversation
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
+                self._lc_thread_id = new_thread_id
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
                 except NoMatches:
                     pass
-                await self._mount_message(
-                    AppMessage(f"Started new thread: {new_thread_id}")
+                thread_msg_widget = AppMessage(f"Started new thread: {new_thread_id}")
+                await self._mount_message(thread_msg_widget)
+                self._schedule_thread_message_link(
+                    thread_msg_widget,
+                    prefix="Started new thread",
+                    thread_id=new_thread_id,
                 )
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))

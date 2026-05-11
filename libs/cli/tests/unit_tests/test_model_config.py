@@ -3858,13 +3858,33 @@ recent = "openai:gpt-5.2"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
             patch.object(settings, "openai_api_key", None),
             patch.object(settings, "anthropic_api_key", "test-key"),
             patch.dict(
                 "os.environ",
                 {"ANTHROPIC_API_KEY": "test-key"},
-                clear=False,
+                clear=True,
             ),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "anthropic:claude-opus-4-7"
+
+    def test_stored_key_used_when_neither_model_set(self, tmp_path):
+        """Falls back to stored TUI credentials when no env vars are set."""
+        from deepagents_cli.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        def stored_key(provider: str) -> str | None:
+            return "test-key" if provider == "anthropic" else None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", side_effect=stored_key),
+            patch.dict("os.environ", {}, clear=True),
         ):
             result = _get_default_model_spec()
 
@@ -3880,6 +3900,8 @@ recent = "openai:gpt-5.2"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
+            patch.dict("os.environ", {}, clear=True),
             patch.object(settings, "openai_api_key", None),
             patch.object(settings, "anthropic_api_key", None),
             patch.object(settings, "google_api_key", None),
@@ -3899,6 +3921,8 @@ recent = "openai:gpt-5.2"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
+            patch.dict("os.environ", {}, clear=True),
             patch.object(settings, "openai_api_key", None),
             patch.object(settings, "anthropic_api_key", None),
             patch.object(settings, "google_api_key", None),

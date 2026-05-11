@@ -37,7 +37,7 @@ def render_repl_system_prompt(
     memory_limit_mb: int,
     snapshot_between_turns: bool,
 ) -> str:
-    """Render the base REPL system prompt text for ``REPLMiddleware``."""
+    """Render the base REPL system prompt text for ``CodeInterpreterMiddleware``."""
     state_persistence_line = (
         "- State (variables, functions) persists across tool calls and across "
         "multiple turns for this conversation thread."

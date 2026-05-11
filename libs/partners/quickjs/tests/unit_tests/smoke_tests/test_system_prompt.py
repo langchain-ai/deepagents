@@ -12,7 +12,7 @@ from langchain_core.tools import tool
 from pydantic import Field
 from typing_extensions import TypedDict
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -154,7 +154,7 @@ def test_system_prompt_snapshot_no_tools(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[REPLMiddleware()],
+        middleware=[CodeInterpreterMiddleware()],
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
@@ -176,7 +176,7 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[REPLMiddleware(ptc=mixed_tools)],
+        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools)],
         tools=mixed_tools,
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})

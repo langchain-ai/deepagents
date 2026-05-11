@@ -93,7 +93,7 @@ VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 
 In normal event flow, run `../play.sh <port>` once per player computer at the start of the day. It starts the Vite server, opens the browser preview once, and leaves the CLI waiting for controller prompts. Use the web UI's
 
-**Reset round all** button between rounds; it resets CLI thread/readiness state without restarting Vite or reopening the browser.
+**Reset round all** button between rounds; it resets CLI thread/readiness state and blanks the Vite project without restarting Vite or reopening the browser.
 
 ## Endpoints
 
@@ -116,7 +116,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and forwards ready names to OBS |
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
 | `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |
-| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends a socket `force-clear` signal and clears controller readiness for the targeted player CLI(s) |
+| `/api/players/clear` | POST | `{port?: str, all?: bool}` | Blanks the player Vite project, sends a socket `force-clear` signal, and clears controller readiness for the targeted player CLI(s) |
 
 ## Configuration
 

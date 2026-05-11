@@ -113,6 +113,13 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
     async def test_clear_players_uses_session_socket_variable(self) -> None:
         tmp_dir = tempfile.TemporaryDirectory(dir="/tmp")
         path = Path(tmp_dir.name) / "events.sock"
+        project = Path(tmp_dir.name) / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "package.json").write_text("{}", encoding="utf-8")
+        (project / "index.html").write_text("<h1>old</h1>", encoding="utf-8")
+        (project / "src" / "main.js").write_text("old", encoding="utf-8")
+        (project / "src" / "style.css").write_text("old", encoding="utf-8")
+        (project / "src" / "counter.js").write_text("old", encoding="utf-8")
         received: list[dict[str, Any]] = []
 
         async def handle_client(
@@ -129,7 +136,12 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
             ports: list[str] | None,
         ) -> list[tuple[str, FakeSession]]:
             self.assertEqual(ports, ["3001"])
-            session = FakeSession({iterm_ctrl.SOCKET_VARIABLE: str(path)})
+            session = FakeSession(
+                {
+                    iterm_ctrl.SOCKET_VARIABLE: str(path),
+                    iterm_ctrl.PROJECT_DIR_VARIABLE: str(project),
+                }
+            )
             return [("3001", session)]
 
         original = iterm_ctrl.matching_sessions
@@ -138,6 +150,8 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
         try:
             with patch("control_server.deepagents_config.clear_recent_model"):
                 cleared = await iterm_ctrl.clear_players(["3001"])
+            index_html = (project / "index.html").read_text(encoding="utf-8")
+            main_js = (project / "src" / "main.js").read_text(encoding="utf-8")
         finally:
             iterm_ctrl.matching_sessions = original
             server.close()
@@ -146,6 +160,9 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cleared, ["3001"])
         self.assertEqual(received[0]["payload"], "force-clear")
+        self.assertNotIn("old", index_html)
+        self.assertIn("localStorage.clear();", main_js)
+        self.assertIn("sessionStorage.clear();", main_js)
 
     async def test_send_prompt_invokes_web_vibe_skill(self) -> None:
         tmp_dir = tempfile.TemporaryDirectory(dir="/tmp")

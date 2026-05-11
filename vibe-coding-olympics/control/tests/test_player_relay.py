@@ -65,6 +65,13 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
     async def test_force_clear_clears_recent_model_before_forwarding(self) -> None:
         tmp_dir = tempfile.TemporaryDirectory(dir="/tmp")
         path = Path(tmp_dir.name) / "events.sock"
+        project = Path(tmp_dir.name) / "project"
+        (project / "src").mkdir(parents=True)
+        (project / "package.json").write_text("{}", encoding="utf-8")
+        (project / "index.html").write_text("<h1>old</h1>", encoding="utf-8")
+        (project / "src" / "main.js").write_text("old", encoding="utf-8")
+        (project / "src" / "style.css").write_text("old", encoding="utf-8")
+        (project / "src" / "counter.js").write_text("old", encoding="utf-8")
         received: list[dict[str, Any]] = []
 
         async def handle_client(
@@ -86,6 +93,7 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
                     "os.environ",
                     {
                         "VIBE_EVENT_SOCKET": str(path),
+                        "VIBE_DIR": str(project),
                         "VIBE_PLAYER_TOKEN": "test-token",
                     },
                     clear=True,
@@ -104,6 +112,8 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
                         json={"kind": "signal", "payload": "force-clear"},
                         headers={"authorization": "Bearer test-token"},
                     )
+                index_html = (project / "index.html").read_text(encoding="utf-8")
+                main_js = (project / "src" / "main.js").read_text(encoding="utf-8")
         finally:
             server.close()
             await server.wait_closed()
@@ -112,6 +122,9 @@ class TestPlayerRelay(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         clear.assert_called_once_with()
         self.assertEqual(received[0]["payload"], "force-clear")
+        self.assertNotIn("old", index_html)
+        self.assertIn("localStorage.clear();", main_js)
+        self.assertIn("sessionStorage.clear();", main_js)
 
     async def test_command_requires_valid_bearer_token(self) -> None:
         app = player_relay.create_app()

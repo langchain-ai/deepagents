@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from control_server import deepagents_config
 from control_server.event_socket import send_socket_event
+from control_server.project_clear import clear_round_project
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,14 @@ def _event_socket_path() -> Path:
     if not raw:
         msg = "VIBE_EVENT_SOCKET is not configured."
         raise HTTPException(status_code=503, detail=msg)
+    return Path(raw)
+
+
+def _round_project_path() -> Path | None:
+    """Return the configured web-vibe project directory, if present."""
+    raw = os.environ.get("VIBE_DIR", "").strip()
+    if not raw:
+        return None
     return Path(raw)
 
 
@@ -73,6 +82,9 @@ def create_app() -> FastAPI:
         socket_path = _event_socket_path()
         if req.kind == "signal" and req.payload == "force-clear":
             deepagents_config.clear_recent_model()
+            project_dir = _round_project_path()
+            if project_dir is not None and not clear_round_project(project_dir):
+                logger.warning("Could not clear round project at %s", project_dir)
         try:
             await send_socket_event(
                 socket_path,

@@ -124,7 +124,6 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
 | `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |
 | `/api/players/clear` | POST | `{port?: str, all?: bool}` | Sends a socket `force-clear` signal and clears controller readiness for the targeted player CLI(s) |
-| `/api/players/reset` | POST | `{port?: str, all?: bool}` | Quits + relaunches player CLI(s) |
 
 ## Configuration
 

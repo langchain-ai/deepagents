@@ -107,6 +107,4 @@ VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 ## More Detail
 
 - `control/README.md` documents the controller API and player dispatch path.
-- `control/LAN_COMMAND_CHANNEL.md` documents the LAN relay for
-  controller-to-player commands on separate laptops.
 - `obs/README.md` documents the OBS runner, scene setup, and transition API.

@@ -1185,12 +1185,6 @@ def create_app() -> FastAPI:
             "obs_error": obs_error,
         }
 
-    @app.post("/api/players/reset")
-    async def players_reset(target: PlayerTarget) -> dict[str, list[str]]:
-        ports = _resolve_ports(target)
-        _clear_player_readiness(ports)
-        return {"reset": await player_dispatch.reset_players(ports)}
-
     return app
 
 

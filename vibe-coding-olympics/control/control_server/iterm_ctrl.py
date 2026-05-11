@@ -25,15 +25,6 @@ logger = logging.getLogger(__name__)
 _connection: iterm2.Connection | None = None
 _connection_lock: asyncio.Lock | None = None
 
-# `/quit` is a QUEUED slash command; give the CLI a beat to tear down
-# the Textual app before piping `deepagents -y` back in.
-RESET_QUIT_GRACE_SECS = 1.0
-
-# Gap between typing a slash command and sending Enter. Without it,
-# iTerm2 flushes the whole buffer at once and Textual's `Input` submits
-# before the trailing chars are ingested, truncating the command.
-SUBMIT_GRACE_SECS = 0.05
-
 
 async def _get_connection() -> iterm2.Connection:
     """Return a shared iTerm2 API connection for the control server.
@@ -57,19 +48,6 @@ def _drop_connection() -> None:
     """Forget the shared iTerm2 connection after a transport failure."""
     global _connection  # noqa: PLW0603
     _connection = None
-
-
-async def _submit_slash(session: iterm2.Session, command: str) -> None:
-    """Type a slash command into a Textual CLI and press Enter.
-
-    Enter in raw terminal mode is CR (`\\r`), not LF (`\\n`); Textual's
-    input widget won't treat `\\n` as submit. Splitting the text and the
-    Enter into two sends also lets the event loop ingest the full
-    command before the submit arrives.
-    """
-    await session.async_send_text(command)
-    await asyncio.sleep(SUBMIT_GRACE_SECS)
-    await session.async_send_text("\r")
 
 
 async def matching_sessions(
@@ -303,25 +281,3 @@ async def players_ready(ports: list[str] | None) -> list[str]:
             continue
         sent.append(port)
     return sent
-
-
-async def reset_players(ports: list[str] | None) -> list[str]:
-    """Quit and relaunch the targeted CLIs back to the splash screen.
-
-    Uses `/quit` (an always-bypass slash command) so a mid-turn CLI
-    still exits cleanly, then re-invokes `deepagents -y` from the CLI's
-    existing cwd — which still has `VIBE_*` env vars intact.
-
-    Args:
-        ports: Ports to target. `None` targets every active session.
-
-    Returns:
-        List of ports that were actually reset.
-    """
-    reset: list[str] = []
-    for port, session in await matching_sessions(ports):
-        await _submit_slash(session, "/quit")
-        await asyncio.sleep(RESET_QUIT_GRACE_SECS)
-        await session.async_send_text("deepagents -y\n")
-        reset.append(port)
-    return reset

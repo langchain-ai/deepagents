@@ -161,19 +161,3 @@ async def players_ready(ports: list[str] | None) -> list[str]:
     if local_ports is None or local_ports:
         sent.extend(await iterm_ctrl.players_ready(local_ports))
     return sent
-
-
-async def reset_players(ports: list[str] | None) -> list[str]:
-    """Quit and relaunch local player CLIs.
-
-    LAN relays intentionally do not own the iTerm2 process, so hard reset keeps
-    using the local iTerm2 path. Use `clear_players` for remote round resets.
-    """
-    relays = configured_relays()
-    relay_ports = _target_relay_ports(ports, relays)
-    for port in relay_ports:
-        logger.warning("Skipping hard reset for LAN relay player %s.", port)
-    local_ports = await _local_fallback_ports(ports, relay_ports)
-    if local_ports is None or local_ports:
-        return await iterm_ctrl.reset_players(local_ports)
-    return []

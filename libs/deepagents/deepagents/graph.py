@@ -272,6 +272,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
+
+            Passing tools here is additive — it never removes a built-in.
+            To drop a built-in tool, register a
+            [`HarnessProfile`][deepagents.HarnessProfile] with
+            `excluded_tools`.
         system_prompt: Custom system instructions placed at the front of
             the system prompt sent to the model.
 

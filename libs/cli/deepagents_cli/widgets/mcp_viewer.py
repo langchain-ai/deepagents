@@ -364,6 +364,58 @@ class MCPToolItem(Static):
             self.toggle_expand()
 
 
+class MCPServerHeaderItem(Static):
+    """A selectable server-header row in the MCP viewer.
+
+    Cursor-selectable so users can navigate to every server — even those
+    in `unauthenticated` or `error` states which have no tool rows by the
+    `MCPServerInfo` invariant — and read the full status / error text on
+    the line. Not expandable: `Enter` and `Ctrl+E` are no-ops here.
+    """
+
+    def __init__(
+        self,
+        content: Content,
+        index: int,
+        *,
+        classes: str = "",
+    ) -> None:
+        """Initialize a server-header row.
+
+        Args:
+            content: Pre-built styled `Content` (from `_render_server_header`).
+            index: Flat row index inside `MCPViewerScreen._row_widgets`.
+            classes: CSS classes — should include `mcp-server-header`, and
+                optionally `mcp-header-selected` for the initial selection.
+        """
+        self.index = index
+        self._selected = "mcp-header-selected" in classes
+        super().__init__(content, classes=classes)
+
+    def set_selected(self, selected: bool) -> None:
+        """Apply or remove the selected-row styling."""
+        if self._selected == selected:
+            return
+        self._selected = selected
+        if selected:
+            self.add_class("mcp-header-selected")
+        else:
+            self.remove_class("mcp-header-selected")
+
+    def on_click(self, event: Click) -> None:
+        """Handle click — select the header row via parent screen.
+
+        Headers are not expandable; clicking only moves the cursor.
+
+        Args:
+            event: The click event.
+        """
+        event.stop()
+        screen = self.screen
+        if isinstance(screen, MCPViewerScreen):
+            screen._move_to(self.index)
+
+
 class MCPViewerScreen(ModalScreen[None]):
     """Modal viewer for active MCP servers and their tools.
 
@@ -436,8 +488,23 @@ class MCPViewerScreen(ModalScreen[None]):
         margin-top: 1;
     }
 
+    MCPViewerScreen .mcp-server-header:hover {
+        background: $surface-lighten-1;
+    }
+
     MCPViewerScreen .mcp-list > .mcp-server-header:first-child {
         margin-top: 0;
+    }
+
+    MCPViewerScreen .mcp-header-selected {
+        background: $primary;
+        color: $text;
+        text-style: bold;
+    }
+
+    MCPViewerScreen .mcp-header-selected:hover {
+        background: $primary-lighten-1;
+        color: $text;
     }
 
     MCPViewerScreen .mcp-tool-item {
@@ -494,9 +561,21 @@ class MCPViewerScreen(ModalScreen[None]):
         super().__init__()
         self._server_info = server_info
         self._connecting = connecting
-        self._tool_widgets: list[MCPToolItem] = []
+        # All cursor-navigable rows in render order: server headers + tool
+        # items intermixed. `_selected_index` indexes into this list.
+        self._row_widgets: list[MCPToolItem | MCPServerHeaderItem] = []
         self._selected_index = 0
         self._query: str = ""
+
+    @property
+    def _tool_widgets(self) -> list[MCPToolItem]:
+        """Tool rows only — excludes server headers.
+
+        Convenience view used by `Ctrl+E` toggle-all and by tests that
+        only care about tool-level state. The authoritative storage is
+        `_row_widgets`.
+        """
+        return [w for w in self._row_widgets if isinstance(w, MCPToolItem)]
 
     def refresh_server_info(self, server_info: list[MCPServerInfo]) -> None:
         """Replace the displayed server list; typically after server startup.
@@ -508,7 +587,7 @@ class MCPViewerScreen(ModalScreen[None]):
         self._connecting = False
         body = self.query_one(Vertical)
         body.remove_children()
-        self._tool_widgets = []
+        self._row_widgets = []
         self._selected_index = 0
         self._mount_body(body)
 
@@ -523,7 +602,7 @@ class MCPViewerScreen(ModalScreen[None]):
         self._query = event.value
         scroll = self.query_one(".mcp-list", VerticalScroll)
         scroll.remove_children()
-        self._tool_widgets = []
+        self._row_widgets = []
         self._selected_index = 0
         self._populate_scroll(scroll, self._query)
 
@@ -621,22 +700,26 @@ class MCPViewerScreen(ModalScreen[None]):
 
             indicator_color = _status_color(server.status, colors)
             indicator_glyph = _status_glyph(server.status, glyphs)
-            scroll.mount(
-                Static(
-                    self._render_server_header(
-                        server,
-                        indicator_glyph,
-                        indicator_color,
-                        visible_tools,
-                        glyphs,
-                    ),
-                    classes="mcp-server-header",
-                )
+            header_classes = "mcp-server-header"
+            if flat_index == 0:
+                header_classes += " mcp-header-selected"
+            header = MCPServerHeaderItem(
+                self._render_server_header(
+                    server,
+                    indicator_glyph,
+                    indicator_color,
+                    visible_tools,
+                    glyphs,
+                ),
+                index=flat_index,
+                classes=header_classes,
             )
+            self._row_widgets.append(header)
+            scroll.mount(header)
+            flat_index += 1
+
             for tool in visible_tools:
                 classes = "mcp-tool-item"
-                if flat_index == 0:
-                    classes += " mcp-tool-selected"
                 widget = MCPToolItem(
                     name=tool.name,
                     description=tool.description,
@@ -644,11 +727,11 @@ class MCPViewerScreen(ModalScreen[None]):
                     classes=classes,
                     input_schema=tool.input_schema,
                 )
-                self._tool_widgets.append(widget)
+                self._row_widgets.append(widget)
                 scroll.mount(widget)
                 flat_index += 1
 
-        if tokens and not self._tool_widgets:
+        if tokens and not self._row_widgets:
             scroll.mount(Static("No matching tools.", classes="mcp-empty"))
 
     @staticmethod
@@ -703,43 +786,63 @@ class MCPViewerScreen(ModalScreen[None]):
         )
 
     def _move_to(self, index: int) -> None:
-        """Move selection to the given index.
+        """Move selection to the given row index.
 
         Args:
-            index: Target tool index.
+            index: Target row index inside `_row_widgets` (header or tool).
         """
-        if not self._tool_widgets:
+        if not self._row_widgets:
             return
         old = self._selected_index
         self._selected_index = index
 
         if old != index:
-            self._tool_widgets[old].set_selected(False)
-            self._tool_widgets[index].set_selected(True)
+            self._row_widgets[old].set_selected(False)
+            self._row_widgets[index].set_selected(True)
             # Caller (action) is responsible for any viewport pin — different
             # navigation directions want different anchors (top for down,
             # bottom for up).
 
     def _move_selection(self, delta: int) -> None:
-        """Move selection by delta positions, clamped at the list ends.
+        """Move selection by delta row positions, clamped at the list ends.
 
-        No wrap-around — pressing `Down` past the last tool stays put
-        rather than jumping to the first.
+        No wrap-around — pressing `Down` past the last row stays put rather
+        than jumping to the first. Walks every row (headers + tools).
 
         Args:
-            delta: Number of positions to move.
+            delta: Number of row positions to move.
         """
-        if not self._tool_widgets:
+        if not self._row_widgets:
             return
         target = self._selected_index + delta
-        if 0 <= target < len(self._tool_widgets):
+        if 0 <= target < len(self._row_widgets):
             self._move_to(target)
 
-    def _scroll_widget_bottom_to_view(self, widget: MCPToolItem) -> None:
+    def _next_tool_row(self, start: int, step: int) -> int | None:
+        """Return the index of the next `MCPToolItem` row in `step` direction.
+
+        Used by `Tab` / `Shift+Tab` to skip server-header rows during
+        cross-tool navigation. Returns `None` when there is no tool row in
+        the requested direction.
+
+        Args:
+            start: Index to start searching from (exclusive).
+            step: `+1` (forward) or `-1` (backward).
+        """
+        idx = start + step
+        while 0 <= idx < len(self._row_widgets):
+            if isinstance(self._row_widgets[idx], MCPToolItem):
+                return idx
+            idx += step
+        return None
+
+    def _scroll_widget_bottom_to_view(
+        self, widget: MCPToolItem | MCPServerHeaderItem
+    ) -> None:
         """Scroll so `widget.region.bottom` aligns with the viewport bottom.
 
-        Used when jumping upward to the previous tool: lands the user at
-        the bottom of that tool so the next `Up` press immediately
+        Used when jumping upward to the previous row: lands the user at
+        the bottom of that row so the next `Up` press immediately
         line-scrolls upward through its content rather than jumping again.
         """
         scroll = self.query_one(".mcp-list", VerticalScroll)
@@ -750,72 +853,87 @@ class MCPViewerScreen(ModalScreen[None]):
             scroll.scroll_relative(y=delta, animate=False)
 
     def action_move_up(self) -> None:
-        """Smart up: scroll one row inside a tall expanded tool, else jump.
+        """Smart up: scroll one row inside a tall expanded row, else jump.
 
-        If the selected tool's top edge is already inside the viewport, jump
-        to the previous tool and pin its **bottom** to the viewport so the
-        next `Up` resumes line-stepping through that tool. Otherwise scroll
-        the viewport up by one row. `Tab` / `Shift+Tab` skip the smart check
-        (see `action_jump_up`).
+        If the selected row's top edge is already inside the viewport, jump
+        to the previous row (header or tool) and pin its **bottom** to the
+        viewport so the next `Up` resumes line-stepping through that row.
+        Otherwise scroll the viewport up by one row. `Tab` / `Shift+Tab`
+        skip the smart check AND skip header rows (see `action_jump_up`).
         """
-        if not self._tool_widgets:
+        if not self._row_widgets:
             return
         scroll = self.query_one(".mcp-list", VerticalScroll)
-        selected = self._tool_widgets[self._selected_index]
+        selected = self._row_widgets[self._selected_index]
         if selected.region.y >= scroll.region.y:
-            self.action_jump_up()
+            old = self._selected_index
+            self._move_selection(-1)
+            if self._selected_index != old:
+                self._scroll_widget_bottom_to_view(
+                    self._row_widgets[self._selected_index]
+                )
         else:
             scroll.scroll_relative(y=-1, animate=False)
 
     def action_move_down(self) -> None:
-        """Smart down: scroll one row inside a tall expanded tool, else jump.
+        """Smart down: scroll one row inside a tall expanded row, else jump.
 
-        If the selected tool's bottom edge is already inside the viewport,
-        jump to the next tool and pin its top to the viewport. Otherwise
-        scroll the viewport down by one row. `Tab` / `Shift+Tab` skip the
-        smart check (see `action_jump_down`).
+        If the selected row's bottom edge is already inside the viewport,
+        jump to the next row (header or tool) and pin its top to the
+        viewport. Otherwise scroll the viewport down by one row. `Tab` /
+        `Shift+Tab` skip the smart check AND skip header rows (see
+        `action_jump_down`).
         """
-        if not self._tool_widgets:
+        if not self._row_widgets:
             return
         scroll = self.query_one(".mcp-list", VerticalScroll)
-        selected = self._tool_widgets[self._selected_index]
+        selected = self._row_widgets[self._selected_index]
         selected_bottom = selected.region.y + selected.region.height
         viewport_bottom = scroll.region.y + scroll.region.height
         if selected_bottom <= viewport_bottom:
-            self.action_jump_down()
+            old = self._selected_index
+            self._move_selection(1)
+            if self._selected_index != old:
+                self._row_widgets[self._selected_index].scroll_visible(top=True)
         else:
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Always jump to the previous tool (Shift+Tab); pin its bottom."""
-        old = self._selected_index
-        self._move_selection(-1)
-        if self._selected_index != old:
-            self._scroll_widget_bottom_to_view(self._tool_widgets[self._selected_index])
+        """Jump to the previous tool (Shift+Tab); skips headers; pin bottom."""
+        target = self._next_tool_row(self._selected_index, -1)
+        if target is None:
+            return
+        self._move_to(target)
+        self._scroll_widget_bottom_to_view(self._row_widgets[target])
 
     def action_jump_down(self) -> None:
-        """Always jump to the next tool (Tab); pin its top."""
-        old = self._selected_index
-        self._move_selection(1)
-        if self._selected_index != old:
-            self._tool_widgets[self._selected_index].scroll_visible(top=True)
+        """Jump to the next tool (Tab); skips headers; pin top."""
+        target = self._next_tool_row(self._selected_index, +1)
+        if target is None:
+            return
+        self._move_to(target)
+        self._row_widgets[target].scroll_visible(top=True)
 
     def action_toggle_expand(self) -> None:
-        """Toggle expand/collapse on the selected tool."""
-        if self._tool_widgets:
-            self._tool_widgets[self._selected_index].toggle_expand()
+        """Toggle expand/collapse on the selected tool (no-op for headers)."""
+        if not self._row_widgets:
+            return
+        row = self._row_widgets[self._selected_index]
+        if isinstance(row, MCPToolItem):
+            row.toggle_expand()
 
     def action_toggle_all(self) -> None:
         """Expand or collapse every visible tool at once.
 
         If any visible tool is collapsed, expand all; otherwise collapse all.
-        Operates on `_tool_widgets`, so a filtered view affects only the
-        currently visible subset — hidden tools keep their state.
+        Operates on tool rows only — server headers are not expandable.
+        Hidden tools (filtered out) keep their state.
         """
-        if not self._tool_widgets:
+        tools = self._tool_widgets
+        if not tools:
             return
-        any_collapsed = any(not w._expanded for w in self._tool_widgets)
-        for widget in self._tool_widgets:
+        any_collapsed = any(not w._expanded for w in tools)
+        for widget in tools:
             widget.set_expanded(any_collapsed)
 
     def action_page_up(self) -> None:

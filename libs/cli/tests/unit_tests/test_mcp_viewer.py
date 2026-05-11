@@ -6,6 +6,7 @@ from textual.widgets import Static
 
 from deepagents_cli.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_cli.widgets.mcp_viewer import (
+    MCPServerHeaderItem,
     MCPToolItem,
     MCPViewerScreen,
 )
@@ -141,10 +142,12 @@ class TestMCPViewerScreen:
             assert "1 tool)" in text
 
     async def test_keyboard_navigation(self) -> None:
-        """Arrow / Tab navigation moves selection between tools.
+        """Arrow / Tab navigation walks rows (headers + tools).
 
-        Vim-style `j`/`k` bindings are intentionally absent so they can be
-        typed into the filter Input — see `test_letter_keys_type_into_filter`.
+        Up/Down step through every row including server headers. Tab /
+        Shift+Tab skip headers as a faster cross-tool nav. Vim-style
+        `j`/`k` bindings are absent so they can be typed into the filter
+        Input — see `test_letter_keys_type_into_filter`.
         """
         from textual.widgets import Input
 
@@ -154,46 +157,61 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            # First tool starts selected
-            assert screen._selected_index == 0
-            assert screen._tool_widgets[0].has_class("mcp-tool-selected")
+            # `_sample_info()` rows: [filesystem header, read_file, write_file,
+            # remote-api header, search] — 5 rows.
+            assert len(screen._row_widgets) == 5
+            assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
+            assert isinstance(screen._row_widgets[1], MCPToolItem)
+            assert isinstance(screen._row_widgets[3], MCPServerHeaderItem)
 
-            # Move down
+            # First row (filesystem header) starts selected.
+            assert screen._selected_index == 0
+            assert screen._row_widgets[0].has_class("mcp-header-selected")
+
+            # Down walks every row in order.
+            for expected in (1, 2, 3, 4):
+                await pilot.press("down")
+                await pilot.pause()
+                assert screen._selected_index == expected
+
+            # No wrap-around at the end of the list.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 1
-            assert screen._tool_widgets[1].has_class("mcp-tool-selected")
-            assert not screen._tool_widgets[0].has_class("mcp-tool-selected")
+            assert screen._selected_index == 4
 
-            # Down again still moves selection (priority binding wins
-            # over the filter Input even when it has focus)
-            await pilot.press("down")
+            # Up walks back row by row.
+            await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 2
+            assert screen._selected_index == 3
 
-            # No wrap-around at the end of the list — Down stays put.
-            await pilot.press("down")
-            await pilot.pause()
-            assert screen._selected_index == 2
-
-            # Reset to first via Shift+Tab.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 0
-
-            # No wrap-around at the start either.
-            await pilot.press("shift+tab")
-            await pilot.pause()
-            assert screen._selected_index == 0
-
-            # Tab advances selection.
+            # Tab skips headers — from row 3 (remote-api header), next tool
+            # is row 4 (search).
             await pilot.press("tab")
             await pilot.pause()
+            assert screen._selected_index == 4
+
+            # Tab from search: no further tool → no-op.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 4
+
+            # Shift+Tab skip-header: search (4) → write_file (2).
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
+
+            # Shift+Tab again: write_file (2) → read_file (1).
+            await pilot.press("shift+tab")
+            await pilot.pause()
             assert screen._selected_index == 1
 
-            # The filter Input exists and is the focused widget
+            # Shift+Tab from read_file (1): no prior tool (only header
+            # before) → no-op.
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            # The filter Input exists and is the focused widget.
             filter_input = screen.query_one("#mcp-filter", Input)
             assert filter_input.has_focus
 
@@ -229,7 +247,10 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            widget = screen._tool_widgets[0]
+            # Step from initial header (row 0) to the first tool row.
+            await pilot.press("down")
+            await pilot.pause()
+            widget = screen._row_widgets[screen._selected_index]
             assert isinstance(widget, MCPToolItem)
             assert not widget._expanded
 
@@ -386,6 +407,8 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            # Step past the server header onto the tool row, then expand.
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
 
@@ -405,6 +428,7 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
 
@@ -432,6 +456,7 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
             assert "Parameters:" not in _widget_text(screen._tool_widgets[0])
@@ -460,6 +485,7 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
             assert "opts: any" in _widget_text(screen._tool_widgets[0])
@@ -488,6 +514,7 @@ class TestMCPViewerScreen:
             app.push_screen(screen)
             await pilot.pause()
 
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
             text = _widget_text(screen._tool_widgets[0])
@@ -509,15 +536,19 @@ class TestMCPViewerScreen:
                 ),
             ),
         ]
+        # Rows: [0: srv header, 1: big, 2: next]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=info)
             app.push_screen(screen)
             await pilot.pause()
 
-            await pilot.press("enter")  # expand "big"
+            # Step to big (row 1) and expand.
+            await pilot.press("down")
+            await pilot.press("enter")
             await pilot.pause()
-            assert screen._tool_widgets[0]._expanded
+            assert screen._selected_index == 1
+            assert screen._row_widgets[1]._expanded  # type: ignore[union-attr]
 
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             initial_offset = scroll.scroll_offset.y
@@ -525,16 +556,16 @@ class TestMCPViewerScreen:
             # First Down must scroll, not jump.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 0
+            assert screen._selected_index == 1
             assert scroll.scroll_offset.y > initial_offset
 
             # Many Downs eventually expose the bottom and the next press jumps.
             for _ in range(60):
-                if screen._selected_index == 1:
+                if screen._selected_index == 2:
                     break
                 await pilot.press("down")
                 await pilot.pause()
-            assert screen._selected_index == 1, (
+            assert screen._selected_index == 2, (
                 "expected to eventually jump to next tool"
             )
 
@@ -553,18 +584,19 @@ class TestMCPViewerScreen:
                 ),
             ),
         ]
+        # Rows: [0: srv header, 1: prev, 2: big]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=info)
             app.push_screen(screen)
             await pilot.pause()
 
-            # Select "big" and expand it; scroll past its top.
-            await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 1
+            # Walk to "big" (row 2) and expand it; scroll past its top.
+            await pilot.press("down")
+            await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
+            assert screen._selected_index == 2
 
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             scroll.scroll_relative(y=30, animate=False)
@@ -574,17 +606,17 @@ class TestMCPViewerScreen:
             # First Up must scroll back, not jump.
             await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 1
+            assert screen._selected_index == 2
             assert scroll.scroll_offset.y < offset_before
 
             # Many Ups eventually re-expose the top and the next press jumps
-            # to "prev". Cap the loop so a regression can't hang the suite.
+            # to "prev" (row 1). Cap the loop so a regression can't hang.
             for _ in range(60):
-                if screen._selected_index == 0:
+                if screen._selected_index == 1:
                     break
                 await pilot.press("up")
                 await pilot.pause()
-            assert screen._selected_index == 0
+            assert screen._selected_index == 1
 
     async def test_up_jump_pins_previous_tool_to_viewport_bottom(self) -> None:
         """After jumping up, the new tool's bottom is at the viewport bottom.
@@ -605,46 +637,52 @@ class TestMCPViewerScreen:
                 ),
             ),
         ]
+        # Rows: [0: srv header, 1: big, 2: next]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=info)
             app.push_screen(screen)
             await pilot.pause()
 
-            await pilot.press("enter")  # expand "big"
+            # Step to big (row 1) and expand.
+            await pilot.press("down")
+            await pilot.press("enter")
             await pilot.pause()
-            # Scroll all the way down through "big" until we jump to "next".
+            # Scroll all the way down through "big" until we jump to "next"
+            # (row 2).
             for _ in range(80):
                 await pilot.press("down")
                 await pilot.pause()
-                if screen._selected_index == 1:
+                if screen._selected_index == 2:
                     break
-            assert screen._selected_index == 1
+            assert screen._selected_index == 2
 
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             big = screen._tool_widgets[0]
 
-            # Press Up — should jump back to "big" and pin its bottom near
-            # the viewport bottom (within 1 row, allowing for layout-tick
-            # rounding).
+            # Press Up — should jump back to "big" (row 1) and pin its
+            # bottom near the viewport bottom (within 1 row, allowing for
+            # layout-tick rounding).
             await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 0
+            assert screen._selected_index == 1
             big_bottom = big.region.y + big.region.height
             viewport_bottom = scroll.region.y + scroll.region.height
             assert abs(big_bottom - viewport_bottom) <= 1
 
-            # The next Up must line-scroll inside "big", not jump again
-            # (there's nothing above index 0 anyway, but the assertion is
-            # really that scroll moved).
+            # The next Up must line-scroll inside "big" (row 1), not jump
+            # to the server header above. Smart-scroll keeps the cursor in
+            # place and just shifts the viewport.
             offset_before = scroll.scroll_offset.y
             await pilot.press("up")
             await pilot.pause()
-            assert screen._selected_index == 0
+            assert screen._selected_index == 1
             assert scroll.scroll_offset.y < offset_before
 
     async def test_no_wrap_around_at_list_ends(self) -> None:
-        """Down past the last tool, or Up past the first, are no-ops."""
+        """Down past the last row, or Up past the first, are no-ops."""
+        # Rows: [0: filesystem header, 1: read_file, 2: write_file,
+        #        3: remote-api header, 4: search]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=_sample_info())
@@ -652,25 +690,30 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert screen._selected_index == 0
-            # Up from the first tool stays put.
+            # Up from the first row (header) stays put.
             await pilot.press("up")
             await pilot.pause()
             assert screen._selected_index == 0
+            # Shift+Tab from a header with no prior tool is also a no-op.
             await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 0
 
-            # Tab to the last tool, then Down/Tab past stays put.
-            await pilot.press("tab")
-            await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 2
-            await pilot.press("tab")
-            await pilot.pause()
-            assert screen._selected_index == 2
+            # Walk to the last row (search, row 4) via Down.
+            for _ in range(4):
+                await pilot.press("down")
+                await pilot.pause()
+            assert screen._selected_index == 4
+
+            # Down past the last row stays put.
             await pilot.press("down")
             await pilot.pause()
-            assert screen._selected_index == 2
+            assert screen._selected_index == 4
+
+            # Tab past the last tool also stays put.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 4
 
     async def test_tab_always_jumps_even_inside_tall_tool(self) -> None:
         """Tab / Shift+Tab unconditionally jump, ignoring viewport visibility."""
@@ -685,23 +728,136 @@ class TestMCPViewerScreen:
                 ),
             ),
         ]
+        # Rows: [0: srv header, 1: big, 2: next]
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             screen = MCPViewerScreen(server_info=info)
             app.push_screen(screen)
             await pilot.pause()
 
-            await pilot.press("enter")  # expand "big" — bottom is far off-screen
+            # Step from header to big and expand it.
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            # One Tab must jump to "next" (row 2) even though Down would
+            # only scroll one row.
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 2
+
+            # Shift+Tab back to "big" (row 1).
+            await pilot.press("shift+tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+    async def test_server_header_rows_are_selectable(self) -> None:
+        """Up/Down lands the cursor on server header rows too (R10)."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
             await pilot.pause()
 
-            # One Tab must jump even though Down would only scroll one row.
+            # First row is the filesystem header.
+            assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
+            assert screen._row_widgets[0].has_class("mcp-header-selected")
+
+            # Step Down to the remote-api header (row 3 — past 2 tool rows).
+            for _ in range(3):
+                await pilot.press("down")
+                await pilot.pause()
+            assert screen._selected_index == 3
+            assert isinstance(screen._row_widgets[3], MCPServerHeaderItem)
+            assert screen._row_widgets[3].has_class("mcp-header-selected")
+            assert not screen._row_widgets[0].has_class("mcp-header-selected")
+
+    async def test_error_only_server_list_is_navigable(self) -> None:
+        """A list with no `ok` servers (only error/unauth) is still navigable.
+
+        Before R10 this was the original pain point — `_tool_widgets` was
+        empty by `MCPServerInfo` invariant, so the cursor had nowhere to go
+        and the user could not read or interact with the failed-server info.
+        """
+        info = [
+            MCPServerInfo(
+                name="broken-a",
+                transport="http",
+                status="error",
+                error="Connection refused",
+            ),
+            MCPServerInfo(
+                name="broken-b",
+                transport="sse",
+                status="error",
+                error="Timed out",
+            ),
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert len(screen._row_widgets) == 2
+            assert all(
+                isinstance(w, MCPServerHeaderItem) for w in screen._row_widgets
+            )
+
+            assert screen._selected_index == 0
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            # No wrap; no tools to Tab to.
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 1
             await pilot.press("tab")
             await pilot.pause()
             assert screen._selected_index == 1
 
-            await pilot.press("shift+tab")
+    async def test_enter_on_server_header_is_noop(self) -> None:
+        """Enter on a server header does not expand or crash."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
+            assert screen._selected_index == 0
+
+            # Press Enter on the header — must be a no-op and must not
+            # affect any tool's expansion state.
+            await pilot.press("enter")
             await pilot.pause()
             assert screen._selected_index == 0
+            assert all(not tool._expanded for tool in screen._tool_widgets)
+
+    async def test_ctrl_e_toggles_only_tool_rows(self) -> None:
+        """`Ctrl+E` expands tool rows but never affects server headers."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Initial cursor is on a header — Ctrl+E should still expand
+            # every visible tool, regardless of what is selected.
+            assert isinstance(screen._row_widgets[0], MCPServerHeaderItem)
+            await pilot.press("ctrl+e")
+            await pilot.pause()
+            assert all(tool._expanded for tool in screen._tool_widgets)
+
+            # Header rows do not have an _expanded attribute; verify they
+            # were left untouched (no AttributeError raised).
+            for w in screen._row_widgets:
+                if isinstance(w, MCPServerHeaderItem):
+                    assert not hasattr(w, "_expanded") or not getattr(
+                        w, "_expanded", False
+                    )
 
     async def test_filter_matches_only_tool_and_server_names(self) -> None:
         """Filter ignores descriptions, param names, and transport."""

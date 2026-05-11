@@ -2158,6 +2158,105 @@ class TestDroppedVideoPaste:
             assert len(app.tracker.get_videos()) == 1
 
 
+class TestPathPayloadDetectionGating:
+    """Single-keystroke edits should skip the blocking path-detection helpers.
+
+    `_is_dropped_path_payload` and `_apply_inline_dropped_path_replacement`
+    reach `Path.exists()` / `Path.is_file()` via
+    `deepagents_cli.input.parse_pasted_path_payload`, which are synchronous
+    stat syscalls on the event-loop thread. They are only meaningful when a
+    text change inserts more than one character (drag-drop / bracketed paste);
+    on normal typing they cost real wall-clock time for no possible match.
+    """
+
+    async def test_typing_does_not_invoke_path_detection(self) -> None:
+        """Char-by-char keypresses must not run path-detection helpers."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            detect_calls = 0
+            replace_calls = 0
+            original_detect = chat._is_dropped_path_payload
+            original_replace = chat._apply_inline_dropped_path_replacement
+
+            def counting_detect(text: str) -> bool:
+                nonlocal detect_calls
+                detect_calls += 1
+                return original_detect(text)
+
+            def counting_replace(text: str) -> bool:
+                nonlocal replace_calls
+                replace_calls += 1
+                return original_replace(text)
+
+            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+            chat._apply_inline_dropped_path_replacement = counting_replace  # type: ignore[method-assign]
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert detect_calls == 0
+            assert replace_calls == 0
+
+    async def test_bulk_text_change_invokes_path_detection(
+        self, tmp_path: Path
+    ) -> None:
+        """Multi-char Changed events (drag-drop / paste) must still detect paths."""
+        target = tmp_path / "dropped.txt"
+        target.write_text("payload")
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            detect_calls = 0
+            original_detect = chat._is_dropped_path_payload
+
+            def counting_detect(text: str) -> bool:
+                nonlocal detect_calls
+                detect_calls += 1
+                return original_detect(text)
+
+            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+
+            ta.text = str(target)
+            await pilot.pause()
+
+            assert detect_calls >= 1
+
+    async def test_replacement_edit_with_small_length_delta_detects_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Replacing selected text with a similar-length path should attach it."""
+        img_path = tmp_path / "similar-length.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="orange")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "x" * len(str(img_path))
+            await pilot.pause()
+
+            ta.text = str(img_path)
+            await pilot.pause()
+
+            assert ta.text == "[image 1] "
+            assert chat.mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+
 class TestBackslashEnterNewline:
     """Test that backslash followed quickly by enter inserts a newline.
 

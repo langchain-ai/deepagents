@@ -768,9 +768,7 @@ class MCPViewerScreen(ModalScreen[None]):
         tool_count = len(visible_tools)
         t_label = "tool" if tool_count == 1 else "tools"
         if server.status == "ok":
-            summary = (
-                f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
-            )
+            summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
             return Content.assemble(
                 (f"{indicator_glyph} ", indicator_color),
                 (server.name, "bold"),

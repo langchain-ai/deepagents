@@ -801,9 +801,7 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert len(screen._row_widgets) == 2
-            assert all(
-                isinstance(w, MCPServerHeaderItem) for w in screen._row_widgets
-            )
+            assert all(isinstance(w, MCPServerHeaderItem) for w in screen._row_widgets)
 
             assert screen._selected_index == 0
             await pilot.press("down")

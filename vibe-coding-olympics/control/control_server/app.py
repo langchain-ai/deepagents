@@ -388,6 +388,7 @@ _INDEX_HTML = """<!doctype html>
     box-sizing: border-box;
   }
   input:focus { outline: none; border-color: #555; }
+  #prompt::placeholder { color: #707070; opacity: 1; }
   .player-slot {
     width: 100%;
     min-height: 2.35rem;

@@ -53,7 +53,7 @@ _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:z-ai/glm-5.1",
     }
 )
-"""Curated frontier-tier models shown in the launch/init picker."""
+"""Curated frontier-tier models shown in the onboarding picker."""
 
 
 class ModelOption(Static):

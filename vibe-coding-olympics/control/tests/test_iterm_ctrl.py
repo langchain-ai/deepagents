@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from control_server import iterm_ctrl
 
@@ -97,12 +98,14 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
 
         server = await asyncio.start_unix_server(handle_client, path=str(path))
         try:
-            await iterm_ctrl._send_force_clear(path)
+            with patch("control_server.deepagents_config.clear_recent_model") as clear:
+                await iterm_ctrl._send_force_clear(path)
         finally:
             server.close()
             await server.wait_closed()
             tmp_dir.cleanup()
 
+        clear.assert_called_once_with()
         self.assertEqual(received[0]["kind"], "signal")
         self.assertEqual(received[0]["payload"], "force-clear")
         self.assertTrue(received[0]["correlation_id"].startswith("vibe-clear-"))
@@ -133,7 +136,8 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
         iterm_ctrl.matching_sessions = matching_sessions  # type: ignore[assignment]
         server = await asyncio.start_unix_server(handle_client, path=str(path))
         try:
-            cleared = await iterm_ctrl.clear_players(["3001"])
+            with patch("control_server.deepagents_config.clear_recent_model"):
+                cleared = await iterm_ctrl.clear_players(["3001"])
         finally:
             iterm_ctrl.matching_sessions = original
             server.close()

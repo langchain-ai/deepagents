@@ -15,6 +15,7 @@ from pathlib import Path
 
 import iterm2
 
+from control_server import deepagents_config
 from control_server.event_socket import send_socket_event
 
 SESSION_PREFIX = "vibe-player-"
@@ -112,6 +113,7 @@ async def _send_force_clear(socket_path: Path) -> None:
         TimeoutError: If the CLI does not acknowledge the event in time.
         RuntimeError: If the CLI returns a negative acknowledgement.
     """
+    deepagents_config.clear_recent_model()
     await _send_socket_event(
         socket_path,
         kind="signal",

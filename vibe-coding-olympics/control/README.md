@@ -131,6 +131,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_LAUNCH_RELAY` | `1` | Whether `play.sh` should launch the player relay tab |
 | `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
 | `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
+| `VIBE_DEEPAGENTS_CONFIG_PATH` | `~/.deepagents/config.toml` | Deep Agents CLI config mutated by player reset cleanup |
 
 ## Player readiness hook
 

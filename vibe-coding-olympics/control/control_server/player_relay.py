@@ -12,6 +12,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from control_server import deepagents_config
 from control_server.event_socket import send_socket_event
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ def create_app() -> FastAPI:
     ) -> dict[str, bool]:
         _authorize(authorization)
         socket_path = _event_socket_path()
+        if req.kind == "signal" and req.payload == "force-clear":
+            deepagents_config.clear_recent_model()
         try:
             await send_socket_event(
                 socket_path,

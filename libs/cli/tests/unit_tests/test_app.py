@@ -30,6 +30,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_cli._version import CHANGELOG_URL
 from deepagents_cli.app import (
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
@@ -37,6 +38,7 @@ from deepagents_cli.app import (
     ExternalInput,
     QueuedMessage,
     TextualSessionState,
+    _build_whats_new_message,
 )
 from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -57,6 +59,22 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
         await asyncio.sleep(0.01)
     msg = f"Timed out waiting for branch {branch!r}"
     raise AssertionError(msg)
+
+
+class TestWhatsNewMessage:
+    """Tests for the post-upgrade banner content."""
+
+    def test_changelog_url_is_clickable(self) -> None:
+        """The changelog URL should be carried as a Textual link span."""
+        content = _build_whats_new_message("Updated to v1.2.3")
+
+        assert content.plain == f"Updated to v1.2.3\nSee what's new: {CHANGELOG_URL}"
+        links = [
+            link
+            for span in content.spans
+            if (link := getattr(span.style, "link", None))
+        ]
+        assert links == [CHANGELOG_URL]
 
 
 class TestInitialPromptOnMount:

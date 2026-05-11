@@ -1001,29 +1001,41 @@ async def run_textual_cli_async(
     # bar can show the model on first paint. The expensive create_model()
     # (~560ms) is deferred to a background worker.
 
+    defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()
     except ModelConfigError as e:
-        from rich.markup import escape
+        if not str(e).startswith("No credentials configured"):
+            from rich.markup import escape
 
-        from deepagents_cli.config import console
+            from deepagents_cli.config import console
 
-        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
-        return AppResult(return_code=1, thread_id=None)
+            console.print(
+                f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False
+            )
+            return AppResult(return_code=1, thread_id=None)
+        resolved_spec = ""
+        defer_server_start = True
 
-    parsed = ModelSpec.try_parse(resolved_spec)
-    if parsed:
-        settings.model_provider = parsed.provider
-        settings.model_name = parsed.model
+    if resolved_spec:
+        parsed = ModelSpec.try_parse(resolved_spec)
+        if parsed:
+            settings.model_provider = parsed.provider
+            settings.model_name = parsed.model
+        else:
+            settings.model_name = resolved_spec
+            settings.model_provider = detect_provider(resolved_spec) or ""
     else:
-        settings.model_name = resolved_spec
-        settings.model_provider = detect_provider(resolved_spec) or ""
+        settings.model_provider = ""
+        settings.model_name = ""
 
-    model_kwargs: dict[str, Any] = {
-        "model_spec": model_name,
-        "extra_kwargs": model_params,
-        "profile_overrides": profile_override,
-    }
+    model_kwargs: dict[str, Any] | None = None
+    if not defer_server_start:
+        model_kwargs = {
+            "model_spec": model_name or resolved_spec,
+            "extra_kwargs": model_params,
+            "profile_overrides": profile_override,
+        }
 
     # Build kwargs for deferred server startup (runs inside the TUI).
     # Never pass auto_approve to the server — the interactive server must
@@ -1032,7 +1044,7 @@ async def run_textual_cli_async(
     # session_state.auto_approve in textual_adapter.py.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
-        "model_name": model_name,
+        "model_name": model_name or resolved_spec or None,
         "model_params": model_params,
         "sandbox_type": sandbox_type,
         "sandbox_id": sandbox_id,
@@ -1068,6 +1080,7 @@ async def run_textual_cli_async(
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
+            defer_server_start=defer_server_start,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)

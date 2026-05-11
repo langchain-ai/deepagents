@@ -1852,7 +1852,11 @@ def _get_default_model_spec() -> str:
     Raises:
         ModelConfigError: If no credentials are configured.
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+    from deepagents_cli.model_config import (
+        ModelConfig,
+        ModelConfigError,
+        get_provider_auth_status,
+    )
 
     config = ModelConfig.load()
     if config.default_model:
@@ -1861,12 +1865,11 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
-    s = _get_settings()
-    if s.has_openai:
+    if get_provider_auth_status("openai").as_legacy_bool() is True:
         return "openai:gpt-5.5"
-    if s.has_anthropic:
+    if get_provider_auth_status("anthropic").as_legacy_bool() is True:
         return "anthropic:claude-opus-4-7"
-    if s.has_google:
+    if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 
     msg = (

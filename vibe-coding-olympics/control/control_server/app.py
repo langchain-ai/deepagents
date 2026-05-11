@@ -586,7 +586,6 @@ _INDEX_HTML = """<!doctype html>
   <button class="secondary" id="btn-list">List</button>
   <button id="btn-times-up">Times up all</button>
   <button class="secondary" id="btn-clear">Reset round all</button>
-  <div class="muted">Connected players: <span id="connected-players">none</span></div>
   <div class="muted">Ready players: <span id="ready-players">none</span></div>
 </section>
 
@@ -714,15 +713,18 @@ function orderedPlayerEntries(ready, connected) {
   }
   return entries.slice(0, 2);
 }
+function playerSummary(entries) {
+  const labels = entries.map((entry) => (
+    entry.name ? `${entry.name} (${entry.port})` : `Connected (${entry.port})`
+  ));
+  return labels.length ? labels.join(', ') : 'none';
+}
 function renderReady(ready, modelReady, connected) {
   const entries = orderedPlayerEntries(ready, connected);
   const names = entries.map((entry) => entry.name).filter(Boolean);
   const modelReadyPorts = new Set(modelReady || []);
   const connectedPorts = new Set(connected || []);
-  document.getElementById('connected-players').textContent =
-    connectedPorts.size ? Array.from(connectedPorts).join(', ') : 'none';
-  document.getElementById('ready-players').textContent =
-    names.length ? names.join(', ') : 'none';
+  document.getElementById('ready-players').textContent = playerSummary(entries);
   ['c1', 'c2'].forEach((id, index) => {
     const slot = document.getElementById(id);
     const entry = entries[index];

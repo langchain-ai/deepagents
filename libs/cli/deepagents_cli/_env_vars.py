@@ -47,6 +47,11 @@ as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.""
 DEBUG_FILE = "DEEPAGENTS_CLI_DEBUG_FILE"
 """Path for the debug log file (default: `/tmp/deepagents_debug.log`)."""
 
+DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CLI_DEBUG_MCP_PROJECT_TRUST"
+"""Force the project MCP approval prompt with sample data for manual UI testing.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled."""
+
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CLI_DEBUG_NOTIFICATIONS"
 """Inject sample missing-dependency notifications at launch so the notification
 center UI can be exercised without waiting for real conditions. Does not

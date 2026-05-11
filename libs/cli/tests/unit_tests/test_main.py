@@ -926,6 +926,47 @@ class TestThreadsListCwdArgparse:
 class TestCheckMcpProjectTrustPrompt:
     """The project MCP approval prompt should surface a docs link."""
 
+    def test_debug_env_forces_prompt_without_project_config(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The debug env var shows a sample prompt without requiring config files."""
+        from deepagents_cli._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_cli.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+                return_value=True,
+            ),
+            patch("deepagents_cli.mcp_trust.trust_project_mcp") as trust_project_mcp,
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        trust_project_mcp.assert_not_called()
+        captured = capsys.readouterr()
+        assert "debug-project-mcp" in captured.err
+        assert "Learn more:" in captured.err
+
     def test_prompt_includes_docs_link(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:

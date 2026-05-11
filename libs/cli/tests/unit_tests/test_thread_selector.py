@@ -737,6 +737,104 @@ class TestThreadSelectorPageNavigation:
                 assert screen._selected_index == 0
 
 
+class _ThreadSelectorScopedTestApp(App):
+    """Test app that mounts the picker with an explicit `filter_cwd`."""
+
+    def __init__(self, filter_cwd: str | None) -> None:
+        super().__init__()
+        self._filter_cwd = filter_cwd
+        self.result: str | None = None
+        self.dismissed = False
+
+    def compose(self) -> ComposeResult:
+        yield Container(id="main")
+
+    def show_selector(self) -> None:
+        """Mount the selector with a caller-supplied cwd filter."""
+
+        def handle_result(result: str | None) -> None:
+            self.result = result
+            self.dismissed = True
+
+        screen = ThreadSelectorScreen(current_thread=None, filter_cwd=self._filter_cwd)
+        self.push_screen(screen, handle_result)
+
+
+class TestThreadSelectorScopeSelect:
+    """Tests for the cwd scope `Select` in the Options panel."""
+
+    async def test_select_toggle_requeries_with_new_cwd(self) -> None:
+        """Switching the scope dropdown reloads threads with the new cwd kwarg."""
+        starting_cwd = "/home/user/project-a"
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+
+        with (
+            patch("deepagents_cli.sessions.list_threads", mock_list),
+            _patch_columns(),
+            patch(
+                "deepagents_cli.widgets.thread_selector._safe_cwd_string",
+                return_value=starting_cwd,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=starting_cwd)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._filter_cwd == starting_cwd
+
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                # Sanity: initial query carried the cwd filter.
+                assert mock_list.await_count >= 1
+                initial_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") == starting_cwd for kw in initial_kwargs), (
+                    f"expected starting cwd, got {initial_kwargs}"
+                )
+
+                mock_list.reset_mock()
+                scope_select.value = "all"
+                await pilot.pause()
+                await pilot.pause()
+                assert screen._filter_cwd is None
+                toggled_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") is None for kw in toggled_kwargs), (
+                    f"expected re-query with cwd=None, got {toggled_kwargs}"
+                )
+
+                mock_list.reset_mock()
+                scope_select.value = "cwd"
+                await pilot.pause()
+                await pilot.pause()
+                assert screen._filter_cwd == starting_cwd
+                back_kwargs = [c.kwargs for c in mock_list.await_args_list]
+                assert any(kw.get("cwd") == starting_cwd for kw in back_kwargs), (
+                    f"expected re-query with cwd={starting_cwd!r}, got {back_kwargs}"
+                )
+
+    async def test_select_same_value_does_not_requery(self) -> None:
+        """Setting the dropdown to its current value is a no-op."""
+        mock_list = AsyncMock(return_value=MOCK_THREADS)
+        with (
+            patch("deepagents_cli.sessions.list_threads", mock_list),
+            _patch_columns(),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                scope_select = screen.query_one("#thread-scope-select", Select)
+                mock_list.reset_mock()
+                # Re-setting to "all" (the active value) must not re-query.
+                scope_select.value = "all"
+                await pilot.pause()
+                mock_list.assert_not_awaited()
+
+
 class TestThreadSelectorClickHandling:
     """Tests for mouse click handling."""
 

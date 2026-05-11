@@ -1847,14 +1847,16 @@ def _get_default_model_spec() -> str:
     3. Auto-detection based on available API credentials.
 
     Returns:
-        Model specification in provider:model format.
+        Model specification in `provider:model` format.
 
     Raises:
-        ModelConfigError: If no credentials are configured.
+        NoCredentialsConfiguredError: If no credentials are configured for any
+            of the auto-detectable providers. Callers may catch this to defer
+            startup and prompt for credentials interactively.
     """
     from deepagents_cli.model_config import (
         ModelConfig,
-        ModelConfigError,
+        NoCredentialsConfiguredError,
         get_provider_auth_status,
     )
 
@@ -1865,6 +1867,13 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
+    # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
+    # to `as_legacy_bool() -> None`). For the three explicit-credential
+    # providers below, an UNKNOWN result means we cannot prove auth works, so
+    # we fall through rather than pick an unverifiable default. If an
+    # implicit-auth provider (e.g., Vertex ADC) is added to this fallback
+    # list, switch to checking `state` against the relevant
+    # `ProviderAuthState` members directly.
     if get_provider_auth_status("openai").as_legacy_bool() is True:
         return "openai:gpt-5.5"
     if get_provider_auth_status("anthropic").as_legacy_bool() is True:
@@ -1876,7 +1885,7 @@ def _get_default_model_spec() -> str:
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
     )
-    raise ModelConfigError(msg)
+    raise NoCredentialsConfiguredError(msg)
 
 
 _OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"

@@ -8480,13 +8480,16 @@ class DeepAgentsApp(App):
             return False
 
         from deepagents_cli.config import _get_default_model_spec
-        from deepagents_cli.model_config import ModelConfigError
+        from deepagents_cli.model_config import (
+            ModelConfigError,
+            NoCredentialsConfiguredError,
+        )
 
         try:
             model_spec = _get_default_model_spec()
+        except NoCredentialsConfiguredError:
+            return False
         except ModelConfigError as exc:
-            if str(exc).startswith("No credentials configured"):
-                return False
             await self._mount_message(ErrorMessage(str(exc)))
             return False
 

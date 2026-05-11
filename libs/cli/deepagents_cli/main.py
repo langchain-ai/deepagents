@@ -84,19 +84,33 @@ def _resolve_agent_arg(args: argparse.Namespace) -> str:
 def _normalize_cwd_filter(cwd: str | None) -> str | None:
     """Normalize the `threads list --cwd` filter for metadata matching.
 
+    Storage uses `str(Path.cwd())` (absolute, no symlink resolution — see
+    `build_run_metadata`). We mirror that here with lexical normalization
+    rather than `.resolve()` so a user invoking from a symlinked path doesn't
+    get an empty result set due to symlink normalization.
+
     Args:
         cwd: Parsed `--cwd` value. An empty string means the flag was passed
             without a value and should use the current working directory.
 
     Returns:
         Absolute path string for filtering, or `None` when no filter was
-        requested.
+        requested. Returns `None` if the current working directory cannot
+        be determined (bare `--cwd` only).
     """
     if cwd is None:
         return None
     if cwd == "":  # noqa: PLC1901
-        return str(Path.cwd())
-    return str(Path(cwd).expanduser().resolve())
+        try:
+            return str(Path.cwd())
+        except OSError:
+            logger.warning(
+                "Could not determine working directory for --cwd; "
+                "no cwd filter will be applied",
+                exc_info=True,
+            )
+            return None
+    return os.path.normpath(str(Path(cwd).expanduser().absolute()))
 
 
 def _recent_agent_is_valid(name: str) -> bool:
@@ -1022,7 +1036,11 @@ async def run_textual_cli_async(
         detect_provider,
         settings,
     )
-    from deepagents_cli.model_config import ModelConfigError, ModelSpec
+    from deepagents_cli.model_config import (
+        ModelConfigError,
+        ModelSpec,
+        NoCredentialsConfiguredError,
+    )
     from deepagents_cli.onboarding import should_run_onboarding
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
@@ -1032,18 +1050,16 @@ async def run_textual_cli_async(
     defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()
-    except ModelConfigError as e:
-        if not str(e).startswith("No credentials configured"):
-            from rich.markup import escape
-
-            from deepagents_cli.config import console
-
-            console.print(
-                f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False
-            )
-            return AppResult(return_code=1, thread_id=None)
+    except NoCredentialsConfiguredError:
         resolved_spec = ""
         defer_server_start = True
+    except ModelConfigError as e:
+        from rich.markup import escape
+
+        from deepagents_cli.config import console
+
+        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
+        return AppResult(return_code=1, thread_id=None)
 
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)
@@ -1954,7 +1970,24 @@ def cli_main() -> None:
             # "ls" is an argparse alias for "list" — argparse stores the
             # alias as-is in the namespace, so we must match both values.
             if args.threads_command in {"list", "ls"}:
-                cwd_filter = _normalize_cwd_filter(getattr(args, "cwd", None))
+                raw_cwd = getattr(args, "cwd", None)
+                cwd_filter = _normalize_cwd_filter(raw_cwd)
+                # Warn (but still query) when the user passed an explicit
+                # `--cwd <path>` that does not exist on disk — otherwise a
+                # typo would silently return "No threads found" with no hint.
+                # Skip the check for the bare-flag (empty string) form, where
+                # the path was generated from `Path.cwd()` and is known to
+                # exist.
+                if (
+                    raw_cwd not in {None, ""}
+                    and cwd_filter is not None
+                    and not Path(cwd_filter).exists()
+                ):
+                    print(  # noqa: T201
+                        f"Warning: --cwd path {cwd_filter!r} does not exist; "
+                        "filtering by stored metadata anyway.",
+                        file=sys.stderr,
+                    )
                 asyncio.run(
                     list_threads_command(
                         agent_name=getattr(args, "agent", None),

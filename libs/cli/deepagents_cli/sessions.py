@@ -281,8 +281,11 @@ async def list_threads(
         include_message_count: Whether to include message counts.
         sort_by: Sort field — `"updated"` or `"created"`.
         branch: Optional filter by git branch name.
-        cwd: Optional filter by working directory. Threads whose stored
-            `cwd` metadata matches this path are returned.
+        cwd: Optional filter by working directory. Only threads whose stored
+            `cwd` metadata equals this path are returned. Matching is an
+            exact string comparison — no path normalization, symlink
+            resolution, or prefix matching. Threads without a stored `cwd`
+            (older rows) are excluded.
 
     Returns:
         List of `ThreadInfo` dicts with `thread_id`, `agent_name`,
@@ -1094,8 +1097,10 @@ async def list_threads_command(
 
             When `None`, reads from config (`~/.deepagents/config.toml`).
         branch: Only show threads from this git branch.
-        cwd: Only show threads created in this working directory. When `None`,
-            threads from all directories are shown.
+        cwd: Only show threads whose stored `cwd` metadata equals this path
+            (exact string match — no normalization or prefix matching). When
+            `None`, no cwd filter is applied. Threads without a stored `cwd`
+            (older rows) are excluded when this is set.
         verbose: When `True`, show all columns (branch, created, prompt).
         relative: Show timestamps as relative time (e.g., '5m ago').
 
@@ -1157,6 +1162,26 @@ async def list_threads_command(
             )
         else:
             console.print("[yellow]No threads found.[/yellow]")
+        if cwd:
+            # Older threads predating cwd-metadata storage are silently
+            # filtered out by the `json_extract` equality match. Tell the
+            # user explicitly when unfiltered rows exist so they don't think
+            # their history is gone.
+            unfiltered = await list_threads(
+                agent_name,
+                limit=limit,
+                include_message_count=False,
+                sort_by=sort_by,
+                branch=branch,
+            )
+            legacy_count = sum(1 for t in unfiltered if not t.get("cwd"))
+            if legacy_count:
+                console.print(
+                    f"[dim]{legacy_count} older thread"
+                    f"{'s have' if legacy_count != 1 else ' has'} "
+                    "no cwd metadata; run without --cwd to see "
+                    f"{'them' if legacy_count != 1 else 'it'}.[/dim]"
+                )
         console.print("[dim]Start a conversation with: deepagents[/dim]")
         return
 

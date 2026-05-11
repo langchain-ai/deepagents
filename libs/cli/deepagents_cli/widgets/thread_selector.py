@@ -125,6 +125,27 @@ _CWD_DEFAULT = _Sentinel()
 Distinguishes "caller did not specify" (use the current working directory) from
 an explicit `None` (start with no cwd filter)."""
 
+
+def _safe_cwd_string() -> str | None:
+    """Return `str(Path.cwd())` or `None` if the working directory is unreadable.
+
+    `Path.cwd()` raises `OSError` (typically `FileNotFoundError`) when the
+    process's working directory has been deleted or is otherwise inaccessible.
+    Treating that as "no cwd filter" matches the storage convention used by
+    `build_run_metadata` and lets the picker degrade to "All directories"
+    instead of crashing the Textual event loop.
+    """
+    try:
+        return str(Path.cwd())
+    except OSError:
+        logger.warning(
+            "Could not determine working directory for thread picker; "
+            "falling back to All directories",
+            exc_info=True,
+        )
+        return None
+
+
 _FormatFns = tuple[
     "Callable[[str | None], str]",  # format_path
     "Callable[[str | None], str]",  # format_relative_timestamp
@@ -752,7 +773,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._current_thread = current_thread
         self._thread_limit = thread_limit
         if isinstance(filter_cwd, _Sentinel):
-            self._filter_cwd: str | None = str(Path.cwd())
+            self._filter_cwd: str | None = _safe_cwd_string()
         else:
             self._filter_cwd = filter_cwd
         initial = list(initial_threads) if initial_threads is not None else []
@@ -1485,10 +1506,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             logger.exception("Failed to load threads for thread selector")
             await self._show_mount_error(str(exc))
             return
-        except Exception as exc:
-            logger.exception("Unexpected error loading threads for thread selector")
-            await self._show_mount_error(str(exc))
-            return
 
         apply_cached_thread_message_counts(self._threads)
         apply_cached_thread_initial_prompts(self._threads)
@@ -1946,7 +1963,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
 
-        new_cwd = str(Path.cwd()) if event.value == _SCOPE_VALUE_CWD else None
+        if event.value == _SCOPE_VALUE_CWD:
+            new_cwd = _safe_cwd_string()
+            if new_cwd is None:
+                # Working directory is gone or unreadable. Tell the user
+                # rather than silently re-querying with no filter.
+                self.app.notify(
+                    "Could not determine the current working directory; "
+                    "showing all directories instead.",
+                    severity="warning",
+                    markup=False,
+                )
+        else:
+            new_cwd = None
         if new_cwd == self._filter_cwd:
             return
         self._filter_cwd = new_cwd

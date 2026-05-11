@@ -747,7 +747,7 @@ class TestRunTextualCliAsyncModelConfigError:
 
     async def test_launches_tui_on_no_credentials(self) -> None:
         """Missing default credentials should be recoverable inside the TUI."""
-        from deepagents_cli.model_config import ModelConfigError
+        from deepagents_cli.model_config import NoCredentialsConfiguredError
 
         app_result = AppResult(return_code=0, thread_id="t-1")
         captured_kwargs: dict[str, Any] = {}
@@ -760,7 +760,7 @@ class TestRunTextualCliAsyncModelConfigError:
         with (
             patch(
                 "deepagents_cli.config._get_default_model_spec",
-                side_effect=ModelConfigError("No credentials configured"),
+                side_effect=NoCredentialsConfiguredError("No credentials configured"),
             ),
             patch("deepagents_cli.app.run_textual_app", new=_stub),
         ):
@@ -770,6 +770,36 @@ class TestRunTextualCliAsyncModelConfigError:
         assert captured_kwargs["defer_server_start"] is True
         assert captured_kwargs["model_kwargs"] is None
         assert captured_kwargs["server_kwargs"]["model_name"] is None
+
+    async def test_recovery_does_not_rely_on_message_text(self) -> None:
+        """`NoCredentialsConfiguredError` triggers deferred start.
+
+        Regardless of the exception message text.
+        """
+        from deepagents_cli.model_config import NoCredentialsConfiguredError
+
+        app_result = AppResult(return_code=0, thread_id="t-2")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        # Reword the message to prove we no longer string-match on prefix.
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=NoCredentialsConfiguredError(
+                    "Setup required: please run /model"
+                ),
+            ),
+            patch("deepagents_cli.app.run_textual_app", new=_stub),
+        ):
+            result = await run_textual_cli_async("agent")
+
+        assert result == app_result
+        assert captured_kwargs["defer_server_start"] is True
 
     async def test_returns_error_code_on_other_model_config_error(self) -> None:
         """Non-recoverable default model errors should still block startup."""
@@ -801,3 +831,93 @@ class TestRunTextualCliAsyncModelConfigError:
             result = await run_textual_cli_async("agent", model_name="openai:gpt-4o")
 
         assert result.return_code == 0
+
+
+class TestNormalizeCwdFilter:
+    """Tests for `_normalize_cwd_filter`."""
+
+    def test_none_returns_none(self) -> None:
+        """No flag → no filter."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        assert _normalize_cwd_filter(None) is None
+
+    def test_empty_string_uses_current_cwd(self) -> None:
+        """Bare `--cwd` (empty-string sentinel) resolves to current working dir."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        assert _normalize_cwd_filter("") == str(Path.cwd())
+
+    def test_explicit_path_is_made_absolute(self) -> None:
+        """A user-supplied path is expanduser'd and made absolute."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        result = _normalize_cwd_filter("~/foo/bar")
+        assert result is not None
+        assert result == str(Path("~/foo/bar").expanduser().absolute())
+        assert Path(result).is_absolute()
+
+    def test_explicit_relative_parent_path_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit relative paths collapse `..` without resolving symlinks."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        project = tmp_path / "project"
+        subdir = project / "subdir"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+
+        assert _normalize_cwd_filter("..") == str(project)
+
+    def test_explicit_path_does_not_resolve_symlinks(self, tmp_path: Path) -> None:
+        """Lexical normalization (not `.resolve()`) matches storage convention."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "via_link"
+        try:
+            link.symlink_to(real)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported on this platform")
+
+        result = _normalize_cwd_filter(str(link))
+        assert result == str(link.absolute())
+        # Sanity: resolve() would have collapsed the symlink to `real`.
+        assert result != str(link.resolve())
+
+    def test_cwd_unreadable_returns_none(self) -> None:
+        """A deleted/unreadable cwd degrades to no filter rather than crashing."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        with patch(
+            "deepagents_cli.main.Path.cwd",
+            side_effect=FileNotFoundError("gone"),
+        ):
+            assert _normalize_cwd_filter("") is None
+
+
+class TestThreadsListCwdArgparse:
+    """Tests for `--cwd` argparse semantics on `deepagents threads list`."""
+
+    def _parse(self, argv: list[str]) -> Any:  # noqa: ANN401
+        from deepagents_cli.main import parse_args
+
+        with patch("sys.argv", ["deepagents", *argv]):
+            return parse_args()
+
+    def test_cwd_omitted_yields_none(self) -> None:
+        """Omitting --cwd leaves the namespace value at `None`."""
+        ns = self._parse(["threads", "list"])
+        assert getattr(ns, "cwd", "MISSING") is None
+
+    def test_cwd_alone_yields_empty_string_const(self) -> None:
+        """Bare `--cwd` stores the `const=""` sentinel for downstream resolution."""
+        ns = self._parse(["threads", "list", "--cwd"])
+        assert ns.cwd == ""
+
+    def test_cwd_with_value_stores_value(self) -> None:
+        """`--cwd /some/path` stores the literal value as-is."""
+        ns = self._parse(["threads", "list", "--cwd", "/some/path"])
+        assert ns.cwd == "/some/path"

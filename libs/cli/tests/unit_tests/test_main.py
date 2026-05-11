@@ -743,16 +743,42 @@ class TestBuildMissingToolNotification:
 
 
 class TestRunTextualCliAsyncModelConfigError:
-    """Verify ModelConfigError is caught cleanly before launching the TUI."""
+    """Verify default model config errors are handled before launching the TUI."""
 
-    async def test_returns_error_code_on_no_credentials(self) -> None:
-        """ModelConfigError from _get_default_model_spec gives return code 1."""
+    async def test_launches_tui_on_no_credentials(self) -> None:
+        """Missing default credentials should be recoverable inside the TUI."""
         from deepagents_cli.model_config import ModelConfigError
+
+        app_result = AppResult(return_code=0, thread_id="t-1")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
 
         with (
             patch(
                 "deepagents_cli.config._get_default_model_spec",
                 side_effect=ModelConfigError("No credentials configured"),
+            ),
+            patch("deepagents_cli.app.run_textual_app", new=_stub),
+        ):
+            result = await run_textual_cli_async("agent")
+
+        assert result == app_result
+        assert captured_kwargs["defer_server_start"] is True
+        assert captured_kwargs["model_kwargs"] is None
+        assert captured_kwargs["server_kwargs"]["model_name"] is None
+
+    async def test_returns_error_code_on_other_model_config_error(self) -> None:
+        """Non-recoverable default model errors should still block startup."""
+        from deepagents_cli.model_config import ModelConfigError
+
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=ModelConfigError("Invalid model config"),
             ),
             patch("deepagents_cli.config._get_console") as mock_console_fn,
         ):

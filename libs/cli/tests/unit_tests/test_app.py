@@ -30,6 +30,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_cli._version import CHANGELOG_URL
 from deepagents_cli.app import (
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
@@ -37,6 +38,7 @@ from deepagents_cli.app import (
     ExternalInput,
     QueuedMessage,
     TextualSessionState,
+    _build_whats_new_message,
 )
 from deepagents_cli.event_bus import ExternalEvent
 from deepagents_cli.widgets.chat_input import ChatInput
@@ -57,6 +59,22 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
         await asyncio.sleep(0.01)
     msg = f"Timed out waiting for branch {branch!r}"
     raise AssertionError(msg)
+
+
+class TestWhatsNewMessage:
+    """Tests for the post-upgrade banner content."""
+
+    def test_changelog_url_is_clickable(self) -> None:
+        """The changelog URL should be carried as a Textual link span."""
+        content = _build_whats_new_message("Updated to v1.2.3")
+
+        assert content.plain == f"Updated to v1.2.3\nSee what's new: {CHANGELOG_URL}"
+        links = [
+            link
+            for span in content.spans
+            if (link := getattr(span.style, "link", None))
+        ]
+        assert links == [CHANGELOG_URL]
 
 
 class TestInitialPromptOnMount:
@@ -147,6 +165,72 @@ class TestInitialPromptOnMount:
             await asyncio.sleep(0)
 
         assert submitted == [("code-review", "review this diff", None)]
+
+    async def test_deferred_start_preserves_initial_prompt_until_server_ready(
+        self,
+    ) -> None:
+        """No-credentials startup should not consume `-m` before connect."""
+        app = DeepAgentsApp(
+            thread_id="new-thread-123",
+            initial_prompt="hello after auth",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+        submitted: list[str] = []
+
+        async def capture(msg: str) -> None:  # noqa: RUF029
+            submitted.append(msg)
+
+        app._handle_user_message = capture  # type: ignore[assignment]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            assert submitted == []
+            assert app._has_initial_submission()
+
+            app._server_startup_deferred = False
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await pilot.pause()
+
+        assert submitted == ["hello after auth"]
+
+    async def test_deferred_start_mounts_auth_guidance(self) -> None:
+        """First launch without credentials should show next-step guidance."""
+        app = DeepAgentsApp(
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+        messages: list[AppMessage] = []
+
+        async def capture(message: AppMessage) -> None:  # noqa: RUF029
+            messages.append(message)
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args, kwargs
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app._mount_message = capture  # type: ignore[assignment]
+        app.run_worker = fake_run_worker  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.update_check.is_update_check_enabled",
+            return_value=False,
+        ):
+            await app._post_paint_init()
+
+        assert len(messages) == 1
+        assert "/model" in str(messages[0].content)
+        assert "credentials" in str(messages[0].content)
 
 
 class TestStartupSequence:

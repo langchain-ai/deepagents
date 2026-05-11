@@ -560,7 +560,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "requests", specifier = ">=2.0.0,<3.0.0" },
     { name = "rich", specifier = ">=14.2.0,<16.0.0" },
@@ -682,7 +682,7 @@ test = [
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-socket", specifier = ">=0.7.0" },
     { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "ruff", specifier = ">=0.8.0" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]

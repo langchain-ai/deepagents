@@ -30,6 +30,8 @@ _ALLOWED_TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".csv"}
 _DEFAULT_SNAPSHOT_NAME = "deepagents-topic-wiki"
 _DEFAULT_DOCKER_IMAGE = "python:3"
 _DEFAULT_FS_CAPACITY = 16 * 1024**3
+_LANGSMITH_BINARY_CANDIDATES = ("langsmith", "langsmith-cli")
+_HUB_COMPATIBLE_BINARIES: set[str] = set()
 _BASE_SYSTEM_PROMPT = """You are an expert research synthesizer building a long-lived topic knowledge base.
 
 Mission:
@@ -172,12 +174,58 @@ def parse_config(argv: Sequence[str] | None = None) -> RunnerConfig:
     )
 
 
+def _resolve_langsmith_binary() -> str:
+    """Find an installed LangSmith CLI binary."""
+    for candidate in _LANGSMITH_BINARY_CANDIDATES:
+        binary = shutil.which(candidate)
+        if binary:
+            return binary
+    msg = (
+        "LangSmith CLI was not found on PATH. Install a LangSmith CLI binary (`langsmith` or "
+        "`langsmith-cli`) before running topic wiki sync."
+    )
+    raise TopicWikiError(msg)
+
+
+def _ensure_hub_command_support(binary: str) -> None:
+    """Validate that an installed LangSmith CLI provides `hub` commands."""
+    if binary in _HUB_COMPATIBLE_BINARIES:
+        return
+
+    check = subprocess.run(  # noqa: S603
+        [binary, "hub", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check.returncode == 0:
+        _HUB_COMPATIBLE_BINARIES.add(binary)
+        return
+
+    output = (check.stderr or check.stdout).strip()
+    cmd = Path(binary).name
+    msg = (
+        f"`{cmd}` is installed but does not support `hub` commands required by this example. "
+        f"Verify with `{cmd} hub --help` and install a hub-capable LangSmith CLI.\n{output}"
+    )
+    raise TopicWikiError(msg)
+
+
+def _ensure_mode_prerequisites(mode: Mode) -> None:
+    """Validate mode-specific environment prerequisites."""
+    if mode in {"ingest", "query", "lint"} and not os.getenv("LANGSMITH_API_KEY"):
+        msg = (
+            "LANGSMITH_API_KEY is required for ingest/query/lint modes because they run agent "
+            "operations inside `langsmith.sandbox`."
+        )
+        raise TopicWikiError(msg)
+
+
 def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """Execute a langsmith CLI command and raise on failures."""
-    binary = shutil.which("langsmith")
-    if not binary:
-        msg = "`langsmith` CLI was not found on PATH. Install it before running topic wiki sync."
-        raise TopicWikiError(msg)
+    binary = _resolve_langsmith_binary()
+    _ensure_hub_command_support(binary)
+    cmd = Path(binary).name
 
     result = subprocess.run([binary, *args], capture_output=True, text=True, check=False)  # noqa: S603
     if result.returncode == 0:
@@ -187,11 +235,11 @@ def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     if "LANGSMITH_API_KEY" in output or "unauthorized" in output.lower():
         msg = (
             "LangSmith authentication failed. Set LANGSMITH_API_KEY and confirm CLI auth. "
-            f"Command: langsmith {' '.join(args)}\n{output}"
+            f"Command: {cmd} {' '.join(args)}\n{output}"
         )
         raise TopicWikiError(msg)
 
-    msg = f"langsmith {' '.join(args)} failed with exit code {result.returncode}:\n{output}"
+    msg = f"{cmd} {' '.join(args)} failed with exit code {result.returncode}:\n{output}"
     raise TopicWikiError(msg)
 
 
@@ -710,6 +758,7 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
 
 def run(config: RunnerConfig, deps: CliDeps | None = None) -> RunResult:
     """Execute the requested topic wiki workflow."""
+    _ensure_mode_prerequisites(config.mode)
     resolved_deps = deps or CliDeps(
         run_langsmith_cli=_run_langsmith_cli,
         run_agent_mode=_run_agent_mode,

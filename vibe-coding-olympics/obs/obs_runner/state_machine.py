@@ -16,6 +16,7 @@ Intentionally hand-rolled: a `Phase` enum, an `Event` enum, and a
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -142,6 +143,18 @@ class StateMachine:
             self._enter_idle()
         return self._snapshot
 
+    def _contestants_from_payload(self, payload: dict[str, Any]) -> list[str]:
+        """Return validated contestant names from an event payload."""
+        raw = payload.get("contestants")
+        if not isinstance(raw, list):
+            msg = "payload must include a `contestants` list"
+            raise InvalidTransitionError(msg)
+        contestants = [name.strip() for name in raw if isinstance(name, str)]
+        if not contestants:
+            msg = "payload `contestants` must include at least one name"
+            raise InvalidTransitionError(msg)
+        return contestants
+
     def _write_contestant_slots(
         self, contestants: list[str], scores: dict[str, float] | None
     ) -> None:
@@ -179,7 +192,7 @@ class StateMachine:
 
     def _enter_ready(self, payload: dict[str, Any]) -> None:
         """Render ready player names while waiting in the idle scene."""
-        contestants = list(payload.get("contestants") or [])
+        contestants = self._contestants_from_payload(payload)
         self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
         cfg = self._config
         self._compositor.set_scene(cfg.scenes[Phase.IDLE])
@@ -188,7 +201,7 @@ class StateMachine:
     def _enter_coding(self, payload: dict[str, Any]) -> None:
         """Switch to the coding scene and write round metadata."""
         prompt = str(payload.get("prompt", ""))
-        contestants = list(payload.get("contestants") or [])
+        contestants = self._contestants_from_payload(payload)
 
         self._snapshot = Snapshot(
             phase=Phase.CODING,
@@ -206,8 +219,15 @@ class StateMachine:
         Scores are mapped to the same slot their contestant occupied in
         `CODING`, preserving visual position across the round.
         """
-        raw = payload.get("scores") or {}
-        scores = {str(k): float(v) for k, v in raw.items()}
+        raw = payload.get("scores")
+        if not isinstance(raw, Mapping):
+            msg = "payload must include a `scores` object"
+            raise InvalidTransitionError(msg)
+        try:
+            scores = {str(k): float(v) for k, v in raw.items()}
+        except (TypeError, ValueError) as exc:
+            msg = "payload `scores` values must be numeric"
+            raise InvalidTransitionError(msg) from exc
         self._snapshot = Snapshot(
             phase=Phase.SCOREBOARD,
             prompt=self._snapshot.prompt,

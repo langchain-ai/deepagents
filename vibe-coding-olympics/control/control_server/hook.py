@@ -3,21 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     """Read a Deep Agents hook payload from stdin and POST it to control."""
     try:
         payload = json.loads(sys.stdin.read() or "{}")
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
+        logger.warning("Ignoring malformed player hook payload: %s", exc)
         return
 
     port = os.environ.get("VIBE_PORT")
     if not port:
+        logger.warning("Ignoring player hook payload without VIBE_PORT")
         return
 
     api = os.environ.get("VIBE_CONTROL_API", "http://localhost:8766").rstrip("/")
@@ -35,12 +40,14 @@ def main() -> None:
         return
 
     try:
-        httpx.post(
+        response = httpx.post(
             f"{api}{path}",
             json=body,
             timeout=2.0,
         )
+        response.raise_for_status()
     except httpx.HTTPError:
+        logger.warning("Failed to POST player hook event %s to %s", event, api)
         return
 
 

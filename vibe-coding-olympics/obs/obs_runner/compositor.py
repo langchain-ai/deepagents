@@ -82,7 +82,7 @@ class ObsCompositor:
         try:
             self._client.disconnect()
         except Exception:
-            pass
+            logger.warning("OBS disconnect failed", exc_info=True)
         self._client = None
 
     def set_scene(self, name: str) -> None:
@@ -136,5 +136,5 @@ class ObsCompositor:
         """Return the live client or raise if `connect()` was not called."""
         if self._client is None:
             msg = "ObsCompositor not connected; call connect() first."
-            raise RuntimeError(msg)
+            raise ConnectionError(msg)
         return self._client

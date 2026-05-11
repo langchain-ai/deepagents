@@ -103,6 +103,13 @@ def test_ready_players_render_in_idle_scene(config: Config) -> None:
     assert comp.last_text("Contestant2Score") == ""
 
 
+def test_ready_rejects_empty_contestants(config: Config) -> None:
+    machine = StateMachine(FakeCompositor(), config)
+
+    with pytest.raises(InvalidTransitionError, match="contestants"):
+        machine.dispatch(Event.READY, {"contestants": []})
+
+
 def test_ready_rejected_during_coding(config: Config) -> None:
     machine = StateMachine(FakeCompositor(), config)
     machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A"]})
@@ -195,6 +202,22 @@ def test_missing_score_leaves_slot_blank(config: Config) -> None:
 
     assert comp.last_text("Contestant1Score") == "8.00"
     assert comp.last_text("Contestant2Score") == ""
+
+
+def test_end_rejects_missing_scores(config: Config) -> None:
+    machine = StateMachine(FakeCompositor(), config)
+    machine.dispatch(Event.START, {"prompt": "x", "contestants": ["Alice"]})
+
+    with pytest.raises(InvalidTransitionError, match="scores"):
+        machine.dispatch(Event.END, {})
+
+
+def test_end_rejects_non_numeric_scores(config: Config) -> None:
+    machine = StateMachine(FakeCompositor(), config)
+    machine.dispatch(Event.START, {"prompt": "x", "contestants": ["Alice"]})
+
+    with pytest.raises(InvalidTransitionError, match="numeric"):
+        machine.dispatch(Event.END, {"scores": {"Alice": "nope"}})
 
 
 def test_contestants_beyond_slot_cap_are_dropped(config: Config) -> None:

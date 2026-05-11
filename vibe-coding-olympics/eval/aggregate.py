@@ -27,15 +27,14 @@ def aggregate(
     axes: Mapping[str, float | None],
     weights: Mapping[str, float] | None = None,
 ) -> float:
-    """Compute a weighted mean over per-axis scores, ignoring `None` axes.
+    """Compute a weighted mean over expected per-axis scores.
 
-    Weights are renormalized across present axes, so skipping one axis (e.g.
-    `accessibility=None` when axe failed to inject) does not punish the
-    overall score — the remaining axes simply absorb the weight.
+    Known axes with `None` scores count as zero, so evaluator failures do
+    not inflate the overall score by shrinking the denominator.
 
     Args:
-        axes: Mapping of axis name to score in [0.0, 1.0], or `None` if the
-            axis could not be evaluated.
+        axes: Mapping of axis name to score in [0.0, 1.0], or `None` when
+            the axis could not be evaluated.
         weights: Optional weight mapping. Unknown axes get weight 0.
             Defaults to `DEFAULT_WEIGHTS`.
 
@@ -43,11 +42,14 @@ def aggregate(
         Weighted mean in [0.0, 1.0]. Returns `0.0` if no axes have signal.
     """
     weights = weights or DEFAULT_WEIGHTS
-    present = {k: v for k, v in axes.items() if v is not None}
-    total_weight = sum(weights.get(k, 0.0) for k in present)
+    total_weight = sum(weight for axis, weight in weights.items() if axis in axes)
     if total_weight == 0:
         return 0.0
-    weighted = sum(present[k] * weights.get(k, 0.0) for k in present)
+    weighted = sum(
+        (axes[axis] or 0.0) * weight
+        for axis, weight in weights.items()
+        if axis in axes
+    )
     return weighted / total_weight
 
 

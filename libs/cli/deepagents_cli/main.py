@@ -1472,8 +1472,9 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         return None
 
     # Merge configs by server name (last wins, matching the loader) so that
-    # a server defined in multiple project configs (e.g. both `.mcp.json`
-    # and `.deepagents/.mcp.json`) only shows up once in the prompt.
+    # a server defined in multiple project configs (for example,
+    # `.deepagents/.mcp.json` and higher-precedence `.mcp.json`) only shows
+    # up once in the prompt.
     loaded_configs = [
         cfg
         for cfg in (load_mcp_config_lenient(path) for path in project_configs)

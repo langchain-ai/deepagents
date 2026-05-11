@@ -1150,10 +1150,32 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        future = await adapter._request_approval(
-                            action_requests, assistant_id
-                        )
-                        decision = await future
+                        # Hide shell tool widgets while the approval renders the
+                        # same command; restore before processing the decision
+                        # so subsequent status updates render on the visible
+                        # widget.
+                        suppressed_tool_msgs = [
+                            tool_msg
+                            for tool_msg in adapter._current_tool_messages.values()
+                            if tool_msg.tool_name == "execute"
+                        ]
+                        for tool_msg in suppressed_tool_msgs:
+                            tool_msg.set_awaiting_approval()
+                        try:
+                            future = await adapter._request_approval(
+                                action_requests, assistant_id
+                            )
+                            decision = await future
+                        finally:
+                            for tool_msg in suppressed_tool_msgs:
+                                try:
+                                    tool_msg.clear_awaiting_approval()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to clear awaiting-approval "
+                                        "state on tool widget %s",
+                                        tool_msg.tool_name,
+                                    )
 
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")

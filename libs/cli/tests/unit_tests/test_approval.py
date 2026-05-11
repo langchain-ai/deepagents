@@ -18,18 +18,18 @@ class TestCheckExpandableCommand:
     def test_shell_command_over_threshold_is_expandable(self) -> None:
         """Test that shell commands longer than threshold are expandable."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         assert menu._has_expandable_command is True
 
     def test_shell_command_at_threshold_not_expandable(self) -> None:
         """Test that shell commands at exactly the threshold are not expandable."""
         exact_command = "x" * _SHELL_COMMAND_TRUNCATE_LENGTH
-        menu = ApprovalMenu({"name": "shell", "args": {"command": exact_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": exact_command}})
         assert menu._has_expandable_command is False
 
     def test_shell_command_under_threshold_not_expandable(self) -> None:
         """Test that short shell commands are not expandable."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         assert menu._has_expandable_command is False
 
     def test_execute_tool_is_expandable(self) -> None:
@@ -49,15 +49,15 @@ class TestCheckExpandableCommand:
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
         menu = ApprovalMenu(
             [
-                {"name": "shell", "args": {"command": long_command}},
-                {"name": "shell", "args": {"command": "echo hello"}},
+                {"name": "execute", "args": {"command": long_command}},
+                {"name": "execute", "args": {"command": "echo hello"}},
             ]
         )
         assert menu._has_expandable_command is False
 
     def test_missing_command_arg_not_expandable(self) -> None:
         """Test that shell requests without command arg are not expandable."""
-        menu = ApprovalMenu({"name": "shell", "args": {}})
+        menu = ApprovalMenu({"name": "execute", "args": {}})
         assert menu._has_expandable_command is False
 
     def test_multiline_command_over_line_threshold_is_expandable(self) -> None:
@@ -67,13 +67,13 @@ class TestCheckExpandableCommand:
         only if the line-count check is missing.
         """
         command = "\n".join(["echo line"] * (_SHELL_COMMAND_TRUNCATE_LINES + 1))
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         assert menu._has_expandable_command is True
 
     def test_multiline_command_at_line_threshold_not_expandable(self) -> None:
         """Commands at exactly the line threshold are not expandable."""
         command = "\n".join(["echo line"] * _SHELL_COMMAND_TRUNCATE_LINES)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         assert menu._has_expandable_command is False
 
 
@@ -82,7 +82,7 @@ class TestGetCommandDisplay:
 
     def test_short_command_shows_full(self) -> None:
         """Test that short commands display in full regardless of expanded state."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         display = menu._get_command_display(expanded=False)
         assert "echo hello" in display.plain
         assert "press 'e' to expand" not in display.plain
@@ -90,7 +90,7 @@ class TestGetCommandDisplay:
     def test_long_command_truncated_when_not_expanded(self) -> None:
         """Test that long commands are truncated with expand hint."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 50)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         display = menu._get_command_display(expanded=False)
         assert get_glyphs().ellipsis in display.plain
         assert "press 'e' to expand" in display.plain
@@ -100,7 +100,7 @@ class TestGetCommandDisplay:
     def test_long_command_shows_full_when_expanded(self) -> None:
         """Test that long commands display in full when expanded."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 50)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         display = menu._get_command_display(expanded=True)
         assert long_command in display.plain
         assert "press 'e' to expand" not in display.plain
@@ -108,7 +108,7 @@ class TestGetCommandDisplay:
 
     def test_short_command_shows_full_even_when_expanded_true(self) -> None:
         """Test that short commands show in full even when expanded=True."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         display = menu._get_command_display(expanded=True)
         assert "echo hello" in display.plain
         assert "press 'e' to expand" not in display.plain
@@ -117,7 +117,7 @@ class TestGetCommandDisplay:
     def test_command_at_boundary_plus_one_is_expandable(self) -> None:
         """Test off-by-one: command at exactly threshold + 1 is expandable."""
         boundary_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 1)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": boundary_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": boundary_command}})
         assert menu._has_expandable_command is True
         display = menu._get_command_display(expanded=False)
         assert get_glyphs().ellipsis in display.plain
@@ -125,14 +125,14 @@ class TestGetCommandDisplay:
 
     def test_none_command_value_handled(self) -> None:
         """Test that None command value is handled gracefully."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": None}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": None}})
         assert menu._has_expandable_command is False
         display = menu._get_command_display(expanded=False)
         assert "None" in display.plain
 
     def test_integer_command_value_handled(self) -> None:
         """Test that integer command value is converted to string."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": 12345}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": 12345}})
         assert menu._has_expandable_command is False
         display = menu._get_command_display(expanded=False)
         assert "12345" in display.plain
@@ -140,14 +140,14 @@ class TestGetCommandDisplay:
     def test_command_display_escapes_markup_tags(self) -> None:
         """Shell command display should safely render literal bracket sequences."""
         command = "echo [/dim] [literal]"
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         display = menu._get_command_display(expanded=True)
         assert command in display.plain
 
     def test_command_display_with_hidden_unicode_shows_warning(self) -> None:
         """Hidden Unicode should be surfaced with explicit warning details."""
         command = "echo a\u202eb"
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         display = menu._get_command_display(expanded=True)
         assert "echo ab" in display.plain
         assert "hidden chars detected" in display.plain
@@ -158,7 +158,7 @@ class TestGetCommandDisplay:
         """Multi-line commands collapse to the line cap with an expand hint."""
         lines = [f"echo {i}" for i in range(_SHELL_COMMAND_TRUNCATE_LINES + 3)]
         command = "\n".join(lines)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         display = menu._get_command_display(expanded=False)
         plain = display.plain
         assert get_glyphs().ellipsis in plain
@@ -171,7 +171,7 @@ class TestGetCommandDisplay:
         """Expanded multi-line commands show every line."""
         lines = [f"echo {i}" for i in range(_SHELL_COMMAND_TRUNCATE_LINES + 3)]
         command = "\n".join(lines)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": command}})
         display = menu._get_command_display(expanded=True)
         for line in lines:
             assert line in display.plain
@@ -184,7 +184,7 @@ class TestToggleExpand:
     def test_toggle_changes_expanded_state(self) -> None:
         """Test that toggling changes the expanded state."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         # Need to set up command widget for toggle to work
         menu._command_widget = MagicMock()
 
@@ -197,7 +197,7 @@ class TestToggleExpand:
     def test_toggle_updates_widget_with_correct_content(self) -> None:
         """Test that toggling calls widget.update() with correct display content."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         menu._command_widget = MagicMock()
 
         # First toggle: expand
@@ -217,7 +217,7 @@ class TestToggleExpand:
 
     def test_toggle_does_nothing_for_non_expandable(self) -> None:
         """Test that toggling does nothing for non-expandable commands."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         menu._command_widget = MagicMock()
 
         assert menu._command_expanded is False
@@ -227,7 +227,7 @@ class TestToggleExpand:
     def test_toggle_does_nothing_without_widget(self) -> None:
         """Test that toggling does nothing if command widget is not set."""
         long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
-        menu = ApprovalMenu({"name": "shell", "args": {"command": long_command}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": long_command}})
         # Explicitly ensure no widget
         menu._command_widget = None
 
@@ -236,33 +236,18 @@ class TestToggleExpand:
         assert menu._command_expanded is False
 
 
-class TestToolSetConsistency:
-    """Tests for tool set consistency between _MINIMAL_TOOLS and SHELL_TOOL_NAMES."""
-
-    def test_bash_tool_is_expandable(self) -> None:
-        """Test that bash tool commands can be expandable like shell commands.
-
-        The 'bash' tool is in _MINIMAL_TOOLS, so it should also support
-        expandable command display when the command is long.
-        """
-        long_command = "x" * (_SHELL_COMMAND_TRUNCATE_LENGTH + 10)
-        menu = ApprovalMenu({"name": "bash", "args": {"command": long_command}})
-        # bash should be expandable just like shell
-        assert menu._has_expandable_command is True
-
-    def test_bash_short_command_not_expandable(self) -> None:
-        """Test that short bash commands are not expandable."""
-        menu = ApprovalMenu({"name": "bash", "args": {"command": "ls -la"}})
-        assert menu._has_expandable_command is False
+class TestExecuteToolMinimalDisplay:
+    """Tests confirming `execute` is treated as the shell-execution tool."""
 
     def test_execute_tool_is_minimal(self) -> None:
-        """Test that execute tool uses minimal display like shell.
-
-        The 'execute' tool is in SHELL_TOOL_NAMES, so it should use minimal display.
-        """
+        """The `execute` tool should use minimal display."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
-        # execute should use minimal display like shell/bash
         assert menu._is_minimal is True
+
+    def test_non_shell_tool_is_not_minimal(self) -> None:
+        """Tools other than `execute` should not use minimal display."""
+        menu = ApprovalMenu({"name": "write_file", "args": {"path": "f.py"}})
+        assert menu._is_minimal is False
 
 
 class TestSecurityWarnings:
@@ -270,7 +255,9 @@ class TestSecurityWarnings:
 
     def test_collects_hidden_unicode_warning(self) -> None:
         """Hidden Unicode in args should populate security warnings."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo he\u200bllo"}})
+        menu = ApprovalMenu(
+            {"name": "execute", "args": {"command": "echo he\u200bllo"}}
+        )
         assert menu._security_warnings
         assert any("hidden Unicode" in warning for warning in menu._security_warnings)
 
@@ -289,7 +276,7 @@ class TestGetCommandDisplayGuard:
 
     def test_raises_on_empty_action_requests(self) -> None:
         """Test that _get_command_display raises RuntimeError with empty requests."""
-        menu = ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         # Artificially empty the action_requests to test the guard
         menu._action_requests = []
         with pytest.raises(RuntimeError, match="empty action_requests"):
@@ -371,7 +358,9 @@ class TestOptionOrdering:
 
         class ApprovalTestApp(App[None]):
             def compose(self) -> ComposeResult:
-                yield ApprovalMenu({"name": "shell", "args": {"command": "echo hello"}})
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
 
             def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
                 nonlocal decision_received

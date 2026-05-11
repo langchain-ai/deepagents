@@ -621,7 +621,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "../../libs/partners/quickjs" }
 dependencies = [
     { name = "deepagents" },

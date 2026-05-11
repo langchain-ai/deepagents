@@ -139,8 +139,6 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "glob",
     "grep",
     "execute",  # sandbox shell
-    # Shell tools
-    "shell",  # local shell
     # Web tools
     "web_search",
     "fetch_url",
@@ -823,6 +821,9 @@ class ToolCallMessage(Vertical):
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
         self._deferred_expanded: bool = False
+        # Whether the widget is currently hidden because an approval prompt
+        # is rendering the same content (see `set_awaiting_approval`).
+        self._awaiting_approval: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -1018,11 +1019,7 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         # For shell commands, prepend the full command so users can see what failed
-        command = (
-            self._args.get("command")
-            if self._tool_name in {"shell", "bash", "execute"}
-            else None
-        )
+        command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
             self._output = f"$ {command}\n\n{error}"
         else:
@@ -1062,6 +1059,27 @@ class ToolCallMessage(Vertical):
             self._status_widget.add_class("rejected")  # Use same styling as rejected
             self._status_widget.update(Content.styled("- Skipped", "dim"))
             self._status_widget.display = True
+
+    def set_awaiting_approval(self) -> None:
+        """Hide the tool call while an approval prompt mirrors its content.
+
+        Used to avoid showing the same shell command in both the streamed tool
+        call header and the HITL approval dialog at the same time. The widget
+        is restored via `clear_awaiting_approval` once the user decides.
+        """
+        self._awaiting_approval = True
+        self.display = False
+
+    def clear_awaiting_approval(self) -> None:
+        """Restore the tool call after `set_awaiting_approval`.
+
+        No-op if `set_awaiting_approval` was not previously called, so the
+        method is safe to call unconditionally from a `finally` block.
+        """
+        if not self._awaiting_approval:
+            return
+        self._awaiting_approval = False
+        self.display = True
 
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
@@ -1114,8 +1132,6 @@ class ToolCallMessage(Vertical):
             "edit_file": self._format_file_output,
             "grep": self._format_search_output,
             "glob": self._format_search_output,
-            "shell": self._format_shell_output,
-            "bash": self._format_shell_output,
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,

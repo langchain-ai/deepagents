@@ -1457,6 +1457,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         discover_mcp_configs,
         extract_project_server_summaries,
         load_mcp_config_lenient,
+        merge_mcp_configs,
     )
     from deepagents_cli.project_utils import ProjectContext
 
@@ -1470,12 +1471,17 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     if not project_configs:
         return None
 
-    # Collect all servers (stdio + remote) across project configs
-    all_servers: list[tuple[str, str, str]] = []
-    for path in project_configs:
-        cfg = load_mcp_config_lenient(path)
-        if cfg is not None:
-            all_servers.extend(extract_project_server_summaries(cfg))
+    # Merge configs by server name (last wins, matching the loader) so that
+    # a server defined in multiple project configs (for example,
+    # `.deepagents/.mcp.json` and higher-precedence `.mcp.json`) only shows
+    # up once in the prompt.
+    loaded_configs = [
+        cfg
+        for cfg in (load_mcp_config_lenient(path) for path in project_configs)
+        if cfg is not None
+    ]
+    merged_config = merge_mcp_configs(loaded_configs)
+    all_servers = extract_project_server_summaries(merged_config)
 
     if not all_servers:
         return None

@@ -807,6 +807,26 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
     return f"Failed to switch model: {exc}"
 
 
+def _build_whats_new_message(heading: str) -> Content:
+    """Build the post-upgrade banner with a clickable changelog URL.
+
+    Args:
+        heading: First line of the post-upgrade banner.
+
+    Returns:
+        Styled banner content with the changelog URL embedded as a link.
+    """
+    return Content.assemble(
+        (heading, TStyle(dim=True, italic=True)),
+        "\n",
+        ("See what's new: ", TStyle(dim=True, italic=True)),
+        (
+            CHANGELOG_URL,
+            TStyle(dim=True, italic=True, underline=True, link=CHANGELOG_URL),
+        ),
+    )
+
+
 def _format_startup_error(error: BaseException) -> str:
     """Format a server-startup exception for the welcome banner.
 
@@ -2820,9 +2840,7 @@ class DeepAgentsApp(App):
             else:
                 heading = f"Updated to v{cli_version}"
 
-            await self._mount_message(
-                AppMessage(f"{heading}\nSee what's new: {CHANGELOG_URL}")
-            )
+            await self._mount_message(AppMessage(_build_whats_new_message(heading)))
         except Exception:
             logger.debug("What's new banner display failed", exc_info=True)
             return

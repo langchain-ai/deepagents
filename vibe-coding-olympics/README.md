@@ -47,6 +47,8 @@ export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 ./play.sh 3002
 ```
 
+`play.sh` instruments a Deep Agents CLI hook that reports the player's name and model-ready status back to `vibe-control` using `VIBE_CONTROL_API`.
+
 If port `8766` is unavailable on the controller machine, override both the control server bind port and the URL used by player laptops:
 
 ```bash

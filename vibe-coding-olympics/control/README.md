@@ -3,7 +3,7 @@
 Operator commands go through one control surface:
 
 - `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
-- `vibe-player-hook` — Deep Agents hook adapter. Reports player names from `user.name.set` into the control panel.
+- `vibe-player-hook` — Deep Agents hook adapter that runs on each player laptop. It reports player names and model-ready status back to `vibe-control`.
 
 Current player command dispatch uses local iTerm2 session discovery and the player CLI's Unix-domain event socket. That works for same-machine smoke tests.
 
@@ -120,7 +120,18 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 
 ## Player readiness hook
 
-Deep Agents CLI already emits `user.name.set` after the player submits their name during launch setup. `../play.sh` now writes a round-local hook config and points the launched CLI at it automatically, so normal event laptops do not need to edit `~/.deepagents/hooks.json`.
+Deep Agents CLI emits hook events when the player enters their name and when model selection is ready. `../play.sh` writes a temporary hook config for the launched player process, so normal event laptops do not need to edit `~/.deepagents/hooks.json`.
+
+The hook command runs on the player laptop:
+
+```txt
+Deep Agents CLI -> vibe-player-hook -> POST to VIBE_CONTROL_API
+```
+
+It reports:
+
+- `user.name.set` to `/api/players/ready`
+- `competition.player.ready` to `/api/players/model-ready`
 
 For manual launches, configure the hook on each player laptop:
 
@@ -128,7 +139,7 @@ For manual launches, configure the hook on each player laptop:
 {
   "hooks": [
     {
-      "events": ["user.name.set"],
+      "events": ["competition.player.ready", "user.name.set"],
       "command": [
         "uv",
         "run",

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from langsmith import Client
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithNotFoundError
+from langsmith.utils import LangSmithError, LangSmithNotFoundError
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
@@ -141,7 +141,7 @@ class ContextHubBackend(BackendProtocol):
         hub_path = self._strip_prefix(file_path)
         try:
             cache = self._ensure_cache()
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return ReadResult(error=f"Hub unavailable: {exc}")
         content = cache.get(hub_path)
@@ -167,7 +167,7 @@ class ContextHubBackend(BackendProtocol):
         try:
             self._ensure_cache()  # populates _commit_hash for parent_commit on push
             self._commit({hub_path: content})
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub write failed for %r", self._identifier)
             self._cache = None
             return WriteResult(error=f"Hub unavailable: {exc}")
@@ -194,7 +194,7 @@ class ContextHubBackend(BackendProtocol):
 
             new_content, occurrences = result
             self._commit({hub_path: new_content})
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub edit failed for %r", self._identifier)
             self._cache = None
             return EditResult(error=f"Hub unavailable: {exc}")
@@ -205,7 +205,7 @@ class ContextHubBackend(BackendProtocol):
         hub_prefix = self._strip_prefix(path).rstrip("/")
         try:
             cache = self._ensure_cache()
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return LsResult(error=f"Hub unavailable: {exc}")
 
@@ -241,7 +241,7 @@ class ContextHubBackend(BackendProtocol):
         """Search contents for ``pattern`` (optional ``path`` / ``glob`` filters)."""
         try:
             cache = self._ensure_cache()
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GrepResult(error=f"Hub unavailable: {exc}")
         matches: list[GrepMatch] = []
@@ -268,7 +268,7 @@ class ContextHubBackend(BackendProtocol):
         """Return files matching ``pattern`` (``path`` unused — flat namespace)."""
         try:
             cache = self._ensure_cache()
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GlobResult(error=f"Hub unavailable: {exc}")
         results: list[FileInfo] = [
@@ -297,7 +297,7 @@ class ContextHubBackend(BackendProtocol):
             try:
                 self._ensure_cache()
                 self._commit(valid_files)
-            except Exception as exc:
+            except LangSmithError as exc:
                 logger.exception("Hub batch upload failed for %r", self._identifier)
                 self._cache = None
                 commit_error = f"Hub unavailable: {exc}"
@@ -318,7 +318,7 @@ class ContextHubBackend(BackendProtocol):
         """Download files as raw bytes. Missing paths return ``file_not_found``."""
         try:
             cache = self._ensure_cache()
-        except Exception as exc:
+        except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             # Backend-specific error string per protocol docs (FileOperationError
             # literal union doesn't cover hub failures).

@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithNotFoundError
+from langsmith.utils import LangSmithAPIError, LangSmithNotFoundError
 
 from deepagents.backends import CompositeBackend, ContextHubBackend, FilesystemBackend
 
@@ -80,13 +81,23 @@ def test_pull_404_treated_as_empty_repo() -> None:
 
 def test_pull_non_404_failure_surfaces_as_error() -> None:
     mock_client = MagicMock()
-    mock_client.pull_agent.side_effect = RuntimeError("hub 5xx")
+    mock_client.pull_agent.side_effect = LangSmithAPIError("hub 5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     result = backend.read("/anything")
     assert result.error is not None
     assert "Hub unavailable" in result.error
     assert "hub 5xx" in result.error
+
+
+def test_pull_non_langsmith_failure_propagates() -> None:
+    """Unexpected runtime errors should bubble up instead of being masked."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = RuntimeError("boom")
+    backend = ContextHubBackend("-/x", client=mock_client)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        backend.read("/anything")
 
 
 def test_has_prior_commits_false_for_missing_repo() -> None:
@@ -168,7 +179,7 @@ def test_write_sibling_of_linked_entry_allowed() -> None:
 
 def test_commit_failure_invalidates_cache() -> None:
     backend, mock_client = _make_backend(**{"a.md": FileEntry(type="file", content="a")})
-    mock_client.push_agent.side_effect = RuntimeError("500")
+    mock_client.push_agent.side_effect = LangSmithAPIError("500")
 
     result = backend.write("/b.md", "b")
     assert result.error is not None
@@ -256,7 +267,7 @@ def test_ls_nested_path() -> None:
 
 def test_ls_surfaces_pull_error() -> None:
     mock_client = MagicMock()
-    mock_client.pull_agent.side_effect = RuntimeError("5xx")
+    mock_client.pull_agent.side_effect = LangSmithAPIError("5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     result = backend.ls("/")
@@ -378,7 +389,7 @@ def test_upload_partial_success_only_commits_valid_files() -> None:
 def test_upload_failure_propagates_to_all_pending_paths() -> None:
     """If the batch commit fails, every otherwise-valid file gets the hub error."""
     backend, mock_client = _make_backend()
-    mock_client.push_agent.side_effect = RuntimeError("503")
+    mock_client.push_agent.side_effect = LangSmithAPIError("503")
 
     responses = backend.upload_files([("/a.md", b"alpha"), ("/b.md", b"beta"), ("/bad.bin", b"\x80")])
     assert "Hub unavailable" in (responses[0].error or "")
@@ -424,7 +435,7 @@ def test_download_missing_file() -> None:
 
 def test_download_propagates_pull_failure() -> None:
     mock_client = MagicMock()
-    mock_client.pull_agent.side_effect = RuntimeError("5xx")
+    mock_client.pull_agent.side_effect = LangSmithAPIError("5xx")
     backend = ContextHubBackend("-/x", client=mock_client)
 
     responses = backend.download_files(["/a.md"])

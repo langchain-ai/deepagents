@@ -377,6 +377,42 @@ class TestOptionOrdering:
 class TestRejectWithReason:
     """Tests for the free-text reject mode (`action_reject_with_reason`)."""
 
+    def test_help_hides_tab_amend_until_reject_selected(self) -> None:
+        """The Tab amendment hint should only appear on the Reject option."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu._selected = 0
+        assert "Tab amend" not in menu._compose_help_text()
+
+        menu._selected = 2
+        help_text = menu._compose_help_text()
+        assert "Tab amend" in help_text
+        assert "reject with reason" not in help_text
+
+    def test_update_options_refreshes_help_for_selected_option(self) -> None:
+        """Moving between options should refresh the footer hint state."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
+        menu._help_widget = MagicMock()
+
+        menu._selected = 2
+        menu._update_options()
+
+        menu._help_widget.update.assert_called_once()
+        assert "Tab amend" in menu._help_widget.update.call_args.args[0]
+
+    def test_move_actions_no_op_while_input_mode_active(self) -> None:
+        """Arrow-key bindings should not move the menu while amending a reject."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu._selected = 2
+        menu._reason_input_active = True
+        menu._update_options = MagicMock()  # type: ignore[method-assign]
+
+        menu.action_move_up()
+        menu.action_move_down()
+
+        assert menu._selected == 2
+        menu._update_options.assert_not_called()  # type: ignore[attr-defined]
+
     def test_no_op_when_reject_not_selected(self) -> None:
         """Tab is a no-op unless cursor is on the Reject option."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})

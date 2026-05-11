@@ -334,11 +334,16 @@ class ApprovalMenu(Container):
                 f"Enter submit {glyphs.bullet} Esc cancel {glyphs.bullet} "
                 "leave blank to reject without a reason"
             )
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} "
-            f"Tab reject with reason {glyphs.bullet} Esc reject"
-        )
+        help_parts = [
+            (
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
+                f"{glyphs.bullet} Enter select {glyphs.bullet} y/a/n quick keys"
+            ),
+        ]
+        if self._selected == _REJECT_OPTION_INDEX:
+            help_parts.append("Tab amend")
+        help_parts.append("Esc reject")
+        help_text = f" {glyphs.bullet} ".join(help_parts)
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
         return help_text
@@ -419,14 +424,20 @@ class ApprovalMenu(Container):
             widget.remove_class("approval-option-selected")
             if i == self._selected:
                 widget.add_class("approval-option-selected")
+        if self._help_widget is not None:
+            self._help_widget.update(self._compose_help_text())
 
     def action_move_up(self) -> None:
         """Move selection up."""
+        if self._reason_input_active:
+            return
         self._selected = (self._selected - 1) % 3
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
+        if self._reason_input_active:
+            return
         self._selected = (self._selected + 1) % 3
         self._update_options()
 

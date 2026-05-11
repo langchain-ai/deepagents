@@ -1249,7 +1249,8 @@ async def execute_task_textual(
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
                                 adapter._current_tool_messages.clear()
-                                any_rejected = True
+                                if reject_message is None:
+                                    any_rejected = True
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",

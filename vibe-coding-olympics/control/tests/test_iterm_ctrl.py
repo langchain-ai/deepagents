@@ -169,9 +169,7 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
         iterm_ctrl.matching_sessions = matching_sessions  # type: ignore[assignment]
         server = await asyncio.start_unix_server(handle_client, path=str(path))
         try:
-            sent = await iterm_ctrl.send_prompt_to_players(
-                None, "a website for a taco truck"
-            )
+            sent = await iterm_ctrl.send_prompt_to_players(None, "taco truck")
         finally:
             iterm_ctrl.matching_sessions = original
             server.close()
@@ -182,7 +180,7 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received[0]["kind"], "command")
         self.assertEqual(
             received[0]["payload"],
-            "/skill:web-vibe Prompt: a website for a taco truck",
+            "/skill:web-vibe Prompt: taco truck",
         )
         self.assertTrue(received[0]["correlation_id"].startswith("vibe-prompt-"))
 

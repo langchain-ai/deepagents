@@ -129,7 +129,7 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
         app_mod._model_ready_ports.update({"3001", "3002"})
         app_mod._prompt_pool.clear()
-        app_mod._prompt_pool[1] = "A website for a taco truck"
+        app_mod._prompt_pool[1] = "taco truck"
         forward = AsyncMock(return_value={"phase": "coding"})
 
         with (
@@ -145,11 +145,11 @@ class TestReadyPlayers(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["prompt"], "A website for a taco truck")
+        self.assertEqual(response.json()["prompt"], "taco truck")
         forward.assert_awaited_once_with(
             "start",
             {
-                "prompt": "A website for a taco truck",
+                "prompt": "taco truck",
                 "contestants": ["Alice", "Bob"],
             },
         )
@@ -229,12 +229,12 @@ class TestReadyPlayers(unittest.TestCase):
 
         created = client.post(
             "/api/prompts",
-            json={"prompt": "  A website for a moon laundromat  "},
+            json={"prompt": "  moon laundromat  "},
         )
         listed = client.get("/api/prompts")
         updated = client.patch(
             "/api/prompts/1",
-            json={"prompt": "A website for a moon greenhouse"},
+            json={"prompt": "moon greenhouse"},
         )
         drawn = client.get("/api/prompts/draw")
         deleted = client.delete("/api/prompts/1")
@@ -242,34 +242,34 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(created.status_code, 200)
         self.assertEqual(
             created.json(),
-            {"id": 1, "prompt": "A website for a moon laundromat"},
+            {"id": 1, "prompt": "moon laundromat"},
         )
         self.assertEqual(
             listed.json()["prompts"],
-            [{"id": 1, "prompt": "A website for a moon laundromat"}],
+            [{"id": 1, "prompt": "moon laundromat"}],
         )
         self.assertEqual(
             updated.json(),
-            {"id": 1, "prompt": "A website for a moon greenhouse"},
+            {"id": 1, "prompt": "moon greenhouse"},
         )
-        self.assertEqual(drawn.json(), {"prompt": "A website for a moon greenhouse"})
+        self.assertEqual(drawn.json(), {"prompt": "moon greenhouse"})
         self.assertEqual(
             deleted.json(),
-            {"id": 1, "prompt": "A website for a moon greenhouse"},
+            {"id": 1, "prompt": "moon greenhouse"},
         )
         self.assertEqual(client.get("/api/prompts").json()["prompts"], [])
 
     def test_prompt_list_places_new_entries_before_defaults(self) -> None:
         client = TestClient(app_mod.create_app())
 
-        client.post("/api/prompts", json={"prompt": "A website for a moon greenhouse"})
-        client.post("/api/prompts", json={"prompt": "A website for a neon museum"})
+        client.post("/api/prompts", json={"prompt": "moon greenhouse"})
+        client.post("/api/prompts", json={"prompt": "neon museum"})
 
         prompts = client.get("/api/prompts").json()["prompts"]
 
-        self.assertEqual(prompts[0]["prompt"], "A website for a neon museum")
-        self.assertEqual(prompts[1]["prompt"], "A website for a moon greenhouse")
-        self.assertEqual(prompts[2]["prompt"], "A website for a taco truck")
+        self.assertEqual(prompts[0]["prompt"], "neon museum")
+        self.assertEqual(prompts[1]["prompt"], "moon greenhouse")
+        self.assertEqual(prompts[2]["prompt"], "taco truck")
 
     def test_players_prompt_rejects_empty_prompt(self) -> None:
         client = TestClient(app_mod.create_app())

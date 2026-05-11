@@ -8266,6 +8266,46 @@ class TestTimesUpState:
             assert app._chat_input.input_widget.disabled is False
             assert not isinstance(app.screen, TimesUpScreen)
 
+    async def test_force_clear_dismisses_model_selector_under_times_up(
+        self,
+    ) -> None:
+        """Reset should not leave the model selector modal on screen."""
+        from deepagents_cli.widgets.model_selector import ModelSelectorScreen
+        from deepagents_cli.widgets.times_up import TimesUpScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen(
+                ModelSelectorScreen(
+                    current_model="claude-sonnet-4-5",
+                    current_provider="anthropic",
+                )
+            )
+            await pilot.pause()
+
+            app._handle_times_up()
+            await pilot.pause()
+
+            assert app._times_up_active is True
+            assert isinstance(app.screen, TimesUpScreen)
+            assert any(
+                isinstance(screen, ModelSelectorScreen) for screen in app.screen_stack
+            )
+
+            await app._handle_command("/force-clear")
+            await pilot.pause()
+            await pilot.pause()
+
+            assert app._times_up_active is False
+            assert not any(
+                isinstance(screen, (ModelSelectorScreen, TimesUpScreen))
+                for screen in app.screen_stack
+            )
+            assert app._chat_input is not None
+            assert app._chat_input.input_widget is not None
+            assert app._chat_input.input_widget.disabled is False
+
     async def test_force_clear_hides_untracked_timer_header(
         self,
         monkeypatch: pytest.MonkeyPatch,

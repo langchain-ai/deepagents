@@ -4929,6 +4929,7 @@ class DeepAgentsApp(App):
         elif cmd in {"/clear", "/force-clear"}:
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+                await self._dismiss_modals_for_reset()
                 await self._reset_times_up_state()
             self._pending_messages.clear()
             self._queued_widgets.clear()
@@ -6579,6 +6580,20 @@ class DeepAgentsApp(App):
         if self._agent_running and self._agent_worker:
             self._agent_worker.cancel()
         self._discard_queue()
+
+    async def _dismiss_modals_for_reset(self) -> None:
+        """Dismiss modal screens that should not survive `/force-clear`."""
+        while isinstance(self.screen, ModalScreen):
+            screen = self.screen
+            try:
+                await screen.dismiss(None)
+            except Exception:
+                logger.debug(
+                    "force-clear: failed to dismiss modal %r",
+                    screen,
+                    exc_info=True,
+                )
+                break
 
     def _handle_times_up(self) -> None:
         """Enter the terminal time-limit state for this session."""

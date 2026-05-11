@@ -1071,7 +1071,7 @@ def create_app() -> FastAPI:
             "start",
             {"prompt": prompt, "contestants": contestants},
         )
-        sent = await iterm_ctrl.send_prompt_to_players(None, prompt)
+        sent = await iterm_ctrl.send_prompt_to_players(_round_player_ports(), prompt)
         return {"state": state, "prompt": prompt, "prompt_sent": sent}
 
     @app.post("/api/round/end")
@@ -1144,7 +1144,7 @@ def create_app() -> FastAPI:
         _model_ready_ports.add(req.port)
         players_ready_sent: list[str] = []
         if _all_named_players_model_ready():
-            players_ready_sent = await iterm_ctrl.players_ready(None)
+            players_ready_sent = await iterm_ctrl.players_ready(_round_player_ports())
         return {
             "connected": _connected_player_ports(),
             "ready": dict(_ready_players),

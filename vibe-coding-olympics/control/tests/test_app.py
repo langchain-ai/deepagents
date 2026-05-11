@@ -50,12 +50,13 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._ready_players.update({"3002": "Bob", "3001": "Alice"})
         app_mod._model_ready_ports.update({"3002", "3001"})
         forward = AsyncMock(return_value={"phase": "coding"})
+        send_prompt = AsyncMock(return_value=["3002", "3001"])
 
         with (
             patch("control_server.app._forward", forward),
             patch(
                 "control_server.iterm_ctrl.send_prompt_to_players",
-                new=AsyncMock(return_value=["3001", "3002"]),
+                new=send_prompt,
             ),
         ):
             response = client.post(
@@ -68,6 +69,7 @@ class TestReadyPlayers(unittest.TestCase):
             "start",
             {"prompt": "build a taco truck", "contestants": ["Bob", "Alice"]},
         )
+        send_prompt.assert_awaited_once_with(["3002", "3001"], "build a taco truck")
 
     def test_round_start_rejects_before_both_models_ready(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -105,12 +107,13 @@ class TestReadyPlayers(unittest.TestCase):
         )
         app_mod._model_ready_ports.update({"3001", "3002"})
         forward = AsyncMock(return_value={"phase": "coding"})
+        send_prompt = AsyncMock(return_value=["3001", "3002"])
 
         with (
             patch("control_server.app._forward", forward),
             patch(
                 "control_server.iterm_ctrl.send_prompt_to_players",
-                new=AsyncMock(return_value=["3001", "3002"]),
+                new=send_prompt,
             ),
         ):
             response = client.post(
@@ -123,6 +126,7 @@ class TestReadyPlayers(unittest.TestCase):
             "start",
             {"prompt": "build a taco truck", "contestants": ["Alice", "Bob"]},
         )
+        send_prompt.assert_awaited_once_with(["3001", "3002"], "build a taco truck")
 
     def test_round_start_draws_prompt_when_prompt_is_empty(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -359,7 +363,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["model_ready"], ["3001", "3002"])
         self.assertEqual(response.json()["players_ready_sent"], ["3001", "3002"])
-        players_ready.assert_awaited_once_with(None)
+        players_ready.assert_awaited_once_with(["3001", "3002"])
 
     def test_players_list_includes_model_ready_ports(self) -> None:
         client = TestClient(app_mod.create_app())

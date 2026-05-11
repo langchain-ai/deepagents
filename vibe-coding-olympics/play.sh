@@ -116,17 +116,6 @@ curl -fsS -m 1 \
   -H "content-type: application/json" \
   -d "{\"port\":\"$PORT\"}" \
   "$CONTROL_API/api/players/connect" >/dev/null 2>&1 || true
-(
-  while true; do
-    curl -fsS -m 1 \
-      -H "content-type: application/json" \
-      -d "{\"port\":\"$PORT\"}" \
-      "$CONTROL_API/api/players/heartbeat" >/dev/null 2>&1 || true
-    sleep 2
-  done
-) &
-HEARTBEAT_PID=$!
-trap 'kill "$HEARTBEAT_PID" 2>/dev/null || true' EXIT
 
 # Free the port up front so the poller below can't race a zombie Vite from a
 # previous round. Without this, the poller's first curl would succeed against
@@ -171,6 +160,7 @@ else
 fi
 
 "${PY_RUN[@]}" - <<'PY'
+import json
 import os
 import shlex
 
@@ -181,6 +171,7 @@ DIR = os.environ["VIBE_DIR"]
 PROMPT = os.environ["VIBE_PROMPT"].strip()
 LOG = os.environ["VIBE_LOG"]
 EVENT_SOCKET = os.environ["VIBE_EVENT_SOCKET"]
+HEARTBEAT_BODY = json.dumps({"port": PORT}, separators=(",", ":"))
 WAIT_FOR_CONTROLLER = os.environ["VIBE_WAIT_FOR_CONTROLLER"] == "1"
 if WAIT_FOR_CONTROLLER:
     STARTUP_SUBHEADER = (
@@ -239,6 +230,20 @@ async def main(connection):
         f"DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START={int(WAIT_FOR_CONTROLLER)} "
         "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER="
         f"{shlex.quote(STARTUP_SUBHEADER)}\n"
+    )
+    await top.async_send_text(
+        "(\n"
+        "  while true; do\n"
+        "    curl -fsS -m 1 "
+        "-H 'content-type: application/json' "
+        f"-d {shlex.quote(HEARTBEAT_BODY)} "
+        f"{shlex.quote(os.environ['VIBE_CONTROL_API'] + '/api/players/heartbeat')} "
+        ">/dev/null 2>&1 || true\n"
+        "    sleep 2\n"
+        "  done\n"
+        ") &\n"
+        "VIBE_HEARTBEAT_PID=$!\n"
+        "trap 'kill \"$VIBE_HEARTBEAT_PID\" 2>/dev/null || true' EXIT\n"
     )
     await top.async_send_text(f"cd {shlex.quote(DIR)}\n")
 

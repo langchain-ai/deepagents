@@ -833,6 +833,38 @@ class TestToolCallMessageRejectReason:
             await pilot.pause()
             assert msg._reject_reason is None
 
+    async def test_reason_with_markup_brackets_renders_safely(self) -> None:
+        """User-controlled reasons must round-trip through Rich markup unscathed.
+
+        `from_markup` with `$reason` substitution should escape any literal
+        bracket sequences so the reason line never throws a MarkupError.
+        """
+        from textual.app import App, ComposeResult
+
+        hostile = "[bold red]boom[/bold red] [/dim] $x"
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason=hostile)
+            await pilot.pause()
+            assert msg._reject_reason == hostile
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+            rendered = str(msg._reject_reason_widget.render())
+            assert "boom" in rendered
+            assert "$x" in rendered
+
 
 class TestUserMessageHighlighting:
     """Test UserMessage highlighting of `@mentions` and `/commands`."""

@@ -1249,6 +1249,12 @@ async def execute_task_textual(
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
                                 adapter._current_tool_messages.clear()
+                                # Bare reject aborts the turn and shows the
+                                # canned "Command rejected" banner so the user
+                                # can redirect. When a reason is supplied, the
+                                # reason itself serves as feedback for the
+                                # agent: keep `any_rejected=False` so the
+                                # stream resumes and the banner is suppressed.
                                 if reject_message is None:
                                     any_rejected = True
                             else:

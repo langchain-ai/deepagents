@@ -377,16 +377,15 @@ class TestOptionOrdering:
 class TestRejectWithReason:
     """Tests for the free-text reject mode (`action_reject_with_reason`)."""
 
-    def test_help_hides_tab_amend_until_reject_selected(self) -> None:
-        """The Tab amendment hint should only appear on the Reject option."""
+    def test_help_hides_tab_hint_until_reject_selected(self) -> None:
+        """The Tab reason hint should only appear on the Reject option."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         menu._selected = 0
-        assert "Tab amend" not in menu._compose_help_text()
+        assert "Tab" not in menu._compose_help_text()
 
         menu._selected = 2
         help_text = menu._compose_help_text()
-        assert "Tab amend" in help_text
-        assert "reject with reason" not in help_text
+        assert "Tab add reason" in help_text
 
     def test_update_options_refreshes_help_for_selected_option(self) -> None:
         """Moving between options should refresh the footer hint state."""
@@ -398,7 +397,7 @@ class TestRejectWithReason:
         menu._update_options()
 
         menu._help_widget.update.assert_called_once()
-        assert "Tab amend" in menu._help_widget.update.call_args.args[0]
+        assert "Tab add reason" in menu._help_widget.update.call_args.args[0]
 
     def test_move_actions_no_op_while_input_mode_active(self) -> None:
         """Arrow-key bindings should not move the menu while amending a reject."""
@@ -536,3 +535,106 @@ class TestRejectWithReason:
             await pilot.pause()
 
         assert decision_received == {"type": "reject"}
+
+    async def test_escape_during_reason_cancels_without_deciding(self) -> None:
+        """Esc from the reason input must close it without posting a decision.
+
+        Verifies the cancel-first behavior end-to-end: typed reason is dropped,
+        no `Decided` posts, and a subsequent `n` still produces a plain reject.
+        """
+        from textual.app import App, ComposeResult
+
+        decisions: list[dict[str, str]] = []
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                decisions.append(event.decision)
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down", "down")
+            await pilot.press("tab")
+            await pilot.pause()
+            for ch in "wip":
+                await pilot.press(ch)
+            menu = pilot.app.query_one(ApprovalMenu)
+            reason_input = menu._reason_input
+            assert reason_input is not None
+            # Esc from the reason Input — verify the cancel state directly so
+            # the test does not depend on which widget surfaces the key event.
+            menu.action_select_reject()
+            await pilot.pause()
+            assert decisions == []
+            assert menu._reason_input_active is False
+            assert reason_input.display is False
+            # Plain reject still works afterwards.
+            await pilot.press("n")
+            await pilot.pause()
+
+        assert decisions == [{"type": "reject"}]
+
+    async def test_on_blur_keeps_focus_on_input_while_active(self) -> None:
+        """Focus-trap must skip re-focus while the reason `Input` is active.
+
+        Without this, the menu would steal focus mid-typing and the typed
+        reason would be lost.
+        """
+        from textual.app import App, ComposeResult
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down", "down")
+            await pilot.press("tab")
+            await pilot.pause()
+            menu = pilot.app.query_one(ApprovalMenu)
+            assert menu._reason_input_active is True
+            assert menu._reason_input is not None
+            # Type something so we can confirm the value survives a blur.
+            for ch in "ok":
+                await pilot.press(ch)
+            await pilot.pause()
+            # Force-emit a blur event; menu must not steal focus back.
+            from textual.events import Blur
+
+            menu.on_blur(Blur())
+            await pilot.pause()
+            assert pilot.app.focused is menu._reason_input
+            assert menu._reason_input.value == "ok"
+
+    def test_on_input_submitted_drops_inactive_event_without_decision(self) -> None:
+        """A stray submit after the input was cancelled must not decide.
+
+        Guards against the Esc-then-Enter race: Esc flips `_reason_input_active`
+        off; a queued Submitted should be silently dropped (with debug log)
+        rather than posting a phantom reject.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu.set_future(future)
+        reason_input = MagicMock(value="late", display=False)
+        menu._reason_input = reason_input
+        menu._reason_input_active = False
+        menu._handle_selection = MagicMock()  # type: ignore[method-assign]
+
+        event = SimpleNamespace(input=reason_input, value="late", stop=MagicMock())
+        menu.on_input_submitted(event)  # type: ignore[arg-type]
+
+        event.stop.assert_called_once()
+        menu._handle_selection.assert_not_called()  # type: ignore[attr-defined]
+        assert not future.done()
+        loop.close()

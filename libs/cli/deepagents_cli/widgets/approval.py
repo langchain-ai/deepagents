@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -33,13 +34,15 @@ from deepagents_cli.unicode_security import (
 )
 from deepagents_cli.widgets.tool_renderers import get_renderer
 
+logger = logging.getLogger(__name__)
+
 # Max length for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 # Max number of lines for truncated shell command display
 _SHELL_COMMAND_TRUNCATE_LINES: int = 5
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
-# Option index for the Reject choice; see `_handle_selection`'s `decision_map`.
+# Must match the "reject" entry in `_handle_selection`'s decision map.
 _REJECT_OPTION_INDEX: int = 2
 
 
@@ -170,7 +173,7 @@ class ApprovalMenu(Container):
         self._command_widget: Static | None = None
         self._has_expandable_command = self._check_expandable_command()
         self._security_warnings = self._collect_security_warnings()
-        # Free-text reject mode (Tab on Reject) — see `action_reject_with_reason`
+        # Free-text reject mode state (Tab on Reject opens an inline Input).
         self._reason_input: Input | None = None
         self._reason_input_active = False
         self._help_widget: Static | None = None
@@ -510,7 +513,15 @@ class ApprovalMenu(Container):
         """
         if self._reason_input_active:
             return
-        if self._selected != _REJECT_OPTION_INDEX or self._reason_input is None:
+        if self._selected != _REJECT_OPTION_INDEX:
+            return
+        if self._reason_input is None:
+            # Lifecycle bug: Tab fired before `compose()` populated the Input ref.
+            # Logging makes the silent no-op debuggable instead of invisible.
+            logger.warning(
+                "action_reject_with_reason: _reason_input is None; menu may not "
+                "be mounted yet"
+            )
             return
         self._reason_input_active = True
         self._reason_input.value = ""
@@ -531,9 +542,17 @@ class ApprovalMenu(Container):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Submit the reject decision with the typed reason (if any)."""
-        if event.input is not self._reason_input or not self._reason_input_active:
+        # Stop before the guard so a stray submit (e.g. queued after Esc closed
+        # the input) cannot bubble to a parent and be re-interpreted, and so a
+        # foreign Input's submission is never misrouted through this handler.
+        if event.input is not self._reason_input:
             return
         event.stop()
+        if not self._reason_input_active:
+            logger.debug(
+                "on_input_submitted fired with inactive reason input; dropping"
+            )
+            return
         reason = event.value.strip()
         self._reason_input_active = False
         self._handle_selection(2, reject_message=reason or None)

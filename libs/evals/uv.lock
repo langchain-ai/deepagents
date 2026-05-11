@@ -478,7 +478,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.55"
+version = "0.0.56"
 source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

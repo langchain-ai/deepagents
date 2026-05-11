@@ -646,6 +646,11 @@ function promptValue(options = {}) {
   }
   return prompt;
 }
+function clearPromptInput() {
+  const input = document.getElementById('prompt');
+  input.value = '';
+  input.setCustomValidity('');
+}
 document.getElementById('prompt').addEventListener('input', (event) => {
   if (event.target.value.trim()) event.target.setCustomValidity('');
 });
@@ -908,6 +913,7 @@ document.getElementById('btn-end-early').onclick = () => {
   api('/api/round/end-early', { scores: roundScores() }).then((result) => {
     if (result.ok && result.json && result.json.state) {
       renderState(result.json.state);
+      clearPromptInput();
     }
     if (!result.ok && result.json && result.json.detail) {
       setEndError(String(result.json.detail));
@@ -1005,7 +1011,10 @@ document.getElementById('btn-list').onclick = async () => {
 document.getElementById('btn-times-up').onclick = () => api('/api/players/times-up', { all: true });
 document.getElementById('btn-clear').onclick = () => {
   api('/api/players/clear', { all: true }).then((result) => {
-    if (result.ok && result.json && result.json.obs) renderState(result.json.obs);
+    if (result.ok && result.json && result.json.obs) {
+      renderState(result.json.obs);
+      clearPromptInput();
+    }
   });
 };
 refreshPlayers();

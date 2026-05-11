@@ -437,6 +437,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("renderPromptEditor", response.text)
         self.assertIn("edit.textContent = 'Edit'", response.text)
         self.assertIn("save.textContent = 'Save'", response.text)
+        self.assertIn("function clearPromptInput()", response.text)
+        self.assertGreaterEqual(response.text.count("clearPromptInput();"), 2)
         self.assertNotIn("Send prompt to all", response.text)
 
 

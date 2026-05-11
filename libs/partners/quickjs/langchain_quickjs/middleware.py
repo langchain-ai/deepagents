@@ -521,6 +521,3 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         # half-unloaded.
         with contextlib.suppress(Exception):
             self._registry.close()
-
-
-REPLMiddleware = CodeInterpreterMiddleware

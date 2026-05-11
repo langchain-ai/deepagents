@@ -205,13 +205,13 @@ class TestTokenDisplay:
             display = pilot.app.query_one("#tokens-display")
             assert str(display.render()) == "... tokens"
 
-    async def test_show_pending_tokens_before_count_shows_placeholder(self) -> None:
+    async def test_show_pending_tokens_before_count_leaves_display_empty(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            assert str(display.render()) == ""
 
     async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.

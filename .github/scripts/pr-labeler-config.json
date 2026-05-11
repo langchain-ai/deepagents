@@ -50,12 +50,12 @@
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
-    "code": "deepagents-code",
+    "code": "dcode",
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
-    "deepagents-code": "deepagents-code",
+    "deepagents-code": "dcode",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
@@ -97,7 +97,7 @@
       "skipExcludedFiles": true
     },
     {
-      "label": "deepagents-code",
+      "label": "dcode",
       "prefix": "libs/code/",
       "skipExcludedFiles": true
     },

@@ -1,5 +1,19 @@
 # Deep Agents CLI Changelog
 
+## [0.0.54](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.53...deepagents-cli==0.0.54) (2026-05-11)
+
+### Features
+
+* Allow filtering threads by directory ([#3290](https://github.com/langchain-ai/deepagents/issues/3290)) ([07a973a](https://github.com/langchain-ai/deepagents/commit/07a973ae5b0256fddfd9591dc88c7987e5581264))
+* Show sandbox provider in header `sub_title` ([#3295](https://github.com/langchain-ai/deepagents/issues/3295)) ([779f7f4](https://github.com/langchain-ai/deepagents/commit/779f7f45c501f3c6d53e12087e3d4c340ef8aded))
+* Surface sandbox startup errors in server crash messages ([#3306](https://github.com/langchain-ai/deepagents/issues/3306)) ([2606d57](https://github.com/langchain-ai/deepagents/commit/2606d57b623f16955df6f91e693051f4b61f6120))
+
+### Bug Fixes
+
+* Allow TUI launch without preconfigured model credentials ([#3301](https://github.com/langchain-ai/deepagents/issues/3301)) ([aa28ff7](https://github.com/langchain-ai/deepagents/commit/aa28ff73768a826b216bfa54d76ecd313c325077))
+* Suppress token placeholder on first invoke ([#3302](https://github.com/langchain-ai/deepagents/issues/3302)) ([c21dee2](https://github.com/langchain-ai/deepagents/commit/c21dee2e9bc1a7d3f52ff62e9e66d1caaaf7b464))
+* Sync thread ID and render clickable link on `/clear` ([#3305](https://github.com/langchain-ai/deepagents/issues/3305)) ([0904974](https://github.com/langchain-ai/deepagents/commit/0904974d52dff259809d00a7a8b26c3e894cc0c0))
+
 ## [0.0.53](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.52...deepagents-cli==0.0.53) (2026-05-10)
 
 ### Features

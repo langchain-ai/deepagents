@@ -6,6 +6,7 @@ import os
 import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -687,6 +688,64 @@ class TestAgentResolutionScope:
         assert mock_list.await_args.kwargs["agent_name"] is None  # type: ignore[union-attr]
         load_recent.assert_not_called()
         valid_recent.assert_not_called()
+
+
+class TestThreadsListCwdFilter:
+    """Tests for `deepagents threads list --cwd` path normalization."""
+
+    @staticmethod
+    def _run_threads_list(*args: str) -> AsyncMock:
+        from deepagents_cli.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "threads", "list", *args]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_cli.main.check_cli_dependencies"),
+            patch(
+                "deepagents_cli.sessions.list_threads_command",
+                new_callable=AsyncMock,
+            ) as mock_list,
+        ):
+            cli_main()
+
+        return mock_list
+
+    def test_no_value_cwd_uses_current_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare `--cwd` filters by the current working directory."""
+        monkeypatch.chdir(tmp_path)
+
+        mock_list = self._run_threads_list("--cwd")
+
+        assert mock_list.await_args.kwargs["cwd"] == str(Path.cwd())  # type: ignore[union-attr]
+
+    def test_explicit_relative_cwd_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit relative paths match absolute stored cwd metadata."""
+        project = tmp_path / "project"
+        project.mkdir()
+        monkeypatch.chdir(project)
+
+        mock_list = self._run_threads_list("--cwd", ".")
+
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
+
+    def test_explicit_home_cwd_is_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit `~` paths match absolute stored cwd metadata."""
+        project = tmp_path / "repo"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        mock_list = self._run_threads_list("--cwd", "~/repo")
+
+        assert mock_list.await_args.kwargs["cwd"] == str(project.resolve())  # type: ignore[union-attr]
 
 
 class TestResolveAgentArg:

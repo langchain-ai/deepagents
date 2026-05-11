@@ -1,29 +1,45 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from control_server import app as app_mod
+from control_server import site_urls as site_urls_mod
+from control_server.round_timer import RoundTimer
+
+
+def _reset_module_globals() -> None:
+    """Reset every mutable module-level singleton `control_server.app` owns.
+
+    Without this, `_round_counter`/`_round_timer` leak across tests:
+    counter assertions flake after the first run and pending timer
+    tasks leak into the next test's event loop.
+    """
+    app_mod._connected_ports.clear()
+    app_mod._ready_players.clear()
+    app_mod._model_ready_ports.clear()
+    app_mod._prompt_pool.clear()
+    app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
+    app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
+    app_mod._round_context.clear()
+    app_mod._last_eval_results.clear()
+    app_mod._round_counter = 0
+    # Swap in a fresh RoundTimer rather than awaiting cancel() across
+    # the previous test's event loop, which TestClient has already
+    # closed.
+    app_mod._round_timer = RoundTimer()
+    app_mod._eval_lock = None
 
 
 class TestReadyPlayers(unittest.TestCase):
     def setUp(self) -> None:
-        app_mod._connected_ports.clear()
-        app_mod._ready_players.clear()
-        app_mod._model_ready_ports.clear()
-        app_mod._prompt_pool.clear()
-        app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
-        app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
+        _reset_module_globals()
 
     def tearDown(self) -> None:
-        app_mod._connected_ports.clear()
-        app_mod._ready_players.clear()
-        app_mod._model_ready_ports.clear()
-        app_mod._prompt_pool.clear()
-        app_mod._prompt_pool.update(enumerate(app_mod.DEFAULT_PROMPTS, start=1))
-        app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
+        _reset_module_globals()
 
     def test_ready_players_forward_to_obs_in_submission_order(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -172,20 +188,70 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("Prompt pool is empty.", response.text)
 
-    def test_round_end_early_signals_players_then_ends_round(self) -> None:
+    def test_round_start_arms_the_server_authoritative_timer(self) -> None:
         client = TestClient(app_mod.create_app())
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
-        calls: list[str] = []
+        app_mod._model_ready_ports.update({"3001", "3002"})
+        forward = AsyncMock(return_value={"phase": "coding"})
+        timer_start = AsyncMock()
 
-        async def times_up(ports: list[str] | None) -> list[str]:
-            calls.append("times-up")
-            self.assertEqual(ports, ["3001", "3002"])
-            return ["3001", "3002"]
+        env = {"VIBE_ROUND_SECONDS": "120"}
+        with (
+            patch("control_server.app._forward", forward),
+            patch(
+                "control_server.player_dispatch.send_prompt_to_players",
+                new=AsyncMock(return_value=["3001", "3002"]),
+            ),
+            patch.dict("os.environ", env, clear=False),
+            patch.object(app_mod._round_timer, "start", new=timer_start),
+        ):
+            response = client.post(
+                "/api/round/start",
+                json={"prompt": "build something", "contestants": ["Alice", "Bob"]},
+            )
 
-        async def forward(event: str, payload: dict[str, object]) -> dict[str, str]:
-            calls.append(event)
-            self.assertEqual(payload, {"scores": {"Alice": 8.2, "Bob": 7.5}})
-            return {"phase": "scoreboard"}
+        self.assertEqual(response.status_code, 200)
+        # TestClient closes its per-request event loop on return, so we
+        # can't observe the live timer task. Asserting `start` was
+        # awaited with the configured duration is the durable contract.
+        timer_start.assert_awaited_once()
+        duration_arg = timer_start.await_args.args[0]
+        self.assertEqual(duration_arg, 120.0)
+        self.assertEqual(
+            timer_start.await_args.kwargs["start_delay_secs"],
+            app_mod._PLAYER_LAUNCH_COUNTDOWN_SECS,
+        )
+        self.assertEqual(response.json()["duration_secs"], 120.0)
+        self.assertEqual(response.json()["round_num"], 1)
+
+    def test_round_end_early_runs_judge_and_forwards_scores(self) -> None:
+        from control_server import eval_runner
+
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._round_context.update(
+            {
+                "prompt": "build a taco truck",
+                "round_num": 1,
+                "contestants": ["Alice", "Bob"],
+            }
+        )
+
+        async def fake_run_eval(
+            *, url: str, site_name: str, prompt: str, round_num: int, work_dir: Any
+        ) -> eval_runner.EvalResult:
+            del url, prompt, round_num, work_dir
+            axes: dict[str, float | None] = dict.fromkeys(eval_runner.LLM_AXES, 0.5)
+            return eval_runner.EvalResult.success(
+                site_name=site_name,
+                url="http://example/x",
+                prompt="p",
+                round_num=1,
+                axes=axes,
+            )
+
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        times_up = AsyncMock(return_value=["3001", "3002"])
 
         with (
             patch(
@@ -193,17 +259,30 @@ class TestReadyPlayers(unittest.TestCase):
                 new=AsyncMock(return_value={"phase": "coding"}),
             ),
             patch("control_server.app._forward", forward),
+            patch(
+                "control_server.app.site_urls.resolve",
+                lambda port: site_urls_mod.SiteUrlResult(
+                    url=f"http://192.168.1.{port[-1]}:{port}", reason=None
+                ),
+            ),
             patch("control_server.player_dispatch.times_up_players", times_up),
+            patch("control_server.eval_runner.run_eval", new=fake_run_eval),
         ):
-            response = client.post(
-                "/api/round/end-early",
-                json={"scores": {"Alice": 8.2, "Bob": 7.5}},
-            )
+            response = client.post("/api/round/end-early", json={})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["times_up_sent"], ["3001", "3002"])
-        self.assertEqual(response.json()["state"], {"phase": "scoreboard"})
-        self.assertEqual(calls, ["times-up", "end"])
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 5.0, "Bob": 5.0}},
+        )
+        body = response.json()
+        names = sorted(entry["name"] for entry in body["results"])
+        self.assertEqual(names, ["Alice", "Bob"])
+        for entry in body["results"]:
+            self.assertEqual(entry["overall"], 0.5)
+            self.assertEqual(entry["obs_score"], 5.0)
+            self.assertFalse(entry["fallback"])
+        self.assertIsNone(body["obs_error"])
 
     def test_round_end_early_rejects_when_not_coding(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -219,7 +298,7 @@ class TestReadyPlayers(unittest.TestCase):
                 new=AsyncMock(),
             ) as times_up,
         ):
-            response = client.post("/api/round/end-early", json={"scores": {}})
+            response = client.post("/api/round/end-early", json={})
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Cannot end early while OBS is in phase `idle`.", response.text)
@@ -422,9 +501,13 @@ class TestReadyPlayers(unittest.TestCase):
         )
         self.assertIn('aria-disabled="true">Start</button>', response.text)
         self.assertIn(
-            'id="btn-end-early" aria-disabled="true">End early</button>',
+            'id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>',
             response.text,
         )
+        self.assertIn('id="btn-open-override"', response.text)
+        self.assertIn('id="override-modal"', response.text)
+        self.assertIn('id="timer-clock"', response.text)
+        self.assertIn('id="eval-results"', response.text)
         self.assertIn('id="end-error"', response.text)
         self.assertIn('id="obs-phase">unknown</span>', response.text)
         self.assertIn('id="state-summary"', response.text)
@@ -440,6 +523,235 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("function clearPromptInput()", response.text)
         self.assertGreaterEqual(response.text.count("clearPromptInput();"), 2)
         self.assertNotIn("Send prompt to all", response.text)
+
+
+class TestRoundOverrideEnd(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_module_globals()
+
+    def tearDown(self) -> None:
+        _reset_module_globals()
+
+    def test_override_end_forwards_supplied_scores_without_judge(self) -> None:
+        client = TestClient(app_mod.create_app())
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        run_eval = AsyncMock()
+
+        with (
+            patch("control_server.app._forward", forward),
+            patch("control_server.eval_runner.run_eval", new=run_eval),
+        ):
+            response = client.post(
+                "/api/round/override-end",
+                json={"scores": {"Alice": 9.5, "Bob": 4.2}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 9.5, "Bob": 4.2}},
+        )
+        run_eval.assert_not_awaited()
+
+    def test_override_end_rejects_out_of_range_scores(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post(
+            "/api/round/override-end",
+            json={"scores": {"Alice": 11.0, "Bob": -1.0}},
+        )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_override_end_cancels_the_round_timer(self) -> None:
+        client = TestClient(app_mod.create_app())
+        timer_cancel = AsyncMock()
+
+        with (
+            patch(
+                "control_server.app._forward",
+                new=AsyncMock(return_value={"phase": "scoreboard"}),
+            ),
+            patch.object(app_mod._round_timer, "cancel", new=timer_cancel),
+        ):
+            response = client.post(
+                "/api/round/override-end",
+                json={"scores": {"Alice": 5.0, "Bob": 5.0}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        timer_cancel.assert_awaited_once()
+
+
+class TestRoundEvalFallback(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_module_globals()
+
+    def tearDown(self) -> None:
+        _reset_module_globals()
+
+    def test_missing_site_url_yields_fallback_results(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._round_context.update(
+            {
+                "prompt": "build something",
+                "round_num": 1,
+                "contestants": ["Alice", "Bob"],
+            }
+        )
+
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        times_up = AsyncMock(return_value=[])
+
+        async def never_called(
+            *, url: str, site_name: str, prompt: str, round_num: int, work_dir: Any
+        ) -> object:
+            raise AssertionError(
+                "run_eval should not be called when site URL is missing"
+            )
+
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "coding"}),
+            ),
+            patch("control_server.app._forward", forward),
+            patch(
+                "control_server.app.site_urls.resolve",
+                lambda port: site_urls_mod.SiteUrlResult(
+                    url=None, reason=f"unset for {port}"
+                ),
+            ),
+            patch("control_server.player_dispatch.times_up_players", times_up),
+            patch("control_server.eval_runner.run_eval", new=never_called),
+        ):
+            response = client.post("/api/round/end-early", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["results"]), 2)
+        for entry in body["results"]:
+            self.assertTrue(entry["fallback"])
+            # Reason should reflect the resolver's diagnostic, not a
+            # generic "no site URL configured" string.
+            self.assertTrue(entry["fallback_reason"].startswith("unset for"))
+            self.assertEqual(entry["url"], "")
+        forward.assert_awaited_once()
+        forwarded_event, forwarded_payload = forward.await_args.args
+        self.assertEqual(forwarded_event, "end")
+        self.assertEqual(set(forwarded_payload["scores"].keys()), {"Alice", "Bob"})
+
+    def test_crashing_eval_does_not_abort_other_players(self) -> None:
+        from control_server import eval_runner
+
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._round_context.update(
+            {"prompt": "p", "round_num": 1, "contestants": ["Alice", "Bob"]}
+        )
+
+        async def half_crashing(
+            *, url: str, site_name: str, prompt: str, round_num: int, work_dir: Any
+        ) -> eval_runner.EvalResult:
+            del url, prompt, round_num, work_dir
+            if site_name == "Alice":
+                msg = "synthetic blowup"
+                raise RuntimeError(msg)
+            return eval_runner.EvalResult.success(
+                site_name=site_name,
+                url="http://example/x",
+                prompt="p",
+                round_num=1,
+                axes=dict.fromkeys(eval_runner.LLM_AXES, 0.6),
+            )
+
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "coding"}),
+            ),
+            patch(
+                "control_server.app._forward",
+                new=AsyncMock(return_value={"phase": "scoreboard"}),
+            ),
+            patch(
+                "control_server.app.site_urls.resolve",
+                lambda port: site_urls_mod.SiteUrlResult(
+                    url=f"http://x:{port}", reason=None
+                ),
+            ),
+            patch(
+                "control_server.player_dispatch.times_up_players",
+                new=AsyncMock(return_value=["3001", "3002"]),
+            ),
+            patch("control_server.eval_runner.run_eval", new=half_crashing),
+        ):
+            response = client.post("/api/round/end-early", json={})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        # Both players must still appear; one as a synthesized fallback
+        # carrying the crash reason, the other with the real score.
+        names_by_fallback = {
+            entry["name"]: entry["fallback"] for entry in body["results"]
+        }
+        self.assertEqual(names_by_fallback, {"Alice": True, "Bob": False})
+        alice = next(e for e in body["results"] if e["name"] == "Alice")
+        self.assertIn("eval crashed", alice["fallback_reason"])
+
+
+class TestStateExposesTimerAndEval(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_module_globals()
+
+    def tearDown(self) -> None:
+        _reset_module_globals()
+
+    def test_state_includes_timer_round_and_namespaced_obs_error(self) -> None:
+        client = TestClient(app_mod.create_app())
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(return_value={"phase": "idle"}),
+        ):
+            response = client.get("/api/state")
+        body = response.json()
+        self.assertEqual(body["timer"]["running"], False)
+        self.assertEqual(body["timer"]["duration_secs"], 0.0)
+        self.assertEqual(body["eval"]["results"], [])
+        self.assertIsNone(body["obs_error"])
+        self.assertEqual(body["phase"], "idle")
+        self.assertIn("round", body)
+        self.assertIsNone(body["round"]["prompt"])
+        self.assertEqual(body["round"]["contestants"], [])
+        self.assertIsNone(body["round"]["duration_warning"])
+
+    def test_state_namespaces_obs_runner_errors(self) -> None:
+        from fastapi import HTTPException
+
+        client = TestClient(app_mod.create_app())
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(side_effect=HTTPException(status_code=502, detail="down")),
+        ):
+            response = client.get("/api/state")
+        body = response.json()
+        self.assertEqual(body["obs_error"], {"detail": "down", "status": 502})
+        # Critically: real OBS keys must NOT have been overwritten by the
+        # diagnostic envelope (defense in depth — empty `obs` payload here).
+        self.assertNotIn("status", body)
+
+    def test_state_surfaces_invalid_round_duration_env(self) -> None:
+        client = TestClient(app_mod.create_app())
+        env = {"VIBE_ROUND_SECONDS": "not-a-number"}
+        with (
+            patch("control_server.app._get_obs_state", new=AsyncMock(return_value={})),
+            patch.dict("os.environ", env, clear=False),
+        ):
+            response = client.get("/api/state")
+        body = response.json()
+        self.assertIsNotNone(body["round"]["duration_warning"])
+        self.assertIn("not-a-number", body["round"]["duration_warning"])
 
 
 if __name__ == "__main__":

@@ -11,23 +11,64 @@ No auth, no persistence, no websockets. Localhost MVP.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
+import tempfile
 import time
-from typing import Any
+from pathlib import Path
+from typing import Annotated, Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 
-from control_server import iterm_ctrl, player_dispatch
+from control_server import eval_runner, iterm_ctrl, player_dispatch, site_urls
+from control_server.round_timer import RoundTimer
 
 logger = logging.getLogger(__name__)
 
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
 PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
+_DEFAULT_ROUND_DURATION_SECS = 300.0
+_PLAYER_LAUNCH_COUNTDOWN_SECS = 5.0
+"""Seconds the CLI blocks on `LaunchCountdownScreen` after controller start."""
+
+
+def _round_duration_config() -> tuple[float, str | None]:
+    """Return `(duration_secs, warning)` parsed from `VIBE_ROUND_SECONDS`.
+
+    `warning` is non-None when the env var is set but unusable, so the
+    operator UI can surface "configured value was rejected, using
+    default" rather than silently running a 5-minute round.
+    """
+    raw = os.environ.get("VIBE_ROUND_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_ROUND_DURATION_SECS, None
+    try:
+        value = float(raw)
+    except ValueError:
+        return (
+            _DEFAULT_ROUND_DURATION_SECS,
+            f"Invalid VIBE_ROUND_SECONDS={raw!r}; using "
+            f"{_DEFAULT_ROUND_DURATION_SECS:g}s.",
+        )
+    if value <= 0:
+        return (
+            _DEFAULT_ROUND_DURATION_SECS,
+            f"VIBE_ROUND_SECONDS={raw!r} must be positive; using "
+            f"{_DEFAULT_ROUND_DURATION_SECS:g}s.",
+        )
+    return value, None
+
+
+def _round_duration_secs() -> float:
+    """Round length in seconds. Override with `VIBE_ROUND_SECONDS`."""
+    duration, _ = _round_duration_config()
+    return duration
+
 
 DEFAULT_PROMPTS = (
     "taco truck",
@@ -122,10 +163,6 @@ class StartRequest(BaseModel):
         return prompt or None
 
 
-class EndRequest(BaseModel):
-    scores: dict[str, float] = Field(default_factory=dict)
-
-
 class PromptRequest(BaseModel):
     """Prompt pool entry created or edited by the controller."""
 
@@ -191,6 +228,51 @@ _prompt_pool: dict[int, str] = dict(enumerate(DEFAULT_PROMPTS, start=1))
 _next_prompt_id = len(_prompt_pool) + 1
 
 
+_round_timer = RoundTimer()
+_round_context: dict[str, Any] = {}
+_round_counter = 0
+_last_eval_results: list[dict[str, Any]] = []
+_eval_lock: asyncio.Lock | None = None
+
+
+def _get_eval_lock() -> asyncio.Lock:
+    """Return the eval-orchestration lock, lazy-bound to the running loop."""
+    global _eval_lock
+    if _eval_lock is None:
+        _eval_lock = asyncio.Lock()
+    return _eval_lock
+
+
+def _eval_workdir() -> Path:
+    """Return the per-process eval results directory, resolved lazily.
+
+    Read on each call (rather than at import time) so tests and
+    operators can override `VIBE_EVAL_RESULTS_DIR` after the module has
+    already loaded.
+    """
+    base = os.environ.get("VIBE_EVAL_RESULTS_DIR", "").strip() or tempfile.gettempdir()
+    return Path(base) / "vibe-eval-results"
+
+
+class OverrideScoresRequest(BaseModel):
+    """Manual smoke-test override: bypass the judge and force OBS scores.
+
+    Scores are constrained to the OBS scoreboard's 0..10 scale; `ge`/`le`
+    bounds also reject `NaN` and `inf` payloads, so a malformed POST is
+    a 422 rather than a poisoned scoreboard.
+    """
+
+    scores: dict[str, Annotated[float, Field(ge=0, le=10)]] = Field(
+        default_factory=dict,
+    )
+
+
+def _reset_round_state() -> None:
+    """Forget the in-flight round context and the last eval snapshot."""
+    _round_context.clear()
+    _last_eval_results.clear()
+
+
 def _ready_contestants() -> list[str]:
     """Return ready player names in submission order."""
     return list(_ready_players.values())
@@ -247,9 +329,7 @@ async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     url = f"{VIBE_OBS_API}/transition"
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            response = await client.post(
-                url, json={"event": event, "payload": payload}
-            )
+            response = await client.post(url, json={"event": event, "payload": payload})
         except httpx.HTTPError as exc:
             msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
             raise HTTPException(status_code=502, detail=msg) from exc
@@ -283,21 +363,205 @@ async def _get_obs_state() -> dict[str, Any]:
     return response.json()
 
 
-async def _end_round_early(scores: dict[str, float]) -> dict[str, Any]:
-    """Signal active players that time is up, then end a live round."""
-    state = await _get_obs_state()
-    phase = state.get("phase")
-    if phase != "coding":
-        msg = f"Cannot end early while OBS is in phase `{phase}`."
-        raise HTTPException(status_code=409, detail=msg)
+def _round_player_targets() -> list[dict[str, str]]:
+    """Return per-player eval targets captured from current state.
 
-    ports = _round_player_ports()
-    times_up_sent = await player_dispatch.times_up_players(ports or None)
-    ended = await _forward("end", {"scores": scores})
+    Each entry has `port`, `name`, and `url`. Players missing a site
+    URL (no relay configured, or a malformed relay) are still returned
+    so the caller can log a fallback for them. When the resolver
+    surfaced a diagnostic reason, it is carried in `url_reason` so the
+    eventual fallback can name the actual cause rather than "no URL".
+    """
+    targets: list[dict[str, str]] = []
+    for port in _round_player_ports():
+        name = _ready_players.get(port, port)
+        resolved = site_urls.resolve(port)
+        target: dict[str, str] = {
+            "port": port,
+            "name": name,
+            "url": resolved.url or "",
+        }
+        if resolved.reason:
+            target["url_reason"] = resolved.reason
+        targets.append(target)
+    return targets
+
+
+def _eval_to_payload(result: eval_runner.EvalResult, *, port: str) -> dict[str, Any]:
+    """Coerce an `EvalResult` to the JSON shape the OBS UI consumes."""
     return {
-        "state": ended,
-        "times_up_sent": times_up_sent,
+        "port": port,
+        "name": result.site_name,
+        "url": result.url,
+        "axes": result.axes,
+        "overall": result.overall,
+        "obs_score": (
+            eval_runner.to_obs_score(result.overall)
+            if result.overall is not None
+            else 0.0
+        ),
+        "fallback": result.fallback,
+        "fallback_reason": result.fallback_reason,
     }
+
+
+async def _evaluate_one(
+    target: dict[str, str],
+    *,
+    prompt: str,
+    round_num: int,
+    work_dir: Path,
+) -> dict[str, Any]:
+    """Run the judge for a single player; coerce to a JSON-friendly dict."""
+    port = target["port"]
+    name = target["name"]
+    url = target["url"]
+    if not url:
+        reason = target.get("url_reason") or "no site URL configured for port"
+        result = eval_runner.EvalResult.fallback_for(
+            site_name=name,
+            url="",
+            prompt=prompt,
+            round_num=round_num,
+            reason=reason,
+        )
+    else:
+        result = await eval_runner.run_eval(
+            url=url,
+            site_name=name,
+            prompt=prompt,
+            round_num=round_num,
+            work_dir=work_dir,
+        )
+    if result.fallback:
+        logger.warning(
+            "Eval fallback for %s (port %s, url %s): %s",
+            name,
+            port,
+            url or "<none>",
+            result.fallback_reason,
+        )
+    return _eval_to_payload(result, port=port)
+
+
+async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
+    """Score the current round's players and forward the end event to OBS.
+
+    Args:
+        reason: Diagnostic tag, either `"timer"` or `"end_early"`.
+
+    Returns:
+        Per-player eval results (also stored in `_last_eval_results`).
+    """
+    async with _get_eval_lock():
+        if not _round_context:
+            logger.info("Skipping eval (%s): no round context.", reason)
+            return []
+        prompt = str(_round_context.get("prompt") or "")
+        round_num = int(_round_context.get("round_num") or 0)
+        targets = _round_player_targets()
+        if not targets:
+            logger.info("Skipping eval (%s): no round players.", reason)
+            return []
+
+        workdir = _eval_workdir()
+        workdir.mkdir(parents=True, exist_ok=True)
+        round_dir = workdir / f"round-{round_num}"
+
+        ports = [t["port"] for t in targets]
+        try:
+            await player_dispatch.times_up_players(ports or None)
+        except Exception as exc:
+            logger.exception("Failed to send times-up to players before eval.")
+            _round_context["times_up_error"] = repr(exc)
+        else:
+            _round_context.pop("times_up_error", None)
+
+        raw_results = await asyncio.gather(
+            *[
+                _evaluate_one(
+                    target,
+                    prompt=prompt,
+                    round_num=round_num,
+                    # Isolate per-player so two players with the same
+                    # sanitized site name cannot overwrite each other's
+                    # judge JSON within a single round.
+                    work_dir=round_dir / target["port"],
+                )
+                for target in targets
+            ],
+            return_exceptions=True,
+        )
+
+        per_site: list[dict[str, Any]] = []
+        for target, item in zip(targets, raw_results, strict=True):
+            if isinstance(item, BaseException):
+                logger.exception(
+                    "Eval task crashed for %s (port %s)",
+                    target["name"],
+                    target["port"],
+                    exc_info=item,
+                )
+                synthetic = eval_runner.EvalResult.fallback_for(
+                    site_name=target["name"],
+                    url=target["url"],
+                    prompt=prompt,
+                    round_num=round_num,
+                    reason=f"eval crashed: {item!r}",
+                )
+                per_site.append(_eval_to_payload(synthetic, port=target["port"]))
+            else:
+                per_site.append(item)
+
+        obs_scores = {entry["name"]: entry["obs_score"] for entry in per_site}
+
+        obs_state: dict[str, Any] | None = None
+        obs_error: str | None = None
+        try:
+            obs_state = await _forward("end", {"scores": obs_scores})
+        except HTTPException as exc:
+            obs_error = str(exc.detail)
+            logger.warning("Could not forward eval scores to OBS: %s", exc.detail)
+
+        _last_eval_results.clear()
+        _last_eval_results.extend(per_site)
+        _round_context["last_reason"] = reason
+        _round_context["obs_state"] = obs_state
+        _round_context["obs_error"] = obs_error
+        _round_context["completed_at"] = time.time()
+        return per_site
+
+
+async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
+    """Arm the server-authoritative timer for a freshly started round."""
+    global _round_counter
+    _round_counter += 1
+    _round_context.clear()
+    _last_eval_results.clear()
+    _round_context.update(
+        {
+            "prompt": prompt,
+            "contestants": list(contestants),
+            "round_num": _round_counter,
+            "ports": _round_player_ports(),
+            "started_at": time.time(),
+            "duration_secs": _round_duration_secs(),
+            "start_delay_secs": _PLAYER_LAUNCH_COUNTDOWN_SECS,
+        }
+    )
+
+    async def _on_expire() -> None:
+        logger.info("Round timer expired; auto-evaluating.")
+        try:
+            await _run_round_eval(reason="timer")
+        except Exception:
+            logger.exception("Auto-eval on timer expiry failed.")
+
+    await _round_timer.start(
+        _round_duration_secs(),
+        _on_expire,
+        start_delay_secs=_PLAYER_LAUNCH_COUNTDOWN_SECS,
+    )
 
 
 def _resolve_ports(target: PlayerTarget) -> list[str] | None:
@@ -510,6 +774,93 @@ _INDEX_HTML = """<!doctype html>
     border: 1px solid #2a2a2a;
   }
   #log .err { color: #fca5a5; }
+  .timer-display {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  #timer-clock {
+    font-size: 2.4rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    letter-spacing: 0.04em;
+  }
+  .timer-meta {
+    color: #94a3b8;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  #timer-bar {
+    width: 100%;
+    height: 6px;
+    appearance: none;
+    margin-top: 0.5rem;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #1f2937;
+    border: 0;
+  }
+  #timer-bar::-webkit-progress-bar { background: #1f2937; }
+  #timer-bar::-webkit-progress-value { background: #38bdf8; }
+  #timer-bar::-moz-progress-bar { background: #38bdf8; }
+  .eval-card {
+    border: 1px solid #2a2a2a;
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    margin-top: 0.75rem;
+    background: #0a0a0a;
+  }
+  .eval-card.fallback { border-color: #7f1d1d; }
+  .eval-card h3 {
+    margin: 0 0 0.4rem 0;
+    font-size: 0.95rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .eval-axes {
+    display: grid;
+    grid-template-columns: 9rem 1fr 3rem;
+    gap: 0.25rem 0.6rem;
+    align-items: center;
+    font-size: 0.82rem;
+  }
+  .eval-axes .axis-bar {
+    height: 6px;
+    border-radius: 999px;
+    background: #1f2937;
+    overflow: hidden;
+  }
+  .eval-axes .axis-fill {
+    display: block;
+    height: 100%;
+    background: #22c55e;
+  }
+  .eval-card.fallback .axis-fill { background: #f97316; }
+  .eval-card .fallback-tag {
+    color: #fca5a5;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .eval-overall {
+    margin-top: 0.4rem;
+    color: #cbd5e1;
+    font-size: 0.85rem;
+  }
+  #override-modal {
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    background: #141414;
+    color: #e5e5e5;
+    padding: 1rem 1.25rem;
+    max-width: 480px;
+    width: 90%;
+  }
+  #override-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
 </style>
 </head>
 <body>
@@ -547,19 +898,55 @@ _INDEX_HTML = """<!doctype html>
 </section>
 
 <section>
-  <h2>End round</h2>
-  <div class="row">
-    <label>Score 1
-      <input id="s1" type="number" step="0.01" value="8.2">
-    </label>
-    <label>Score 2
-      <input id="s2" type="number" step="0.01" value="7.5">
-    </label>
+  <h2>Round timer</h2>
+  <div class="timer-display">
+    <span id="timer-clock">--:--</span>
+    <span class="timer-meta" id="timer-meta">idle</span>
   </div>
-  <button id="btn-end">End</button>
-  <button class="danger" id="btn-end-early" aria-disabled="true">End early</button>
+  <progress id="timer-bar" max="1" value="0"></progress>
+  <div class="muted">When the timer expires, the LLM judge scores both player websites automatically.</div>
+</section>
+
+<section>
+  <h2>End round</h2>
+  <p class="muted">
+    Scores are computed automatically when the timer expires. End early to
+    stop the round and trigger judging now. Use <em>Override scores</em>
+    for smoke tests when you need to bypass the judge.
+  </p>
+  <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
+  <button class="secondary" id="btn-open-override">Override scores…</button>
   <span class="inline-error" id="end-error" role="alert"></span>
 </section>
+
+<section>
+  <h2>Judge results</h2>
+  <div class="muted">Latest per-axis evaluation. Fallback rows used randomized scores.</div>
+  <div id="eval-results">No results yet.</div>
+</section>
+
+<dialog id="override-modal">
+  <form method="dialog" id="override-form">
+    <h2 style="margin-top:0">Override scores</h2>
+    <p class="muted" style="margin-top:0">
+      Bypass the judge entirely. Use for smoke tests only — the LLM judge is
+      authoritative during live rounds.
+    </p>
+    <div class="row">
+      <label>Score 1
+        <input id="s1" type="number" step="0.01" min="0" max="10" value="8.2">
+      </label>
+      <label>Score 2
+        <input id="s2" type="number" step="0.01" min="0" max="10" value="7.5">
+      </label>
+    </div>
+    <div class="action-line">
+      <button type="button" id="btn-override-submit">Submit override</button>
+      <button type="button" class="secondary" id="btn-override-cancel">Cancel</button>
+    </div>
+    <span class="inline-error" id="override-error" role="alert"></span>
+  </form>
+</dialog>
 
 <section>
   <h2>Game state</h2>
@@ -686,6 +1073,93 @@ function renderState(state) {
   document.getElementById('state-scores').textContent = scoreEntries.length
     ? scoreEntries.map(([name, score]) => `${name}: ${score}`).join(', ')
     : 'none';
+  renderTimer(state.timer);
+  renderEval((state.eval && state.eval.results) || []);
+}
+function formatClock(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return '--:--';
+  const total = Math.max(0, Math.round(seconds));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+function renderTimer(timer) {
+  const clock = document.getElementById('timer-clock');
+  const meta = document.getElementById('timer-meta');
+  const bar = document.getElementById('timer-bar');
+  if (!timer || !timer.running) {
+    clock.textContent = timer && timer.duration_secs
+      ? formatClock(timer.duration_secs)
+      : '--:--';
+    meta.textContent = 'idle';
+    bar.value = 0;
+    bar.max = 1;
+    return;
+  }
+  clock.textContent = formatClock(timer.remaining_secs);
+  meta.textContent = `of ${formatClock(timer.duration_secs)}`;
+  bar.max = timer.duration_secs || 1;
+  bar.value = Math.max(0, (timer.duration_secs || 0) - (timer.remaining_secs || 0));
+}
+function renderEval(results) {
+  const container = document.getElementById('eval-results');
+  container.replaceChildren();
+  if (!results || results.length === 0) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'muted';
+    placeholder.textContent = 'No results yet.';
+    container.appendChild(placeholder);
+    return;
+  }
+  for (const entry of results) {
+    const card = document.createElement('div');
+    card.className = 'eval-card' + (entry.fallback ? ' fallback' : '');
+
+    const header = document.createElement('h3');
+    const label = document.createElement('span');
+    label.textContent = `${entry.name || '?'} — ${(entry.obs_score || 0).toFixed(2)} / 10`;
+    header.appendChild(label);
+    if (entry.fallback) {
+      const tag = document.createElement('span');
+      tag.className = 'fallback-tag';
+      tag.textContent = `fallback: ${entry.fallback_reason || 'unknown'}`;
+      header.appendChild(tag);
+    }
+    card.appendChild(header);
+
+    const axes = document.createElement('div');
+    axes.className = 'eval-axes';
+    const ordered = [
+      'color', 'typography', 'layout', 'content_completeness',
+      'creativity', 'interpretation_quality', 'accessibility',
+    ];
+    for (const axis of ordered) {
+      const value = entry.axes ? entry.axes[axis] : null;
+      const display = value === null || value === undefined ? 'n/a' : (value * 10).toFixed(1);
+      const name = document.createElement('div');
+      name.textContent = axis.replace(/_/g, ' ');
+      const barWrap = document.createElement('div');
+      barWrap.className = 'axis-bar';
+      const fill = document.createElement('span');
+      fill.className = 'axis-fill';
+      fill.style.width = `${Math.round(Math.max(0, Math.min(1, value || 0)) * 100)}%`;
+      barWrap.appendChild(fill);
+      const num = document.createElement('div');
+      num.textContent = display;
+      num.style.textAlign = 'right';
+      axes.append(name, barWrap, num);
+    }
+    card.appendChild(axes);
+
+    if (entry.url) {
+      const overall = document.createElement('div');
+      overall.className = 'eval-overall';
+      overall.textContent = entry.url;
+      card.appendChild(overall);
+    }
+
+    container.appendChild(card);
+  }
 }
 function showRoundStarted() {
   const badge = document.getElementById('round-started');
@@ -897,12 +1371,6 @@ document.getElementById('btn-start').onclick = async () => {
   }
 };
 
-document.getElementById('btn-end').onclick = () => {
-  api('/api/round/end', { scores: roundScores() }).then((result) => {
-    if (result.ok && result.json) renderState(result.json);
-  });
-};
-
 document.getElementById('btn-end-early').onclick = () => {
   if (currentPhase !== 'coding') {
     const message = `No live round to end early. OBS is ${currentPhase}.`;
@@ -910,7 +1378,7 @@ document.getElementById('btn-end-early').onclick = () => {
     log(message, true);
     return;
   }
-  api('/api/round/end-early', { scores: roundScores() }).then((result) => {
+  api('/api/round/end-early', {}).then((result) => {
     if (result.ok && result.json && result.json.state) {
       renderState(result.json.state);
       clearPromptInput();
@@ -921,14 +1389,34 @@ document.getElementById('btn-end-early').onclick = () => {
   });
 };
 
-function roundScores() {
+const overrideModal = document.getElementById('override-modal');
+function openOverrideModal() {
+  document.getElementById('override-error').textContent = '';
+  if (typeof overrideModal.showModal === 'function') overrideModal.showModal();
+  else overrideModal.setAttribute('open', '');
+}
+function closeOverrideModal() {
+  if (typeof overrideModal.close === 'function') overrideModal.close();
+  else overrideModal.removeAttribute('open');
+}
+document.getElementById('btn-open-override').onclick = openOverrideModal;
+document.getElementById('btn-override-cancel').onclick = closeOverrideModal;
+document.getElementById('btn-override-submit').onclick = async () => {
   const c1 = playerName('c1');
   const c2 = playerName('c2');
   const scores = {};
   if (c1) scores[c1] = num('s1');
   if (c2) scores[c2] = num('s2');
-  return scores;
-}
+  const result = await api('/api/round/override-end', { scores });
+  if (result.ok) {
+    closeOverrideModal();
+    refreshState({ quiet: true });
+    return;
+  }
+  if (result.json && result.json.detail) {
+    document.getElementById('override-error').textContent = String(result.json.detail);
+  }
+};
 
 document.getElementById('btn-state').onclick = () => refreshState();
 document.getElementById('btn-reset').onclick = () => {
@@ -986,8 +1474,8 @@ document.getElementById('btn-full-round').onclick = async () => {
     }
     await sleep(2000);
 
-    log('full round: end');
-    r = await api('/api/round/end', { scores });
+    log('full round: end (override, skipping judge)');
+    r = await api('/api/round/override-end', { scores });
     if (!r.ok) return;
     await sleep(2000);
 
@@ -1038,7 +1526,43 @@ def create_app() -> FastAPI:
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
-        return await _get_obs_state()
+        obs: dict[str, Any] = {}
+        obs_error: dict[str, Any] | None = None
+        try:
+            obs = await _get_obs_state()
+        except HTTPException as exc:
+            # Namespaced so a real OBS payload key like "error" or
+            # "status" cannot silently shadow the diagnostic.
+            obs_error = {"detail": str(exc.detail), "status": exc.status_code}
+        snapshot = _round_timer.snapshot()
+        _, duration_warning = _round_duration_config()
+        return {
+            **obs,
+            "obs_error": obs_error,
+            "timer": {
+                "running": snapshot.running,
+                "duration_secs": snapshot.duration_secs,
+                "remaining_secs": snapshot.remaining_secs,
+            },
+            "round": {
+                "prompt": _round_context.get("prompt"),
+                "round_num": _round_context.get("round_num"),
+                "contestants": list(_round_context.get("contestants") or []),
+                "started_at": _round_context.get("started_at"),
+                "completed_at": _round_context.get("completed_at"),
+                "last_reason": _round_context.get("last_reason"),
+                "obs_error": _round_context.get("obs_error"),
+                "times_up_error": _round_context.get("times_up_error"),
+                "duration_warning": duration_warning,
+            },
+            "eval": {
+                "results": list(_last_eval_results),
+            },
+        }
+
+    @app.get("/api/eval/last")
+    async def get_last_eval() -> dict[str, Any]:
+        return {"results": list(_last_eval_results)}
 
     @app.get("/api/prompts")
     async def prompts_list() -> dict[str, list[dict[str, Any]]]:
@@ -1083,30 +1607,70 @@ def create_app() -> FastAPI:
             "start",
             {"prompt": prompt, "contestants": contestants},
         )
-        sent = await player_dispatch.send_prompt_to_players(_round_player_ports(), prompt)
-        return {"state": state, "prompt": prompt, "prompt_sent": sent}
+        sent = await player_dispatch.send_prompt_to_players(
+            _round_player_ports(), prompt
+        )
+        await _start_round_timer(prompt, contestants)
+        return {
+            "state": state,
+            "prompt": prompt,
+            "prompt_sent": sent,
+            "round_num": _round_context.get("round_num"),
+            "duration_secs": _round_context.get("duration_secs"),
+        }
 
     @app.post("/api/round/end")
-    async def round_end(req: EndRequest) -> dict[str, Any]:
-        return await _forward("end", {"scores": req.scores})
+    async def round_end() -> dict[str, Any]:
+        await _round_timer.cancel()
+        results = await _run_round_eval(reason="end_now")
+        return {
+            "state": _round_context.get("obs_state"),
+            "obs_error": _round_context.get("obs_error"),
+            "results": results,
+        }
 
     @app.post("/api/round/end-early")
-    async def round_end_early(req: EndRequest) -> dict[str, Any]:
-        return await _end_round_early(req.scores)
+    async def round_end_early() -> dict[str, Any]:
+        state = await _get_obs_state()
+        phase = state.get("phase")
+        if phase != "coding":
+            msg = f"Cannot end early while OBS is in phase `{phase}`."
+            raise HTTPException(status_code=409, detail=msg)
+        await _round_timer.cancel()
+        results = await _run_round_eval(reason="end_early")
+        return {
+            "state": _round_context.get("obs_state"),
+            "obs_error": _round_context.get("obs_error"),
+            "results": results,
+        }
+
+    @app.post("/api/round/override-end")
+    async def round_override_end(req: OverrideScoresRequest) -> dict[str, Any]:
+        await _round_timer.cancel()
+        obs_state = await _forward("end", {"scores": req.scores})
+        _round_context["last_reason"] = "override"
+        _round_context["obs_state"] = obs_state
+        _round_context["obs_error"] = None
+        _round_context["completed_at"] = time.time()
+        return {"state": obs_state, "scores": req.scores}
 
     @app.post("/api/round/reset")
     async def round_reset() -> dict[str, Any]:
         _ready_players.clear()
         _model_ready_ports.clear()
+        await _round_timer.cancel()
+        _reset_round_state()
         return await _forward("reset", {})
 
     @app.get("/api/players")
     async def players_list() -> dict[str, Any]:
+        connected = _connected_player_ports()
         return {
             "players": await iterm_ctrl.list_players(),
-            "connected": _connected_player_ports(),
+            "connected": connected,
             "ready": dict(_ready_players),
             "model_ready": sorted(_model_ready_ports),
+            "site_urls": site_urls.site_urls(_round_player_ports() or connected),
         }
 
     @app.post("/api/players/connect")

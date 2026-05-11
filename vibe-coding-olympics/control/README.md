@@ -100,11 +100,13 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | Path | Method | Body | Does |
 | --- | --- | --- | --- |
 | `/` | GET | — | Serves the HTML control panel |
-| `/api/state` | GET | — | Proxies `GET /state` on the OBS runner |
-| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, drawing from the prompt pool when `prompt` is blank or omitted |
-| `/api/round/end` | POST | `{scores: {name: float}}` | Fires `end` on the FSM |
-| `/api/round/end-early` | POST | `{scores: {name: float}}` | Requires OBS `coding`, sends `times-up` to current player CLI(s), then fires `end` on the FSM |
-| `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM |
+| `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
+| `/api/eval/last` | GET | — | Returns the latest per-player judge results |
+| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
+| `/api/round/end` | POST | `{}` | Cancels the timer, runs the LLM judge against every player site, and forwards `end` to the FSM |
+| `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, then fires `end` |
+| `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and forwards the supplied scores without invoking the judge |
+| `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM and cancels the timer |
 | `/api/prompts` | GET | — | Lists prompt pool entries |
 | `/api/prompts` | POST | `{prompt: str}` | Adds a prompt pool entry |
 | `/api/prompts/{id}` | PATCH | `{prompt: str}` | Updates a prompt pool entry |
@@ -126,12 +128,30 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_CONTROL_HOST` | `127.0.0.1` | Bind host for the control panel |
 | `VIBE_CONTROL_PORT` | `8766` | Bind port for the control panel |
 | `VIBE_CONTROL_API` | `http://localhost:8766` | URL used by `vibe-player-hook` from player machines |
-| `VIBE_PLAYER_<port>_RELAY` | _(unset)_ | Controller-side URL for a player laptop relay, e.g. `VIBE_PLAYER_3001_RELAY` |
+| `VIBE_PLAYER_<port>_RELAY` | _(unset)_ | Controller-side URL for a player laptop relay, e.g. `VIBE_PLAYER_3001_RELAY`. Its host is reused to build the player's site URL for the judge. |
+| `VIBE_PLAYER_<port>_SITE_URL` | _(unset)_ | Optional explicit override for the player's site URL (e.g. a remote deploy). Wins over the relay-derived URL. |
 | `VIBE_PLAYER_TOKEN` | _(unset)_ | Shared bearer token used by controller-to-relay commands |
 | `VIBE_LAUNCH_RELAY` | `1` | Whether `play.sh` should launch the player relay tab |
 | `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
 | `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
+| `VIBE_ROUND_SECONDS` | `300` | Player coding time in seconds; starts after the CLI launch countdown and triggers the judge on expiry |
+| `VIBE_EVAL_DIR` | _(bundled `vibe-coding-olympics/eval`)_ | Override path to the eval workspace, useful for local development |
+| `VIBE_EVAL_RESULTS_DIR` | system temp dir | Parent directory for `round-N-<name>.json` files written by the judge |
 | `VIBE_DEEPAGENTS_CONFIG_PATH` | `~/.deepagents/config.toml` | Deep Agents CLI config mutated by player reset cleanup |
+
+## Judge integration
+
+The control server is the only thing that runs the LLM judge. When the round timer expires (or the operator clicks **End early**), the server:
+
+1. Sends `times-up` to both player CLIs.
+2. Derives each player's site URL — `http://<relay-host>:<player-port>` by default, or `VIBE_PLAYER_<port>_SITE_URL` if set.
+3. Runs `vibe-coding-olympics/eval/judge.py` per site concurrently via `uv run`.
+4. Aggregates per-axis scores into a single `[0, 1]` overall, scales to `0..10`, and forwards them to the OBS runner's `end` transition.
+5. Stores per-axis results so the control website can render them and the OBS composite can pick them up.
+
+If the judge subprocess fails (timeout, non-zero exit, missing/malformed JSON) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.
+
+The **Override scores** modal on the control website calls `/api/round/override-end` and is intended only for smoke tests; it skips the judge and writes the entered scores directly to OBS.
 
 ## Player readiness hook
 

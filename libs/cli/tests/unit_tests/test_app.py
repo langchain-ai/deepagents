@@ -7874,6 +7874,58 @@ class TestTimerCommand:
             assert app.sub_title == "⏱ 00:59"
             app._stop_timer()
 
+    async def test_timer_toasts_warning_thresholds_once(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "notify") as notify:
+                await app._handle_command("/timer 5")
+                notify.assert_not_called()
+
+                app._timer_seconds_remaining = 151
+                app._tick_timer()
+                app._tick_timer()
+                app._timer_seconds_remaining = 61
+                app._tick_timer()
+                app._timer_seconds_remaining = 31
+                app._tick_timer()
+
+                assert notify.mock_calls == [
+                    call(
+                        "2.5 minutes left",
+                        severity="warning",
+                        timeout=8,
+                        markup=False,
+                    ),
+                    call(
+                        "1 minute left",
+                        severity="warning",
+                        timeout=8,
+                        markup=False,
+                    ),
+                    call(
+                        "30 seconds left",
+                        severity="warning",
+                        timeout=8,
+                        markup=False,
+                    ),
+                ]
+            app._stop_timer()
+
+    async def test_timer_toasts_when_started_on_warning_threshold(self) -> None:
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "notify") as notify:
+                await app._handle_command("/timer 1")
+                notify.assert_called_once_with(
+                    "1 minute left",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
+            app._stop_timer()
+
     async def test_timer_expiry_stops_handle(self) -> None:
         from deepagents_cli.widgets.times_up import TimesUpScreen
 

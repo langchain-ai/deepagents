@@ -1593,6 +1593,9 @@ class DeepAgentsApp(App):
         self._timer_seconds_remaining = 0
         """Seconds left in the active countdown; drives the header sub_title."""
 
+        self._timer_notified_thresholds: set[int] = set()
+        """Timer warning thresholds already shown for the active countdown."""
+
         self._timer_prior_sub_title: str | None = None
         """`App.sub_title` snapshot captured before a timer started, restored
         when the timer is cancelled or replaced."""
@@ -5236,6 +5239,11 @@ class DeepAgentsApp(App):
 
     _TIMER_DEFAULT_MINUTES: ClassVar[int] = 5
     _TIMER_MAX_MINUTES: ClassVar[int] = 24 * 60
+    _TIMER_WARNING_MESSAGES: ClassVar[dict[int, str]] = {
+        150: "2.5 minutes left",
+        60: "1 minute left",
+        30: "30 seconds left",
+    }
 
     async def _handle_timer_command(self, command: str) -> None:
         """Handle the hidden `/timer [N]` command.
@@ -5290,7 +5298,9 @@ class DeepAgentsApp(App):
 
         await self._ensure_header_mounted()
         self._timer_seconds_remaining = minutes * 60
+        self._timer_notified_thresholds.clear()
         self._render_timer_sub_title()
+        self._notify_timer_warning_if_needed()
         self._timer_handle = self.set_interval(1.0, self._tick_timer)
 
     def _tick_timer(self) -> None:
@@ -5305,6 +5315,7 @@ class DeepAgentsApp(App):
             self._handle_times_up()
             return
         self._render_timer_sub_title()
+        self._notify_timer_warning_if_needed()
 
     def _stop_timer(self) -> None:
         """Cancel the active countdown and restore the prior sub_title."""
@@ -5312,8 +5323,22 @@ class DeepAgentsApp(App):
             self._timer_handle.stop()
             self._timer_handle = None
         self._timer_seconds_remaining = 0
+        self._timer_notified_thresholds.clear()
         self.sub_title = self._timer_prior_sub_title or ""
         self._timer_prior_sub_title = None
+
+    def _notify_timer_warning_if_needed(self) -> None:
+        """Toast each timer warning threshold once per countdown."""
+        seconds = self._timer_seconds_remaining
+        if seconds in self._timer_notified_thresholds:
+            return
+
+        message = self._TIMER_WARNING_MESSAGES.get(seconds)
+        if message is None:
+            return
+
+        self._timer_notified_thresholds.add(seconds)
+        self.notify(message, severity="warning", timeout=8, markup=False)
 
     def _render_timer_sub_title(self) -> None:
         """Format the remaining time as `MM:SS` and push to `App.sub_title`."""

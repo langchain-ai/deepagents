@@ -54,7 +54,7 @@ from deepagents_cli._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_cli.config import build_stream_config
+from deepagents_cli.config import SHELL_TOOL_NAMES, build_stream_config
 from deepagents_cli.file_ops import FileOpTracker
 from deepagents_cli.formatting import format_duration
 from deepagents_cli.hooks import dispatch_hook
@@ -1150,10 +1150,24 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        future = await adapter._request_approval(
-                            action_requests, assistant_id
-                        )
-                        decision = await future
+                        # Hide shell tool widgets while the approval renders the
+                        # same command; restore before the post-decision
+                        # set_running/set_rejected calls run.
+                        suppressed_tool_msgs = [
+                            tool_msg
+                            for tool_msg in adapter._current_tool_messages.values()
+                            if tool_msg.tool_name in SHELL_TOOL_NAMES
+                        ]
+                        for tool_msg in suppressed_tool_msgs:
+                            tool_msg.set_awaiting_approval()
+                        try:
+                            future = await adapter._request_approval(
+                                action_requests, assistant_id
+                            )
+                            decision = await future
+                        finally:
+                            for tool_msg in suppressed_tool_msgs:
+                                tool_msg.clear_awaiting_approval()
 
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")

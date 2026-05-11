@@ -731,6 +731,56 @@ class TestToolCallMessageShellCommand:
         assert "dim" not in lines[2].markup
 
 
+class TestToolCallMessageAwaitingApproval:
+    """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
+
+    def test_set_awaiting_approval_hides_widget(self) -> None:
+        """`set_awaiting_approval` should mark the widget as hidden."""
+        msg = ToolCallMessage("shell", {"command": "echo hi"})
+        assert msg._awaiting_approval is False
+        msg.set_awaiting_approval()
+        assert msg._awaiting_approval is True
+        assert msg.display is False
+
+    def test_clear_awaiting_approval_restores_widget(self) -> None:
+        """`clear_awaiting_approval` should restore visibility."""
+        msg = ToolCallMessage("shell", {"command": "echo hi"})
+        msg.set_awaiting_approval()
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+        assert msg.display is True
+
+    def test_clear_awaiting_approval_no_op_when_not_set(self) -> None:
+        """Clearing before setting should not touch widget visibility."""
+        msg = ToolCallMessage("shell", {"command": "echo hi"})
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+
+    async def test_awaiting_approval_round_trip_in_mounted_widget(self) -> None:
+        """Mounted widget should hide on set, reappear on clear."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("shell", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg.display is True
+            msg.set_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is False
+            msg.clear_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is True
+
+
 class TestUserMessageHighlighting:
     """Test UserMessage highlighting of `@mentions` and `/commands`."""
 

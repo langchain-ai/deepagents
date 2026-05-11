@@ -823,6 +823,9 @@ class ToolCallMessage(Vertical):
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
         self._deferred_expanded: bool = False
+        # Whether the widget is currently hidden because an approval prompt
+        # is rendering the same content (see `set_awaiting_approval`).
+        self._awaiting_approval: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -1062,6 +1065,23 @@ class ToolCallMessage(Vertical):
             self._status_widget.add_class("rejected")  # Use same styling as rejected
             self._status_widget.update(Content.styled("- Skipped", "dim"))
             self._status_widget.display = True
+
+    def set_awaiting_approval(self) -> None:
+        """Hide the tool call while an approval prompt mirrors its content.
+
+        Used to avoid showing the same shell command in both the streamed tool
+        call header and the HITL approval dialog at the same time. The widget
+        is restored via `clear_awaiting_approval` once the user decides.
+        """
+        self._awaiting_approval = True
+        self.display = False
+
+    def clear_awaiting_approval(self) -> None:
+        """Restore the tool call after `set_awaiting_approval`."""
+        if not self._awaiting_approval:
+            return
+        self._awaiting_approval = False
+        self.display = True
 
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""

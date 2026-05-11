@@ -4146,14 +4146,14 @@ class DeepAgentsApp(App):
         if not is_env_truthy(COMPETITION_WAIT_FOR_START):
             return None
 
-        from deepagents_cli.hooks import dispatch_hook
+        from deepagents_cli.hooks import dispatch_hook_fire_and_forget
         from deepagents_cli.widgets.launch_init import LaunchWaitingScreen
 
         self._competition_players_ready = False
-        await dispatch_hook("competition.player.ready", {})
         future = self._push_screen_result_future(
             LaunchWaitingScreen(ready_to_start=self._competition_players_ready)
         )
+        dispatch_hook_fire_and_forget("competition.player.ready", {})
         loop = asyncio.get_running_loop()
         start_future: asyncio.Future[ExternalEvent | None] = loop.create_future()
         self._competition_wait_future = start_future

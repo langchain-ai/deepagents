@@ -8396,6 +8396,39 @@ class TestExternalBypassFieldHonored:
 class TestCompetitionPromptHeader:
     """Controller start events should render the prompt in the header title."""
 
+    async def test_wait_modal_is_shown_before_ready_hook_dispatch(self) -> None:
+        app = DeepAgentsApp()
+        order: list[str] = []
+
+        def push_waiting_screen(_screen: ModalScreen[Any]) -> asyncio.Future[None]:
+            order.append("push")
+            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+            future.set_result(None)
+            return future
+
+        def dispatch_ready_hook(_event: str, _payload: dict[str, Any]) -> None:
+            order.append("hook")
+
+        with (
+            patch.dict(
+                os.environ,
+                {"DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START": "1"},
+            ),
+            patch.object(
+                app,
+                "_push_screen_result_future",
+                side_effect=push_waiting_screen,
+            ),
+            patch(
+                "deepagents_cli.hooks.dispatch_hook_fire_and_forget",
+                side_effect=dispatch_ready_hook,
+            ),
+        ):
+            result = await app._maybe_wait_for_competition_start()
+
+        assert result is None
+        assert order == ["push", "hook"]
+
     def test_extracts_prompt_from_skill_command_payload(self) -> None:
         payload = "/skill:web-vibe Prompt: A website for a taco truck"
 

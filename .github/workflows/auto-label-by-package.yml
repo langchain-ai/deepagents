@@ -37,7 +37,7 @@ jobs:
               "deepagents (SDK)": "deepagents",
               "cli": "cli",
               "acp": "acp",
-              "deepagents-code": "deepagents-code",
+              "deepagents-code": "dcode",
               "evals": "evals",
               "harbor": "harbor",
               "repl": "repl",

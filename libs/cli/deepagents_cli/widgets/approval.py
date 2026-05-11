@@ -8,7 +8,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
 from textual.message import Message
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
     import asyncio
@@ -39,6 +39,8 @@ _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 _SHELL_COMMAND_TRUNCATE_LINES: int = 5
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
+# Option index for the Reject choice; see `_handle_selection`'s `decision_map`.
+_REJECT_OPTION_INDEX: int = 2
 
 
 def _is_command_too_long(command: str) -> bool:
@@ -111,6 +113,7 @@ class ApprovalMenu(Container):
         Binding("3", "select_reject", "Reject", show=False),
         Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
+        Binding("tab", "reject_with_reason", "Reject with reason", show=False),
     ]
 
     class Decided(Message):
@@ -167,6 +170,10 @@ class ApprovalMenu(Container):
         self._command_widget: Static | None = None
         self._has_expandable_command = self._check_expandable_command()
         self._security_warnings = self._collect_security_warnings()
+        # Free-text reject mode (Tab on Reject) — see `action_reject_with_reason`
+        self._reason_input: Input | None = None
+        self._reason_input_active = False
+        self._help_widget: Static | None = None
 
     def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
         """Set the future to resolve when user decides."""
@@ -302,15 +309,39 @@ class ApprovalMenu(Container):
                 self._option_widgets.append(widget)
                 yield widget
 
+        # Free-text reject reason input (hidden until activated via Tab)
+        self._reason_input = Input(
+            placeholder="Reason (Enter to submit, Esc to cancel)",
+            classes="approval-reason-input",
+            id="approval-reason-input",
+        )
+        self._reason_input.display = False
+        yield self._reason_input
+
         # Help text at the very bottom
+        self._help_widget = Static(self._compose_help_text(), classes="approval-help")
+        yield self._help_widget
+
+    def _compose_help_text(self) -> str:
+        """Build the help-line content for the current mode.
+
+        Returns:
+            Help text for either the normal menu or the reject-reason input.
+        """
         glyphs = get_glyphs()
+        if self._reason_input_active:
+            return (
+                f"Enter submit {glyphs.bullet} Esc cancel {glyphs.bullet} "
+                "leave blank to reject without a reason"
+            )
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate {glyphs.bullet} "
-            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} Esc reject"
+            f"Enter select {glyphs.bullet} y/a/n quick keys {glyphs.bullet} "
+            f"Tab reject with reason {glyphs.bullet} Esc reject"
         )
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
-        yield Static(help_text, classes="approval-help")
+        return help_text
 
     async def on_mount(self) -> None:
         """Focus self on mount and update tool info."""
@@ -412,7 +443,15 @@ class ApprovalMenu(Container):
         self._handle_selection(1)
 
     def action_select_reject(self) -> None:
-        """Submit reject option."""
+        """Submit reject option.
+
+        When the free-text reject input is open, the first press cancels the
+        input instead of rejecting, so the user can back out without losing
+        their unsubmitted reason.
+        """
+        if self._reason_input_active:
+            self._exit_reason_input_mode()
+            return
         self._handle_selection(2)
 
     def action_toggle_expand(self) -> None:
@@ -424,14 +463,24 @@ class ApprovalMenu(Container):
             self._get_command_display(expanded=self._command_expanded)
         )
 
-    def _handle_selection(self, option: int) -> None:
-        """Handle the selected option."""
+    def _handle_selection(
+        self, option: int, *, reject_message: str | None = None
+    ) -> None:
+        """Handle the selected option.
+
+        Args:
+            option: Index of the chosen option (0 approve, 1 auto-approve, 2 reject).
+            reject_message: Optional free-text reason. Only attached when the
+                user rejects with a non-empty message via `action_reject_with_reason`.
+        """
         decision_map = {
             0: "approve",
             1: "auto_approve_all",
             2: "reject",
         }
-        decision = {"type": decision_map[option]}
+        decision: dict[str, str] = {"type": decision_map[option]}
+        if option == _REJECT_OPTION_INDEX and reject_message:
+            decision["message"] = reject_message
 
         self.display = False
 
@@ -441,6 +490,42 @@ class ApprovalMenu(Container):
 
         # Post message
         self.post_message(self.Decided(decision))
+
+    def action_reject_with_reason(self) -> None:
+        """Enter free-text reject mode if Reject is currently selected.
+
+        No-op unless the cursor is on the Reject option. Mounts an inline
+        `Input` whose value is sent as `RejectDecision.message` on submit.
+        """
+        if self._reason_input_active:
+            return
+        if self._selected != _REJECT_OPTION_INDEX or self._reason_input is None:
+            return
+        self._reason_input_active = True
+        self._reason_input.value = ""
+        self._reason_input.display = True
+        if self._help_widget is not None:
+            self._help_widget.update(self._compose_help_text())
+        self._reason_input.focus()
+
+    def _exit_reason_input_mode(self) -> None:
+        """Close the reason input and return focus to the menu without deciding."""
+        if not self._reason_input_active or self._reason_input is None:
+            return
+        self._reason_input_active = False
+        self._reason_input.display = False
+        if self._help_widget is not None:
+            self._help_widget.update(self._compose_help_text())
+        self.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Submit the reject decision with the typed reason (if any)."""
+        if event.input is not self._reason_input or not self._reason_input_active:
+            return
+        event.stop()
+        reason = event.value.strip()
+        self._reason_input_active = False
+        self._handle_selection(2, reject_message=reason or None)
 
     def _collect_security_warnings(self) -> list[str]:
         """Collect warning strings for suspicious Unicode and URL values.
@@ -474,5 +559,11 @@ class ApprovalMenu(Container):
         return warnings
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Re-focus on blur to keep focus trapped until decision is made."""
+        """Re-focus on blur to keep focus trapped until decision is made.
+
+        Skipped while the free-text reject input is active so the `Input`
+        widget can keep keyboard focus.
+        """
+        if self._reason_input_active:
+            return
         self.call_after_refresh(self.focus)

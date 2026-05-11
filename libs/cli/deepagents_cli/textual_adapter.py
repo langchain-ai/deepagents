@@ -1228,15 +1228,26 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                decisions = [
-                                    RejectDecision(type="reject")
-                                    for _ in action_requests
-                                ]
+                                reject_message = decision.get("message")
+                                reject_message = (
+                                    reject_message
+                                    if isinstance(reject_message, str)
+                                    and reject_message.strip()
+                                    else None
+                                )
+                                reject_decision: RejectDecision = (
+                                    RejectDecision(
+                                        type="reject", message=reject_message
+                                    )
+                                    if reject_message
+                                    else RejectDecision(type="reject")
+                                )
+                                decisions = [reject_decision for _ in action_requests]
                                 tool_msgs = list(
                                     adapter._current_tool_messages.values()
                                 )
                                 for tool_msg in tool_msgs:
-                                    tool_msg.set_rejected()
+                                    tool_msg.set_rejected(reason=reject_message)
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                             else:

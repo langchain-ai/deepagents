@@ -372,3 +372,131 @@ class TestOptionOrdering:
             await pilot.pause()
 
         assert decision_received == {"type": expected_type}
+
+
+class TestRejectWithReason:
+    """Tests for the free-text reject mode (`action_reject_with_reason`)."""
+
+    def test_no_op_when_reject_not_selected(self) -> None:
+        """Tab is a no-op unless cursor is on the Reject option."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu._reason_input = MagicMock(value="", display=False)
+        menu._selected = 0
+        menu.action_reject_with_reason()
+        assert menu._reason_input_active is False
+
+    def test_activates_input_mode_when_reject_selected(self) -> None:
+        """Tab on Reject flips the menu into reason-input mode."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        reason_input = MagicMock(value="existing", display=False)
+        menu._reason_input = reason_input
+        menu._help_widget = MagicMock()
+        menu._selected = 2
+        menu.action_reject_with_reason()
+        assert menu._reason_input_active is True
+        assert reason_input.value == ""  # cleared
+        assert reason_input.display is True
+        reason_input.focus.assert_called_once()
+
+    def test_handle_selection_attaches_reject_message(self) -> None:
+        """A non-empty reason is attached to the reject decision."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu({"name": "write_file", "args": {"path": "f.py"}})
+        menu.set_future(future)
+        menu._handle_selection(2, reject_message="please dry-run first")
+        assert future.result() == {
+            "type": "reject",
+            "message": "please dry-run first",
+        }
+        loop.close()
+
+    def test_handle_selection_omits_empty_reject_message(self) -> None:
+        """An empty / `None` reason produces a bare reject decision."""
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+        menu = ApprovalMenu({"name": "write_file", "args": {"path": "f.py"}})
+        menu.set_future(future)
+        menu._handle_selection(2, reject_message=None)
+        assert future.result() == {"type": "reject"}
+        loop.close()
+
+    def test_action_select_reject_cancels_input_mode_first(self) -> None:
+        """Reject shortcut closes the input the first time instead of rejecting."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        reason_input = MagicMock(value="abc", display=True)
+        menu._reason_input = reason_input
+        menu._help_widget = MagicMock()
+        menu._selected = 2
+        menu._reason_input_active = True
+        menu._handle_selection = MagicMock()  # type: ignore[method-assign]
+        menu.action_select_reject()
+        # First call: cancels the input, no decision posted.
+        menu._handle_selection.assert_not_called()  # type: ignore[attr-defined]
+        assert menu._reason_input_active is False
+        assert reason_input.display is False
+        # Second call: now it actually rejects.
+        menu.action_select_reject()
+        menu._handle_selection.assert_called_once_with(2)
+
+    async def test_tab_then_type_then_enter_submits_reason(self) -> None:
+        """End-to-end Tab → type → Enter sends a reject decision with the message."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            # Move to Reject (option 3 of 3) — start at 0, so two downs.
+            await pilot.press("down", "down")
+            await pilot.press("tab")
+            await pilot.pause()
+            for ch in "dry run first":
+                await pilot.press(ch if ch != " " else "space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert decision_received == {
+            "type": "reject",
+            "message": "dry run first",
+        }
+
+    async def test_blank_reason_submits_plain_reject(self) -> None:
+        """Pressing Enter without typing yields a bare reject decision."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down", "down")
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert decision_received == {"type": "reject"}

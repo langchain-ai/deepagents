@@ -759,6 +759,13 @@ class ToolCallMessage(Vertical):
         color: $warning;
     }
 
+    ToolCallMessage .tool-reject-reason {
+        margin-left: 3;
+        margin-top: 0;
+        height: auto;
+        color: $text-muted;
+    }
+
     ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
@@ -806,6 +813,8 @@ class ToolCallMessage(Vertical):
         self._output: str = ""
         self._expanded: bool = False
         self._args_expanded: bool = False
+        # User-provided reason attached to a HITL reject decision (if any).
+        self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
         self._args_widget: Static | None = None
@@ -813,6 +822,7 @@ class ToolCallMessage(Vertical):
         self._preview_widget: Static | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
+        self._reject_reason_widget: Static | None = None
         # Animation state
         self._spinner_position = 0
         self._start_time: float | None = None
@@ -821,6 +831,7 @@ class ToolCallMessage(Vertical):
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
         self._deferred_expanded: bool = False
+        self._deferred_reject_reason: str | None = None
         # Whether the widget is currently hidden because an approval prompt
         # is rendering the same content (see `set_awaiting_approval`).
         self._awaiting_approval: bool = False
@@ -863,6 +874,8 @@ class ToolCallMessage(Vertical):
         yield Static("", classes="tool-output-hint", id="args-hint")
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
+        # Optional HITL reject reason (only shown when user rejected with a message)
+        yield Static("", classes="tool-reject-reason", id="reject-reason")
         # Output area - hidden initially, shown when output is set
         yield Static("", classes="tool-output-preview", id="output-preview")
         yield Static("", classes="tool-output", id="output-full")
@@ -879,6 +892,7 @@ class ToolCallMessage(Vertical):
         self._preview_widget = self.query_one("#output-preview", Static)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
+        self._reject_reason_widget = self.query_one("#reject-reason", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
         self._args_widget.display = False
@@ -886,6 +900,7 @@ class ToolCallMessage(Vertical):
         self._preview_widget.display = False
         self._hint_widget.display = False
         self._full_widget.display = False
+        self._reject_reason_widget.display = False
         self._update_args_display()
 
         # Restore deferred state if this widget was hydrated from data
@@ -899,11 +914,14 @@ class ToolCallMessage(Vertical):
         status = self._deferred_status
         output = self._deferred_output or ""
         self._expanded = self._deferred_expanded
+        if self._deferred_reject_reason:
+            self._reject_reason = self._deferred_reject_reason
 
         # Clear deferred values
         self._deferred_status = None
         self._deferred_output = None
         self._deferred_expanded = False
+        self._deferred_reject_reason = None
 
         # Restore based on status (don't restart animations for running tools)
         colors = theme.get_theme_colors(self)
@@ -932,6 +950,7 @@ class ToolCallMessage(Vertical):
                         Content.styled(f"{error_icon} Rejected", colors.warning)
                     )
                     self._status_widget.display = True
+                self._update_reject_reason_display()
             case "skipped":
                 self._status = "skipped"
                 if self._status_widget:
@@ -1037,10 +1056,17 @@ class ToolCallMessage(Vertical):
         self._expanded = True
         self._update_output_display()
 
-    def set_rejected(self) -> None:
-        """Mark the tool call as rejected by user."""
+    def set_rejected(self, *, reason: str | None = None) -> None:
+        """Mark the tool call as rejected by user.
+
+        Args:
+            reason: Optional free-text reason supplied via the HITL reject
+                widget; rendered as a dim line beneath the status.
+        """
         self._stop_animation()
         self._status = "rejected"
+        if reason and reason.strip():
+            self._reject_reason = reason.strip()
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")
@@ -1049,6 +1075,22 @@ class ToolCallMessage(Vertical):
             colors = theme.get_theme_colors(self)
             self._status_widget.update(Content.styled(text, colors.warning))
             self._status_widget.display = True
+        self._update_reject_reason_display()
+
+    def _update_reject_reason_display(self) -> None:
+        """Render the rejection reason line if a reason is set."""
+        if self._reject_reason_widget is None:
+            return
+        if self._reject_reason:
+            self._reject_reason_widget.update(
+                Content.from_markup(
+                    "[dim italic]Reason: $reason[/dim italic]",
+                    reason=self._reject_reason,
+                )
+            )
+            self._reject_reason_widget.display = True
+        else:
+            self._reject_reason_widget.display = False
 
     def set_skipped(self) -> None:
         """Mark the tool call as skipped (due to another rejection)."""

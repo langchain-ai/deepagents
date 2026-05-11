@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -566,7 +566,7 @@ async def test_ptc_host_call_budget_none_disables_limit(
 
 
 def test_middleware_ptc_default_off_omits_prompt_block() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # Calling _prepare_for_call directly is fine — pass a minimal request
     # stand-in. We don't need a full ModelRequest for this check.
     from types import SimpleNamespace
@@ -579,7 +579,7 @@ def test_middleware_ptc_default_off_omits_prompt_block() -> None:
 def test_middleware_ptc_list_includes_prompt_block() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=["greet", "eval"])
+    mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     prompt = mw._prepare_for_call(req)
     # Greet included
@@ -592,7 +592,7 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     """`ptc=[tool]` installs the tool in the REPL even when the agent has none."""
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=[_greet_tool()])
+    mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
     req = SimpleNamespace(tools=[])
     prompt = mw._prepare_for_call(req)
     assert "async function greet(" in prompt
@@ -608,7 +608,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     """
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=["greet", "eval"])
+    mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
     # Simulate a model-call turn without any langgraph config present.
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
     mw._prepare_for_call(req)
@@ -626,7 +626,7 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     from langchain.tools import ToolRuntime
 
     command_tool = _command_tool()
-    mw = REPLMiddleware(ptc=[command_tool])
+    mw = CodeInterpreterMiddleware(ptc=[command_tool])
     tool = mw.tools[0]
     mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool]))
     runtime = ToolRuntime(
@@ -651,10 +651,10 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
 def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc=True)  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc=True)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
-    mw = REPLMiddleware(ptc=False)  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc=False)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
 
@@ -662,7 +662,7 @@ def test_middleware_rejects_boolean_ptc_config_during_prepare() -> None:
 def test_middleware_rejects_dict_ptc_config_during_prepare() -> None:
     from types import SimpleNamespace
 
-    mw = REPLMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
+    mw = CodeInterpreterMiddleware(ptc={"include": ["greet"]})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="Unsupported `ptc` config type"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
 

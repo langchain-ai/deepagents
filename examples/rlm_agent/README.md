@@ -1,7 +1,7 @@
 # Recursive REPL Mode (RLM)
 
 `create_rlm_agent` is a wrapper over `create_deep_agent` that adds
-[`REPLMiddleware`](../../libs/partners/quickjs) to the agent and — for
+[`CodeInterpreterMiddleware`](../../libs/partners/quickjs) to the agent and — for
 `max_depth > 0` — replaces the default `general-purpose` subagent
 with a `CompiledSubAgent` whose runnable is a depth-(N-1) RLM agent.
 
@@ -16,7 +16,7 @@ at depth 0, where `general-purpose` is the plain built-in.
 A plain Deep Agent can delegate to a subagent via the `task` tool.
 That's one call per subtask, serialized across model turns.
 
-With `REPLMiddleware(ptc=["task", ...])` on the agent, the model can write:
+With `CodeInterpreterMiddleware(ptc=["task", ...])` on the agent, the model can write:
 
 ```javascript
 // inside one `eval` tool call
@@ -34,9 +34,9 @@ can fan out again.
 ## Structure
 
 ```
-root (depth=2, has REPLMiddleware)
-└── general-purpose → compiled depth-1 graph (has REPLMiddleware)
-    └── general-purpose → compiled depth-0 graph (has REPLMiddleware)
+root (depth=2, has CodeInterpreterMiddleware)
+└── general-purpose → compiled depth-1 graph (has CodeInterpreterMiddleware)
+    └── general-purpose → compiled depth-0 graph (has CodeInterpreterMiddleware)
         └── general-purpose → built-in default (no REPL, no recursion)
 ```
 
@@ -103,5 +103,5 @@ uv run python rlm_agent.py --max-depth 2
   the `task` tool's `description` argument or let results flow back
   through tool return values.
 - **Only the root agent has REPL at each level.** If you want REPL
-  on a non-`general-purpose` subagent too, add `REPLMiddleware` to
+  on a non-`general-purpose` subagent too, add `CodeInterpreterMiddleware` to
   its `middleware` list yourself when you define it.

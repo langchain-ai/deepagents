@@ -30,12 +30,12 @@ repl_swarm/
 
 1. `swarm_agent.py` creates a `create_deep_agent` with
    `skills=[".../skills"]` and
-   `REPLMiddleware(ptc=["task"], skills_backend=backend)`.
+   `CodeInterpreterMiddleware(ptc=["task"], skills_backend=backend)`.
 2. `SkillsMiddleware` parses `SKILL.md` frontmatter, including the new
    `module` key, and writes a `SkillMetadata` entry into state.
 3. When the model writes
    `await import("@/skills/swarm")` inside an `eval` call,
-   `REPLMiddleware` scans the source, loads the skill dir via the
+   `CodeInterpreterMiddleware` scans the source, loads the skill dir via the
    backend, builds a `ModuleScope` with `index.ts` (oxidase strips
    TypeScript types at install time), and calls `ctx.install`.
 4. Guest code imports `runSwarm`, which calls `tools.task(...)`

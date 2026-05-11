@@ -6,11 +6,11 @@ Instead of issuing N serial tool calls, the model can write one block of JavaScr
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 ```
 
@@ -52,11 +52,11 @@ uv add langchain-quickjs
 
 ```python
 from deepagents import create_deep_agent
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 agent = create_deep_agent(
     model="claude-sonnet-4-6",
-    middleware=[REPLMiddleware()],
+    middleware=[CodeInterpreterMiddleware()],
 )
 
 # Use `ainvoke` — PTC bridges register as async QuickJS host functions,
@@ -178,9 +178,9 @@ await tools.summarize({ text: results.join("\n\n") })
 ### Enabling it
 
 ```python
-REPLMiddleware()                              # disabled (default)
-REPLMiddleware(ptc=["search_web"])            # explicit allowlist
-REPLMiddleware(ptc=[search_tool])             # explicit tool object allowlist
+CodeInterpreterMiddleware()                              # disabled (default)
+CodeInterpreterMiddleware(ptc=["search_web"])            # explicit allowlist
+CodeInterpreterMiddleware(ptc=[search_tool])             # explicit tool object allowlist
 ```
 
 The REPL's own tool is always excluded from PTC; `tools.eval("tools.eval(...)")` would be pointless recursion, and if the model wants nested code it can just write nested code in one call.
@@ -228,7 +228,7 @@ Under the hood:
 Enable it by passing the same `BackendProtocol` your `SkillsMiddleware` uses:
 
 ```python
-REPLMiddleware(skills_backend=my_backend)
+CodeInterpreterMiddleware(skills_backend=my_backend)
 ```
 
 There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or prune generated code.
@@ -236,7 +236,7 @@ There's a hard cap of 1 MiB per skill bundle. If you hit it, split the skill or 
 ## Configuration reference
 
 ```python
-REPLMiddleware(
+CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
     timeout=5.0,                     # per-call seconds
     max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)

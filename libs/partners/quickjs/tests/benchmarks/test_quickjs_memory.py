@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests.benchmarks._common import (
     CONSOLE_LOG_CODE,
     PTC_ONLY_CODE,
@@ -42,7 +42,7 @@ class TestQuickJSMemoryBenchmarks:
         use_ptc: bool,
     ) -> None:
         def _worker(index: int) -> None:
-            middleware = REPLMiddleware(
+            middleware = CodeInterpreterMiddleware(
                 timeout=45.0,
                 capture_console=True,
                 ptc=[echo_payload] if use_ptc else None,

@@ -369,13 +369,13 @@ class WelcomeBanner(Static):
                 )
                 parts.extend(
                     [
-                        ("Thread: ", "dim"),
+                        ("  Thread: ", "dim"),
                         (self._cli_thread_id, TStyle(dim=True, link=thread_url)),
                         ("\n", "dim"),
                     ]
                 )
             else:
-                parts.append((f"Thread: {self._cli_thread_id}\n", "dim"))
+                parts.append((f"  Thread: {self._cli_thread_id}\n", "dim"))
 
         if self._mcp_tool_count > 0:
             parts.append((f"{get_glyphs().checkmark} ", success_color))

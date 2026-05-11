@@ -49,6 +49,7 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
         "openai",
         "openrouter",
         "perplexity",
+        "together",
         "vertexai",
         "xai",
     }

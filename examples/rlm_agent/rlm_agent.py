@@ -3,7 +3,7 @@
 `create_deep_agent` with a compiled general-purpose chain.
 
 `create_rlm_agent` builds a Deep Agent whose own middleware stack
-includes `REPLMiddleware(ptc=[...])`, and — for `max_depth > 0` —
+includes `CodeInterpreterMiddleware(ptc=[...])`, and — for `max_depth > 0` —
 replaces the default `general-purpose` subagent with a
 `CompiledSubAgent` whose runnable is itself a depth-(N-1) RLM agent.
 The model delegates via `tools.task({subagent_type: "general-purpose",
@@ -44,7 +44,7 @@ from deepagents.middleware.subagents import (
     SubAgent,
 )
 from langchain_core.tools import BaseTool, tool
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 _MAX_DEPTH_LIMIT = 8  # guard against typos that would build thousands of agents
 
@@ -135,7 +135,7 @@ def _build(
             model=model,
             tools=tools,
             subagents=extra_subagents,
-            middleware=[REPLMiddleware(ptc=ptc_tool_names)],
+            middleware=[CodeInterpreterMiddleware(ptc=ptc_tool_names)],
             **kwargs,
         )
 
@@ -156,7 +156,7 @@ def _build(
         model=model,
         tools=tools,
         subagents=[compiled_gp, *extra_subagents],
-        middleware=[REPLMiddleware(ptc=ptc_tool_names)],
+        middleware=[CodeInterpreterMiddleware(ptc=ptc_tool_names)],
         **kwargs,
     )
 

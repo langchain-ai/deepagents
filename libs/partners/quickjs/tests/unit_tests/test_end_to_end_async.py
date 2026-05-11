@@ -1,4 +1,4 @@
-"""Async end-to-end tests for ``REPLMiddleware`` with a fake LLM.
+"""Async end-to-end tests for ``CodeInterpreterMiddleware`` with a fake LLM.
 
 Covers the same integration surfaces as the prior quickjs e2e suite:
 agent wiring, REPL execution, PTC tool calls, runtime propagation,
@@ -21,7 +21,7 @@ from langchain.tools import (
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
 
 
@@ -79,7 +79,7 @@ def _script(code: str, *, final_message: str = "done") -> Iterator[AIMessage]:
 
 def _make_agent(
     code: str,
-    middleware: REPLMiddleware,
+    middleware: CodeInterpreterMiddleware,
     *,
     final_message: str = "done",
 ) -> Any:
@@ -107,7 +107,7 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
     """Basic async test with QuickJS interpreter."""
     result = await _make_agent(
         "6 * 7",
-        REPLMiddleware(),
+        CodeInterpreterMiddleware(),
         final_message="The answer is 42.",
     ).ainvoke(
         {"messages": [HumanMessage(content="Use the eval tool to calculate 6 * 7")]}
@@ -121,7 +121,9 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
 async def test_deepagent_with_quickjs_list_returning_foreign_function() -> None:
     """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
     code = "const ids = await tools.listUserIds({});\nids.join(',');"
-    result = await _make_agent(code, REPLMiddleware(ptc=[list_user_ids])).ainvoke(
+    result = await _make_agent(
+        code, CodeInterpreterMiddleware(ptc=[list_user_ids])
+    ).ainvoke(
         {
             "messages": [
                 HumanMessage(
@@ -146,7 +148,7 @@ async def test_deepagent_with_quickjs_async_foreign_function() -> None:
     )
     result = await _make_agent(
         code,
-        REPLMiddleware(ptc=[sync_label_tool, async_label_tool]),
+        CodeInterpreterMiddleware(ptc=[sync_label_tool, async_label_tool]),
     ).ainvoke(
         {
             "messages": [
@@ -163,7 +165,7 @@ async def test_quickjs_async_timeout_error() -> None:
     """Verify the async eval path surfaces QuickJS eval timeouts."""
     result = await _make_agent(
         "while (true) {}",
-        REPLMiddleware(timeout=1),
+        CodeInterpreterMiddleware(timeout=1),
         final_message="timeout hit",
     ).ainvoke(
         {
@@ -184,7 +186,7 @@ async def test_quickjs_async_tool_exception_propagates() -> None:
     semantics as a non-quickjs tool that raises."""
     agent = _make_agent(
         "await tools.alwaysFails({value: 'x'})",
-        REPLMiddleware(ptc=[always_fails]),
+        CodeInterpreterMiddleware(ptc=[always_fails]),
     )
     with pytest.raises(RuntimeError, match="boom:x"):
         await agent.ainvoke(
@@ -204,7 +206,7 @@ async def test_quickjs_async_host_call_budget_exceeded() -> None:
         "await tools.syncLabel({value: 'a'});\n"
         "await tools.syncLabel({value: 'b'});\n"
         "'done'",
-        REPLMiddleware(ptc=[sync_label_tool], max_ptc_calls=1),
+        CodeInterpreterMiddleware(ptc=[sync_label_tool], max_ptc_calls=1),
     ).ainvoke(
         {"messages": [HumanMessage(content="Use eval and call sync_label twice.")]}
     )
@@ -217,7 +219,7 @@ async def test_quickjs_async_toolruntime_configurable_foreign_function() -> None
     """Verify async PTC tool calls see configurable runtime data."""
     result = await _make_agent(
         "await tools.runtimeConfigurable({value: 'value'})",
-        REPLMiddleware(ptc=[runtime_configurable]),
+        CodeInterpreterMiddleware(ptc=[runtime_configurable]),
     ).ainvoke(
         {
             "messages": [
@@ -239,7 +241,7 @@ async def test_quickjs_async_parallel_agents() -> None:
     async def _run_agent(index: int) -> tuple[int, dict[str, object]]:
         result = await _make_agent(
             f"{index} * 10",
-            REPLMiddleware(),
+            CodeInterpreterMiddleware(),
             final_message=f"done-{index}",
         ).ainvoke(
             {

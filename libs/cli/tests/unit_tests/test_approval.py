@@ -7,6 +7,7 @@ import pytest
 from deepagents_cli.config import get_glyphs
 from deepagents_cli.widgets.approval import (
     _SHELL_COMMAND_TRUNCATE_LENGTH,
+    _SHELL_COMMAND_TRUNCATE_LINES,
     ApprovalMenu,
 )
 
@@ -57,6 +58,22 @@ class TestCheckExpandableCommand:
     def test_missing_command_arg_not_expandable(self) -> None:
         """Test that shell requests without command arg are not expandable."""
         menu = ApprovalMenu({"name": "shell", "args": {}})
+        assert menu._has_expandable_command is False
+
+    def test_multiline_command_over_line_threshold_is_expandable(self) -> None:
+        """Multi-line commands that exceed the line threshold are expandable.
+
+        Each line stays well under the character threshold, so this regresses
+        only if the line-count check is missing.
+        """
+        command = "\n".join(["echo line"] * (_SHELL_COMMAND_TRUNCATE_LINES + 1))
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        assert menu._has_expandable_command is True
+
+    def test_multiline_command_at_line_threshold_not_expandable(self) -> None:
+        """Commands at exactly the line threshold are not expandable."""
+        command = "\n".join(["echo line"] * _SHELL_COMMAND_TRUNCATE_LINES)
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
         assert menu._has_expandable_command is False
 
 
@@ -136,6 +153,29 @@ class TestGetCommandDisplay:
         assert "hidden chars detected" in display.plain
         assert "U+202E" in display.plain
         assert "raw:" in display.plain
+
+    def test_multiline_command_truncated_to_max_lines(self) -> None:
+        """Multi-line commands collapse to the line cap with an expand hint."""
+        lines = [f"echo {i}" for i in range(_SHELL_COMMAND_TRUNCATE_LINES + 3)]
+        command = "\n".join(lines)
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        display = menu._get_command_display(expanded=False)
+        plain = display.plain
+        assert get_glyphs().ellipsis in plain
+        assert "press 'e' to expand" in plain
+        for kept in lines[:_SHELL_COMMAND_TRUNCATE_LINES]:
+            assert kept in plain
+        assert lines[_SHELL_COMMAND_TRUNCATE_LINES] not in plain
+
+    def test_multiline_command_shows_full_when_expanded(self) -> None:
+        """Expanded multi-line commands show every line."""
+        lines = [f"echo {i}" for i in range(_SHELL_COMMAND_TRUNCATE_LINES + 3)]
+        command = "\n".join(lines)
+        menu = ApprovalMenu({"name": "shell", "args": {"command": command}})
+        display = menu._get_command_display(expanded=True)
+        for line in lines:
+            assert line in display.plain
+        assert "press 'e' to expand" not in display.plain
 
 
 class TestToggleExpand:

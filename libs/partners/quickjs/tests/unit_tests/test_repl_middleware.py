@@ -1,4 +1,4 @@
-"""Unit tests for REPLMiddleware and its backing REPL wrapper."""
+"""Unit tests for CodeInterpreterMiddleware and its backing REPL wrapper."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 from quickjs_rs import Runtime, ThreadWorker
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
 
@@ -84,7 +84,7 @@ class _StubModel:
 
 
 def test_tool_registered_with_default_name() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # langchain's create_agent accepts a model string; we use a cheap local
     # fake to avoid any provider import. Any string maps through init_chat_model,
     # but we want to avoid network/config; go direct via tools=[] + our middleware.
@@ -101,7 +101,7 @@ def test_tool_registered_with_default_name() -> None:
 
 
 def test_tool_registered_with_custom_name() -> None:
-    mw = REPLMiddleware(tool_name="js")
+    mw = CodeInterpreterMiddleware(tool_name="js")
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     agent = create_agent(
@@ -115,23 +115,23 @@ def test_tool_registered_with_custom_name() -> None:
 
 
 def test_legacy_system_prompt_alias_removed() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     assert not hasattr(mw, "system_prompt")
 
 
 def test_rejects_invalid_max_ptc_calls() -> None:
     with pytest.raises(ValueError, match="must be >= 1 or None"):
-        REPLMiddleware(max_ptc_calls=0)
+        CodeInterpreterMiddleware(max_ptc_calls=0)
 
 
 def test_rejects_invalid_max_snapshot_bytes() -> None:
     with pytest.raises(ValueError, match="must be >= 1 or None"):
-        REPLMiddleware(max_snapshot_bytes=0)
+        CodeInterpreterMiddleware(max_snapshot_bytes=0)
 
 
 def test_system_prompt_injected_once() -> None:
     """wrap_model_call appends exactly one snippet per call, idempotent in content."""
-    mw = REPLMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)
+    mw = CodeInterpreterMiddleware(timeout=7.0, memory_limit=32 * 1024 * 1024)
     seen: list[ModelRequest] = []
 
     def handler(req: ModelRequest):
@@ -167,7 +167,7 @@ def test_system_prompt_injected_once() -> None:
 
 
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
-    mw = REPLMiddleware(snapshot_between_turns=False)
+    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert "DO NOT persist across multiple turns" in mw._base_system_prompt
 
 
@@ -403,7 +403,7 @@ def test_registry_get_if_exists_does_not_create_slot() -> None:
 
 
 def test_middleware_del_closes_runtime() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     # Force a slot to exist
     _ = mw._registry.get("t")
     slots = list(mw._registry._slots.values())
@@ -546,7 +546,7 @@ async def test_aevict_closes_and_removes_slot() -> None:
 
 def test_after_agent_evicts_current_thread_slot() -> None:
     """``after_agent`` snapshots state and evicts the resolved thread slot."""
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         # Force a slot to exist for the middleware's fallback thread id.
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -562,7 +562,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
 
 async def test_aafter_agent_evicts_current_thread_slot() -> None:
     """``aafter_agent`` snapshots state and evicts the resolved thread slot."""
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("globalThis.counter = 10")
@@ -577,7 +577,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
 
 def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
     """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``."""
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("const answer = 42")
@@ -595,7 +595,7 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
 
 async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
     """Async snapshot roundtrip restores state in a fresh slot."""
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         await repl.eval_async("const answer = 42")
@@ -612,7 +612,7 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
 
 
 def test_before_agent_clears_payload_on_restore_failure() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         update = mw.before_agent(
             state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
@@ -624,7 +624,7 @@ def test_before_agent_clears_payload_on_restore_failure() -> None:
 
 
 def test_after_agent_clears_payload_on_snapshot_failure() -> None:
-    mw = REPLMiddleware()
+    mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
@@ -636,7 +636,7 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
 
 
 def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = REPLMiddleware(max_snapshot_bytes=4)
+    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(repl, "create_snapshot", return_value=b"12345"):
@@ -648,7 +648,7 @@ def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
 
 
 async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = REPLMiddleware(max_snapshot_bytes=4)
+    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         with patch.object(
@@ -664,7 +664,7 @@ async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
 
 
 def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    mw = REPLMiddleware(snapshot_between_turns=False)
+    mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("globalThis.answer = 42")

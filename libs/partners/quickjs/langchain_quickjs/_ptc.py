@@ -1,4 +1,4 @@
-"""Programmatic tool calling (PTC) support for ``REPLMiddleware``.
+"""Programmatic tool calling (PTC) support for ``CodeInterpreterMiddleware``.
 
 PTC exposes the agent's LangChain tools inside the JavaScript REPL as
 ``tools.<camelCaseName>(input)`` async functions. Instead of issuing

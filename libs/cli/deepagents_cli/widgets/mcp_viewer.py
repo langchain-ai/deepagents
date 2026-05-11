@@ -661,14 +661,15 @@ class MCPViewerScreen(ModalScreen[None]):
     ) -> Content:
         """Build the styled header line for one server.
 
-        Routes external-origin strings (`server.name`, `server.transport`,
-        `server.error`) through `Content.from_markup`'s `$var` substitution
-        per AGENTS.md — `assemble`'s plain-string tuples don't markup-parse
-        but do not escape either, leaving the door open to surprise. The
-        `$var` form is also resilient if the values ever contain `[…]`-shaped
-        text. `server.error` additionally goes through `_sanitize_inline`
-        because MCP servers can return arbitrary error text including
-        newlines or terminal escapes.
+        Uses `Content.assemble`'s `(text, style)` tuple form so the per-span
+        color is applied dynamically from the theme palette — `from_markup`
+        does NOT substitute into bracket tags (`[$icolor]…[/]` would render
+        as a literal/unknown tag, not a hex color). The tuple form is also
+        injection-safe: each span's `text` is rendered verbatim, never
+        markup-parsed, so a server name like `[bold]foo[/]` shows literally
+        rather than getting styled. `server.error` additionally goes through
+        `_sanitize_inline` because MCP servers can return arbitrary error
+        text including newlines or terminal escapes.
 
         Args:
             server: The server whose header is being rendered.
@@ -684,37 +685,21 @@ class MCPViewerScreen(ModalScreen[None]):
         tool_count = len(visible_tools)
         t_label = "tool" if tool_count == 1 else "tools"
         if server.status == "ok":
-            template = (
-                "[$icolor]$icon [/]"
-                "[bold]$name[/bold]"
-                f"[dim] $transport {glyphs.bullet} $count $tlabel[/dim]"
+            summary = (
+                f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
             )
-            return Content.from_markup(
-                template,
-                icolor=indicator_color,
-                icon=indicator_glyph,
-                name=server.name,
-                transport=server.transport,
-                count=str(tool_count),
-                tlabel=t_label,
+            return Content.assemble(
+                (f"{indicator_glyph} ", indicator_color),
+                (server.name, "bold"),
+                (summary, "dim"),
             )
         error_text = _sanitize_inline(server.error or "")
-        template = (
-            "[$icolor]$icon [/]"
-            "[bold]$name[/bold]"
-            "[dim] $transport[/dim]"
-            f"[$icolor] {glyphs.bullet} $status[/]"
-        )
-        if error_text:
-            template += "[dim] — $error[/dim]"
-        return Content.from_markup(
-            template,
-            icolor=indicator_color,
-            icon=indicator_glyph,
-            name=server.name,
-            transport=server.transport,
-            status=server.status,
-            error=error_text,
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", "dim"),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (f" — {error_text}", "dim") if error_text else "",
         )
 
     def _move_to(self, index: int) -> None:

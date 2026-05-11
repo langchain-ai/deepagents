@@ -384,6 +384,8 @@ class StatusBar(Horizontal):
     (The actual context is larger because the generation was interrupted before
     the model reported final usage.)
     """
+    _has_token_count: bool = False
+    """Whether the status bar has displayed a real token count this session."""
 
     def watch_tokens(self, new_value: int) -> None:
         """Update token display when count changes."""
@@ -425,6 +427,7 @@ class StatusBar(Horizontal):
             approximate: Append "+" to indicate the count is stale.
         """
         self._approximate = approximate
+        self._has_token_count = count > 0
         if self.tokens == count:
             # Reactive dedup would skip the watcher — call render directly.
             self._render_tokens(count, approximate=approximate)
@@ -435,6 +438,8 @@ class StatusBar(Horizontal):
 
     def show_pending_tokens(self) -> None:
         """Show an unknown token count placeholder during streaming."""
+        if not self._has_token_count:
+            return
         try:
             self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:

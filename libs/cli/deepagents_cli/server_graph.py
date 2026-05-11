@@ -26,6 +26,20 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
+_STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
+
+
+def _print_startup_error(message: str) -> None:
+    """Print a startup error for both humans and the parent CLI process.
+
+    Args:
+        message: Concise startup failure to surface in the parent process.
+    """
+    print(message, file=sys.stderr)  # noqa: T201  # stderr fallback for logs
+    print(  # noqa: T201  # machine-readable marker consumed by server.py
+        f"{_STARTUP_ERROR_MARKER}{message}",
+        file=sys.stderr,
+    )
 
 
 def _get_mcp_session_manager() -> Any:  # noqa: ANN401
@@ -163,23 +177,20 @@ def make_graph() -> Any:  # noqa: ANN401
             logger.exception(
                 "Sandbox provider '%s' is not installed", config.sandbox_type
             )
-            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-                f"Sandbox provider '{config.sandbox_type}' is not installed",
-                file=sys.stderr,
+            _print_startup_error(
+                f"Sandbox provider '{config.sandbox_type}' is not installed"
             )
             sys.exit(1)
         except NotImplementedError:
             logger.exception("Sandbox type '%s' is not supported", config.sandbox_type)
-            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-                f"Sandbox type '{config.sandbox_type}' is not supported",
-                file=sys.stderr,
+            _print_startup_error(
+                f"Sandbox type '{config.sandbox_type}' is not supported"
             )
             sys.exit(1)
         except Exception as exc:
             logger.exception("Sandbox creation failed for '%s'", config.sandbox_type)
-            print(  # noqa: T201  # stderr fallback — logger may not reach parent process
-                f"Sandbox creation failed for '{config.sandbox_type}': {exc}",
-                file=sys.stderr,
+            _print_startup_error(
+                f"Sandbox creation failed for '{config.sandbox_type}': {exc}"
             )
             sys.exit(1)
 

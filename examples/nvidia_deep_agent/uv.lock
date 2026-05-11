@@ -1550,7 +1550,7 @@ requires-dist = [
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.1.55" },
     { name = "markdownify", specifier = ">=1.2.0" },
     { name = "modal", specifier = ">=0.73.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "tavily-python", specifier = ">=0.5.0" },
 ]
 

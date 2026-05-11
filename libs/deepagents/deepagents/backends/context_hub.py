@@ -8,7 +8,7 @@ import re
 from typing import TYPE_CHECKING
 
 from langsmith import Client
-from langsmith.schemas import FileEntry
+from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
 from langsmith.utils import LangSmithNotFoundError
 
 from deepagents.backends.protocol import (
@@ -107,7 +107,9 @@ class ContextHubBackend(BackendProtocol):
         if not files:
             return
 
-        payload = {path: FileEntry(type="file", content=content) for path, content in files.items()}
+        payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
+            path: FileEntry(type="file", content=content) for path, content in files.items()
+        }
         url = self._client.push_agent(
             self._identifier,
             files=payload,

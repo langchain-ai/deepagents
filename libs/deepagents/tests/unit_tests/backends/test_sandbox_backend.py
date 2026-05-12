@@ -1019,8 +1019,9 @@ def test_read_script_ascii_larger_than_prefix(tmp_path: Path) -> None:
 
 
 _PERMISSION_DENIED_SKIP = pytest.mark.skipif(
-    os.geteuid() == 0 if hasattr(os, "geteuid") else False,
-    reason="chmod 000 is bypassed when running as root",
+    sys.platform == "win32"
+    or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="chmod 000 does not deny access on Windows or as root",
 )
 
 

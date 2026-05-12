@@ -22,3 +22,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["control_server"]
+artifacts = ["control_server/static/**/*"]

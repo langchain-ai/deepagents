@@ -41,6 +41,36 @@ class TestReadyPlayers(unittest.TestCase):
     def tearDown(self) -> None:
         _reset_module_globals()
 
+    def test_overlay_route_serves_obs_browser_source_page(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.get("/overlay")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Vibe Olympics Overlay", response.text)
+        self.assertIn("background: transparent !important", response.text)
+        self.assertIn("/static/fonts/aeonik-mono/aeonikmono-regular.woff2", response.text)
+        self.assertIn("overlayMode = params.get('mode')", response.text)
+        self.assertIn("fetch('/api/state'", response.text)
+
+    def test_index_links_to_overlay_route(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Vibe Olympics Control", response.text)
+        self.assertIn('href="/overlay"', response.text)
+
+    def test_static_fonts_are_served(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.get("/static/fonts/aeonik-mono/aeonikmono-regular.woff2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "font/woff2")
+        self.assertGreater(len(response.content), 0)
+
     def test_ready_players_forward_to_obs_in_submission_order(self) -> None:
         client = TestClient(app_mod.create_app())
         forward = AsyncMock(return_value={"phase": "idle"})

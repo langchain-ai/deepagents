@@ -23,6 +23,7 @@ from typing import Annotated, Any
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from control_server import eval_runner, iterm_ctrl, player_dispatch, site_urls
@@ -31,6 +32,7 @@ from control_server.round_timer import RoundTimer
 logger = logging.getLogger(__name__)
 
 VIBE_OBS_API = os.environ.get("VIBE_OBS_API", "http://localhost:8765").rstrip("/")
+STATIC_DIR = Path(__file__).with_name("static")
 PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
 _DEFAULT_ROUND_DURATION_SECS = 300.0
 _PLAYER_LAUNCH_COUNTDOWN_SECS = 5.0
@@ -683,6 +685,7 @@ _INDEX_HTML = """<!doctype html>
   button:disabled, button[aria-disabled="true"] { cursor: not-allowed; filter: grayscale(0.7) brightness(0.75); opacity: 0.55; }
   button.danger { background: #dc2626; }
   button.secondary { background: #525252; }
+  a { color: #93c5fd; }
   .muted { color: #888; font-size: 0.85rem; margin-top: 0.65rem; }
   .port-note { color: #707070; font-size: 0.8rem; }
   .inline-error { color: #fca5a5; font-size: 0.85rem; }
@@ -865,6 +868,14 @@ _INDEX_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Vibe Olympics Control</h1>
+
+<section>
+  <h2>OBS overlay</h2>
+  <div class="muted">
+    Add <a id="overlay-link" href="/overlay" target="_blank" rel="noreferrer">/overlay</a>
+    as an OBS Browser Source on top of the player feeds.
+  </div>
+</section>
 
 <section>
   <h2>Start round</h2>
@@ -1508,8 +1519,682 @@ document.getElementById('btn-clear').onclick = () => {
 refreshPlayers();
 refreshState({ quiet: true });
 loadPromptPool();
+document.getElementById('overlay-link').href = `${window.location.origin}/overlay`;
 setInterval(refreshPlayers, 2000);
 setInterval(() => refreshState({ quiet: true }), 2000);
+</script>
+</body>
+</html>
+"""
+
+
+_OVERLAY_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Olympics Overlay</title>
+<style>
+  @font-face {
+    font-family: "Aeonik Mono";
+    src: url("/static/fonts/aeonik-mono/aeonikmono-regular.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Aeonik Mono";
+    src: url("/static/fonts/aeonik-mono/aeonikmono-medium.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 500;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "Aeonik Mono";
+    src: url("/static/fonts/aeonik-mono/aeonikmono-semibold.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 700;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IBM Plex Mono";
+    src: url("/static/fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+  }
+  @font-face {
+    font-family: "IBM Plex Mono";
+    src: url("/static/fonts/ibm-plex-mono/IBMPlexMono-Bold.ttf") format("truetype");
+    font-style: normal;
+    font-weight: 700;
+    font-display: block;
+  }
+  :root {
+    color-scheme: dark;
+    --ink: #000;
+    --paper: #fff;
+    --blue-a: #868cfe;
+    --blue-b: #82c9fe;
+    --pink-a: #ed92ff;
+    --pink-b: #d5c3f7;
+    --soft-blue: #d8efff;
+    --soft-pink: #f5d8ff;
+    --line: max(2px, 0.11vw);
+    --status: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: transparent !important;
+    color: var(--ink);
+    font-family: "Aeonik Mono", "IBM Plex Mono", ui-monospace, monospace;
+  }
+  #app {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+  }
+  .view {
+    position: absolute;
+    inset: 0;
+    display: none;
+  }
+  .view.active { display: block; }
+  .stage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+  .split-shell,
+  .focus-shell {
+    position: absolute;
+    inset: 0;
+  }
+  .focus-shell { display: none; }
+  #coding-view.focus .split-shell { display: none; }
+  #coding-view.focus .focus-shell { display: block; }
+  .gradient-left {
+    background: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 42%, var(--paper) 100%);
+  }
+  .gradient-right {
+    background: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+  }
+  .top-band {
+    position: absolute;
+    top: 0;
+    height: 10.5%;
+    border-bottom: var(--line) solid var(--ink);
+  }
+  .top-band.left { left: 0; width: 50%; }
+  .top-band.right { right: 0; width: 50%; }
+  .bottom-band {
+    position: absolute;
+    bottom: 0;
+    top: 10.5%;
+    display: none;
+  }
+  .bottom-band.left { left: 0; width: 50%; }
+  .bottom-band.right { right: 0; width: 50%; }
+  .divider {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: var(--line);
+    background: var(--ink);
+  }
+  .chip {
+    position: absolute;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 1.2vw;
+    overflow: hidden;
+    background: var(--ink);
+    color: var(--paper);
+    clip-path: polygon(5% 0, 95% 0, 100% 50%, 95% 100%, 5% 100%, 0 50%);
+    font-weight: 700;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .event-chip {
+    left: 35.7%;
+    top: 2.25%;
+    width: 34%;
+    height: 5.5%;
+    font-size: min(1.95vw, 3.45vh);
+    letter-spacing: 0.02em;
+  }
+  .timer-chip {
+    right: 2.2%;
+    top: 2.25%;
+    width: 7.2%;
+    height: 5.5%;
+    font-size: min(1.55vw, 2.75vh);
+  }
+  .player-name {
+    position: absolute;
+    top: 2.85%;
+    max-width: 27%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: min(1.75vw, 3.1vh);
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .player-name.left { left: 2.2%; }
+  .player-name.right { left: 52.2%; }
+  .prompt-strip {
+    position: absolute;
+    left: 2.2%;
+    right: 2.2%;
+    top: 12.1%;
+    min-height: 5.8%;
+    display: flex;
+    align-items: center;
+    gap: 1.25vw;
+    padding: 0.65vh 1vw;
+    background: rgba(255, 255, 255, 0.94);
+    border: var(--line) solid var(--ink);
+    font-size: min(1.16vw, 2.06vh);
+    font-weight: 500;
+  }
+  .prompt-strip span:first-child {
+    flex: 0 0 auto;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .prompt-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pane {
+    position: absolute;
+    border: var(--line) solid var(--ink);
+    background: transparent;
+  }
+  .pane-label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 0.62vh 0.72vw;
+    background: var(--paper);
+    border-right: var(--line) solid var(--ink);
+    border-bottom: var(--line) solid var(--ink);
+    font-size: min(1.05vw, 1.86vh);
+    font-weight: 500;
+    line-height: 1.18;
+    text-transform: uppercase;
+  }
+  .split-player.left .pane-label,
+  #coding-view[data-focus="1"] .pane-label {
+    background: linear-gradient(180deg, var(--paper), var(--soft-blue));
+  }
+  .split-player.right .pane-label,
+  #coding-view[data-focus="2"] .pane-label {
+    background: linear-gradient(180deg, var(--paper), var(--soft-pink));
+  }
+  .terminal-title {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 16%;
+    display: flex;
+    align-items: center;
+    padding: 0 1vw;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: min(1.05vw, 1.86vh);
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .terminal-input {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 16%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 1vw;
+    background: rgba(255, 255, 255, 0.92);
+    border-top: var(--line) solid var(--ink);
+    font-size: min(1.05vw, 1.86vh);
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .terminal-arrow {
+    align-self: stretch;
+    width: 8%;
+    display: grid;
+    place-items: center;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: min(2vw, 3.55vh);
+  }
+  .split-player { position: absolute; top: 18.8%; bottom: 3%; width: 46.2%; }
+  .split-player.left { left: 2.2%; }
+  .split-player.right { right: 2.2%; }
+  .split-player .preview {
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 55%;
+  }
+  .split-player .terminal {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 38%;
+  }
+  .focus-top {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 10.5%;
+    border-bottom: var(--line) solid var(--ink);
+  }
+  #coding-view[data-focus="1"] .focus-top { background: linear-gradient(90deg, var(--blue-a), var(--blue-b), var(--paper)); }
+  #coding-view[data-focus="2"] .focus-top { background: linear-gradient(90deg, var(--pink-a), var(--pink-b), var(--paper)); }
+  .focus-name {
+    position: absolute;
+    left: 2.2%;
+    top: 2.85%;
+    max-width: 35%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: min(1.9vw, 3.38vh);
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+  .focus-website {
+    left: 2.2%;
+    top: 18.8%;
+    width: 60.5%;
+    height: 59%;
+  }
+  .focus-terminal {
+    right: 2.2%;
+    top: 18.8%;
+    width: 33%;
+    height: 59%;
+  }
+  .focus-prompt {
+    left: 2.2%;
+    right: 2.2%;
+    top: 81%;
+  }
+  .focus-caption {
+    position: absolute;
+    right: 2.2%;
+    bottom: 2.6%;
+    font-size: min(1.3vw, 2.31vh);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .status {
+    position: absolute;
+    right: 2.2%;
+    bottom: 1.3%;
+    color: var(--status);
+    font-size: min(1vw, 1.78vh);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0;
+  }
+  .status.visible { opacity: 1; }
+  .full-backdrop {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgba(134, 140, 254, 0.98) 0 50%, rgba(237, 146, 255, 0.98) 50% 100%);
+  }
+  .idle-card {
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    top: 25%;
+    min-height: 36%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2.4vh;
+    padding: 5%;
+    background: var(--ink);
+    color: var(--paper);
+    clip-path: polygon(2.5% 0, 97.5% 0, 100% 50%, 97.5% 100%, 2.5% 100%, 0 50%);
+  }
+  .idle-title {
+    font-size: min(5.8vw, 10.31vh);
+    line-height: 0.92;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .idle-subhead {
+    font-size: min(1.85vw, 3.29vh);
+    font-weight: 500;
+  }
+  .score-card {
+    position: absolute;
+    top: 24%;
+    width: 38%;
+    height: 48%;
+    padding: 3%;
+    background: var(--paper);
+    border: var(--line) solid var(--ink);
+  }
+  .score-card.left { left: 7%; }
+  .score-card.right { right: 7%; }
+  .score-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: min(3.1vw, 5.51vh);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .score-num {
+    margin-top: 8%;
+    font-family: "IBM Plex Mono", "Aeonik Mono", ui-monospace, monospace;
+    font-size: min(7.5vw, 13.33vh);
+    line-height: 0.95;
+    font-weight: 700;
+  }
+  .score-track {
+    height: 6%;
+    margin-top: 8%;
+    border: var(--line) solid var(--ink);
+    background: transparent;
+  }
+  .score-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--ink);
+    transition: width 900ms ease;
+  }
+  .winner {
+    margin-top: 5%;
+    font-size: min(1.45vw, 2.58vh);
+    font-weight: 700;
+    text-transform: uppercase;
+    opacity: 0;
+  }
+  .winner.visible { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <section class="view active" id="idle-view">
+    <div class="stage">
+      <div class="full-backdrop"></div>
+      <div class="idle-card">
+        <div class="idle-title">Vibe Coding Olympics</div>
+        <div class="idle-subhead" id="idle-subhead">Waiting for players</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view split" id="coding-view">
+    <div class="stage split-shell">
+      <div class="top-band left gradient-left"></div>
+      <div class="top-band right gradient-right"></div>
+      <div class="bottom-band left gradient-left"></div>
+      <div class="bottom-band right gradient-right"></div>
+      <div class="divider"></div>
+      <div class="player-name left" id="split-p1-name">Player 1</div>
+      <div class="player-name right" id="split-p2-name">Player 2</div>
+      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
+      <div class="chip timer-chip" id="split-clock">--:--</div>
+      <div class="prompt-strip">
+        <span>Prompt</span>
+        <span class="prompt-text" id="split-prompt">Waiting for prompt</span>
+      </div>
+      <div class="split-player left">
+        <div class="pane preview">
+          <div class="pane-label">P1 Live<br>Preview</div>
+        </div>
+        <div class="pane terminal">
+          <div class="terminal-title">P1 Terminal</div>
+          <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
+        </div>
+      </div>
+      <div class="split-player right">
+        <div class="pane preview">
+          <div class="pane-label">P2 Live<br>Preview</div>
+        </div>
+        <div class="pane terminal">
+          <div class="terminal-title">P2 Terminal</div>
+          <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage focus-shell">
+      <div class="focus-top"></div>
+      <div class="focus-name" id="focus-name">Player 1</div>
+      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
+      <div class="chip timer-chip" id="focus-clock">--:--</div>
+      <div class="pane focus-website">
+        <div class="pane-label" id="focus-preview-label">P1 Live<br>Preview</div>
+      </div>
+      <div class="pane focus-terminal">
+        <div class="terminal-title" id="focus-terminal-title">P1 Terminal</div>
+        <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
+      </div>
+      <div class="prompt-strip focus-prompt">
+        <span>Prompt</span>
+        <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
+      </div>
+      <div class="focus-caption" id="focus-caption">Player Focus</div>
+    </div>
+  </section>
+
+  <section class="view" id="scoreboard-view">
+    <div class="stage">
+      <div class="full-backdrop"></div>
+      <div class="chip event-chip">Final Scores</div>
+      <div id="score-wrap"></div>
+    </div>
+  </section>
+
+  <div class="status" id="status">Disconnected</div>
+</div>
+
+<script>
+const state = {
+  phase: 'idle',
+  prompt: '',
+  contestants: [],
+  scores: {},
+  timer: null,
+  lastFetch: 0,
+  connected: true,
+};
+
+const params = new URLSearchParams(window.location.search);
+const overlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
+const focusIndex = params.get('p') === '2' ? 1 : 0;
+
+const els = {
+  idleView: document.getElementById('idle-view'),
+  codingView: document.getElementById('coding-view'),
+  scoreboardView: document.getElementById('scoreboard-view'),
+  idleSubhead: document.getElementById('idle-subhead'),
+  splitP1Name: document.getElementById('split-p1-name'),
+  splitP2Name: document.getElementById('split-p2-name'),
+  splitClock: document.getElementById('split-clock'),
+  splitPrompt: document.getElementById('split-prompt'),
+  focusName: document.getElementById('focus-name'),
+  focusClock: document.getElementById('focus-clock'),
+  focusPrompt: document.getElementById('focus-prompt'),
+  focusPreviewLabel: document.getElementById('focus-preview-label'),
+  focusTerminalTitle: document.getElementById('focus-terminal-title'),
+  focusCaption: document.getElementById('focus-caption'),
+  scoreWrap: document.getElementById('score-wrap'),
+  status: document.getElementById('status'),
+};
+
+function active(view) {
+  els.idleView.classList.toggle('active', view === 'idle');
+  els.codingView.classList.toggle('active', view === 'coding');
+  els.scoreboardView.classList.toggle('active', view === 'scoreboard');
+}
+
+function text(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+}
+
+function formatClock(seconds) {
+  if (!Number.isFinite(seconds)) return '--:--';
+  const total = Math.max(0, Math.ceil(seconds));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function currentRemaining() {
+  const timer = state.timer;
+  if (!timer || !timer.running) return timer ? timer.remaining_secs : NaN;
+  const elapsed = (Date.now() - state.lastFetch) / 1000;
+  return Math.max(0, Number(timer.remaining_secs || 0) - elapsed);
+}
+
+function renderIdle() {
+  active('idle');
+  const names = state.contestants.filter(Boolean);
+  els.idleSubhead.textContent = names.length
+    ? `Ready: ${names.join(' vs ')}`
+    : 'Waiting for players';
+}
+
+function renderCoding() {
+  active('coding');
+  els.codingView.classList.toggle('focus', overlayMode === 'focus');
+  els.codingView.classList.toggle('split', overlayMode !== 'focus');
+  els.codingView.dataset.focus = String(focusIndex + 1);
+
+  const p1 = text(state.contestants[0], 'Player 1');
+  const p2 = text(state.contestants[1], 'Player 2');
+  const prompt = text(state.prompt, 'Waiting for prompt');
+  const clock = formatClock(currentRemaining());
+  const focused = focusIndex === 0 ? p1 : p2;
+  const focusedLabel = `P${focusIndex + 1}`;
+
+  els.splitP1Name.textContent = p1;
+  els.splitP2Name.textContent = p2;
+  els.splitPrompt.textContent = prompt;
+  els.splitClock.textContent = clock;
+
+  els.focusName.textContent = focused;
+  els.focusPrompt.textContent = prompt;
+  els.focusClock.textContent = clock;
+  els.focusPreviewLabel.innerHTML = `${focusedLabel} Live<br>Preview`;
+  els.focusTerminalTitle.textContent = `${focusedLabel} Terminal`;
+  els.focusCaption.textContent = `${focusedLabel} Player Focus`;
+}
+
+function scoreEntries() {
+  const names = state.contestants.length
+    ? state.contestants
+    : Object.keys(state.scores);
+  return names.slice(0, 2).map((name) => ({
+    name,
+    score: Number(state.scores[name] || 0),
+  }));
+}
+
+function renderScoreboard() {
+  active('scoreboard');
+  const entries = scoreEntries();
+  const winnerScore = Math.max(...entries.map((entry) => entry.score), -1);
+  els.scoreWrap.replaceChildren();
+  entries.forEach((entry, index) => {
+    const card = document.createElement('div');
+    card.className = `score-card ${index === 0 ? 'left' : 'right'}`;
+    const name = document.createElement('div');
+    name.className = 'score-name';
+    name.textContent = text(entry.name, 'Player');
+    const score = document.createElement('div');
+    score.className = 'score-num';
+    score.textContent = entry.score.toFixed(2);
+    const track = document.createElement('div');
+    track.className = 'score-track';
+    const fill = document.createElement('div');
+    fill.className = 'score-fill';
+    track.appendChild(fill);
+    const winner = document.createElement('div');
+    winner.className = 'winner';
+    winner.classList.toggle('visible', entry.score === winnerScore && winnerScore > 0);
+    winner.textContent = 'Winner';
+    card.append(name, score, track, winner);
+    els.scoreWrap.appendChild(card);
+    requestAnimationFrame(() => {
+      fill.style.width = `${Math.max(0, Math.min(100, entry.score * 10))}%`;
+    });
+  });
+  if (entries.length === 0) {
+    const card = document.createElement('div');
+    card.className = 'score-card left';
+    const name = document.createElement('div');
+    name.className = 'score-name';
+    name.textContent = 'Waiting for scores';
+    card.appendChild(name);
+    els.scoreWrap.appendChild(card);
+  }
+}
+
+function render() {
+  els.status.classList.toggle('visible', !state.connected);
+  if (state.phase === 'coding') {
+    renderCoding();
+  } else if (state.phase === 'scoreboard') {
+    renderScoreboard();
+  } else {
+    renderIdle();
+  }
+}
+
+async function refreshState() {
+  try {
+    const response = await fetch('/api/state', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    state.phase = payload.phase || 'idle';
+    state.prompt = payload.prompt || (payload.round && payload.round.prompt) || '';
+    state.contestants = Array.isArray(payload.contestants) && payload.contestants.length
+      ? payload.contestants
+      : ((payload.round && payload.round.contestants) || []);
+    state.scores = payload.scores || {};
+    state.timer = payload.timer || null;
+    state.lastFetch = Date.now();
+    state.connected = !payload.obs_error;
+  } catch (error) {
+    state.connected = false;
+  }
+  render();
+}
+
+refreshState();
+setInterval(refreshState, 1000);
+setInterval(() => {
+  if (state.phase === 'coding') renderCoding();
+}, 100);
 </script>
 </body>
 </html>
@@ -1519,10 +2204,15 @@ setInterval(() => refreshState({ quiet: true }), 2000);
 def create_app() -> FastAPI:
     """Build the control-panel FastAPI app."""
     app = FastAPI(title="Vibe Olympics Control Panel")
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return _INDEX_HTML
+
+    @app.get("/overlay", response_class=HTMLResponse)
+    async def overlay() -> str:
+        return _OVERLAY_HTML
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:

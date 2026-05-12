@@ -2011,8 +2011,8 @@ _OVERLAY_HTML = """<!doctype html>
     --pink-b: #d5c3f7;
     --blue-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 20%, var(--paper) 50%);
     --pink-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 20%, var(--paper) 50%);
-    --blue-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--blue-b) 58%, var(--paper) 100%);
-    --pink-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--pink-b) 58%, var(--paper) 100%);
+    --blue-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--soft-blue) 44%, var(--blue-a) 100%);
+    --pink-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--soft-pink) 44%, var(--pink-a) 100%);
     --soft-blue: #d8efff;
     --soft-pink: #f5d8ff;
     --line: max(2px, 0.11vw);
@@ -2171,7 +2171,7 @@ _OVERLAY_HTML = """<!doctype html>
     background: var(--ink);
     color: var(--paper);
     clip-path: polygon(5% 0, 95% 0, 100% 50%, 95% 100%, 5% 100%, 0 50%);
-    font-weight: 700;
+    font-weight: 400;
     text-transform: uppercase;
     white-space: nowrap;
     z-index: 4;
@@ -2221,7 +2221,7 @@ _OVERLAY_HTML = """<!doctype html>
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: min(1.35vw, 2.4vh);
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1;
     text-transform: uppercase;
     z-index: 4;
@@ -2231,6 +2231,8 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .preview-name.right {
     background-image: var(--pink-name-gradient);
+    justify-content: flex-end;
+    text-align: right;
   }
   .prompt-strip {
     position: absolute;
@@ -2518,13 +2520,13 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="split-player left">
         <div class="pane preview">
-          <div class="preview-name left" id="split-p1-name">Player: Player 1</div>
+          <div class="preview-name left" id="split-p1-name">Player 1</div>
         </div>
         <div class="pane terminal"></div>
       </div>
       <div class="split-player right">
         <div class="pane preview">
-          <div class="preview-name right" id="split-p2-name">Player: Player 2</div>
+          <div class="preview-name right" id="split-p2-name">Player 2</div>
         </div>
         <div class="pane terminal"></div>
       </div>
@@ -2538,7 +2540,7 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="focus-bg outer-right"></div>
       <div class="focus-bg bottom-website"></div>
       <div class="focus-bg bottom-terminal"></div>
-      <div class="focus-name" id="focus-name">Player: Player 1</div>
+      <div class="focus-name" id="focus-name">Player 1</div>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="chip timer-chip" id="focus-clock">--:--</div>
       <div class="prompt-strip focus-prompt">
@@ -2622,7 +2624,7 @@ function displayName(value, fallback = '') {
 }
 
 function playerName(value, fallback) {
-  return `Player: ${displayName(value, fallback)}`;
+  return displayName(value, fallback);
 }
 
 function syncOverlayMode(payload) {

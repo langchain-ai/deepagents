@@ -1,10 +1,17 @@
 # context-hub-kb-issues
 
-A minimal example that treats Context Hub as a living knowledge base:
+A minimal one-file example that treats Context Hub as a living knowledge base:
 
 - `/memories/` is durable in Context Hub.
 - default backend stays thread-scoped (`StateBackend`).
-- deployment can auto-wire a LangSmith issues board to the same Context Hub repo handle.
+- one script defines the graph and auto-wires a LangSmith issues board to the same Context Hub repo handle.
+
+## Single code file
+
+- `context_hub_kb_issues.py`
+  - defines `agent` with `CompositeBackend` + `ContextHubBackend`
+  - deploys the graph (`langgraph deploy`)
+  - create-or-patch wires `/issues-agent`
 
 ## Backend pattern
 
@@ -12,21 +19,15 @@ A minimal example that treats Context Hub as a living knowledge base:
 backend = CompositeBackend(
     default=StateBackend(),  # thread-scoped
     routes={
-        "/memories/": ContextHubBackend("-/my-agent"),  # durable in Context Hub
+        "/memories/": ContextHubBackend("my-agent"),  # durable in Context Hub
     },
 )
 
 agent = create_deep_agent(
-    model="anthropic:claude-sonnet-4-6",
+    model=init_chat_model(model="anthropic:claude-sonnet-4-6"),
     backend=backend,
 )
 ```
-
-## Files
-
-- `agent.py` — graph definition using `CompositeBackend` + `ContextHubBackend`
-- `langgraph.json` — graph entrypoint for local/dev/deploy
-- `deploy_and_wire_issues.py` — deploys and POST/PATCHes `/issues-agent`
 
 ## Prerequisites
 
@@ -34,10 +35,10 @@ Set these environment variables:
 
 - `ANTHROPIC_API_KEY`
 - `LANGSMITH_API_KEY` (or `LANGCHAIN_API_KEY`)
-- `MEMORIES_HUB_IDENTIFIER` (e.g. `-/my-agent` or `my-org/my-agent`)
 
 Optional:
 
+- `MEMORIES_HUB_IDENTIFIER` (for example `my-agent` or `my-org/my-agent`)
 - `LANGSMITH_ENDPOINT` / `LANGCHAIN_ENDPOINT`
 - `LANGSMITH_TENANT_ID`
 - `DEEPAGENT_MODEL`
@@ -46,21 +47,9 @@ Optional:
 
 ```bash
 cd examples/context-hub-kb-issues
-cp .env.example .env
 
 # Deploy + auto-wire issues board
-uv run python deploy_and_wire_issues.py \
-  --project-name my-agent \
-  --memories-identifier -/my-agent
-```
-
-If you already deployed and only want to wire/update the issues board:
-
-```bash
-uv run python deploy_and_wire_issues.py \
-  --project-name my-agent \
-  --memories-identifier -/my-agent \
-  --skip-deploy
+uv run python context_hub_kb_issues.py --project-name my-agent
 ```
 
 ## What the wiring does

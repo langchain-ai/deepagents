@@ -103,6 +103,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/overlay` | GET | — | Serves the transparent OBS Browser Source overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
 | `/api/eval/last` | GET | — | Returns the latest per-player judge results |
+| `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
 | `/api/round/end` | POST | `{}` | Cancels the timer, runs the LLM judge against every player site, and forwards `end` to the FSM |
 | `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, then fires `end` |

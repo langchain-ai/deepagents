@@ -26,6 +26,7 @@ def _reset_module_globals() -> None:
     app_mod._next_prompt_id = len(app_mod._prompt_pool) + 1
     app_mod._round_context.clear()
     app_mod._last_eval_results.clear()
+    app_mod._overlay_smoke_state = None
     app_mod._round_counter = 0
     # Swap in a fresh RoundTimer rather than awaiting cancel() across
     # the previous test's event loop, which TestClient has already
@@ -71,6 +72,10 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Vibe Olympics Control", response.text)
         self.assertIn('href="/overlay"', response.text)
+        self.assertIn('id="smoke-modal"', response.text)
+        self.assertIn('id="btn-open-smoke"', response.text)
+        self.assertIn("/api/overlay-smoke", response.text)
+        self.assertIn("Run transition tour", response.text)
 
     def test_static_fonts_are_served(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -816,6 +821,68 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
             body["timer"]["warning"],
             {"threshold_secs": 60, "message": "1 minute left"},
         )
+
+    def test_overlay_smoke_state_overrides_obs_state(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post(
+            "/api/overlay-smoke",
+            json={
+                "phase": "coding",
+                "prompt": "build a neon scoreboard",
+                "contestants": ["Alice", "Bob"],
+                "duration_secs": 300,
+                "remaining_secs": 60,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["phase"], "coding")
+        self.assertEqual(state["prompt"], "build a neon scoreboard")
+        self.assertEqual(state["contestants"], ["Alice", "Bob"])
+        self.assertEqual(state["timer"]["warning"]["threshold_secs"], 60)
+        self.assertTrue(state["overlay_smoke"]["active"])
+
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(side_effect=AssertionError("OBS should not be queried")),
+        ):
+            smoke = client.get("/api/state")
+
+        body = smoke.json()
+        self.assertEqual(body["phase"], "coding")
+        self.assertTrue(body["overlay_smoke"]["active"])
+
+    def test_overlay_smoke_scoreboard_defaults_scores(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post(
+            "/api/overlay-smoke",
+            json={"phase": "scoreboard", "contestants": ["Alice", "Bob"]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["phase"], "scoreboard")
+        self.assertEqual(state["scores"], {"Alice": 8.6, "Bob": 7.8})
+        self.assertFalse(state["timer"]["running"])
+
+    def test_overlay_smoke_clear_restores_live_state(self) -> None:
+        client = TestClient(app_mod.create_app())
+        client.post("/api/overlay-smoke", json={"phase": "idle"})
+
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(return_value={"phase": "idle"}),
+        ):
+            response = client.delete("/api/overlay-smoke")
+
+        state = response.json()["state"]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(state["phase"], "idle")
+        self.assertFalse(state["overlay_smoke"]["active"])
+        self.assertIsNone(app_mod._overlay_smoke_state)
 
 
 if __name__ == "__main__":

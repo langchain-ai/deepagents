@@ -27,7 +27,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from control_server import eval_runner, iterm_ctrl, player_dispatch, site_urls
-from control_server.round_timer import RoundTimer, TimerWarning
+from control_server.round_timer import (
+    RoundTimer,
+    TimerWarning,
+    timer_warning_for_remaining,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,6 +248,7 @@ _round_timer = RoundTimer()
 _round_context: dict[str, Any] = {}
 _round_counter = 0
 _last_eval_results: list[dict[str, Any]] = []
+_overlay_smoke_state: dict[str, Any] | None = None
 _eval_lock: asyncio.Lock | None = None
 
 
@@ -279,6 +284,44 @@ class OverrideScoresRequest(BaseModel):
     )
 
 
+class OverlaySmokeRequest(BaseModel):
+    """Controller-only overlay preview state for OBS smoke tests."""
+
+    phase: str
+    prompt: str | None = None
+    contestants: list[str] = Field(default_factory=list)
+    scores: dict[str, Annotated[float, Field(ge=0, le=10)]] = Field(
+        default_factory=dict,
+    )
+    duration_secs: Annotated[float, Field(ge=0)] = 300.0
+    remaining_secs: Annotated[float | None, Field(ge=0)] = None
+
+    @field_validator("phase")
+    @classmethod
+    def validate_phase(cls, value: str) -> str:
+        """Allow only overlay phases the browser source can render."""
+        phase = value.strip().lower()
+        if phase not in {"idle", "coding", "scoreboard"}:
+            msg = "phase must be one of: idle, coding, scoreboard"
+            raise ValueError(msg)
+        return phase
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_smoke_prompt(cls, value: str | None) -> str | None:
+        """Normalize optional smoke-test prompts."""
+        if value is None:
+            return None
+        prompt = value.strip()
+        return prompt or None
+
+    @field_validator("contestants")
+    @classmethod
+    def validate_smoke_contestants(cls, value: list[str]) -> list[str]:
+        """Keep at most two non-empty smoke-test player names."""
+        return [name.strip() for name in value if name.strip()][:2]
+
+
 def _reset_round_state() -> None:
     """Forget the in-flight round context and the last eval snapshot."""
     _round_context.clear()
@@ -288,6 +331,124 @@ def _reset_round_state() -> None:
 def _ready_contestants() -> list[str]:
     """Return ready player names in submission order."""
     return list(_ready_players.values())
+
+
+def _clear_overlay_smoke() -> None:
+    """Disable the controller-only overlay smoke state."""
+    global _overlay_smoke_state
+    _overlay_smoke_state = None
+
+
+def _smoke_contestants(contestants: list[str]) -> list[str]:
+    """Return two player names for overlay smoke tests."""
+    if contestants:
+        return contestants[:2]
+    ready = _ready_contestants()[:2]
+    if ready:
+        return ready
+    return ["Ada Lovelace", "Grace Hopper"]
+
+
+def _smoke_scores(
+    contestants: list[str],
+    scores: dict[str, float],
+) -> dict[str, float]:
+    """Return scoreboard scores keyed by smoke-test player names."""
+    defaults = [8.6, 7.8]
+    return {
+        name: float(scores.get(name, defaults[index]))
+        for index, name in enumerate(contestants[:2])
+    }
+
+
+def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
+    """Store and return a fake overlay state for smoke tests."""
+    global _overlay_smoke_state
+
+    contestants = _smoke_contestants(req.contestants)
+    duration_secs = float(req.duration_secs)
+    remaining_secs = (
+        float(req.remaining_secs)
+        if req.remaining_secs is not None
+        else duration_secs
+    )
+    remaining_secs = min(remaining_secs, duration_secs) if duration_secs else 0.0
+    now = time.monotonic()
+    _overlay_smoke_state = {
+        "phase": req.phase,
+        "prompt": req.prompt
+        or "Build a bold event landing page for a time-traveling taco truck.",
+        "contestants": contestants,
+        "scores": _smoke_scores(contestants, req.scores),
+        "duration_secs": duration_secs,
+        "timer_anchor_monotonic": now,
+        "timer_anchor_remaining_secs": remaining_secs,
+        "timer_started_at": now - max(0.0, duration_secs - remaining_secs),
+        "created_at": time.time(),
+    }
+    state = _overlay_smoke_api_state()
+    if state is None:
+        msg = "Failed to create overlay smoke state."
+        raise HTTPException(status_code=500, detail=msg)
+    return state
+
+
+def _overlay_smoke_api_state() -> dict[str, Any] | None:
+    """Return the active fake `/api/state` payload for overlay smoke tests."""
+    smoke = _overlay_smoke_state
+    if smoke is None:
+        return None
+
+    phase = str(smoke["phase"])
+    duration_secs = float(smoke["duration_secs"])
+    remaining_secs = 0.0
+    running = False
+    warning: TimerWarning | None = None
+    if phase == "coding":
+        elapsed = max(0.0, time.monotonic() - float(smoke["timer_anchor_monotonic"]))
+        remaining_secs = max(
+            0.0,
+            float(smoke["timer_anchor_remaining_secs"]) - elapsed,
+        )
+        running = remaining_secs > 0
+        warning = timer_warning_for_remaining(
+            duration_secs=duration_secs,
+            remaining_secs=remaining_secs,
+        )
+
+    scores = dict(smoke["scores"]) if phase == "scoreboard" else {}
+    timer = {
+        "running": running,
+        "duration_secs": duration_secs,
+        "remaining_secs": remaining_secs,
+        "started_at": smoke["timer_started_at"] if phase == "coding" else None,
+        "warning": _timer_warning_payload(warning),
+    }
+    return {
+        "phase": phase,
+        "prompt": smoke["prompt"],
+        "contestants": list(smoke["contestants"]),
+        "scores": scores,
+        "obs_error": None,
+        "timer": timer,
+        "round": {
+            "prompt": smoke["prompt"],
+            "round_num": None,
+            "contestants": list(smoke["contestants"]),
+            "started_at": smoke["created_at"],
+            "completed_at": None,
+            "last_reason": "overlay_smoke",
+            "obs_error": None,
+            "times_up_error": None,
+            "duration_warning": None,
+        },
+        "eval": {
+            "results": [],
+        },
+        "overlay_smoke": {
+            "active": True,
+        },
+    }
 
 
 def _round_player_ports() -> list[str]:
@@ -864,16 +1025,35 @@ _INDEX_HTML = """<!doctype html>
     color: #cbd5e1;
     font-size: 0.85rem;
   }
-  #override-modal {
+  #override-modal,
+  #smoke-modal {
     border: 1px solid #2a2a2a;
     border-radius: 10px;
     background: #141414;
     color: #e5e5e5;
     padding: 1rem 1.25rem;
-    max-width: 480px;
+    max-width: 560px;
     width: 90%;
   }
-  #override-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+  #override-modal::backdrop,
+  #smoke-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+  .smoke-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.45rem;
+    margin-top: 0.75rem;
+  }
+  .smoke-actions button {
+    width: 100%;
+    margin-right: 0;
+  }
+  .smoke-links {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+  }
 </style>
 </head>
 <body>
@@ -884,6 +1064,10 @@ _INDEX_HTML = """<!doctype html>
   <div class="muted">
     Add <a id="overlay-link" href="/overlay" target="_blank" rel="noreferrer">/overlay</a>
     as an OBS Browser Source on top of the player feeds.
+  </div>
+  <div class="action-line">
+    <button class="secondary" id="btn-open-smoke">Smoke test overlay…</button>
+    <span class="ready-badge waiting" id="smoke-active">Smoke active</span>
   </div>
 </section>
 
@@ -966,6 +1150,50 @@ _INDEX_HTML = """<!doctype html>
       <button type="button" class="secondary" id="btn-override-cancel">Cancel</button>
     </div>
     <span class="inline-error" id="override-error" role="alert"></span>
+  </form>
+</dialog>
+
+<dialog id="smoke-modal">
+  <form method="dialog" id="smoke-form">
+    <h2 style="margin-top:0">Overlay smoke test</h2>
+    <div class="row">
+      <label>Player 1
+        <input id="smoke-p1" type="text" value="Ada Lovelace">
+      </label>
+      <label>Player 2
+        <input id="smoke-p2" type="text" value="Grace Hopper">
+      </label>
+    </div>
+    <label>Prompt
+      <input id="smoke-prompt" type="text" value="Build a bold event landing page for a time-traveling taco truck">
+    </label>
+    <div class="row">
+      <label>Score 1
+        <input id="smoke-s1" type="number" step="0.01" min="0" max="10" value="8.6">
+      </label>
+      <label>Score 2
+        <input id="smoke-s2" type="number" step="0.01" min="0" max="10" value="7.8">
+      </label>
+    </div>
+    <div class="smoke-actions">
+      <button type="button" id="btn-smoke-idle">Idle</button>
+      <button type="button" id="btn-smoke-coding">Coding</button>
+      <button type="button" id="btn-smoke-scoreboard">Scores</button>
+      <button type="button" id="btn-smoke-warning-150">2:30 flash</button>
+      <button type="button" id="btn-smoke-warning-60">1:00 flash</button>
+      <button type="button" id="btn-smoke-warning-30">0:30 flash</button>
+    </div>
+    <div class="action-line">
+      <button type="button" class="secondary" id="btn-smoke-tour">Run transition tour</button>
+      <button type="button" class="danger" id="btn-smoke-clear">Clear smoke mode</button>
+      <button type="button" class="secondary" id="btn-smoke-cancel">Close</button>
+    </div>
+    <div class="smoke-links">
+      <a id="smoke-overlay-link" href="/overlay" target="_blank" rel="noreferrer">Open split</a>
+      <a id="smoke-focus-p1-link" href="/overlay?mode=focus&p=1" target="_blank" rel="noreferrer">Open P1 focus</a>
+      <a id="smoke-focus-p2-link" href="/overlay?mode=focus&p=2" target="_blank" rel="noreferrer">Open P2 focus</a>
+    </div>
+    <span class="inline-error" id="smoke-error" role="alert"></span>
   </form>
 </dialog>
 
@@ -1082,9 +1310,17 @@ function renderPhase(phase) {
   );
   if (currentPhase === 'coding') setEndError('');
 }
+function renderSmokeActive(active) {
+  document.getElementById('smoke-active').classList.toggle('visible', Boolean(active));
+}
 function renderState(state) {
   if (!state) return;
   if (state.phase) renderPhase(state.phase);
+  const smokeActive = Boolean(state.overlay_smoke && state.overlay_smoke.active);
+  renderSmokeActive(smokeActive);
+  if (smokeActive) {
+    document.getElementById('btn-end-early').setAttribute('aria-disabled', 'true');
+  }
   document.getElementById('state-prompt').textContent = state.prompt || 'none';
   const contestants = state.contestants || [];
   document.getElementById('state-contestants').textContent =
@@ -1439,6 +1675,120 @@ document.getElementById('btn-override-submit').onclick = async () => {
   }
 };
 
+const smokeModal = document.getElementById('smoke-modal');
+function setSmokeError(message) {
+  document.getElementById('smoke-error').textContent = message;
+}
+function smokeInput(id) {
+  return document.getElementById(id).value.trim();
+}
+function smokeNumber(id, fallback) {
+  const value = num(id);
+  return Number.isFinite(value) ? value : fallback;
+}
+function smokeContestants() {
+  const p1 = smokeInput('smoke-p1') || playerName('c1') || 'Ada Lovelace';
+  const p2 = smokeInput('smoke-p2') || playerName('c2') || 'Grace Hopper';
+  return [p1, p2];
+}
+function smokePrompt() {
+  return smokeInput('smoke-prompt')
+    || val('prompt')
+    || 'Build a bold event landing page for a time-traveling taco truck';
+}
+function smokeBody(phase, options = {}) {
+  const contestants = smokeContestants();
+  const scores = {};
+  scores[contestants[0]] = smokeNumber('smoke-s1', 8.6);
+  scores[contestants[1]] = smokeNumber('smoke-s2', 7.8);
+  return {
+    phase,
+    prompt: smokePrompt(),
+    contestants,
+    scores,
+    duration_secs: 300,
+    ...options,
+  };
+}
+function hydrateSmokeDefaults() {
+  const p1 = playerName('c1');
+  const p2 = playerName('c2');
+  if (p1) document.getElementById('smoke-p1').value = p1;
+  if (p2) document.getElementById('smoke-p2').value = p2;
+  const prompt = val('prompt');
+  if (prompt) document.getElementById('smoke-prompt').value = prompt;
+}
+function openSmokeModal() {
+  hydrateSmokeDefaults();
+  setSmokeError('');
+  if (typeof smokeModal.showModal === 'function') smokeModal.showModal();
+  else smokeModal.setAttribute('open', '');
+}
+function closeSmokeModal() {
+  if (typeof smokeModal.close === 'function') smokeModal.close();
+  else smokeModal.removeAttribute('open');
+}
+async function setOverlaySmoke(phase, options = {}) {
+  setSmokeError('');
+  const result = await api('/api/overlay-smoke', smokeBody(phase, options));
+  if (result.ok && result.json && result.json.state) {
+    renderState(result.json.state);
+    return true;
+  }
+  const message = result.json && result.json.detail
+    ? String(result.json.detail)
+    : result.text;
+  setSmokeError(message);
+  return false;
+}
+async function clearOverlaySmoke() {
+  const result = await api('/api/overlay-smoke', undefined, { method: 'DELETE' });
+  if (result.ok && result.json && result.json.state) {
+    renderState(result.json.state);
+    return true;
+  }
+  return false;
+}
+async function runSmokeTour() {
+  const button = document.getElementById('btn-smoke-tour');
+  button.disabled = true;
+  try {
+    const steps = [
+      ['idle', {}],
+      ['coding', { remaining_secs: 300 }],
+      ['coding', { remaining_secs: 150 }],
+      ['coding', { remaining_secs: 60 }],
+      ['coding', { remaining_secs: 30 }],
+      ['scoreboard', {}],
+    ];
+    for (const [phase, options] of steps) {
+      const ok = await setOverlaySmoke(phase, options);
+      if (!ok) return;
+      await sleep(1300);
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+document.getElementById('btn-open-smoke').onclick = openSmokeModal;
+document.getElementById('btn-smoke-cancel').onclick = closeSmokeModal;
+document.getElementById('btn-smoke-idle').onclick = () => setOverlaySmoke('idle');
+document.getElementById('btn-smoke-coding').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 300 })
+);
+document.getElementById('btn-smoke-scoreboard').onclick = () => setOverlaySmoke('scoreboard');
+document.getElementById('btn-smoke-warning-150').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 150 })
+);
+document.getElementById('btn-smoke-warning-60').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 60 })
+);
+document.getElementById('btn-smoke-warning-30').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 30 })
+);
+document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
+document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
+
 document.getElementById('btn-state').onclick = () => refreshState();
 document.getElementById('btn-reset').onclick = () => {
   api('/api/round/reset', {}).then((result) => {
@@ -1530,6 +1880,11 @@ refreshPlayers();
 refreshState({ quiet: true });
 loadPromptPool();
 document.getElementById('overlay-link').href = `${window.location.origin}/overlay`;
+document.getElementById('smoke-overlay-link').href = `${window.location.origin}/overlay`;
+document.getElementById('smoke-focus-p1-link').href =
+  `${window.location.origin}/overlay?mode=focus&p=1`;
+document.getElementById('smoke-focus-p2-link').href =
+  `${window.location.origin}/overlay?mode=focus&p=2`;
 setInterval(refreshPlayers, 2000);
 setInterval(() => refreshState({ quiet: true }), 2000);
 </script>
@@ -2263,6 +2618,10 @@ def create_app() -> FastAPI:
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
+        smoke_state = _overlay_smoke_api_state()
+        if smoke_state is not None:
+            return smoke_state
+
         obs: dict[str, Any] = {}
         obs_error: dict[str, Any] | None = None
         try:
@@ -2297,11 +2656,23 @@ def create_app() -> FastAPI:
             "eval": {
                 "results": list(_last_eval_results),
             },
+            "overlay_smoke": {
+                "active": False,
+            },
         }
 
     @app.get("/api/eval/last")
     async def get_last_eval() -> dict[str, Any]:
         return {"results": list(_last_eval_results)}
+
+    @app.post("/api/overlay-smoke")
+    async def overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
+        return {"state": _set_overlay_smoke(req)}
+
+    @app.delete("/api/overlay-smoke")
+    async def overlay_smoke_clear() -> dict[str, Any]:
+        _clear_overlay_smoke()
+        return {"state": await get_state()}
 
     @app.get("/api/prompts")
     async def prompts_list() -> dict[str, list[dict[str, Any]]]:
@@ -2340,6 +2711,7 @@ def create_app() -> FastAPI:
     async def round_start(req: StartRequest) -> dict[str, Any]:
         if not _all_named_players_model_ready():
             raise HTTPException(status_code=409, detail=_start_blocked_message())
+        _clear_overlay_smoke()
         prompt = _round_prompt(req)
         contestants = req.contestants or _ready_contestants()[:2]
         state = await _forward(
@@ -2360,6 +2732,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/round/end")
     async def round_end() -> dict[str, Any]:
+        _clear_overlay_smoke()
         await _round_timer.cancel()
         results = await _run_round_eval(reason="end_now")
         return {
@@ -2370,6 +2743,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/round/end-early")
     async def round_end_early() -> dict[str, Any]:
+        _clear_overlay_smoke()
         state = await _get_obs_state()
         phase = state.get("phase")
         if phase != "coding":
@@ -2385,6 +2759,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/round/override-end")
     async def round_override_end(req: OverrideScoresRequest) -> dict[str, Any]:
+        _clear_overlay_smoke()
         await _round_timer.cancel()
         obs_state = await _forward("end", {"scores": req.scores})
         _round_context["last_reason"] = "override"
@@ -2395,6 +2770,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/round/reset")
     async def round_reset() -> dict[str, Any]:
+        _clear_overlay_smoke()
         _ready_players.clear()
         _model_ready_ports.clear()
         await _round_timer.cancel()
@@ -2481,6 +2857,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/players/clear")
     async def players_clear(target: PlayerTarget) -> dict[str, Any]:
+        _clear_overlay_smoke()
         ports = _resolve_ports(target)
         cleared = await player_dispatch.clear_players(ports)
         _clear_player_readiness(ports)

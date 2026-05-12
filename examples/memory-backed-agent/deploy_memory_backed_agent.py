@@ -1,8 +1,7 @@
-"""Deploy a Context Hub memory-backed deep agent and wire its issues board."""
+"""Deploy a memory-backed deep agent and wire its LangSmith issues board."""
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shutil
@@ -23,11 +22,6 @@ SUCCESS_CODES = {200, 201}
 HTTP_CONFLICT = 409
 
 
-def memories_identifier(*, project_name: str) -> str:
-    """Return Context Hub memories identifier from env or project name."""
-    return os.getenv("MEMORIES_HUB_IDENTIFIER") or project_name
-
-
 def langsmith_endpoint() -> str:
     """Return LangSmith API endpoint from env or default."""
     endpoint = os.getenv("LANGSMITH_ENDPOINT") or os.getenv("LANGCHAIN_ENDPOINT")
@@ -41,24 +35,6 @@ def langsmith_api_key() -> str:
         msg = "Missing LANGSMITH_API_KEY (or LANGCHAIN_API_KEY)."
         raise RuntimeError(msg)
     return api_key
-
-
-def repo_handle(identifier: str) -> str:
-    """Return Context Hub repo handle from `repo`, `owner/repo`, or `-/repo`."""
-    if "/" not in identifier:
-        if not identifier:
-            msg = "Invalid MEMORIES_HUB_IDENTIFIER: value cannot be empty."
-            raise ValueError(msg)
-        return identifier
-
-    owner, sep, handle = identifier.partition("/")
-    if not sep or not owner or not handle:
-        msg = (
-            "Invalid MEMORIES_HUB_IDENTIFIER. Expected `repo`, `owner/repo`, or "
-            f"`-/repo`, got: {identifier!r}"
-        )
-        raise ValueError(msg)
-    return handle
 
 
 def build_agent() -> CompiledStateGraph:
@@ -77,7 +53,7 @@ def build_agent() -> CompiledStateGraph:
     backend = CompositeBackend(
         default=StateBackend(),
         routes={
-            "/memories/": ContextHubBackend(memories_identifier(project_name=DEFAULT_PROJECT_NAME)),
+            "/memories/": ContextHubBackend(DEFAULT_PROJECT_NAME),
         },
     )
 
@@ -91,11 +67,11 @@ try:
     # Required for langgraph module import resolution.
     agent = build_agent()
 except RuntimeError:
-    # Allow `--help` in environments missing graph deps.
+    # Allows import in lightweight environments missing graph deps.
     agent = None
 
 
-def deploy_graph(*, script_path: Path, project_name: str, memories_id: str) -> None:
+def deploy_graph(*, script_path: Path, project_name: str) -> None:
     """Deploy this file as a langgraph graph."""
     if shutil.which("langgraph") is None:
         msg = "`langgraph` CLI not found. Install with: pip install 'langgraph-cli[inmem]'"
@@ -130,7 +106,6 @@ def deploy_graph(*, script_path: Path, project_name: str, memories_id: str) -> N
 
     env = os.environ.copy()
     env["LANGGRAPH_CLI_ANALYTICS_SOURCE"] = "deepagents"
-    env["MEMORIES_HUB_IDENTIFIER"] = memories_id
 
     print(f"Deploying graph with name: {project_name}")
     print("Running:", " ".join(cmd))
@@ -190,7 +165,7 @@ def request_json(
         raise RuntimeError(msg) from exc
 
 
-def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, handle: str) -> None:
+def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, repo_handle: str) -> None:
     """Create-or-patch LangSmith issues board for this deployed project."""
     url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
 
@@ -206,7 +181,7 @@ def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, handle:
         "cron_schedule": "0 */6 * * *",
         "heavy_model": "anthropic:issues-agent-heavy",
         "light_model": "anthropic:issues-agent-light",
-        "context_hub_repo_handle": handle,
+        "context_hub_repo_handle": repo_handle,
     }
 
     create_status, create_text = request_json(
@@ -217,7 +192,7 @@ def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, handle:
     )
 
     if create_status in SUCCESS_CODES:
-        print(f"Issues board wired for tracing project {session_id} ({handle}).")
+        print(f"Issues board wired for tracing project {session_id} ({repo_handle}).")
         return
 
     if create_status == HTTP_CONFLICT:
@@ -225,10 +200,10 @@ def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, handle:
             method="PATCH",
             url=url,
             headers=headers,
-            payload={"context_hub_repo_handle": handle},
+            payload={"context_hub_repo_handle": repo_handle},
         )
         if patch_status in SUCCESS_CODES:
-            print(f"Issues board existed; updated context hub handle to {handle}.")
+            print(f"Issues board existed; updated context hub handle to {repo_handle}.")
             return
 
         msg = (
@@ -241,43 +216,17 @@ def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, handle:
     raise RuntimeError(msg)
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description=(
-            "Deploy this Context Hub-backed deep agent and auto-wire a LangSmith "
-            "issues board to the same Context Hub repo handle."
-        )
-    )
-    parser.add_argument(
-        "--project-name",
-        default=DEFAULT_PROJECT_NAME,
-        help=(
-            "Deployment/tracing project name (default: my-agent). Also used as "
-            "Context Hub memories repo when MEMORIES_HUB_IDENTIFIER is unset."
-        ),
-    )
-    return parser.parse_args()
-
-
 def main() -> None:
     """Run deploy + issues-board wiring flow."""
-    args = parse_args()
+    project_name = DEFAULT_PROJECT_NAME
     endpoint = langsmith_endpoint()
     api_key = langsmith_api_key()
 
-    memories_id = memories_identifier(project_name=args.project_name)
-    os.environ["MEMORIES_HUB_IDENTIFIER"] = memories_id
-
     script_path = Path(__file__).resolve()
-    deploy_graph(
-        script_path=script_path,
-        project_name=args.project_name,
-        memories_id=memories_id,
-    )
+    deploy_graph(script_path=script_path, project_name=project_name)
 
     session_id = session_id_for_project(
-        project_name=args.project_name,
+        project_name=project_name,
         api_key=api_key,
         endpoint=endpoint,
     )
@@ -285,7 +234,7 @@ def main() -> None:
         session_id=session_id,
         api_key=api_key,
         endpoint=endpoint,
-        handle=repo_handle(memories_id),
+        repo_handle=project_name,
     )
 
 

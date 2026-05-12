@@ -38,7 +38,6 @@ Set these environment variables:
 
 Optional:
 
-- `MEMORIES_HUB_IDENTIFIER` (for example `my-agent` or `my-org/my-agent`)
 - `LANGSMITH_ENDPOINT` / `LANGCHAIN_ENDPOINT`
 - `LANGSMITH_TENANT_ID`
 - `DEEPAGENT_MODEL`
@@ -49,7 +48,7 @@ Optional:
 cd examples/memory-backed-agent
 
 # Deploy + auto-wire issues board
-uv run python deploy_memory_backed_agent.py --project-name my-agent
+uv run python deploy_memory_backed_agent.py
 ```
 
 ## What the wiring does

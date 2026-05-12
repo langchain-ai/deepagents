@@ -2267,6 +2267,14 @@ _OVERLAY_HTML = """<!doctype html>
     border: var(--line) solid var(--ink);
     background: transparent;
   }
+  .ndi-feed {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: var(--ink);
+  }
   .pane-label {
     position: absolute;
     left: 0;
@@ -2534,12 +2542,14 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="split-player left">
         <div class="pane preview">
+          <iframe class="ndi-feed" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 live preview" allow="autoplay; fullscreen"></iframe>
           <div class="preview-name left" id="split-p1-name">Player 1</div>
         </div>
         <div class="pane terminal"></div>
       </div>
       <div class="split-player right">
         <div class="pane preview">
+          <iframe class="ndi-feed" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 live preview" allow="autoplay; fullscreen"></iframe>
           <div class="preview-name right" id="split-p2-name">Player 2</div>
         </div>
         <div class="pane terminal"></div>
@@ -2562,6 +2572,7 @@ _OVERLAY_HTML = """<!doctype html>
         <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
       </div>
       <div class="pane focus-website">
+        <iframe class="ndi-feed" id="focus-feed" src="http://127.0.0.1:8889/p1-screen/" title="Focused player live preview" allow="autoplay; fullscreen"></iframe>
         <div class="pane-label" id="focus-preview-label">Live Preview</div>
       </div>
       <div class="pane focus-terminal">
@@ -2596,6 +2607,10 @@ const state = {
 const params = new URLSearchParams(window.location.search);
 const defaultOverlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
 const defaultFocusIndex = params.get('p') === '2' ? 1 : 0;
+const previewUrls = [
+  'http://127.0.0.1:8889/p1-screen/',
+  'http://127.0.0.1:8889/p2-screen/',
+];
 let overlayMode = defaultOverlayMode;
 let focusIndex = defaultFocusIndex;
 
@@ -2609,6 +2624,7 @@ const els = {
   splitClock: document.getElementById('split-clock'),
   focusName: document.getElementById('focus-name'),
   focusClock: document.getElementById('focus-clock'),
+  focusFeed: document.getElementById('focus-feed'),
   focusPrompt: document.getElementById('focus-prompt'),
   focusPreviewLabel: document.getElementById('focus-preview-label'),
   scoreWrap: document.getElementById('score-wrap'),
@@ -2728,6 +2744,10 @@ function renderCoding() {
   els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);
   els.focusPrompt.textContent = prompt;
   els.focusClock.textContent = clock;
+  const focusUrl = previewUrls[focusIndex] || previewUrls[0];
+  if (els.focusFeed.src !== focusUrl) {
+    els.focusFeed.src = focusUrl;
+  }
   els.focusPreviewLabel.textContent = 'Live Preview';
 }
 

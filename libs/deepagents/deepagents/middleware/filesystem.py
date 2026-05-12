@@ -31,7 +31,7 @@ from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.runtime import Runtime
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
@@ -1973,6 +1973,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
+        When a new eviction fires, uses `Overwrite` to atomically replace
+        the messages channel with a fully-identified list. A plain append of
+        the tagged message would not survive DeltaChannel replay: the original
+        `HumanMessage(id=None)` write gets a fresh UUID on replay that
+        doesn't match the eviction Command's ID, producing a duplicate.
+
         Args:
             messages: The message list (may be modified if write succeeded).
             write_result: Result of the backend write, or `None` if no new
@@ -1988,13 +1994,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             last = messages[-1]
             tagged = last.model_copy(
                 update={
+                    "id": last.id if last.id is not None else str(uuid.uuid4()),
                     "additional_kwargs": {
                         **last.additional_kwargs,
                         "lc_evicted_to": file_path,
-                    }
+                    },
                 }
             )
-            state_command = Command(update={"messages": [tagged]})
+            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []

@@ -57,7 +57,7 @@
 
 ### Architecture Diagram
 
-```
+```txt
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        User (local machine)                          │
 │                                                                      │
@@ -138,6 +138,7 @@
 | C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
 
 **Notes:**
+
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
 2. MCP servers only load if `.mcp.json` config files are present.
 3. Hooks only execute if `~/.deepagents/hooks.json` exists.

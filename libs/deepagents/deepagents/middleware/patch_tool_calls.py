@@ -3,7 +3,7 @@
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Overwrite
 
@@ -27,7 +27,7 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         ):
             return None
 
-        patched_messages: list[Any] = []
+        patched_messages: list[AnyMessage] = []
         for msg in messages:
             patched_messages.append(msg)
             if not isinstance(msg, AIMessage):

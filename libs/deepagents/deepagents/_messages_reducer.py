@@ -10,7 +10,6 @@ side — so we skip the per-message coercion.
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, cast
 
 from langchain_core.messages import (
@@ -28,9 +27,17 @@ def _messages_delta_reducer(  # noqa: C901, PLR0912
     """Batch reducer for use with `DeltaChannel` on the messages key.
 
     Dedups by ID, tombstones via `RemoveMessage`, resets on
-    `REMOVE_ALL_MESSAGES`, and assigns UUIDs to ID-less messages in a single
-    batched pass. Batching-invariant as required by `DeltaChannel`:
-    `reducer(reducer(state, xs), ys) == reducer(state, xs + ys)`.
+    `REMOVE_ALL_MESSAGES`. ID-less messages are appended without ID
+    assignment — the reducer does not assign IDs because doing so breaks
+    the batching invariant required by `DeltaChannel`. Checkpointers
+    serialize pending writes before `update()` runs, so any IDs assigned
+    inside the reducer never reach the stored writes; on replay the same
+    ID-less message gets a different ID, defeating deduplication.
+
+    The correct fix is to ensure messages carry stable IDs before they are
+    written to the channel (e.g. auto-assignment at creation in
+    langchain-core). Until that lands, ID-less messages are simply appended
+    — consistent with LangGraph's own `_messages_delta_reducer`.
 
     Raw dict / string / tuple inputs are coerced to typed `BaseMessage` so
     HTTP-driven graphs work without a separate coercion step.
@@ -60,19 +67,15 @@ def _messages_delta_reducer(  # noqa: C901, PLR0912
         state_msgs = []
         msgs = msgs[remove_all_idx + 1 :]
 
-    # Build index and assign missing IDs in one pass (parity with add_messages
-    # so eviction and RemoveMessage tombstoning work on ID-less messages).
-    index: dict[str, int] = {}
-    for i, m in enumerate(state_msgs):
-        if m.id is None:
-            m.id = str(uuid.uuid4())
-        index[m.id] = i
+    index: dict[str, int] = {
+        m.id: i for i, m in enumerate(state_msgs) if m.id is not None
+    }
     result: list[AnyMessage | None] = list(state_msgs)
     for msg in msgs:
-        if msg.id is None:
-            msg.id = str(uuid.uuid4())
         mid = msg.id
-        if isinstance(msg, RemoveMessage):
+        if mid is None:
+            result.append(msg)
+        elif isinstance(msg, RemoveMessage):
             if mid in index:
                 result[index[mid]] = None
                 del index[mid]

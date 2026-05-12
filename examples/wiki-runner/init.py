@@ -98,7 +98,7 @@ def run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Initialize a local topic repo and push its first hub revision."""
     config.topic_dir.mkdir(parents=True, exist_ok=True)
     helpers._ensure_no_symlinks(config.topic_dir)
-    helpers._ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
+    helpers._ensure_scaffold(config.topic_dir, config.topic)
 
     hub_identifier = helpers._hub_identifier(config.owner, config.repo)
     help_text = _hub_init_help_text(deps)
@@ -120,7 +120,7 @@ def run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     init_args.extend(description_flags)
     deps.run_langsmith_cli(init_args)
 
-    helpers._ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
+    helpers._ensure_scaffold(config.topic_dir, config.topic)
     helpers._validate_text_only_directory(config.topic_dir)
 
     deps.run_langsmith_cli(

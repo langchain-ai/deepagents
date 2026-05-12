@@ -397,7 +397,8 @@ def _agents_md(topic: str) -> str:
     """Build default AGENTS.md guidance content."""
     return (
         f"# {topic} Wiki\n\n"
-        "Maintain a concise, source-grounded wiki for this topic.\n\n"
+        "Use this file as the wiki schema/config for agent behavior.\n"
+        "Keep it concise and co-evolve it as the wiki and workflow change.\n\n"
         "Rules:\n"
         "- Treat `/raw/` as read-only source material.\n"
         "- Ingest flow should be supervised: review takeaways first, then apply updates.\n"

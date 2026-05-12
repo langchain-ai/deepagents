@@ -352,6 +352,105 @@ def test_run_init_uses_hub_only_flow(tmp_path: Path) -> None:
     assert any("--repo-source" in call for call in init_calls)
 
 
+def test_run_init_creates_agents_md_when_missing(tmp_path: Path) -> None:
+    """Create the default `AGENTS.md` scaffold when it is missing."""
+    workspace_dir = tmp_path / "workspace"
+    assert not (workspace_dir / "AGENTS.md").exists()
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args == ["hub", "init", "--help"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="--repo-source [internal|external]",
+                stderr="",
+            )
+        if args[:2] == ["hub", "get"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"source": "internal"}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    deps = _make_deps(fake_run_langsmith_cli)
+    config = helpers.RunnerConfig(
+        mode="init",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=workspace_dir,
+        sources=(),
+        note=None,
+        question=None,
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    helpers._run_init(config, deps)
+
+    agents_text = (workspace_dir / "AGENTS.md").read_text(encoding="utf-8")
+    assert agents_text.startswith("# Ada Wiki\n\n")
+    assert "wiki schema/config for agent behavior" in agents_text
+
+
+def test_run_init_preserves_existing_agents_md(tmp_path: Path) -> None:
+    """Preserve existing `AGENTS.md` content on repeated init runs."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True)
+    agents_path = workspace_dir / "AGENTS.md"
+    original_content = "# Custom\n\nKeep this file unchanged.\n"
+    agents_path.write_text(original_content, encoding="utf-8")
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        if args == ["hub", "init", "--help"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="--repo-source [internal|external]",
+                stderr="",
+            )
+        if args[:2] == ["hub", "get"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"source": "internal"}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    deps = _make_deps(fake_run_langsmith_cli)
+    config = helpers.RunnerConfig(
+        mode="init",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=workspace_dir,
+        sources=(),
+        note=None,
+        question=None,
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    helpers._run_init(config, deps)
+
+    assert agents_path.read_text(encoding="utf-8") == original_content
+
+
 def test_run_init_passes_description_when_supported(tmp_path: Path) -> None:
     """Pass description on init when hub help advertises description flags."""
     calls: list[list[str]] = []

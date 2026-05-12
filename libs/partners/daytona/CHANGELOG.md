@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.5...langchain-daytona==0.0.6) (2026-05-12)
+
+
+### Features
+
+* **sdk:** v0.6 ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
+## Changelog
+
 ---
 
 ## Prior Releases

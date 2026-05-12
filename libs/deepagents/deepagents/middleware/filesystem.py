@@ -2001,9 +2001,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            stable: list[AnyMessage] = [(m.model_copy(update={"id": str(uuid.uuid4())}) if m.id is None else m) for m in messages[:-1]] + [tagged]
-            state_command = Command(update={"messages": Overwrite(stable)})
-            messages = stable
+            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
+            messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
         for msg in messages:

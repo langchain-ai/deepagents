@@ -9,10 +9,11 @@ from langsmith import Client, get_tracing_context
 
 @pytest.fixture(scope="session", autouse=True)
 def langsmith_client() -> Generator[Client | None, None, None]:
-    """Create a LangSmith client if LANGSMITH_API_KEY is set.
+    """Create a LangSmith client if `LANGSMITH_API_KEY` is set.
 
     This fixture is session-scoped and automatically used by all tests.
-    It creates a single client instance and ensures it's flushed after each test.
+    It creates a single client instance and ensures it's flushed after
+    each test.
     """
     langsmith_api_key = os.environ.get("LANGSMITH_API_KEY") or os.environ.get(
         "LANGCHAIN_API_KEY"

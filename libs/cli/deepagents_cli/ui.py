@@ -4,6 +4,8 @@ This module is imported at CLI startup to wire `-h` actions into the
 argparse tree.  It must stay lightweight — no SDK or langchain imports.
 """
 
+import argparse
+
 from rich.markup import escape
 
 from deepagents_cli import theme
@@ -16,6 +18,29 @@ from deepagents_cli.config import (
 
 _JSON_OPTION_LINE = "  --json                  Emit machine-readable JSON"
 _HELP_OPTION_LINE = "  -h, --help              Show this help message"
+
+
+def positive_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 1.
+
+    Args:
+        value: Raw CLI argument string to parse.
+
+    Returns:
+        Parsed positive integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 1.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 1:
+        msg = f"must be a positive integer (>= 1), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
 
 
 def _print_option_section(*lines: str, title: str = "Options") -> None:
@@ -59,9 +84,19 @@ def show_help() -> None:
     console.print(
         "  deepagents threads <list|delete>               Manage conversation threads"
     )
+    console.print("  deepagents mcp <login>                         Manage MCP servers")
     console.print(
         "  deepagents update                              Check for and install updates"
     )
+    console.print()
+    console.print("[bold]Deploy (beta):[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  deepagents init [NAME]                  Scaffold a new deploy project"
+    )
+    console.print(
+        "  deepagents dev    --config deepagents.toml  Run a local dev server"
+    )
+    console.print("  deepagents deploy --config deepagents.toml  Bundle and deploy")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -75,7 +110,10 @@ def show_help() -> None:
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
-    console.print("  --skill NAME              Invoke a skill when the session starts")
+    console.print("  --skill NAME               Invoke a skill when the session starts")
+    console.print(
+        "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
+    )
     console.print(
         "  -y, --auto-approve         Auto-approve all tool calls (toggle: Shift+Tab)"
     )
@@ -104,6 +142,9 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
+    console.print(
+        "  --max-turns N              Max agentic turns before stopping (needs -n)"
+    )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(
         "  --json                     Emit machine-readable JSON for commands"
@@ -115,6 +156,9 @@ def show_help() -> None:
     console.print("  --clear-default-model      Clear the default model")
     console.print(
         "  --update                   Check for and install updates, then exit"
+    )
+    console.print(
+        "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show deepagents CLI and SDK versions")
@@ -359,6 +403,81 @@ def show_update_help() -> None:
     console.print()
 
 
+def _print_mcp_discovery_paths() -> None:
+    """Print the auto-discovered MCP config paths in precedence order."""
+    from deepagents_cli.mcp_tools import MCP_CONFIG_DISCOVERY_PATHS
+
+    console.print(
+        "[bold]Auto-discovered config paths (precedence order):[/bold]",
+        style=theme.PRIMARY,
+    )
+    width = max(len(path) for path, _ in MCP_CONFIG_DISCOVERY_PATHS)
+    for path, label in MCP_CONFIG_DISCOVERY_PATHS:
+        console.print(f"  {path:<{width}}  ({label})")
+    console.print(
+        "  <project-root> = nearest ancestor with a `.git` entry, else CWD.",
+        style=theme.MUTED,
+    )
+
+
+_MCP_CONFIG_FORMAT_EXAMPLE = """\
+  {
+    "mcpServers": {
+      "notion": {
+        "transport": "http",
+        "url": "https://mcp.notion.com/mcp",
+        "auth": "oauth"
+      }
+    }
+  }"""
+
+
+def show_mcp_help() -> None:
+    """Show help information for the `mcp` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  login <server>    Run the OAuth login flow for an MCP server")
+    console.print()
+    _print_option_section()
+    console.print()
+    _print_mcp_discovery_paths()
+    console.print()
+    console.print(
+        "  Pass --config <path> to any subcommand to bypass discovery.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print()
+
+
+def show_mcp_login_help() -> None:
+    """Show help information for the `mcp login` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login <server> [--config PATH]")
+    console.print()
+    _print_option_section(
+        "  --config PATH           Path to an MCP config JSON file "
+        "(default: auto-discovered)",
+    )
+    console.print()
+    _print_mcp_discovery_paths()
+    console.print()
+    console.print("[bold]Config format:[/bold]", style=theme.PRIMARY)
+    console.print(_MCP_CONFIG_FORMAT_EXAMPLE, style=theme.MUTED)
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  deepagents mcp login notion")
+    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print()
+
+
 def show_threads_help() -> None:
     """Show help information for the `threads` subcommand.
 
@@ -408,6 +527,7 @@ def show_threads_list_help() -> None:
     _print_option_section(
         "  --agent NAME              Filter by agent name",
         "  --branch TEXT             Filter by git branch name",
+        "  --cwd [PATH]              Filter by working directory (no value = current)",
         "  --sort {created,updated}  Sort order (default: from config, or updated)",
         "  -n, --limit N             Maximum threads to display (default: 20)",
         "  -v, --verbose             Show all columns (branch, created, prompt)",
@@ -420,6 +540,7 @@ def show_threads_list_help() -> None:
     console.print("  deepagents threads list -n 10")
     console.print("  deepagents threads list --agent mybot")
     console.print("  deepagents threads list --branch main -v")
+    console.print("  deepagents threads list --cwd")
     console.print("  deepagents threads list --sort created --limit 50")
     console.print("  deepagents threads list -r")
     console.print()

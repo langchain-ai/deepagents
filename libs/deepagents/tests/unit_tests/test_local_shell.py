@@ -1,6 +1,7 @@
 """Unit tests for LocalShellBackend per-command timeout features."""
 
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -58,7 +59,7 @@ class TestPerCommandTimeout:
     def test_per_command_timeout_actually_expires(self) -> None:
         """A per-command timeout should actually terminate long-running commands."""
         backend = LocalShellBackend(timeout=60, inherit_env=True)
-        result = backend.execute("sleep 30", timeout=1)
+        result = backend.execute(f'"{sys.executable}" -c "import time; time.sleep(30)"', timeout=1)
         assert result.exit_code == 124
         assert "timed out" in result.output.lower()
 

@@ -1,16 +1,35 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from deepagents_cli import model_config
-from deepagents_cli.app import DeepAgentsApp, _extract_model_params_flag
+from deepagents_cli.app import (
+    DeepAgentsApp,
+    _extract_model_params_flag,
+    _format_model_params,
+)
 from deepagents_cli.config import settings
-from deepagents_cli.model_config import ModelSpec, clear_caches
+from deepagents_cli.model_config import (
+    ModelSpec,
+    ProviderAuthSource,
+    ProviderAuthState,
+    ProviderAuthStatus,
+    clear_caches,
+)
 from deepagents_cli.remote_client import RemoteAgent
 from deepagents_cli.widgets.messages import AppMessage, ErrorMessage
+
+_CONFIGURED_AUTH_STATUS = ProviderAuthStatus(
+    state=ProviderAuthState.CONFIGURED,
+    provider="anthropic",
+    env_var="ANTHROPIC_API_KEY",
+    source=ProviderAuthSource.ENV,
+)
+"""Generic non-blocking auth status for tests that bypass the credential check."""
 
 
 def _make_remote_agent() -> RemoteAgent:
@@ -96,6 +115,41 @@ def mock_create_model() -> Iterator[Mock]:
         yield mock
 
 
+class TestFormatModelParams:
+    """Tests for the `_format_model_params` rendering helper."""
+
+    def test_none_returns_empty_string(self) -> None:
+        """`None` produces no suffix so callers can concatenate unconditionally."""
+        assert _format_model_params(None) == ""
+
+    def test_empty_dict_returns_empty_string(self) -> None:
+        """An empty dict has no params worth echoing — collapse to empty."""
+        assert _format_model_params({}) == ""
+
+    def test_single_key_renders_with_leading_space(self) -> None:
+        """Single key renders as a space-prefixed suffix that callers append."""
+        assert _format_model_params({"num_ctx": 16384}) == (
+            ' with model params {"num_ctx": 16384}'
+        )
+
+    def test_keys_are_sorted_regardless_of_insertion_order(self) -> None:
+        """`sort_keys=True` must produce stable output across call sites and dicts.
+
+        Insertion-reversed keys would render in insertion order without
+        `sort_keys=True`, so this test would fail if the flag were dropped.
+        """
+        params = {"temperature": 0.2, "num_ctx": 16384}
+        assert _format_model_params(params) == (
+            ' with model params {"num_ctx": 16384, "temperature": 0.2}'
+        )
+
+    def test_string_values_are_json_escaped(self) -> None:
+        """Values containing quotes must be JSON-escaped, not interpolated raw."""
+        assert _format_model_params({"stop": '"end"'}) == (
+            ' with model params {"stop": "\\"end\\""}'
+        )
+
+
 class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
 
@@ -118,14 +172,14 @@ class TestModelSwitchNoOp:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -139,6 +193,99 @@ class TestModelSwitchNoOp:
         assert "Already using" in captured_messages[0]
         assert "Switched to" not in captured_messages[0]
         assert app._model_switching is False
+
+    async def test_same_model_can_skip_unchanged_message(self) -> None:
+        """Onboarding can re-select the active model without adding chat noise."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        with patch(
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5", announce_unchanged=False
+            )
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override is None
+        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        assert app._model_switching is False
+
+    async def test_same_model_with_new_params_applies_overrides(self) -> None:
+        """`/model <current> --model-params {...}` should apply params per-session.
+
+        Regression test for the bug where the early return on the
+        already-active-model branch silently dropped `--model-params`,
+        leaving `_model_params_override` unset.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(
+                "anthropic:claude-opus-4-5",
+                extra_kwargs={"num_ctx": 16384, "temperature": 0.2},
+            )
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override == {
+            "num_ctx": 16384,
+            "temperature": 0.2,
+        }
+        assert len(captured_messages) == 1
+        message = captured_messages[0]
+        assert message.startswith("Already using anthropic:claude-opus-4-5")
+        # Stable, key-sorted JSON in the echoed suffix.
+        assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
+
+    async def test_same_model_without_params_clears_prior_override(self) -> None:
+        """Re-selecting the same model with no params must clear stale params.
+
+        Regression test for the asymmetry where the regular-switch path always
+        wrote `_model_params_override = extra_kwargs` (clearing on `None`) but
+        the already-active branch left previously-set params in place.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        # Simulate a prior `/model <current> --model-params {...}` call.
+        app._model_override = "anthropic:claude-opus-4-5"
+        app._model_params_override = {"num_ctx": 16384}
+
+        with patch(
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert app._model_override == "anthropic:claude-opus-4-5"
+        assert app._model_params_override is None
 
 
 class TestModelSwitchErrorHandling:
@@ -157,18 +304,18 @@ class TestModelSwitchErrorHandling:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_cli.model_config.get_credential_env_var",
-                return_value="ANTHROPIC_API_KEY",
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                    env_var="ANTHROPIC_API_KEY",
+                ),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -192,21 +339,21 @@ class TestModelSwitchErrorHandling:
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
 
-        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_err(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_err_init(self, message, **kwargs)
 
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=False),
             patch.object(ErrorMessage, "__init__", capture_err),
@@ -235,14 +382,14 @@ class TestModelSwitchErrorHandling:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch(
                 "deepagents_cli.model_config.save_recent_model", return_value=True
@@ -273,8 +420,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -303,8 +450,8 @@ class TestModelSwitchErrorHandling:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
@@ -319,6 +466,41 @@ class TestModelSwitchErrorHandling:
             "max_tokens": 1024,
         }
 
+    async def test_switched_to_message_echoes_params(self) -> None:
+        """The 'Switched to' confirmation should echo `--model-params`."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        captured_messages: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured_messages.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
+            patch.object(AppMessage, "__init__", capture_init),
+        ):
+            await app._switch_model(
+                "anthropic:claude-sonnet-4-5",
+                extra_kwargs={"temperature": 0.7, "num_ctx": 16384},
+            )
+
+        assert any(
+            m == "Switched to anthropic:claude-sonnet-4-5 with model params "
+            '{"num_ctx": 16384, "temperature": 0.7}'
+            for m in captured_messages
+        )
+
 
 class TestModelSwitchConcurrencyGuard:
     """Tests for _model_switching concurrency guard."""
@@ -332,7 +514,7 @@ class TestModelSwitchConcurrencyGuard:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
@@ -354,14 +536,231 @@ class TestModelSwitchConcurrencyGuard:
 
         with (
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch("deepagents_cli.model_config.save_recent_model", return_value=True),
         ):
             await app._switch_model("anthropic:claude-sonnet-4-5")
 
         assert app._model_switching is False
+
+
+class TestModelSwitchSessionReadiness:
+    """Tests for gating model switch on server-backed session readiness."""
+
+    async def test_defers_switch_while_connecting(self) -> None:
+        """A direct /model switch fired before `ServerReady` is queued, not failed."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = True
+
+        await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert len(app._deferred_actions) == 1
+        action = app._deferred_actions[0]
+        assert action.kind == "model_switch"
+        notify_mock.assert_called_once()
+        app._mount_message.assert_not_called()  # type: ignore[union-attr]
+        # Guard flag cleared so the deferred retry isn't a no-op.
+        assert app._model_switching is False
+
+    async def test_errors_when_agent_missing_and_not_connecting(self) -> None:
+        """Server-startup failure (no agent, not connecting) still errors."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        assert app._deferred_actions == []
+        notify_mock.assert_not_called()
+        assert any("server-backed session" in msg for msg in captured_errors)
+
+    async def test_deferred_switch_completes_after_server_ready(self) -> None:
+        """End-to-end: defer during connect, drain after ready, switch completes."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        notify_mock = Mock()
+        app.notify = notify_mock  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = True
+
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        with (
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch("deepagents_cli.model_config.save_recent_model", return_value=True),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+            assert len(app._deferred_actions) == 1
+
+            # Simulate `ServerReady`: agent arrives, connecting flips off, drain runs.
+            app._agent = _make_remote_agent()
+            app._connecting = False
+            await app._maybe_drain_deferred()
+
+        assert app._deferred_actions == []
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+        assert settings.model_name == "claude-sonnet-4-5"
+        assert settings.model_provider == "anthropic"
+        assert app._model_switching is False
+
+
+class TestModelSwitchFailedStartupRecovery:
+    """Tests for `/model` recovery after a failed initial server startup."""
+
+    async def test_retries_startup_with_new_model(self) -> None:
+        """Failed startup + `/model` retries `_start_server_background`.
+
+        Regression: when the CLI launches without the API key for the
+        configured model, `_start_server_background` raises
+        `ModelConfigError` before the server comes up, leaving the user
+        unable to switch via `/model` (the old code path bailed with
+        "Model switching requires a server-backed session"). `/model`
+        should now rewire deferred-startup state and re-run the worker.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
+        app._server_kwargs = {
+            "assistant_id": None,
+            "model_name": "anthropic:claude-opus-4-5",
+            "model_params": None,
+            "interactive": True,
+        }
+        app._model_kwargs = {
+            "model_spec": "anthropic:claude-opus-4-5",
+            "extra_kwargs": None,
+            "profile_overrides": None,
+        }
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        with patch(
+            "deepagents_cli.model_config.get_provider_auth_status",
+            return_value=_CONFIGURED_AUTH_STATUS,
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        # Failure state cleared and a fresh startup worker scheduled.
+        assert app._server_startup_error is None
+        assert app._connecting is True
+        run_worker_mock.assert_called_once()
+        worker_args, worker_kwargs = run_worker_mock.call_args
+        assert worker_args[0] == app._start_server_background
+        assert worker_kwargs.get("group") == "server-startup"
+
+        # Deferred-startup kwargs rewired with the new spec.
+        assert app._model_kwargs == {
+            "model_spec": "anthropic:claude-sonnet-4-5",
+            "extra_kwargs": None,
+            "profile_overrides": None,
+        }
+        assert app._server_kwargs["model_name"] == "anthropic:claude-sonnet-4-5"
+        assert app._model_switching is False
+
+    async def test_retry_with_still_missing_credentials_errors(self) -> None:
+        """Retrying with creds still missing surfaces the credentials error.
+
+        Avoids looping right back into the same `ModelConfigError` by
+        applying the standard tri-state credentials check before
+        re-launching the startup worker.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
+        app._server_kwargs = {
+            "assistant_id": None,
+            "model_name": "anthropic:claude-opus-4-5",
+            "model_params": None,
+            "interactive": True,
+        }
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with (
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                    env_var="ANTHROPIC_API_KEY",
+                ),
+            ),
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        # No worker scheduled, failure state preserved so the user can retry.
+        run_worker_mock.assert_not_called()
+        assert app._server_startup_error == (
+            "ModelConfigError: ANTHROPIC_API_KEY not set"
+        )
+        assert app._connecting is False
+        assert any(
+            "Missing credentials" in msg and "ANTHROPIC_API_KEY" in msg
+            for msg in captured_errors
+        )
+
+    async def test_remote_server_mode_keeps_original_error(self) -> None:
+        """In remote-server mode (no `_server_kwargs`), recovery is not possible.
+
+        The CLI doesn't own the subprocess so it can't restart it; fall back
+        to the existing "server-backed session" error rather than silently
+        no-op'ing.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = None
+        app._connecting = False
+        app._server_startup_error = "RuntimeError: connection refused"
+        app._server_kwargs = None
+        run_worker_mock = Mock()
+        app.run_worker = run_worker_mock  # type: ignore[method-assign]
+
+        captured_errors: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured_errors.append(message)
+            original_init(self, message, **kwargs)
+
+        with patch.object(ErrorMessage, "__init__", capture_init):
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+
+        run_worker_mock.assert_not_called()
+        assert any("server-backed session" in msg for msg in captured_errors)
 
 
 class TestModelSwitchConfigProvider:
@@ -393,7 +792,7 @@ api_key_env = "FIREWORKS_API_KEY"
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
@@ -435,7 +834,7 @@ api_key_env = "FIREWORKS_API_KEY"
         captured_errors: list[str] = []
         original_err_init = ErrorMessage.__init__
 
-        def capture_err(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_err(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_err_init(self, message, **kwargs)
 
@@ -468,7 +867,7 @@ models = ["llama3"]
         captured_messages: list[str] = []
         original_app_init = AppMessage.__init__
 
-        def capture_app(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_app_init(self, message, **kwargs)
 
@@ -503,15 +902,15 @@ class TestModelSwitchBareModelName:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch(
                 "deepagents_cli.model_config.save_recent_model", return_value=True
@@ -538,19 +937,19 @@ class TestModelSwitchBareModelName:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_cli.model_config.get_credential_env_var",
-                return_value="OPENAI_API_KEY",
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="openai",
+                    env_var="OPENAI_API_KEY",
+                ),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -573,15 +972,15 @@ class TestModelSwitchBareModelName:
         captured_messages: list[str] = []
         original_init = AppMessage.__init__
 
-        def capture_init(self: AppMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
             captured_messages.append(message)
             original_init(self, message, **kwargs)
 
         with (
             patch("deepagents_cli.config.detect_provider", return_value="openai"),
             patch(
-                "deepagents_cli.model_config.has_provider_credentials",
-                return_value=True,
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
             ),
             patch.object(AppMessage, "__init__", capture_init),
         ):
@@ -689,7 +1088,7 @@ class TestModelCommandIntegration:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 
@@ -708,7 +1107,7 @@ class TestModelCommandIntegration:
         captured_errors: list[str] = []
         original_init = ErrorMessage.__init__
 
-        def capture_init(self: ErrorMessage, message: str, **kwargs: object) -> None:
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
             captured_errors.append(message)
             original_init(self, message, **kwargs)
 

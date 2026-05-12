@@ -16,6 +16,18 @@ from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
 
+# Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
+# `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
+# that permits `(path, label)` tuples. The `skills` module is already
+# loaded by the `SkillsMiddleware` import above, so the extra lookup
+# here adds no startup cost.
+try:
+    from deepagents.middleware.skills import SkillSource as _SkillSource  # noqa: F401
+except ImportError:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = False
+else:
+    _SUPPORTS_SKILL_SOURCE_TUPLES = True
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
@@ -40,6 +52,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_cli import theme
+from deepagents_cli._constants import DEFAULT_AGENT_NAME
 from deepagents_cli.config import (
     _ShellAllowAll,
     config,
@@ -68,9 +81,6 @@ from deepagents_cli.unicode_security import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_AGENT_NAME = "agent"
-"""The default agent name used when no `-a` flag is provided."""
-
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
@@ -78,11 +88,11 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 class ShellAllowListMiddleware(AgentMiddleware):
     """Validate shell commands against an allow-list without HITL interrupts.
 
-    When the agent invokes a shell tool (any tool in `SHELL_TOOL_NAMES`),
-    this middleware checks the command against the configured allow-list
-    **before execution**. Rejected commands are returned as error `ToolMessage`
-    objects — the graph never pauses, so LangSmith traces stay as a single
-    continuous run.
+    When the agent invokes the `execute` shell tool, this middleware checks
+    the command against the configured allow-list **before execution**.
+    Rejected commands are returned as error `ToolMessage` objects — the
+    graph never pauses, so LangSmith traces stay as a single continuous
+    run.
 
     Use this middleware in non-interactive mode to avoid the
     interrupt/resume cycle that fragments traces.
@@ -125,10 +135,9 @@ class ShellAllowListMiddleware(AgentMiddleware):
         """
         from langchain_core.messages import ToolMessage as LCToolMessage
 
-        from deepagents_cli.config import SHELL_TOOL_NAMES, is_shell_command_allowed
+        from deepagents_cli.config import is_shell_command_allowed
 
-        tool_name = request.tool_call["name"]
-        if tool_name not in SHELL_TOOL_NAMES:
+        if request.tool_call["name"] != "execute":
             return None
 
         args = request.tool_call.get("args") or {}
@@ -145,7 +154,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
                 f"Allowed commands: {allowed_str}. "
                 f"Please use an allowed command or try another approach."
             ),
-            name=tool_name,
+            name="execute",
             tool_call_id=request.tool_call["id"],
             status="error",
         )
@@ -257,6 +266,61 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+def _is_agent_dir_entry(entry: Path) -> bool:
+    """Return whether a `~/.deepagents/` entry should be listed as an agent.
+
+    Filters out symlinks (so dangling links don't masquerade as agents)
+    and dot-prefixed names — `.state/` (CLI internal state) plus any
+    other hidden directory the user may have placed there.
+
+    `OSError` from `is_dir`/`is_symlink` propagates so callers can log
+    with the failing entry's name as context.
+    """
+    if entry.name.startswith("."):
+        return False
+    return entry.is_dir() and not entry.is_symlink()
+
+
+def get_available_agent_names() -> list[str]:
+    """Return a sorted list of available agent names from `~/.deepagents/`.
+
+    Scans the user's `.deepagents` directory and returns each real
+    subdirectory found there. Symlinks excluded so a dangling link does not
+    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) are
+    skipped so CLI internal state never appears as an agent.
+
+    Filesystem errors (missing parent, permission denied, broken entries) are
+    logged and surfaced as an empty list rather than raised — the caller shows
+    an empty modal instead of crashing mid-render.
+
+    Returns:
+        Sorted list of agent names. Empty when no agents exist yet or the
+            directory is unreadable (see log for the underlying cause).
+    """
+    agents_dir = settings.user_deepagents_dir
+    try:
+        entries = list(agents_dir.iterdir())
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.warning("Could not list agents in %s", agents_dir, exc_info=True)
+        return []
+
+    names: list[str] = []
+    for entry in entries:
+        try:
+            if _is_agent_dir_entry(entry):
+                names.append(entry.name)
+        except OSError:
+            logger.debug(
+                "Skipping unreadable entry in %s: %s",
+                agents_dir,
+                entry.name,
+                exc_info=True,
+            )
+    return sorted(names)
+
+
 def list_agents(*, output_format: OutputFormat = "text") -> None:
     """List all available agents.
 
@@ -264,8 +328,9 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
     agents_dir = settings.user_deepagents_dir
+    names = get_available_agent_names()
 
-    if not agents_dir.exists() or not any(agents_dir.iterdir()):
+    if not names:
         if output_format == "json":
             from deepagents_cli.output import write_json
 
@@ -283,17 +348,16 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         from deepagents_cli.output import write_json
 
         agents = []
-        for agent_path in sorted(agents_dir.iterdir()):
-            if agent_path.is_dir():
-                agent_name = agent_path.name
-                agents.append(
-                    {
-                        "name": agent_name,
-                        "path": str(agent_path),
-                        "has_agents_md": (agent_path / "AGENTS.md").exists(),
-                        "is_default": agent_name == DEFAULT_AGENT_NAME,
-                    }
-                )
+        for name in names:
+            agent_path = agents_dir / name
+            agents.append(
+                {
+                    "name": name,
+                    "path": str(agent_path),
+                    "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                    "is_default": name == DEFAULT_AGENT_NAME,
+                }
+            )
         write_json("list", agents)
         return
 
@@ -301,33 +365,28 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
 
     console.print("\n[bold]Available Agents:[/bold]\n", style=theme.PRIMARY)
 
-    for agent_path in sorted(agents_dir.iterdir()):
-        if agent_path.is_dir():
-            agent_name = escape_markup(agent_path.name)
-            agent_md = agent_path / "AGENTS.md"
-            is_default = agent_path.name == DEFAULT_AGENT_NAME
-            default_label = " [dim](default)[/dim]" if is_default else ""
+    bullet = get_glyphs().bullet
+    for name in names:
+        agent_path = agents_dir / name
+        agent_name = escape_markup(name)
+        is_default = name == DEFAULT_AGENT_NAME
+        default_label = " [dim](default)[/dim]" if is_default else ""
 
-            bullet = get_glyphs().bullet
-            if agent_md.exists():
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                    style=theme.PRIMARY,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
-            else:
-                console.print(
-                    f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
-                    " [dim](incomplete)[/dim]",
-                    style=theme.WARNING,
-                )
-                console.print(
-                    f"    {escape_markup(str(agent_path))}",
-                    style=theme.MUTED,
-                )
+        if (agent_path / "AGENTS.md").exists():
+            console.print(
+                f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+                style=theme.PRIMARY,
+            )
+        else:
+            console.print(
+                f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
+                " [dim](incomplete)[/dim]",
+                style=theme.WARNING,
+            )
+        console.print(
+            f"    {escape_markup(str(agent_path))}",
+            style=theme.MUTED,
+        )
 
     console.print()
 
@@ -830,9 +889,9 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
-        "launch_async_subagent": async_subagent_interrupt_config,
-        "update_async_subagent": async_subagent_interrupt_config,
-        "cancel_async_subagent": async_subagent_interrupt_config,
+        "start_async_task": async_subagent_interrupt_config,
+        "update_async_task": async_subagent_interrupt_config,
+        "cancel_async_task": async_subagent_interrupt_config,
     }
 
     if REQUIRE_COMPACT_TOOL_APPROVAL:
@@ -1077,25 +1136,40 @@ def create_cli_agent(
         # built-in -> user .deepagents -> user .agents
         # -> project .deepagents -> project .agents
         # -> user .claude (experimental) -> project .claude (experimental)
-        sources = [str(settings.get_built_in_skills_dir())]
-        sources.extend([str(skills_dir), str(user_agent_skills_dir)])
+        # Labels disambiguate user- vs project-scoped sources that share a
+        # `.../skills` leaf; the middleware would otherwise derive identical
+        # labels from the parent directory name.
+        sources: list[tuple[str, str]] = [
+            (str(settings.get_built_in_skills_dir()), "Built-in"),
+            (str(skills_dir), "User Deepagents"),
+            (str(user_agent_skills_dir), "User Agents"),
+        ]
         if project_skills_dir:
-            sources.append(str(project_skills_dir))
+            sources.append((str(project_skills_dir), "Project Deepagents"))
         if project_agent_skills_dir:
-            sources.append(str(project_agent_skills_dir))
+            sources.append((str(project_agent_skills_dir), "Project Agents"))
 
         # Experimental: Claude Code skill directories
         user_claude_skills_dir = settings.get_user_claude_skills_dir()
         if user_claude_skills_dir.exists():
-            sources.append(str(user_claude_skills_dir))
+            sources.append((str(user_claude_skills_dir), "User Claude"))
         project_claude_skills_dir = settings.get_project_claude_skills_dir()
         if project_claude_skills_dir:
-            sources.append(str(project_claude_skills_dir))
+            sources.append((str(project_claude_skills_dir), "Project Claude"))
+
+        # Backwards-compat: strip labels when the installed SDK is too old
+        # to accept `(path, label)` tuples. Label-based disambiguation
+        # regresses to the pre-alias behavior (user- and project-scoped
+        # `.claude/skills` collapse to the same label), but functionality
+        # is preserved.
+        middleware_sources: Sequence[str | tuple[str, str]] = (
+            sources if _SUPPORTS_SKILL_SOURCE_TUPLES else [path for path, _ in sources]
+        )
 
         agent_middleware.append(
             SkillsMiddleware(
                 backend=FilesystemBackend(),
-                sources=sources,
+                sources=middleware_sources,
             )
         )
 

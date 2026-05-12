@@ -1,0 +1,13 @@
+# Second deployment of the coding-agent with assistant-scoped sandbox.
+# Same src/ (AGENTS.md, skills/, mcp.json) — only the sandbox scope and
+# the agent name differ from deepagents.toml.
+
+[agent]
+name = "deepagents-deploy-coding-agent-assistant-scope"
+model = "anthropic:claude-sonnet-4-5"
+
+[sandbox]
+provider = "langsmith"
+template = "coding-agent"
+image = "python:3.12"
+scope = "assistant"

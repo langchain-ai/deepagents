@@ -21,7 +21,7 @@ function loadConfig() {
     throw new Error(`Failed to parse pr-labeler-config.json: ${e.message}`);
   }
   const required = [
-    'labelColor', 'sizeThresholds', 'fileRules',
+    'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
     'typeToLabel', 'scopeToLabel', 'trustedThreshold',
     'excludedFiles', 'excludedPaths',
   ];
@@ -43,6 +43,7 @@ function init(github, owner, repo, config, core) {
     scopeToLabel,
     typeToLabel,
     fileRules: fileRulesDef,
+    branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
   } = config;
@@ -127,6 +128,29 @@ function init(github, owner, repo, config, core) {
       if (candidates.some(f => rule.test(f.filename ?? ''))) {
         labels.add(rule.label);
       }
+    }
+    return labels;
+  }
+
+  // ── Branch-name-based labels ──────────────────────────────────────
+
+  function matchBranchLabels(headRef) {
+    const labels = new Set();
+    const ref = headRef ?? '';
+    if (!ref) return labels;
+    for (const rule of branchRulesDef) {
+      let matched = false;
+      if (rule.prefix) matched = ref.startsWith(rule.prefix);
+      else if (rule.suffix) matched = ref.endsWith(rule.suffix);
+      else if (rule.exact) matched = ref === rule.exact;
+      else if (rule.pattern) matched = new RegExp(rule.pattern).test(ref);
+      else {
+        throw new Error(
+          `branchRules entry (label: "${rule.label}") has no recognized matcher ` +
+          `(expected one of: prefix, suffix, exact, pattern)`,
+        );
+      }
+      if (matched) labels.add(rule.label);
     }
     return labels;
   }
@@ -252,13 +276,47 @@ function init(github, owner, repo, config, core) {
     return tierLabel;
   }
 
+  // ── Full PR labeling (title + file + size) ───────────────────────
+
+  async function labelPR(prNumber, { title } = {}) {
+    if (!prNumber) {
+      throw new Error('labelPR() requires a valid prNumber');
+    }
+    const toAdd = new Set();
+
+    const prTitle = title ?? (await github.rest.pulls.get({
+      owner, repo, pull_number: prNumber,
+    })).data.title;
+
+    // Title-based labels
+    for (const l of matchTitleLabels(prTitle).labels) toAdd.add(l);
+
+    // File-based labels + size
+    const files = await github.paginate(github.rest.pulls.listFiles, {
+      owner, repo, pull_number: prNumber, per_page: 100,
+    });
+    toAdd.add(computeSize(files).sizeLabel);
+    for (const l of matchFileLabels(files)) toAdd.add(l);
+
+    for (const name of toAdd) await ensureLabel(name);
+    const labels = [...toAdd];
+    if (labels.length) {
+      await github.rest.issues.addLabels({
+        owner, repo, issue_number: prNumber, labels,
+      });
+    }
+    return labels;
+  }
+
   return {
     ensureLabel,
     getSizeLabel,
     computeSize,
     buildFileRules,
     matchFileLabels,
+    matchBranchLabels,
     matchTitleLabels,
+    labelPR,
     allTypeLabels,
     checkMembership,
     getContributorInfo,

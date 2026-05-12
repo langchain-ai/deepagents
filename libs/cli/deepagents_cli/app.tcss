@@ -11,6 +11,14 @@ Screen {
     scrollbar-size-vertical: 1;
 }
 
+/* Hide the Header's clickable ⭘ icon. It opens the command palette by default,
+   but ENABLE_COMMAND_PALETTE = False on the app, so it's already inert. We use
+   `visibility: hidden` (not `display: none`) so the 8-cell gutter is preserved
+   and balances the clock-space gutter on the right, keeping the title centered. */
+#app-header HeaderIcon {
+    visibility: hidden;
+}
+
 /* Main content goes on base layer by default */
 
 /* Chat area - main scrollable messages area */
@@ -37,7 +45,6 @@ Screen {
 #bottom-app-container {
     height: auto;
     margin-top: 1;
-    padding: 0 1;
 }
 
 /* Input area */
@@ -99,7 +106,6 @@ Screen {
 #status-bar {
     height: 1;
     dock: bottom;
-    margin-bottom: 1;
 }
 
 /* Tool approval widgets */
@@ -146,6 +152,10 @@ UserMessage.-mode-shell {
     border-left: wide $mode-bash;
 }
 
+UserMessage.-mode-shell-incognito {
+    border-left: wide $mode-incognito;
+}
+
 UserMessage.-mode-command {
     border-left: wide $mode-command;
 }
@@ -157,6 +167,10 @@ UserMessage.-ascii {
 
 UserMessage.-ascii.-mode-shell {
     border-left: ascii $mode-bash;
+}
+
+UserMessage.-ascii.-mode-shell-incognito {
+    border-left: ascii $mode-incognito;
 }
 
 UserMessage.-ascii.-mode-command {
@@ -210,6 +224,13 @@ ToolCallMessage.-ascii:hover {
     margin-top: 0;
 }
 
+/* Free-text reject reason input (Tab on Reject) */
+.approval-menu .approval-reason-input {
+    margin: 1 0 0 0;
+    border: solid $warning;
+    background: $surface;
+}
+
 /* Ask user widget */
 .ask-user-menu {
     height: auto;
@@ -258,16 +279,34 @@ ToolCallMessage.-ascii:hover {
 }
 
 .ask-user-menu .ask-user-choice {
-    height: 1;
+    height: auto;
     padding: 0 1;
 }
 
 .ask-user-menu .ask-user-text-input {
     margin: 1 1 0 1;
+    height: auto;
+    min-height: 3;
+    max-height: 10;
+    background: transparent;
 }
 
 .ask-user-menu .ask-user-other-input {
     margin: 1 1 0 1;
+    height: auto;
+    min-height: 3;
+    max-height: 10;
+    background: transparent;
+}
+
+.ask-user-menu AskUserTextArea {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

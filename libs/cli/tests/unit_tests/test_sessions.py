@@ -1319,6 +1319,134 @@ class TestListThreadsSortAndBranch:
             assert threads[0]["thread_id"] == "thread_a"
 
 
+class TestListThreadsCwdFilter:
+    """Tests for the `cwd` filter on `list_threads`."""
+
+    @pytest.fixture
+    def db_with_cwds(self, tmp_path: Path) -> Path:
+        """Database with threads stored under distinct cwd values.
+
+        thread_a: cwd=/home/user/project-a, branch=main, agent=bot
+        thread_b: cwd=/tmp/workspace, branch=feat, agent=bot
+        thread_c: no cwd metadata (legacy), branch=main, agent=bot
+        """
+        db_path = tmp_path / "cwds.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE checkpoints (
+                thread_id TEXT NOT NULL,
+                checkpoint_ns TEXT NOT NULL DEFAULT '',
+                checkpoint_id TEXT NOT NULL,
+                metadata BLOB,
+                PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+            )
+        """)
+        ins = (
+            "INSERT INTO checkpoints"
+            " (thread_id, checkpoint_ns, checkpoint_id, metadata)"
+            " VALUES (?, '', ?, ?)"
+        )
+        conn.execute(
+            ins,
+            (
+                "thread_a",
+                "cp_a",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-06-01T12:00:00+00:00",
+                        "git_branch": "main",
+                        "cwd": "/home/user/project-a",
+                    }
+                ),
+            ),
+        )
+        conn.execute(
+            ins,
+            (
+                "thread_b",
+                "cp_b",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-05-15T12:00:00+00:00",
+                        "git_branch": "feat",
+                        "cwd": "/tmp/workspace",
+                    }
+                ),
+            ),
+        )
+        conn.execute(
+            ins,
+            (
+                "thread_c",
+                "cp_c",
+                json.dumps(
+                    {
+                        "agent_name": "bot",
+                        "updated_at": "2025-04-01T12:00:00+00:00",
+                        "git_branch": "main",
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def test_filter_by_cwd(self, db_with_cwds: Path) -> None:
+        """Only threads with exactly the supplied cwd are returned."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            threads = asyncio.run(sessions.list_threads(cwd="/home/user/project-a"))
+        assert [t["thread_id"] for t in threads] == ["thread_a"]
+        assert threads[0]["cwd"] == "/home/user/project-a"
+
+    def test_filter_by_cwd_excludes_legacy_rows(self, db_with_cwds: Path) -> None:
+        """Threads without stored cwd metadata are dropped by the filter."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            threads = asyncio.run(sessions.list_threads(cwd="/tmp/workspace"))
+        ids = {t["thread_id"] for t in threads}
+        # thread_c (no cwd) must not leak through; only thread_b matches.
+        assert ids == {"thread_b"}
+
+    def test_filter_by_cwd_no_match(self, db_with_cwds: Path) -> None:
+        """Unknown cwd returns empty list."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            threads = asyncio.run(sessions.list_threads(cwd="/no/such/dir"))
+        assert threads == []
+
+    def test_filter_by_cwd_combined_with_branch(self, db_with_cwds: Path) -> None:
+        """`cwd` + branch combine with AND."""
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            threads = asyncio.run(
+                sessions.list_threads(cwd="/home/user/project-a", branch="main")
+            )
+            assert [t["thread_id"] for t in threads] == ["thread_a"]
+            # Mismatched branch yields empty even when cwd matches.
+            threads = asyncio.run(
+                sessions.list_threads(cwd="/home/user/project-a", branch="feat")
+            )
+            assert threads == []
+
+    def test_cwd_filter_skips_recent_threads_cache(self, db_with_cwds: Path) -> None:
+        """Filtered queries must not poison the unfiltered picker cache."""
+        sessions._recent_threads_cache.clear()
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            asyncio.run(
+                sessions.list_threads(
+                    cwd="/home/user/project-a", sort_by="updated", limit=10
+                )
+            )
+        assert sessions._recent_threads_cache == {}
+
+    def test_unfiltered_query_populates_cache(self, db_with_cwds: Path) -> None:
+        """Sanity: cache still fills when cwd is None (regression guard)."""
+        sessions._recent_threads_cache.clear()
+        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
+            asyncio.run(sessions.list_threads(sort_by="updated", limit=10))
+        assert (None, 10) in sessions._recent_threads_cache
+
+
 class TestListThreadsCommandConfigDefaults:
     """Tests for list_threads_command reading config defaults."""
 

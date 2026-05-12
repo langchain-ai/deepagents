@@ -6,22 +6,24 @@ import ast
 import json
 import logging
 import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual import on
 from textual.containers import Vertical
 from textual.content import Content
 from textual.events import Click
+from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.widgets import Static
 
 from deepagents_cli import theme
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
-    PREFIX_TO_MODE,
+    detect_mode_prefix,
     get_glyphs,
     is_ascii_mode,
 )
@@ -32,6 +34,7 @@ from deepagents_cli.widgets._links import open_style_link
 from deepagents_cli.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
+    from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
     from textual.app import ComposeResult
     from textual.timer import Timer
     from textual.widgets import Markdown
@@ -40,7 +43,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _show_timestamp_toast(widget: Static | Vertical) -> None:
+def _show_timestamp_toast(widget: Static | Vertical) -> None:  # noqa: ARG001  # temporarily disabled
     """Show a toast with the message's creation timestamp.
 
     No-ops silently if the widget is not mounted or has no associated message
@@ -49,21 +52,23 @@ def _show_timestamp_toast(widget: Static | Vertical) -> None:
     Args:
         widget: The message widget whose timestamp to display.
     """
-    from datetime import UTC, datetime
-
-    try:
-        app = widget.app
-    except Exception:  # noqa: BLE001  # Textual raises when widget has no app
-        return
-    if not widget.id:
-        return
-    store = app._message_store  # type: ignore[attr-defined]
-    data = store.get_message(widget.id)
-    if not data:
-        return
-    dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()
-    label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"
-    app.notify(label, timeout=3)
+    # TODO: temporarily disabled — uncomment to restore click-to-show-timestamp
+    return  # early return while feature is disabled
+    # from datetime import UTC, datetime  # noqa: ERA001
+    #
+    # try:  # noqa: ERA001
+    #     app = widget.app  # noqa: ERA001
+    # except Exception:  # Textual raises when widget has no app  # noqa: ERA001
+    #     return  # noqa: ERA001
+    # if not widget.id:
+    #     return  # noqa: ERA001
+    # store = app._message_store  # noqa: ERA001
+    # data = store.get_message(widget.id)  # noqa: ERA001
+    # if not data:
+    #     return  # noqa: ERA001
+    # dt = datetime.fromtimestamp(data.timestamp, tz=UTC).astimezone()  # noqa: ERA001
+    # label = f"{dt:%b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M:%S} {dt:%p}"  # noqa: ERA001, E501
+    # app.notify(label, timeout=3)  # noqa: ERA001
 
 
 class _TimestampClickMixin:
@@ -93,6 +98,8 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
     colors = theme.get_theme_colors(widget_or_app)
     if not mode:
         return colors.primary
+    if mode == "shell_incognito":
+        return colors.mode_incognito
     if mode == "shell":
         return colors.mode_bash
     if mode == "command":
@@ -118,6 +125,8 @@ _MAX_INLINE_ARGS = 3
 
 # Truncation limits for display
 _MAX_TODO_CONTENT_LEN = 70
+_DEFAULT_TODO_WRAP_WIDTH = 80
+_TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
 # Tools that have their key info already in the header (no need for args line)
@@ -130,11 +139,10 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "glob",
     "grep",
     "execute",  # sandbox shell
-    # Shell tools
-    "shell",  # local shell
     # Web tools
     "web_search",
     "fetch_url",
+    "ask_user",
     # Agent tools
     "task",
     "write_todos",
@@ -184,9 +192,10 @@ class UserMessage(_TimestampClickMixin, Static):
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
-        mode = PREFIX_TO_MODE.get(self._content[:1]) if self._content else None
-        if mode:
-            self.add_class(f"-mode-{mode}")
+        mode_match = detect_mode_prefix(self._content)
+        if mode_match:
+            _prefix, mode = mode_match
+            self.add_class(f"-mode-{mode.replace('_', '-')}")
         if is_ascii_mode():
             self.add_class("-ascii")
 
@@ -203,11 +212,12 @@ class UserMessage(_TimestampClickMixin, Static):
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             parts.append(("> ", f"bold {colors.primary}"))
 
@@ -284,11 +294,12 @@ class QueuedUserMessage(Static):
         """
         colors = theme.get_theme_colors(self)
         content = self._content
-        mode = PREFIX_TO_MODE.get(content[:1]) if content else None
-        if mode:
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, content[0])
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
             prefix = (f"{glyph} ", f"bold {colors.muted}")
-            content = content[1:]
+            content = content[len(prefix_text) :]
         else:
             prefix = ("> ", f"bold {colors.muted}")
         return Content.assemble(prefix, (content, colors.muted))
@@ -575,7 +586,13 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
-    the full content on each update.
+    the full content on each update. Once a stream finishes, the message
+    is re-rendered from the complete source via `Markdown.update()` to
+    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
+    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
+    the first chunk, so any later recompose (click, focus change, theme
+    update) re-yields the stale value and wrapped fenced-code bodies vanish.
+    A full re-parse rebuilds every fence with correct internal state.
     """
 
     DEFAULT_CSS = """
@@ -661,24 +678,28 @@ class AssistantMessage(_TimestampClickMixin, Vertical):
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
         if self._content:
-            stream = self._ensure_stream()
-            await stream.write(self._content)
+            await self._get_markdown().update(self._content)
 
     async def stop_stream(self) -> None:
         """Stop the streaming and finalize the content."""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
+            await self._get_markdown().update(self._content)
 
     async def set_content(self, content: str) -> None:
         """Set the full message content.
 
-        This stops any active stream and sets content directly.
+        Cancels any active stream and renders the new content with a
+        single `Markdown.update()` (avoiding a redundant intermediate
+        update of the in-flight content).
 
         Args:
             content: The markdown content to display
         """
-        await self.stop_stream()
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
@@ -738,6 +759,13 @@ class ToolCallMessage(Vertical):
         color: $warning;
     }
 
+    ToolCallMessage .tool-reject-reason {
+        margin-left: 3;
+        margin-top: 0;
+        height: auto;
+        color: $text-muted;
+    }
+
     ToolCallMessage .tool-output {
         margin-left: 0;
         margin-top: 0;
@@ -784,11 +812,17 @@ class ToolCallMessage(Vertical):
         self._status = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
+        self._args_expanded: bool = False
+        # User-provided reason attached to a HITL reject decision (if any).
+        self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
+        self._args_widget: Static | None = None
+        self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
         self._hint_widget: Static | None = None
         self._full_widget: Static | None = None
+        self._reject_reason_widget: Static | None = None
         # Animation state
         self._spinner_position = 0
         self._start_time: float | None = None
@@ -797,6 +831,10 @@ class ToolCallMessage(Vertical):
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
         self._deferred_expanded: bool = False
+        self._deferred_reject_reason: str | None = None
+        # Whether the widget is currently hidden because an approval prompt
+        # is rendering the same content (see `set_awaiting_approval`).
+        self._awaiting_approval: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -830,8 +868,14 @@ class ToolCallMessage(Vertical):
                     Content.from_markup("[dim]($args)[/dim]", args=args_str),
                     classes="tool-args",
                 )
+        # Collapsed argument detail for tools whose args are too noisy inline.
+        # Mounted for every tool but only populated when `has_expandable_args` is True.
+        yield Static("", classes="tool-args", id="args-full")
+        yield Static("", classes="tool-output-hint", id="args-hint")
         # Status - shows running animation while pending, then final status
         yield Static("", classes="tool-status", id="status")
+        # Optional HITL reject reason (only shown when user rejected with a message)
+        yield Static("", classes="tool-reject-reason", id="reject-reason")
         # Output area - hidden initially, shown when output is set
         yield Static("", classes="tool-output-preview", id="output-preview")
         yield Static("", classes="tool-output", id="output-full")
@@ -843,14 +887,21 @@ class ToolCallMessage(Vertical):
             self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
+        self._args_widget = self.query_one("#args-full", Static)
+        self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
         self._hint_widget = self.query_one("#output-hint", Static)
         self._full_widget = self.query_one("#output-full", Static)
+        self._reject_reason_widget = self.query_one("#reject-reason", Static)
         # Hide everything initially - status only shown when running or on error/reject
         self._status_widget.display = False
+        self._args_widget.display = False
+        self._args_hint_widget.display = False
         self._preview_widget.display = False
         self._hint_widget.display = False
         self._full_widget.display = False
+        self._reject_reason_widget.display = False
+        self._update_args_display()
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
@@ -863,11 +914,14 @@ class ToolCallMessage(Vertical):
         status = self._deferred_status
         output = self._deferred_output or ""
         self._expanded = self._deferred_expanded
+        if self._deferred_reject_reason:
+            self._reject_reason = self._deferred_reject_reason
 
         # Clear deferred values
         self._deferred_status = None
         self._deferred_output = None
         self._deferred_expanded = False
+        self._deferred_reject_reason = None
 
         # Restore based on status (don't restart animations for running tools)
         colors = theme.get_theme_colors(self)
@@ -896,6 +950,7 @@ class ToolCallMessage(Vertical):
                         Content.styled(f"{error_icon} Rejected", colors.warning)
                     )
                     self._status_widget.display = True
+                self._update_reject_reason_display()
             case "skipped":
                 self._status = "skipped"
                 if self._status_widget:
@@ -983,11 +1038,7 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         # For shell commands, prepend the full command so users can see what failed
-        command = (
-            self._args.get("command")
-            if self._tool_name in {"shell", "bash", "execute"}
-            else None
-        )
+        command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
             self._output = f"$ {command}\n\n{error}"
         else:
@@ -1005,10 +1056,17 @@ class ToolCallMessage(Vertical):
         self._expanded = True
         self._update_output_display()
 
-    def set_rejected(self) -> None:
-        """Mark the tool call as rejected by user."""
+    def set_rejected(self, *, reason: str | None = None) -> None:
+        """Mark the tool call as rejected by user.
+
+        Args:
+            reason: Optional free-text reason supplied via the HITL reject
+                widget; rendered as a dim line beneath the status.
+        """
         self._stop_animation()
         self._status = "rejected"
+        if reason and reason.strip():
+            self._reject_reason = reason.strip()
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")
@@ -1017,6 +1075,22 @@ class ToolCallMessage(Vertical):
             colors = theme.get_theme_colors(self)
             self._status_widget.update(Content.styled(text, colors.warning))
             self._status_widget.display = True
+        self._update_reject_reason_display()
+
+    def _update_reject_reason_display(self) -> None:
+        """Render the rejection reason line if a reason is set."""
+        if self._reject_reason_widget is None:
+            return
+        if self._reject_reason:
+            self._reject_reason_widget.update(
+                Content.from_markup(
+                    "[dim italic]Reason: $reason[/dim italic]",
+                    reason=self._reject_reason,
+                )
+            )
+            self._reject_reason_widget.display = True
+        else:
+            self._reject_reason_widget.display = False
 
     def set_skipped(self) -> None:
         """Mark the tool call as skipped (due to another rejection)."""
@@ -1028,18 +1102,50 @@ class ToolCallMessage(Vertical):
             self._status_widget.update(Content.styled("- Skipped", "dim"))
             self._status_widget.display = True
 
+    def set_awaiting_approval(self) -> None:
+        """Hide the tool call while an approval prompt mirrors its content.
+
+        Used to avoid showing the same shell command in both the streamed tool
+        call header and the HITL approval dialog at the same time. The widget
+        is restored via `clear_awaiting_approval` once the user decides.
+        """
+        self._awaiting_approval = True
+        self.display = False
+
+    def clear_awaiting_approval(self) -> None:
+        """Restore the tool call after `set_awaiting_approval`.
+
+        No-op if `set_awaiting_approval` was not previously called, so the
+        method is safe to call unconditionally from a `finally` block.
+        """
+        if not self._awaiting_approval:
+            return
+        self._awaiting_approval = False
+        self.display = True
+
     def toggle_output(self) -> None:
-        """Toggle between preview and full output display."""
+        """Toggle expansion of the tool's preview/full output."""
         if not self._output:
+            return
+        if not self._expanded and not self._has_expandable_output():
             return
         self._expanded = not self._expanded
         self._update_output_display()
 
+    def toggle_args(self) -> None:
+        """Toggle display of collapsed tool arguments."""
+        if not self.has_expandable_args:
+            return
+        self._args_expanded = not self._args_expanded
+        self._update_args_display()
+
     def on_click(self, event: Click) -> None:
-        """Toggle output expansion, or show timestamp if no output."""
+        """Toggle output/argument expansion, or show timestamp if nothing expands."""
         event.stop()  # Prevent click from bubbling up and scrolling
         if self._output:
             self.toggle_output()
+        elif self.has_expandable_args:
+            self.toggle_args()
         else:
             _show_timestamp_toast(self)
 
@@ -1068,8 +1174,6 @@ class ToolCallMessage(Vertical):
             "edit_file": self._format_file_output,
             "grep": self._format_search_output,
             "glob": self._format_search_output,
-            "shell": self._format_shell_output,
-            "bash": self._format_shell_output,
             "execute": self._format_shell_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
@@ -1094,6 +1198,21 @@ class ToolCallMessage(Vertical):
 
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
+
+    def _has_expandable_output(self) -> bool:
+        """Return whether collapsed output has hidden content to expand."""
+        output = self._output.strip()
+        if not output:
+            return False
+
+        lines = output.split("\n")
+        if len(lines) > self._PREVIEW_LINES or len(output) > self._PREVIEW_CHARS:
+            return True
+
+        if self._tool_name == "write_todos":
+            return self._format_output(output, is_preview=True).truncation is not None
+
+        return False
 
     def _prefix_output(self, content: Content) -> Content:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Prefix output with output marker and indent continuation lines.
@@ -1137,13 +1256,37 @@ class ToolCallMessage(Vertical):
             lines.extend([Content.assemble("    ", stats), Content("")])
 
         # Format each item
-        lines.extend(self._format_single_todo(item) for item in items[:max_items])
+        lines.extend(
+            self._format_single_todo(item, is_preview=is_preview)
+            for item in items[:max_items]
+        )
 
         truncation = None
-        if is_preview and len(items) > max_items:
-            truncation = f"{len(items) - max_items} more"
+        if is_preview:
+            hidden_items = len(items) - max_items
+            if hidden_items > 0:
+                truncation = f"{hidden_items} more"
+            elif any(
+                len(self._todo_text(item)) > _MAX_TODO_CONTENT_LEN
+                for item in items[:max_items]
+            ):
+                truncation = "full todo text"
 
         return FormattedOutput(content=Content("\n").join(lines), truncation=truncation)
+
+    @staticmethod
+    def _todo_text(item: dict | str) -> str:
+        """Return display text for a todo item.
+
+        Args:
+            item: Todo item dictionary or plain string.
+
+        Returns:
+            Todo content text.
+        """
+        if isinstance(item, dict):
+            return str(item.get("content", str(item)))
+        return str(item)
 
     def _parse_todo_items(self, output: str) -> list | None:  # noqa: PLR6301  # Grouped as method for widget cohesion
         """Parse todo items from output.
@@ -1187,37 +1330,113 @@ class ToolCallMessage(Vertical):
             parts.append(Content.styled(f"{completed} done", colors.success))
         return Content.styled(" | ", "dim").join(parts) if parts else Content("")
 
-    def _format_single_todo(self, item: dict | str) -> Content:
+    def _todo_content_width(self, indent_width: int) -> int:
+        """Return the todo content wrap width for the current widget size.
+
+        Args:
+            indent_width: Display width before todo content starts.
+
+        Returns:
+            Width available for todo content wrapping.
+        """
+        display_width = 0
+        for widget in (self._full_widget, self._preview_widget, self):
+            if widget and widget.is_mounted and widget.size.width > 0:
+                display_width = widget.size.width
+                break
+
+        if not display_width:
+            try:
+                display_width = self.app.size.width
+            except NoActiveAppError:
+                display_width = _DEFAULT_TODO_WRAP_WIDTH
+
+        output_prefix_width = len(get_glyphs().output_prefix) + 1
+        available = (
+            display_width
+            - output_prefix_width
+            - indent_width
+            - _TODO_WRAP_GUARD_COLUMNS
+        )
+        return max(20, available)
+
+    def _format_todo_line(
+        self,
+        prefix: Content,
+        text: str,
+        *,
+        is_preview: bool,
+        text_style: str | None = None,
+    ) -> Content:
+        """Format a todo row, wrapping expanded content under the text column.
+
+        Args:
+            prefix: Styled status prefix before todo content.
+            text: Todo text to render.
+            is_preview: Whether the compact preview is being rendered.
+            text_style: Optional style for todo content.
+
+        Returns:
+            Styled `Content` for one todo row.
+        """
+        if is_preview and len(text) > _MAX_TODO_CONTENT_LEN:
+            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
+
+        if is_preview:
+            content = Content.styled(text, text_style) if text_style else Content(text)
+            return Content.assemble(prefix, content)
+
+        indent = " " * len(prefix.plain)
+        wrapped = textwrap.wrap(
+            text,
+            width=self._todo_content_width(len(prefix.plain)),
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+        parts: list[Content] = [prefix]
+        for index, line in enumerate(wrapped):
+            if index:
+                parts.append(Content("\n" + indent))
+            content = Content.styled(line, text_style) if text_style else Content(line)
+            parts.append(content)
+        return Content.assemble(*parts)
+
+    def _format_single_todo(self, item: dict | str, *, is_preview: bool) -> Content:
         """Format a single todo item.
+
+        Args:
+            item: Todo item dictionary or plain string.
+            is_preview: Whether the compact preview is being rendered.
 
         Returns:
             Styled `Content` with checkbox and status styling.
         """
         colors = theme.get_theme_colors(self)
         if isinstance(item, dict):
-            text = item.get("content", str(item))
+            text = self._todo_text(item)
             status = item.get("status", "pending")
         else:
-            text = str(item)
+            text = self._todo_text(item)
             status = "pending"
-
-        if len(text) > _MAX_TODO_CONTENT_LEN:
-            text = text[: _MAX_TODO_CONTENT_LEN - 3] + "..."
 
         glyphs = get_glyphs()
         if status == "completed":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.checkmark} done", colors.success),
-                Content.styled(f"   {text}", "dim"),
+            return self._format_todo_line(
+                Content.styled(f"    {glyphs.checkmark} done   ", colors.success),
+                text,
+                is_preview=is_preview,
+                text_style="dim",
             )
         if status == "in_progress":
-            return Content.assemble(
-                Content.styled(f"    {glyphs.circle_filled} active", colors.warning),
-                f" {text}",
+            return self._format_todo_line(
+                Content.styled(f"    {glyphs.circle_filled} active ", colors.warning),
+                text,
+                is_preview=is_preview,
             )
-        return Content.assemble(
-            Content.styled(f"    {glyphs.circle_empty} todo", "dim"),
-            f"   {text}",
+        return self._format_todo_line(
+            Content.styled(f"    {glyphs.circle_empty} todo   ", "dim"),
+            text,
+            is_preview=is_preview,
         )
 
     def _format_ls_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
@@ -1534,11 +1753,24 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             elif output_stripped:
                 # Output fits in preview, show formatted
-                result = self._format_output(output_stripped, is_preview=False)
+                is_tool_preview = self._tool_name == "write_todos"
+                result = self._format_output(
+                    output_stripped,
+                    is_preview=is_tool_preview,
+                )
                 prefixed = self._prefix_output(result.content)
                 self._preview_widget.update(prefixed)
                 self._preview_widget.display = True
-                self._hint_widget.display = False
+                if result.truncation:
+                    ellipsis = get_glyphs().ellipsis
+                    hint = Content.styled(
+                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
+                        "dim",
+                    )
+                    self._hint_widget.update(hint)
+                    self._hint_widget.display = True
+                else:
+                    self._hint_widget.display = False
             else:
                 self._preview_widget.display = False
                 self._hint_widget.display = False
@@ -1551,6 +1783,67 @@ class ToolCallMessage(Vertical):
             True if there is output content, False otherwise.
         """
         return bool(self._output)
+
+    @property
+    def tool_name(self) -> str:
+        """Public read-only accessor for the underlying tool name."""
+        return self._tool_name
+
+    @property
+    def has_expandable_args(self) -> bool:
+        """Whether the tool's args are large enough to deserve a collapsible block.
+
+        Only `ask_user` qualifies today: its `questions` payload is too noisy to
+        render inline, but users still need a way to inspect it.
+        """
+        return self._tool_name == "ask_user" and bool(self._args)
+
+    def _format_args_detail(self) -> Content:
+        """Render tool arguments as an indented `Content` block.
+
+        Falls back to `str(self._args)` (with a visible marker) when JSON
+        serialization fails — `default=str` already handles most non-serializable
+        values, so reaching the fallback indicates a deeper issue worth logging.
+
+        Returns:
+            Indented `Content` containing JSON-pretty-printed arguments, or a
+            marked fallback rendering on serialization failure.
+        """
+        try:
+            text = json.dumps(self._args, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "ask_user args not JSON-serializable; using repr fallback: %r", exc
+            )
+            text = f"# (fallback rendering)\n{self._args!s}"
+        lines = Content(text).split("\n")
+        return Content("\n").join(Content.assemble("  ", line) for line in lines)
+
+    def _update_args_display(self) -> None:
+        """Update the collapsed/expanded argument display."""
+        if self._args_widget is None or self._args_hint_widget is None:
+            # Toggle invoked before on_mount cached the refs; log so a regression
+            # that nulls them out post-mount doesn't appear as a silent no-op.
+            logger.debug("_update_args_display called before widget refs are cached")
+            return
+
+        if not self.has_expandable_args:
+            self._args_widget.display = False
+            self._args_hint_widget.display = False
+            return
+
+        if self._args_expanded:
+            self._args_widget.update(self._format_args_detail())
+            self._args_widget.display = True
+            self._args_hint_widget.update(
+                Content.styled("click or Ctrl+O to hide arguments", "dim italic")
+            )
+        else:
+            self._args_widget.display = False
+            self._args_hint_widget.update(
+                Content.styled("click or Ctrl+O to show arguments", "dim italic")
+            )
+        self._args_hint_widget.display = True
 
     def _filtered_args(self) -> dict[str, Any]:
         """Filter large tool args for display.
@@ -1655,14 +1948,14 @@ class ErrorMessage(_TimestampClickMixin, Static):
     """
     """Tinted background + left border to visually separate errors from output."""
 
-    def __init__(self, error: str, **kwargs: Any) -> None:
+    def __init__(self, error: str | Content, **kwargs: Any) -> None:
         """Initialize an error message.
 
         Args:
-            error: The error message
-            **kwargs: Additional arguments passed to parent
+            error: Plain string, or `Content` for pre-styled bodies
+                (e.g. with `link`-styled spans).
+            **kwargs: Additional arguments passed to parent.
         """
-        # Store raw content for serialization
         self._content = error
         super().__init__(**kwargs)
 
@@ -1670,7 +1963,7 @@ class ErrorMessage(_TimestampClickMixin, Static):
         """Render with theme-aware colors.
 
         Returns:
-            Styled error content with theme-appropriate color.
+            Styled error content; spans on a `Content` body are preserved.
         """
         colors = theme.get_theme_colors(self)
         return Content.assemble(
@@ -1683,6 +1976,66 @@ class ErrorMessage(_TimestampClickMixin, Static):
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.error)
+
+    def on_click(self, event: Click) -> None:
+        """Open clicked URLs; otherwise show the timestamp toast."""
+        if event.style.link:
+            open_style_link(event)
+            return
+        _show_timestamp_toast(self)
+
+
+class _MutedRichMarkdown:
+    """Render Rich markdown to match `AppMessage`'s muted-italic base.
+
+    Plain `AppMessage` strings render as `dim italic` via `Content.styled`
+    plus the widget's CSS. Rich's default markdown theme paints h2-h4
+    magenta and table headers/borders cyan, and doesn't apply `dim` to
+    paragraphs, so markdown blocks look visually distinct. This wrapper:
+
+    - Applies a `rich.theme.Theme` while rendering that strips the stock
+        colors while keeping structural emphasis (bold/underline/italic), and
+    - Layers `dim` over the whole document via `rich.styled.Styled` so
+        body text matches the `dim italic` baseline used elsewhere.
+    """
+
+    _THEME_OVERRIDES: ClassVar[dict[str, str]] = {
+        "markdown.h1": "bold underline",
+        "markdown.h2": "bold underline",
+        "markdown.h3": "bold",
+        "markdown.h4": "italic",
+        "markdown.table.header": "bold",
+        "markdown.table.border": "",
+    }
+
+    def __init__(self, markup: str) -> None:
+        from rich.markdown import Markdown as RichMarkdown
+
+        self._markdown = RichMarkdown(markup)
+        self._markup = markup
+
+    def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
+        self, console: RichConsole, options: ConsoleOptions
+    ) -> RenderResult:
+        from rich.styled import Styled
+        from rich.theme import Theme
+
+        theme = Theme(self._THEME_OVERRIDES, inherit=True)
+        try:
+            with console.use_theme(theme):
+                yield from Styled(self._markdown, "dim").__rich_console__(
+                    console, options
+                )
+        except Exception:
+            # Rich markdown or theme application blew up on malformed input.
+            # Fall back to the raw source so the chat view keeps rendering.
+            logger.warning(
+                "Rich markdown rendering failed; falling back to plain text",
+                exc_info=True,
+            )
+            yield from Styled(self._markup, "dim italic").__rich_console__(
+                console, options
+            )
 
 
 class AppMessage(Static):
@@ -1704,20 +2057,39 @@ class AppMessage(Static):
     }
     """
 
-    def __init__(self, message: str | Content, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        message: str | Content,
+        *,
+        markdown: bool = False,
+        **kwargs: Any,
+    ) -> None:
         """Initialize a system message.
 
         Args:
             message: The system message as a string or pre-styled `Content`.
-            **kwargs: Additional arguments passed to parent
+            markdown: When `True`, render `message` as markdown via Rich's
+                markdown renderer (tables, headings, bold, etc.).
+
+                Requires a string message — `Content` objects already carry
+                their own structure.
+            **kwargs: Additional arguments passed to parent.
+
+        Raises:
+            TypeError: If `markdown=True` is combined with a non-string
+                `message`.
         """
-        # Store raw content for serialization
         self._content = message
-        rendered = (
-            message
-            if isinstance(message, Content)
-            else Content.styled(message, "dim italic")
-        )
+        self._is_markdown = markdown
+        if markdown:
+            if not isinstance(message, str):
+                msg = "AppMessage(markdown=True) requires a string message"
+                raise TypeError(msg)
+            rendered = _MutedRichMarkdown(message)
+        elif isinstance(message, Content):
+            rendered = message
+        else:
+            rendered = Content.styled(message, "dim italic")
         super().__init__(rendered, **kwargs)
 
     def on_click(self, event: Click) -> None:

@@ -1,6 +1,6 @@
 """Unit tests for message widgets markup safety."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
@@ -18,6 +18,7 @@ from deepagents_cli.widgets.messages import (
     SummarizationMessage,
     ToolCallMessage,
     UserMessage,
+    _MutedRichMarkdown,
     _show_timestamp_toast,
     _strip_frontmatter,
     _strip_success_exit_line,
@@ -74,6 +75,67 @@ class TestErrorMessageMarkupSafety:
         assert isinstance(rendered, Content)
         assert rendered.plain == "Error: something broke"
 
+    def test_error_message_accepts_content_with_link_span(self) -> None:
+        """Pre-built `Content` with `link` spans passes through to render output."""
+        from textual.style import Style as TStyle
+
+        url = "https://docs.langchain.com/oss/python/deepagents/cli/providers"
+        body = Content.assemble(
+            "see ",
+            (url, TStyle(underline=True, link=url)),
+        )
+        rendered = ErrorMessage(body).render()
+        assert isinstance(rendered, Content)
+        links = [
+            getattr(span.style, "link", None)
+            for span in rendered.spans
+            if getattr(span.style, "link", None)
+        ]
+        assert links == [url]
+        assert rendered.plain == f"Error: see {url}"
+
+    def test_error_message_click_on_link_opens_url(self) -> None:
+        """Click on a `link`-styled span should route through `open_style_link`."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("see https://example.com")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link="https://example.com"),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_called_once_with(event)
+        mock_toast.assert_not_called()
+
+    def test_error_message_click_off_link_shows_timestamp(self) -> None:
+        """Click outside a link span should fall back to the timestamp toast."""
+        from types import SimpleNamespace
+
+        msg = ErrorMessage("plain error, no URL")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link=None),
+            app=SimpleNamespace(notify=MagicMock()),
+            stop=MagicMock(),
+        )
+        with (
+            patch("deepagents_cli.widgets.messages.open_style_link") as mock_open_link,
+            patch(
+                "deepagents_cli.widgets.messages._show_timestamp_toast"
+            ) as mock_toast,
+        ):
+            msg.on_click(event)  # type: ignore[arg-type]
+
+        mock_open_link.assert_not_called()
+        mock_toast.assert_called_once_with(msg)
+
 
 class TestAppMessageMarkupSafety:
     """Test AppMessage handles content with brackets safely."""
@@ -103,6 +165,134 @@ class TestAppMessageMarkupSafety:
         msg = AppMessage(pre)
         rendered = msg._Static__content  # type: ignore[attr-defined]
         assert rendered is pre
+
+    def test_app_message_markdown_uses_muted_wrapper(self) -> None:
+        """`markdown=True` should route through `_MutedRichMarkdown`."""
+        msg = AppMessage("### heading", markdown=True)
+        rendered = msg._Static__content  # type: ignore[attr-defined]
+        assert isinstance(rendered, _MutedRichMarkdown)
+
+    def test_app_message_markdown_requires_string(self) -> None:
+        """`markdown=True` with non-string input should raise `TypeError`."""
+        pre = Content.styled("styled", "bold")
+        with pytest.raises(TypeError):
+            AppMessage(pre, markdown=True)
+
+
+class TestMutedRichMarkdown:
+    """Tests for the muted markdown theme wrapper."""
+
+    _DOC = (
+        "### Installed optional dependencies\n"
+        "\n"
+        "| Extra | Package | Version |\n"
+        "| --- | --- | --- |\n"
+        "| anthropic | langchain-anthropic | 1.4.1 |\n"
+    )
+
+    @staticmethod
+    def _render(renderable: object) -> str:
+        import io
+
+        from rich.console import Console
+
+        console = Console(
+            file=io.StringIO(),
+            force_terminal=True,
+            color_system="truecolor",
+            width=80,
+            legacy_windows=False,
+        )
+        console.print(renderable)
+        return console.file.getvalue()  # type: ignore[attr-defined]
+
+    def test_strips_heading_and_table_colors(self) -> None:
+        """Muted wrapper should drop magenta/cyan from headings and tables."""
+        muted = self._render(_MutedRichMarkdown(self._DOC))
+
+        # Some Rich versions paint headings/tables magenta/cyan by default.
+        # The wrapper should not emit those hues regardless of Rich's baseline.
+        assert "\x1b[35m" not in muted
+        assert ";35m" not in muted
+        assert "\x1b[36m" not in muted
+        assert ";36m" not in muted
+
+    def test_applies_dim_to_body_and_headings(self) -> None:
+        """Muted wrapper should layer `dim` onto body, headings, and tables."""
+        muted = self._render(_MutedRichMarkdown(self._DOC))
+
+        # `dim` is ANSI code 2. Heading should be bold+dim ("1;2"),
+        # plain cells should be dim ("2m"), and both must be present.
+        assert "\x1b[1;2m" in muted
+        assert "\x1b[2m" in muted
+
+    def test_render_failure_falls_back_to_plain_source(self) -> None:
+        """A crash inside Rich markdown rendering must not escape.
+
+        If the themed render path raises, the wrapper should emit the raw
+        source so the chat view stays up; the full stream would otherwise
+        tear down when Textual asks the widget for content.
+        """
+        wrapped = _MutedRichMarkdown("# heading\n\nbody")
+        # Force the inner Markdown renderable to raise when consumed.
+        wrapped._markdown = MagicMock()
+        wrapped._markdown.__rich_console__ = MagicMock(side_effect=RuntimeError("boom"))
+
+        rendered = self._render(wrapped)
+        assert "body" in rendered
+
+
+class TestAssistantMessageMarkdownRendering:
+    """Tests for assistant markdown render lifecycle."""
+
+    async def test_write_initial_content_uses_full_markdown_update(self) -> None:
+        """Preloaded assistant messages should not keep stream state alive."""
+        msg = AssistantMessage("```python\nprint('hello')\n```")
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        msg._markdown = markdown
+
+        await msg.write_initial_content()
+
+        markdown.update.assert_awaited_once_with("```python\nprint('hello')\n```")
+        assert msg._stream is None
+
+    async def test_stop_stream_rerenders_complete_markdown(self) -> None:
+        """Completed streams should get a full parse after incremental updates."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "```python\nprint('wrapped text')\n```"
+
+        await msg.stop_stream()
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with(
+            "```python\nprint('wrapped text')\n```"
+        )
+        assert msg._stream is None
+
+    async def test_set_content_replaces_stream_with_single_update(self) -> None:
+        """Replacing content should cancel the stream and update exactly once."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "old streamed content"
+
+        await msg.set_content("```python\nnew content\n```")
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with("```python\nnew content\n```")
+        assert msg._stream is None
+        assert msg._content == "```python\nnew content\n```"
 
 
 class TestSummarizationMessage:
@@ -177,6 +367,262 @@ class TestToolCallMessageMarkupSafety:
         assert "[foo]" in content.plain
         assert "[/dim]" in content.plain
 
+    def test_ask_user_args_are_collapsed_by_default(self) -> None:
+        """`ask_user` should show compact header without inline raw args."""
+        msg = ToolCallMessage(
+            "ask_user",
+            {
+                "questions": [
+                    {
+                        "question": 'Your prompt is just "hi" - what should I build?',
+                        "type": "text",
+                    }
+                    for _ in range(4)
+                ]
+            },
+        )
+
+        widgets = list(msg.compose())
+        visible = []
+        for widget in widgets[:3]:
+            content = widget._Static__content  # type: ignore[attr-defined]
+            visible.append(content.plain if isinstance(content, Content) else content)
+        visible_plain = "\n".join(visible)
+
+        assert "ask_user(4 questions)" in visible_plain
+        assert "Your prompt is just" not in visible_plain
+        assert msg.has_expandable_args is True
+
+
+class TestToolCallMessageTodos:
+    """Tests for `write_todos` output formatting."""
+
+    def test_todo_preview_truncates_long_content(self) -> None:
+        """Collapsed todo preview should keep the compact character limit."""
+        long = "Implement " + "very detailed authentication flow " * 4
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "in_progress"}]),
+            is_preview=True,
+        )
+
+        assert result.content.plain.endswith("...")
+        assert long not in result.content.plain
+        assert result.truncation == "full todo text"
+
+    async def test_todo_collapsed_short_output_uses_preview_formatting(self) -> None:
+        """Collapsed todos should truncate even when raw output fits generically."""
+        from textual.app import App, ComposeResult
+
+        long = "Implement " + "very detailed authentication flow " * 3
+        assert len(long) > 70
+        output = repr([{"content": long, "status": "pending"}])
+        assert len(output) < ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_todos")
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._hint_widget is not None
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert isinstance(content, Content)
+            assert "..." in content.plain
+            assert long not in content.plain
+            assert app.msg._hint_widget.display is True
+
+    async def test_todo_short_fully_visible_output_does_not_expand(self) -> None:
+        """Clicking fully visible todo output should not show a collapse hint."""
+        from textual.app import App, ComposeResult
+
+        output = repr([{"content": "Write tests", "status": "pending"}])
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_todos")
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is False
+
+    def test_todo_expanded_shows_full_wrapped_content(self) -> None:
+        """Expanded todo output should wrap long content without truncating."""
+        long = (
+            "Implement the new authentication flow using OAuth2 with PKCE for "
+            "the CLI login command and preserve readable todo output"
+        )
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "in_progress"}]),
+            is_preview=False,
+        )
+        plain = result.content.plain
+
+        assert "..." not in plain
+        assert long.replace(" ", "") == plain.split("active ", 1)[1].replace(
+            "\n             ",
+            "",
+        ).replace(" ", "")
+        assert "\n             " in plain
+
+    def test_todo_expanded_continuation_aligns_content_column(self) -> None:
+        """Wrapped continuation lines should align under the todo text."""
+        long = "Write integration tests for " + "token refresh revocation " * 4
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "pending"}]),
+            is_preview=False,
+        )
+        lines = result.content.plain.splitlines()
+        todo_start = next(
+            index for index, line in enumerate(lines) if "todo   " in line
+        )
+
+        assert len(lines) > todo_start + 1
+        assert lines[todo_start + 1].startswith("             ")
+
+
+class TestToolCallMessageExpandableArgs:
+    """Tests for the `ask_user` expandable-arguments toggle."""
+
+    def test_has_expandable_args_false_for_non_ask_user(self) -> None:
+        """Only `ask_user` should expose expandable args."""
+        msg = ToolCallMessage("read_file", {"path": "/tmp/x"})
+        assert msg.has_expandable_args is False
+
+    def test_has_expandable_args_false_for_ask_user_without_args(self) -> None:
+        """Empty args dict should not be expandable."""
+        msg = ToolCallMessage("ask_user", {})
+        assert msg.has_expandable_args is False
+
+    def test_tool_name_property_exposes_underlying_name(self) -> None:
+        """Public `tool_name` property should mirror the constructor arg."""
+        msg = ToolCallMessage("ask_user", {"questions": []})
+        assert msg.tool_name == "ask_user"
+
+    def test_toggle_args_no_op_before_mount(self) -> None:
+        """Calling `toggle_args` before mount should not flip state."""
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "?"}]})
+        # Without `on_mount`, widget refs are None — `_update_args_display`
+        # short-circuits and the expanded flag should not be flipped either,
+        # since the user can't possibly see the result.
+        msg.toggle_args()
+        assert msg._args_expanded is True  # state flips
+        # but rendering is a no-op:
+        assert msg._args_widget is None
+
+    async def test_toggle_args_swaps_display_state(self) -> None:
+        """`toggle_args` should flip the args widget's display after mount."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "Name?", "type": "text"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+
+            # Initial state: hint visible, full args hidden.
+            assert msg._args_widget is not None
+            assert msg._args_hint_widget is not None
+            assert msg._args_widget.display is False
+            assert msg._args_hint_widget.display is True
+
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is True
+            assert msg._args_widget.display is True
+
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is False
+            assert msg._args_widget.display is False
+
+    async def test_on_click_routes_ask_user_to_toggle_args(self) -> None:
+        """Clicking an `ask_user` row (no output) should expand args."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "?"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            event = MagicMock()
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._args_expanded is True
+
+    async def test_toggle_output_does_not_fall_through_to_args(self) -> None:
+        """`toggle_output` is strictly about output; args stay collapsed."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "ask_user",
+                    {"questions": [{"question": "?"}]},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.toggle_output()
+            await pilot.pause()
+            assert msg._args_expanded is False
+
 
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.
@@ -191,7 +637,7 @@ class TestToolCallMessageShellCommand:
         long_cmd = "pip install " + " ".join(f"package{i}" for i in range(50))
         assert len(long_cmd) > 120  # Exceeds truncation limit
 
-        msg = ToolCallMessage("shell", {"command": long_cmd})
+        msg = ToolCallMessage("execute", {"command": long_cmd})
         msg.set_error("Command not found: pip")
 
         # The error output should include the full command
@@ -200,28 +646,10 @@ class TestToolCallMessageShellCommand:
     def test_shell_error_command_prefix(self) -> None:
         """Error output should have shell prompt prefix."""
         cmd = "echo hello"
-        msg = ToolCallMessage("shell", {"command": cmd})
+        msg = ToolCallMessage("execute", {"command": cmd})
         msg.set_error("Permission denied")
 
         # Output should have shell prompt prefix
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_bash_error_includes_full_command(self) -> None:
-        """Error output should include full command for bash tool too."""
-        cmd = "make build"
-        msg = ToolCallMessage("bash", {"command": cmd})
-        msg.set_error("make: *** No rule to make target")
-
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_execute_error_includes_full_command(self) -> None:
-        """Error output should include full command for execute tool too."""
-        cmd = "docker build ."
-        msg = ToolCallMessage("execute", {"command": cmd})
-        msg.set_error("Cannot connect to Docker daemon")
-
         assert msg._output.startswith("$ ")
         assert cmd in msg._output
 
@@ -236,7 +664,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_none_command(self) -> None:
         """Shell tool with None command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": None})
+        msg = ToolCallMessage("execute", {"command": None})
         error = "Some error"
         msg.set_error(error)
 
@@ -245,7 +673,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_empty_command(self) -> None:
         """Shell tool with empty command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": ""})
+        msg = ToolCallMessage("execute", {"command": ""})
         error = "Some error"
         msg.set_error(error)
 
@@ -254,7 +682,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_whitespace_command(self) -> None:
         """Shell tool with whitespace command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": "   "})
+        msg = ToolCallMessage("execute", {"command": "   "})
         error = "Some error"
         msg.set_error(error)
 
@@ -262,7 +690,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_no_command_key(self) -> None:
         """Shell tool with no command key should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"other_arg": "value"})
+        msg = ToolCallMessage("execute", {"other_arg": "value"})
         error = "Some error"
         msg.set_error(error)
 
@@ -271,7 +699,7 @@ class TestToolCallMessageShellCommand:
 
     def test_format_shell_output_styles_only_first_line_dim(self) -> None:
         """Shell output formatting should only style the first command line in dim."""
-        msg = ToolCallMessage("shell", {"command": "echo test"})
+        msg = ToolCallMessage("execute", {"command": "echo test"})
         output = "$ echo test\ntest output\n$ not a command"
         result = msg._format_shell_output(output, is_preview=False)
 
@@ -283,6 +711,159 @@ class TestToolCallMessageShellCommand:
         # Subsequent lines should NOT be dim
         assert lines[2].plain == "$ not a command"
         assert "dim" not in lines[2].markup
+
+
+class TestToolCallMessageAwaitingApproval:
+    """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
+
+    def test_set_awaiting_approval_hides_widget(self) -> None:
+        """`set_awaiting_approval` should mark the widget as hidden."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        assert msg._awaiting_approval is False
+        msg.set_awaiting_approval()
+        assert msg._awaiting_approval is True
+        assert msg.display is False
+
+    def test_clear_awaiting_approval_restores_widget(self) -> None:
+        """`clear_awaiting_approval` should restore visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.set_awaiting_approval()
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+        assert msg.display is True
+
+    def test_clear_awaiting_approval_no_op_when_not_set(self) -> None:
+        """Clearing before setting should not touch widget visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+
+    async def test_awaiting_approval_round_trip_in_mounted_widget(self) -> None:
+        """Mounted widget should hide on set, reappear on clear."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg.display is True
+            msg.set_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is False
+            msg.clear_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is True
+
+
+class TestToolCallMessageRejectReason:
+    """Tests for surfacing a user-supplied HITL reject reason."""
+
+    async def test_set_rejected_with_reason_renders_line(self) -> None:
+        """`set_rejected(reason=...)` should display the reason beneath the status."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="please dry-run first")
+            await pilot.pause()
+            assert msg._reject_reason == "please dry-run first"
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+
+    async def test_set_rejected_without_reason_hides_line(self) -> None:
+        """`set_rejected()` with no reason keeps the reason line hidden."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected()
+            await pilot.pause()
+            assert msg._reject_reason is None
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is False
+
+    async def test_blank_reason_does_not_set_attribute(self) -> None:
+        """Whitespace-only reasons are treated as no reason."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="   ")
+            await pilot.pause()
+            assert msg._reject_reason is None
+
+    async def test_reason_with_markup_brackets_renders_safely(self) -> None:
+        """User-controlled reasons must round-trip through Rich markup unscathed.
+
+        `from_markup` with `$reason` substitution should escape any literal
+        bracket sequences so the reason line never throws a MarkupError.
+        """
+        from textual.app import App, ComposeResult
+
+        hostile = "[bold red]boom[/bold red] [/dim] $x"
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason=hostile)
+            await pilot.pause()
+            assert msg._reject_reason == hostile
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+            rendered = str(msg._reject_reason_widget.render())
+            assert "boom" in rendered
+            assert "$x" in rendered
 
 
 class TestUserMessageHighlighting:
@@ -353,6 +934,13 @@ class TestUserMessageModeRendering:
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
+    def test_incognito_shell_prefix_renders_dollar_indicator(self) -> None:
+        """`UserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(UserMessage("!!ls"))
+        assert content.plain == "$ ls"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.mode_incognito in str(first_span.style)
+
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
         content = _render_content(UserMessage("/help"))
@@ -394,6 +982,11 @@ class TestQueuedUserMessageModeRendering:
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
         content = _render_content(QueuedUserMessage("!ls"))
+        assert content.plain == "$ ls"
+
+    def test_incognito_shell_prefix_renders_dimmed_dollar(self) -> None:
+        """`QueuedUserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(QueuedUserMessage("!!ls"))
         assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:
@@ -479,60 +1072,6 @@ class TestAppMessageOnClickOpensLink:
 # ---------------------------------------------------------------------------
 
 _MSG_STORE_PATH = "deepagents_cli.widgets.messages"
-
-
-class TestShowTimestampToast:
-    """Tests for `_show_timestamp_toast` helper."""
-
-    def test_noop_when_widget_not_mounted(self) -> None:
-        """Should not raise when widget has no app."""
-        widget = MagicMock(spec=["app", "id"])
-        # Simulate unmounted widget: .app property raises
-        type(widget).app = property(
-            lambda _: (_ for _ in ()).throw(RuntimeError("no app"))
-        )
-        widget.id = "msg-abc"
-        _show_timestamp_toast(widget)  # should not raise
-
-    def test_noop_when_widget_id_is_none(self) -> None:
-        """Should return early when widget.id is None."""
-        widget = MagicMock()
-        widget.id = None
-        widget.app = MagicMock()
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_noop_when_message_not_in_store(self) -> None:
-        """Should return early when message is not found in the store."""
-        widget = MagicMock()
-        widget.id = "msg-missing"
-        widget.app._message_store.get_message.return_value = None
-        _show_timestamp_toast(widget)
-        widget.app.notify.assert_not_called()
-
-    def test_shows_toast_with_formatted_timestamp(self) -> None:
-        """Should call notify with a human-readable timestamp."""
-        from deepagents_cli.widgets.message_store import MessageData, MessageType
-
-        data = MessageData(
-            type=MessageType.USER,
-            content="hello",
-            id="msg-test123",
-            timestamp=1709744055.0,  # 2024-03-06 17:14:15 UTC
-        )
-        widget = MagicMock()
-        widget.id = "msg-test123"
-        widget.app._message_store.get_message.return_value = data
-
-        _show_timestamp_toast(widget)
-
-        widget.app.notify.assert_called_once()
-        call_args = widget.app.notify.call_args
-        label = call_args[0][0]
-        # Should contain month abbreviation and time components
-        assert "Mar" in label
-        assert ":" in label
-        assert call_args[1]["timeout"] == 3
 
 
 class TestTimestampClickMixin:

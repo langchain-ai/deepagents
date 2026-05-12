@@ -1,9 +1,9 @@
 """Remote agent client — thin wrapper around LangGraph's `RemoteGraph`.
 
 Delegates streaming, state management, and SSE handling to
-`langgraph.pregel.remote.RemoteGraph`. The only added logic is converting raw
-message dicts from the server into LangChain message objects that the CLI's
-Textual adapter expects.
+`langgraph.pregel.remote.RemoteGraph`. This wrapper converts streamed message
+dicts into LangChain message objects for the CLI's Textual adapter, but leaves
+state snapshots in the server's serialized form.
 """
 
 from __future__ import annotations
@@ -44,8 +44,9 @@ class RemoteAgent:
 
     Wraps `langgraph.pregel.remote.RemoteGraph` which handles SSE parsing,
     stream-mode negotiation (`messages-tuple`), namespace extraction, and
-    interrupt detection. This class adds only message-object conversion for the
-    Textual adapter and thread-ID normalization.
+    interrupt detection. This class adds streamed message-object conversion for
+    the Textual adapter and thread-ID normalization. State snapshots are
+    returned as provided by the server.
     """
 
     def __init__(
@@ -182,19 +183,25 @@ class RemoteAgent:
     ) -> Any:  # noqa: ANN401
         """Get the current state of a thread.
 
-        Returns `None` when the thread does not exist on the server (404).
+        Returns `None` when the thread does not exist on the server (404) or
+        when the thread exists but has no checkpoint yet (new/empty thread).
         All other errors (network, auth, 500) are logged at WARNING and
         re-raised so callers can handle them.
+
+        Unlike `astream`, message values are not deserialized; callers may
+        receive serialized message dicts in `values["messages"]` from the
+        server.
 
         Args:
             config: Config with `configurable.thread_id`.
 
         Returns:
             Thread state object with `values` and `next` attributes, or `None`
-                if the thread is not found.
+                if the thread is not found or has no checkpoint.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
+            TypeError: If the server returns an unexpected state shape.
         """  # noqa: DOC502 — raised by _require_thread_id
         from langgraph_sdk.errors import NotFoundError
 
@@ -206,6 +213,20 @@ class RemoteAgent:
         except NotFoundError:
             logger.debug("Thread %s not found on server", thread_id)
             return None
+        except TypeError as e:
+            # langgraph SDK bug: _create_state_snapshot does
+            # state["checkpoint"]["thread_id"], but the server returns
+            # checkpoint=null for threads with no checkpoint yet (new threads,
+            # or threads registered via aensure_thread before any run).
+            if "subscriptable" in str(e).lower():
+                logger.debug(
+                    "Thread %s has no checkpoint yet; treating as empty", thread_id
+                )
+                return None
+            logger.warning(
+                "Failed to get state for thread %s", thread_id, exc_info=True
+            )
+            raise
         except Exception:
             logger.warning(
                 "Failed to get state for thread %s", thread_id, exc_info=True
@@ -220,7 +241,8 @@ class RemoteAgent:
         """Update the state of a thread.
 
         Exceptions from the underlying graph (server/network errors) are logged
-        at WARNING level and then re-raised so callers can handle them.
+        at DEBUG level and then re-raised so callers can decide how to surface
+        them (callers typically log at WARNING with a friendlier message).
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -235,7 +257,7 @@ class RemoteAgent:
         try:
             await graph.aupdate_state(_prepare_config(config), values)
         except Exception:
-            logger.warning(
+            logger.debug(
                 "Failed to update state for thread %s", thread_id, exc_info=True
             )
             raise

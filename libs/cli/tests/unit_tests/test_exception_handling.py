@@ -17,10 +17,6 @@ import pytest
 from tavily import BadRequestError, InvalidAPIKeyError, UsageLimitExceededError
 from tavily.errors import TimeoutError as TavilyTimeoutError
 
-from deepagents_cli.clipboard import (
-    copy_selection_to_clipboard,
-    logger as clipboard_logger,
-)
 from deepagents_cli.file_ops import FileOpTracker, _safe_read
 from deepagents_cli.media_utils import (
     _get_clipboard_via_osascript,
@@ -162,33 +158,6 @@ class TestFileOpsExceptionHandling:
 
         assert result is None
         assert "Failed to read file" in caplog.text
-
-
-class TestClipboardExceptionHandling:
-    """Test exception handling in clipboard utilities."""
-
-    def test_copy_handles_widget_selection_failures(self, caplog):
-        """Test that copy_selection_to_clipboard handles widget failures gracefully."""
-        # Create a mock app with widgets
-        mock_app = MagicMock()
-        mock_widget = MagicMock()
-        mock_widget.text_selection = MagicMock()
-        mock_widget.get_selection.side_effect = AttributeError("No selection")
-
-        mock_app.query.return_value = [mock_widget]
-
-        with caplog.at_level(logging.DEBUG):
-            # Should not raise
-            copy_selection_to_clipboard(mock_app)
-
-        # Verify the error was logged
-        assert "Failed to get selection from widget" in caplog.text
-        assert "No selection" in caplog.text
-
-    def test_clipboard_logger_exists(self):
-        """Test that clipboard module has proper logging configured."""
-        assert clipboard_logger is not None
-        assert clipboard_logger.name == "deepagents_cli.clipboard"
 
 
 class TestMediaUtilsExceptionHandling:

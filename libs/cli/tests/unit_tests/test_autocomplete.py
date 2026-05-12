@@ -5,10 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deepagents_cli.command_registry import SLASH_COMMANDS
+from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.widgets.autocomplete import (
     MAX_SUGGESTIONS,
     CompletionController,
+    CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
@@ -341,6 +342,31 @@ class TestSlashCommandController:
         # Second reset should be a no-op (suggestions already empty)
         controller.reset()
 
+    def test_space_key_applies_selected_completion(self, controller, mock_view) -> None:
+        """Pressing space with active suggestions applies the completion."""
+        controller.on_text_changed("/hel", 4)
+        mock_view.render_completion_suggestions.assert_called()
+
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/hel", 4)
+
+        assert result == CompletionResult.HANDLED
+        mock_view.replace_completion_range.assert_called_once()
+        # First positional arg is start=0, second is cursor_index=4,
+        # third is the completed command name.
+        args = mock_view.replace_completion_range.call_args[0]
+        assert args[0] == 0
+        assert args[1] == 4
+        assert args[2] == "/help"
+
+    def test_space_key_ignored_without_suggestions(self, controller) -> None:
+        """Space returns IGNORED when there are no active suggestions."""
+        event = MagicMock()
+        event.key = "space"
+        result = controller.on_key(event, "/zzz", 4)
+        assert result == CompletionResult.IGNORED
+
 
 class TestScoreCommand:
     """Direct unit tests for SlashCommandController._score_command."""
@@ -525,12 +551,12 @@ class TestSlashCommandControllerUpdateCommands:
 
     def test_update_replaces_commands(self, mock_view: MagicMock) -> None:
         """update_commands() replaces the internal commands list."""
-        initial = [("/help", "Show help", "")]
+        initial = [CommandEntry("/help", "Show help", "", "")]
         controller = SlashCommandController(initial, mock_view)
 
         new_commands = [
-            ("/help", "Show help", ""),
-            ("/skill:web-research", "Research topics", "web-research"),
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/skill:web-research", "Research topics", "web-research", ""),
         ]
         controller.update_commands(new_commands)
 
@@ -542,19 +568,21 @@ class TestSlashCommandControllerUpdateCommands:
 
     def test_update_resets_suggestions(self, mock_view: MagicMock) -> None:
         """update_commands() clears any active suggestions."""
-        commands = [("/help", "Show help", "")]
+        commands = [CommandEntry("/help", "Show help", "", "")]
         controller = SlashCommandController(commands, mock_view)
         controller.on_text_changed("/h", 2)
         mock_view.render_completion_suggestions.assert_called()
 
-        controller.update_commands([("/quit", "Exit", "")])
+        controller.update_commands([CommandEntry("/quit", "Exit", "", "")])
         mock_view.clear_completion_suggestions.assert_called()
 
     def test_skill_commands_fuzzy_match(self, mock_view: MagicMock) -> None:
         """Skill commands match via hidden keywords."""
         commands = [
-            ("/help", "Show help", ""),
-            ("/skill:code-review", "Review code changes", "code-review"),
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry(
+                "/skill:code-review", "Review code changes", "code-review", ""
+            ),
         ]
         controller = SlashCommandController(commands, mock_view)
         controller.on_text_changed("/code", 5)

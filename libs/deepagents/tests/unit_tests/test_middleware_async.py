@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import patch
 
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 import deepagents.middleware.filesystem as filesystem_middleware
@@ -27,7 +28,7 @@ def _make_backend(files=None):
                     "modified_at": fdata.get("modified_at", ""),
                 },
             )
-    backend = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
+    backend = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
     return backend, mem_store
 
 
@@ -56,7 +57,7 @@ class TestFilesystemMiddlewareAsync:
         middleware = FilesystemMiddleware(backend=backend)
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = await ls_tool.ainvoke({"runtime": _runtime(), "path": "/"})
-        assert result == str(["/test.txt", "/test2.txt"])
+        assert result.content == str(["/test.txt", "/test2.txt"])
 
     async def test_als_shortterm_with_path(self):
         """Test async ls tool with specific path."""
@@ -92,10 +93,10 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # ls should only return files directly in /pokemon/, not in subdirectories
-        assert "/pokemon/test2.txt" in result
-        assert "/pokemon/charmander.txt" in result
-        assert "/pokemon/water/squirtle.txt" not in result  # In subdirectory
-        assert "/pokemon/water/" in result
+        assert "/pokemon/test2.txt" in result.content
+        assert "/pokemon/charmander.txt" in result.content
+        assert "/pokemon/water/squirtle.txt" not in result.content  # In subdirectory
+        assert "/pokemon/water/" in result.content
 
     async def test_als_shortterm_lists_directories(self):
         """Test async ls lists directories with trailing /."""
@@ -131,12 +132,12 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # ls should list both files and directories at root level
-        assert "/test.txt" in result
-        assert "/pokemon/" in result
-        assert "/docs/" in result
+        assert "/test.txt" in result.content
+        assert "/pokemon/" in result.content
+        assert "/docs/" in result.content
         # But NOT subdirectory files
-        assert "/pokemon/charmander.txt" not in result
-        assert "/pokemon/water/squirtle.txt" not in result
+        assert "/pokemon/charmander.txt" not in result.content
+        assert "/pokemon/water/squirtle.txt" not in result.content
 
     async def test_aglob_search_shortterm_simple_pattern(self):
         """Test async glob with simple pattern."""
@@ -172,7 +173,7 @@ class TestFilesystemMiddlewareAsync:
             }
         )
         # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result == str(["/test.py"])
+        assert result.content == str(["/test.py"])
 
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
@@ -202,9 +203,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" in result
-        assert "/tests/test_main.py" in result
+        assert "/src/main.py" in result.content
+        assert "/src/utils/helper.py" in result.content
+        assert "/tests/test_main.py" in result.content
 
     async def test_aglob_search_shortterm_with_path(self):
         """Test async glob with specific path."""
@@ -235,9 +236,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/src/utils/helper.py" not in result
-        assert "/tests/test_main.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/src/utils/helper.py" not in result.content
+        assert "/tests/test_main.py" not in result.content
 
     async def test_aglob_search_shortterm_brace_expansion(self):
         """Test async glob with brace expansion."""
@@ -267,9 +268,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.pyi" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.pyi" in result.content
+        assert "/test.txt" not in result.content
 
     async def test_aglob_search_shortterm_no_matches(self):
         """Test async glob with no matches."""
@@ -289,7 +290,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result == str([])
+        assert result.content == str([])
 
     async def test_glob_timeout_returns_error_message_async(self):
         backend, _ = _make_backend()
@@ -313,7 +314,7 @@ class TestFilesystemMiddlewareAsync:
                 }
             )
 
-        assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
@@ -343,9 +344,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/helper.txt" in result
-        assert "/main.py" not in result
+        assert "/test.py" in result.content
+        assert "/helper.txt" in result.content
+        assert "/main.py" not in result.content
 
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
@@ -366,9 +367,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "1: import os" in result
-        assert "2: import sys" in result
-        assert "print" not in result
+        assert "1: import os" in result.content
+        assert "2: import sys" in result.content
+        assert "print" not in result.content
 
     async def test_agrep_search_shortterm_count_mode(self):
         """Test async grep with count mode."""
@@ -394,8 +395,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py:2" in result or "/test.py: 2" in result
-        assert "/main.py:1" in result or "/main.py: 1" in result
+        assert "/test.py:2" in result.content or "/test.py: 2" in result.content
+        assert "/main.py:1" in result.content or "/main.py: 1" in result.content
 
     async def test_agrep_search_shortterm_with_include(self):
         """Test async grep with glob filter."""
@@ -421,8 +422,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/test.py" in result
-        assert "/test.txt" not in result
+        assert "/test.py" in result.content
+        assert "/test.txt" not in result.content
 
     async def test_agrep_search_shortterm_with_path(self):
         """Test async grep with specific path."""
@@ -448,8 +449,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "/src/main.py" in result
-        assert "/tests/test.py" not in result
+        assert "/src/main.py" in result.content
+        assert "/tests/test.py" not in result.content
 
     async def test_agrep_search_shortterm_regex_pattern(self):
         """Test async grep with literal pattern (not regex)."""
@@ -471,9 +472,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "1: def hello():" in result
-        assert "2: def world():" in result
-        assert "x = 5" not in result
+        assert "1: def hello():" in result.content
+        assert "2: def world():" in result.content
+        assert "x = 5" not in result.content
 
     async def test_agrep_search_shortterm_no_matches(self):
         """Test async grep with no matches."""
@@ -493,7 +494,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert result == "No matches found"
+        assert result.content == "No matches found"
 
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
@@ -514,7 +515,8 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "No matches found" in result
+        content = result.content if isinstance(result, ToolMessage) else result
+        assert "No matches found" in content
 
     async def test_aread_file(self):
         """Test async read_file tool."""
@@ -534,9 +536,9 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "Hello world" in result
-        assert "Line 2" in result
-        assert "Line 3" in result
+        assert "Hello world" in result.content
+        assert "Line 2" in result.content
+        assert "Line 3" in result.content
 
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
@@ -558,10 +560,10 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        assert "Line 2" in result
-        assert "Line 3" in result
-        assert "Line 1" not in result
-        assert "Line 4" not in result
+        assert "Line 2" in result.content
+        assert "Line 3" in result.content
+        assert "Line 1" not in result.content
+        assert "Line 4" not in result.content
 
     async def test_awrite_file(self):
         """Test async write_file tool."""
@@ -575,8 +577,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc1", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        # StoreBackend writes to the store and returns a plain string
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aedit_file(self):
@@ -599,8 +600,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc2", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        # StoreBackend writes to the store and returns a plain string
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aedit_file_replace_all(self):
@@ -624,7 +624,7 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": ToolRuntime(state={}, context=None, tool_call_id="tc3", store=None, stream_writer=lambda _: None, config={}),
             }
         )
-        assert isinstance(result, str)
+        assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
     async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
@@ -648,9 +648,9 @@ class TestFilesystemMiddlewareAsync:
         # Execute should return error message, not raise exception
         result = await execute_tool.ainvoke({"command": "ls -la", "runtime": runtime})
 
-        assert isinstance(result, str)
-        assert "Error: Execution not available" in result
-        assert "does not support command execution" in result
+        assert isinstance(result, ToolMessage)
+        assert "Error: Execution not available" in result.content
+        assert "does not support command execution" in result.content
 
     async def test_aexecute_tool_forwards_zero_timeout_to_backend(self):
         """Async execute tool should forward timeout=0 for no-timeout backends."""
@@ -689,7 +689,7 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "echo hello", "timeout": 0, "runtime": rt})
 
-        assert "async ok" in result
+        assert "async ok" in result.content
         assert captured_timeout["value"] == 0
 
     async def test_aexecute_tool_output_formatting(self):
@@ -731,9 +731,9 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
 
-        assert "Async Hello world\nAsync Line 2" in result
-        assert "succeeded" in result
-        assert "exit code 0" in result
+        assert "Async Hello world\nAsync Line 2" in result.content
+        assert "succeeded" in result.content
+        assert "exit code 0" in result.content
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -774,9 +774,9 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "nonexistent", "runtime": rt})
 
-        assert "Async Error: command not found" in result
-        assert "failed" in result
-        assert "exit code 127" in result
+        assert "Async Error: command not found" in result.content
+        assert "failed" in result.content
+        assert "exit code 127" in result.content
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""
@@ -817,5 +817,5 @@ class TestFilesystemMiddlewareAsync:
         execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
         result = await execute_tool.ainvoke({"command": "cat large_file", "runtime": rt})
 
-        assert "Async Very long output..." in result
-        assert "truncated" in result
+        assert "Async Very long output..." in result.content
+        assert "truncated" in result.content

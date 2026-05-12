@@ -29,17 +29,15 @@ def _sample_info() -> list[MCPServerInfo]:
         MCPServerInfo(
             name="filesystem",
             transport="stdio",
-            tools=[
+            tools=(
                 MCPToolInfo(name="read_file", description="Read a file"),
                 MCPToolInfo(name="write_file", description="Write a file"),
-            ],
+            ),
         ),
         MCPServerInfo(
             name="remote-api",
             transport="sse",
-            tools=[
-                MCPToolInfo(name="search", description="Search the web"),
-            ],
+            tools=(MCPToolInfo(name="search", description="Search the web"),),
         ),
     ]
 
@@ -105,7 +103,7 @@ class TestMCPViewerScreen:
             MCPServerInfo(
                 name="only",
                 transport="http",
-                tools=[MCPToolInfo(name="do_thing", description="")],
+                tools=(MCPToolInfo(name="do_thing", description=""),),
             ),
         ]
         app = MCPViewerTestApp()
@@ -145,6 +143,16 @@ class TestMCPViewerScreen:
 
             # Wrap around
             await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 0
+
+            # Tab advances selection
+            await pilot.press("tab")
+            await pilot.pause()
+            assert screen._selected_index == 1
+
+            # Shift+Tab moves selection back
+            await pilot.press("shift+tab")
             await pilot.pause()
             assert screen._selected_index == 0
 

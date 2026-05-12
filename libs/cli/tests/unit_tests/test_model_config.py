@@ -1,9 +1,11 @@
 """Tests for model_config module."""
 
+import io
 import logging
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -16,20 +18,31 @@ from deepagents_cli.model_config import (
     ModelConfigError,
     ModelProfileEntry,
     ModelSpec,
+    ProviderAuthSource,
+    ProviderAuthState,
+    ProviderAuthStatus,
     _get_builtin_providers,
     _get_provider_profile_modules,
+    _is_local_endpoint,
     _load_provider_profiles,
     _profile_module_from_class_path,
     clear_caches,
+    clear_default_agent,
     clear_default_model,
     get_available_models,
     get_model_profiles,
+    get_provider_auth_status,
     has_provider_credentials,
     is_warning_suppressed,
+    load_default_agent,
+    load_recent_agent,
     load_thread_columns,
+    save_default_agent,
+    save_recent_agent,
     save_recent_model,
     save_thread_columns,
     suppress_warning,
+    unsuppress_warning,
 )
 
 
@@ -131,6 +144,148 @@ class TestHasProviderCredentials:
             clear=True,
         ):
             assert has_provider_credentials("anthropic") is True
+
+
+@pytest.fixture
+def fake_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the credential store into a temp directory."""
+    state_dir = tmp_path / ".state"
+    monkeypatch.setattr("deepagents_cli.model_config.DEFAULT_STATE_DIR", state_dir)
+    return state_dir
+
+
+class TestStoredCredentials:
+    """Stored API keys (added via /auth) integrate into auth resolution."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_dotenv_prefixed_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip `DEEPAGENTS_CLI_*` keys preloaded from `~/.deepagents/.env`.
+
+        `dotenv.load_dotenv()` runs at config-import time and may inject
+        prefixed variants that win over `monkeypatch.setenv` in
+        `resolve_env_var`'s lookup order.
+        """
+        for var in (
+            "DEEPAGENTS_CLI_ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CLI_OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_resolve_provider_credential_prefers_stored_over_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored credential beats env var (matches pi-mono ordering)."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        auth_store.set_stored_key("anthropic", "from-store")
+
+        assert resolve_provider_credential("anthropic") == "from-store"
+
+    def test_resolve_provider_credential_falls_back_to_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Env var is used when no stored credential exists."""
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        assert resolve_provider_credential("anthropic") == "from-env"
+
+    def test_resolve_provider_credential_returns_none_for_unknown_provider(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Provider with no env-var binding and no stored key returns None."""
+        from deepagents_cli.model_config import resolve_provider_credential
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert resolve_provider_credential("totally-unknown") is None
+
+    def test_status_reports_stored_credential(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key flips status to CONFIGURED with a stored detail."""
+        from deepagents_cli import auth_store
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        auth_store.set_stored_key("anthropic", "from-store")
+
+        status = get_provider_auth_status("anthropic")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.STORED
+        assert status.env_var == "ANTHROPIC_API_KEY"
+
+    def test_apply_stored_credentials_sets_env_var(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`apply_stored_credentials` exports the stored key into os.environ."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        auth_store.set_stored_key("openai", "from-store")
+        applied = apply_stored_credentials("openai")
+
+        assert applied is True
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "from-store"
+
+    def test_apply_stored_credentials_overrides_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Stored credential takes precedence over an already-set env var."""
+        from deepagents_cli import auth_store
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+        auth_store.set_stored_key("openai", "from-store")
+
+        assert apply_stored_credentials("openai") is True
+        import os
+
+        assert os.environ["OPENAI_API_KEY"] == "from-store"
+
+    def test_apply_stored_credentials_noop_when_no_store(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key means no environment mutation."""
+        from deepagents_cli.model_config import apply_stored_credentials
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        assert apply_stored_credentials("anthropic") is False
+        import os
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "from-env"
+
+    def test_corrupt_store_does_not_block_status(
+        self,
+        fake_state_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A corrupt auth.json doesn't poison `get_provider_auth_status`."""
+        path = fake_state_dir / "auth.json"
+        path.parent.mkdir(parents=True)
+        path.write_text("{not json")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+        # Status should still resolve via env var without raising.
+        status = get_provider_auth_status("anthropic")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
 
 
 class TestThreadColumnPersistence:
@@ -473,6 +628,40 @@ class TestResolveEnvVar:
         from deepagents_cli.model_config import resolve_env_var
 
         assert resolve_env_var("DEEPAGENTS_CLI_MY_KEY") == "direct"
+
+
+class TestUnknownProviderError:
+    """Tests for the structured `UnknownProviderError` exception."""
+
+    def test_message_mentions_spec_and_docs_url(self):
+        """Message references both `model_spec` and the docs URL."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        exc = UnknownProviderError(model_spec="mystery-model")
+        assert exc.model_spec == "mystery-model"
+        assert exc.docs_url == PROVIDERS_DOCS_URL
+        assert "mystery-model" in str(exc)
+        assert PROVIDERS_DOCS_URL in str(exc)
+
+    def test_empty_model_spec_rejected(self):
+        """Empty `model_spec` raises `ValueError` at construction time."""
+        from deepagents_cli.model_config import UnknownProviderError
+
+        with pytest.raises(ValueError, match="non-empty"):
+            UnknownProviderError(model_spec="")
+
+    def test_docs_url_is_class_attribute(self):
+        """`docs_url` lives on the class, not the instance — same for every error."""
+        from deepagents_cli.model_config import (
+            PROVIDERS_DOCS_URL,
+            UnknownProviderError,
+        )
+
+        # Class-level access works without an instance.
+        assert UnknownProviderError.docs_url == PROVIDERS_DOCS_URL
 
 
 class TestProviderApiKeyEnv:
@@ -1124,6 +1313,734 @@ api_key_env = "SOME_KEY"
         assert "empty" not in models
 
 
+class TestOllamaModelDiscovery:
+    """Tests for auto-populating the switcher from a running Ollama daemon."""
+
+    @staticmethod
+    def _patch_registry() -> AbstractContextManager[object]:
+        """Patch the langchain registry so `ollama` is a known provider."""
+        return patch(
+            "deepagents_cli.model_config._get_builtin_providers",
+            return_value={
+                "ollama": ("langchain_ollama.chat_models", "ChatOllama"),
+            },
+        )
+
+    @staticmethod
+    def _empty_profiles_loader(module_path: str) -> dict[str, Any]:
+        """Pretend `langchain_ollama` ships no profile data."""
+        if module_path == "langchain_ollama.data._profiles":
+            return {}
+        msg = "not installed"
+        raise ImportError(msg)
+
+    def test_discovery_merges_models_into_switcher(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Daemon-reported models populate `available["ollama"]`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["llama3", "qwen3:4b"],
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models.get("ollama") == ["llama3", "qwen3:4b"]
+
+    def test_discovery_unions_with_explicit_config_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit `models = […]` config still wins / supplements discovery."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["my-finetune"]
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["llama3", "my-finetune"],
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        # Explicit config first, then newly discovered names; no duplicates.
+        assert models["ollama"] == ["my-finetune", "llama3"]
+
+    def test_discovery_skipped_when_package_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No HTTP probe when `langchain-ollama` is not installed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+    def test_discovery_disabled_via_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CLI_OLLAMA_DISCOVERY=0` opts out of the probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.setenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", "0")
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+    def test_discovery_skipped_when_provider_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`enabled = false` for ollama prevents the probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+enabled = false
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+            ) as fetch,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        fetch.assert_not_called()
+        assert "ollama" not in models
+
+    def test_discovery_warns_on_unknown_env_value(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unrecognized env values warn and keep discovery enabled."""
+        monkeypatch.setenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", "maybe")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config._ollama_discovery_enabled() is True
+
+        assert "Unrecognized value for DEEPAGENTS_CLI_OLLAMA_DISCOVERY" in caplog.text
+
+    def test_installed_model_discovery_cached_across_profile_load(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Available-model and profile loading share one `/api/tags` probe."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ) as fetch,
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={},
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            get_available_models()
+            get_model_profiles()
+
+        fetch.assert_called_once_with(None)
+
+    def test_empty_installed_model_discovery_not_cached(self) -> None:
+        """Empty `/api/tags` results do not block later recovery."""
+        with patch(
+            "deepagents_cli.model_config._fetch_ollama_installed_models",
+            side_effect=[[], ["qwen3:4b"]],
+        ) as fetch:
+            assert model_config._get_ollama_installed_models(None) == []
+            assert model_config._get_ollama_installed_models(None) == ["qwen3:4b"]
+
+        assert fetch.call_count == 2
+
+    def test_model_profiles_include_discovered_context_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovered Ollama metadata populates model profile entries."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={
+                    "qwen3:4b": {
+                        "max_input_tokens": 262144,
+                        "text_inputs": True,
+                        "text_outputs": True,
+                        "tool_calling": True,
+                        "reasoning_output": True,
+                    },
+                },
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["ollama:qwen3:4b"]
+        assert entry["profile"]["max_input_tokens"] == 262144
+        assert entry["profile"]["tool_calling"] is True
+        assert entry["profile"]["reasoning_output"] is True
+        assert entry["overridden_keys"] == frozenset()
+
+    def test_model_profiles_apply_config_overrides_to_discovered_metadata(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config profile values still override Ollama-discovered metadata."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama.profile."qwen3:4b"]
+max_input_tokens = 4096
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=["qwen3:4b"],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={"qwen3:4b": {"max_input_tokens": 262144}},
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        entry = profiles["ollama:qwen3:4b"]
+        assert entry["profile"]["max_input_tokens"] == 4096
+        assert "max_input_tokens" in entry["overridden_keys"]
+
+    def test_model_profiles_fetch_configured_models_when_tags_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured Ollama models are inspected even when `/api/tags` is empty."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["qwen3:4b"]
+""")
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_DISCOVERY", raising=False)
+
+        with (
+            self._patch_registry(),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=self._empty_profiles_loader,
+            ),
+            patch(
+                "deepagents_cli.model_config.importlib.util.find_spec",
+                return_value=object(),
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_models",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.model_config._fetch_ollama_installed_model_profiles",
+                return_value={"qwen3:4b": {"max_input_tokens": 262144}},
+            ) as fetch_profiles,
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            profiles = get_model_profiles()
+
+        fetch_profiles.assert_called_once_with(None, ["qwen3:4b"])
+        assert profiles["ollama:qwen3:4b"]["profile"]["max_input_tokens"] == 262144
+
+
+class _BytesContext:
+    """Minimal context manager wrapping a bytes payload for fake `urlopen`."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = io.BytesIO(body)
+
+    def __enter__(self) -> io.BytesIO:
+        return self._body
+
+    def __exit__(self, *_exc: object) -> None:
+        self._body.close()
+
+
+class TestFetchOllamaInstalledModels:
+    """Tests for the `_fetch_ollama_installed_models` HTTP probe."""
+
+    def test_returns_sorted_names_from_payload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Parses `{"models": [{"name": ...}]}` and sorts results."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+        captured_timeout: list[float] = []
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:
+            captured_url.append(request.full_url)
+            captured_timeout.append(timeout)
+            captured_headers.append(dict(request.header_items()))
+            payload = {"models": [{"name": "qwen3:4b"}, {"name": "llama3"}]}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == ["llama3", "qwen3:4b"]
+        assert captured_url == ["http://localhost:11434/api/tags"]
+        assert captured_timeout == [model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS]
+        assert "Authorization" not in {k.title() for k in captured_headers[0]}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {},
+            {"models": "qwen3:4b"},
+        ],
+    )
+    def test_returns_empty_for_unexpected_payload_shape(
+        self, payload: dict[str, object], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing or non-list `models` payloads are ignored."""
+        import json
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == []
+
+    def test_returns_empty_for_malformed_json(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Malformed JSON is treated as discovery failure."""
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            return _BytesContext(b"{not json")
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = model_config._fetch_ollama_installed_models(
+                "http://localhost:11434"
+            )
+
+        assert result == []
+
+    def test_silent_on_connection_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Connection errors yield an empty list without raising."""
+        from urllib.error import URLError
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        url_error = URLError("connection refused")
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise url_error
+
+        with patch("urllib.request.urlopen", side_effect=boom):
+            assert model_config._fetch_ollama_installed_models(None) == []
+
+    def test_uses_default_endpoint_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Falls back to `OLLAMA_DEFAULT_BASE_URL` when no endpoint is given."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_url.append(request.full_url)
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            assert model_config._fetch_ollama_installed_models(None) == []
+
+        assert captured_url[0].startswith(model_config.OLLAMA_DEFAULT_BASE_URL)
+        assert captured_url[0].endswith("/api/tags")
+
+    def test_forwards_optional_api_key_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`OLLAMA_API_KEY` is forwarded to local discovery endpoints."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            model_config._fetch_ollama_installed_models("http://localhost:11434")
+
+        # Header names are title-cased by urllib.
+        assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_does_not_forward_optional_api_key_to_remote_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discovery does not send credentials to non-local endpoints."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            return _BytesContext(json.dumps({"models": []}).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            model_config._fetch_ollama_installed_models("https://ollama.example.com")
+
+        assert "Authorization" not in captured_headers[0]
+
+    def test_rejects_unsupported_scheme(self) -> None:
+        """Non-http(s) endpoints are skipped without invoking the network."""
+        with patch("urllib.request.urlopen") as fake:
+            assert (
+                model_config._fetch_ollama_installed_models("ftp://localhost:11434")
+                == []
+            )
+        fake.assert_not_called()
+
+
+class TestFetchOllamaInstalledModelProfiles:
+    """Tests for Ollama `/api/show` profile discovery."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (True, None),
+            (False, None),
+            (-1, None),
+            (0, None),
+            (1.5, None),
+            ("4096", 4096),
+            (None, None),
+        ],
+    )
+    def test_coerce_positive_int_edges(
+        self, value: object, expected: int | None
+    ) -> None:
+        """Only positive whole-number values are accepted."""
+        assert model_config._coerce_positive_int(value) == expected
+
+    def test_extracts_profile_from_show_payload(self) -> None:
+        """Context length and capabilities become selector profile fields."""
+        payload = {
+            "model_info": {
+                "general.architecture": "qwen3",
+                "qwen3.context_length": 262144,
+                "qwen3.embedding_length": 2560,
+            },
+            "capabilities": ["completion", "tools", "thinking"],
+        }
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {
+            "max_input_tokens": 262144,
+            "text_inputs": True,
+            "text_outputs": True,
+            "tool_calling": True,
+            "reasoning_output": True,
+        }
+
+    def test_extracts_max_from_multiple_context_lengths(self) -> None:
+        """When several context lengths are present, the largest is used."""
+        payload = {
+            "model_info": {
+                "context_length": 8192,
+                "draft.context_length": 4096,
+                "qwen3.context_length": 262144,
+            },
+        }
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {"max_input_tokens": 262144}
+
+    def test_non_dict_payload_returns_empty_profile(self) -> None:
+        """Malformed payloads are ignored."""
+        assert model_config._profile_from_ollama_show_payload([]) == {}
+
+    def test_missing_model_info_returns_capabilities_only(self) -> None:
+        """Capabilities can still be extracted without model metadata."""
+        payload = {"capabilities": ["tools"]}
+
+        profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {"tool_calling": True}
+
+    def test_non_list_capabilities_ignored(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Unexpected capability shape does not produce false flags."""
+        payload = {"model_info": {}, "capabilities": "tools"}
+
+        with caplog.at_level(logging.DEBUG):
+            profile = model_config._profile_from_ollama_show_payload(payload)
+
+        assert profile == {}
+        assert "no recognized profile fields" in caplog.text
+
+    def test_posts_model_names_to_show_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fetches local `/api/show` with bearer auth and parses context length."""
+        import json
+        from urllib.request import Request
+
+        captured_url: list[str] = []
+        captured_body: list[dict[str, str]] = []
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:
+            assert timeout == model_config.OLLAMA_DISCOVERY_TIMEOUT_SECONDS
+            captured_url.append(request.full_url)
+            captured_headers.append(dict(request.header_items()))
+            data = cast("bytes", request.data)
+            captured_body.append(json.loads(data.decode("utf-8")))
+            payload = {
+                "model_info": {"qwen3.context_length": 262144},
+                "capabilities": ["completion", "tools"],
+            }
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+
+        assert profiles["qwen3:4b"]["max_input_tokens"] == 262144
+        assert profiles["qwen3:4b"]["tool_calling"] is True
+        assert captured_url == ["http://localhost:11434/api/show"]
+        assert captured_body == [{"model": "qwen3:4b"}]
+        assert captured_headers[0].get("Authorization") == "Bearer secret-token"
+
+    def test_show_does_not_forward_optional_api_key_to_remote_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Profile discovery does not send credentials to non-local endpoints."""
+        import json
+        from urllib.request import Request
+
+        captured_headers: list[dict[str, str]] = []
+
+        def fake_urlopen(
+            request: Request,
+            timeout: float,  # noqa: ARG001
+        ) -> _BytesContext:
+            captured_headers.append(dict(request.header_items()))
+            payload = {"model_info": {"qwen3.context_length": 262144}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "secret-token")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "https://ollama.example.com",
+                ["qwen3:4b"],
+            )
+
+        assert profiles["qwen3:4b"]["max_input_tokens"] == 262144
+        assert "Authorization" not in captured_headers[0]
+
+    def test_successful_profiles_are_cached(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeated profile discovery reuses successful `/api/show` results."""
+        import json
+
+        calls = 0
+
+        def fake_urlopen(*_args: object, **_kwargs: object) -> _BytesContext:
+            nonlocal calls
+            calls += 1
+            payload = {"model_info": {"qwen3.context_length": 262144}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CLI_OLLAMA_API_KEY", raising=False)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            first = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+            second = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["qwen3:4b"],
+            )
+
+        assert first == second == {"qwen3:4b": {"max_input_tokens": 262144}}
+        assert calls == 1
+
+    def test_continues_after_per_model_failure(self) -> None:
+        """A failed model profile lookup does not abort the whole batch."""
+        import json
+        from urllib.error import URLError
+        from urllib.request import Request
+
+        def fake_urlopen(request: Request, timeout: float) -> _BytesContext:  # noqa: ARG001
+            data = cast("bytes", request.data)
+            body = json.loads(data.decode("utf-8"))
+            if body["model"] == "broken":
+                msg = "not found"
+                raise URLError(msg)
+            payload = {"model_info": {"llama.context_length": 8192}}
+            return _BytesContext(json.dumps(payload).encode("utf-8"))
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            profiles = model_config._fetch_ollama_installed_model_profiles(
+                "http://localhost:11434",
+                ["broken", "llama3"],
+            )
+
+        assert profiles == {"llama3": {"max_input_tokens": 8192}}
+
+
 class TestDisabledProviders:
     """Tests for provider hiding via `enabled = false`."""
 
@@ -1634,14 +2551,62 @@ class TestHasProviderCredentialsFallback:
     """Tests for has_provider_credentials() falling back to ModelConfig."""
 
     def test_falls_back_to_config_no_key_required(self, tmp_path):
-        """Returns None for config provider with no api_key_env (unknown)."""
+        """Returns True for local Ollama with no api_key_env."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("""
 [models.providers.ollama]
 models = ["llama3"]
 """)
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            assert has_provider_credentials("ollama") is None
+            assert has_provider_credentials("ollama") is True
+
+    def test_ollama_remote_without_key_is_unknown(self, tmp_path):
+        """Remote Ollama without optional auth should not claim local readiness."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert "OLLAMA_API_KEY" in (status.detail or "")
+        assert legacy is None
+
+    def test_ollama_optional_api_key_is_configured(self, tmp_path):
+        """OLLAMA_API_KEY marks Ollama as configured for cloud/hosted use."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+base_url = "https://ollama.example.com"
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {"OLLAMA_API_KEY": "test-key"}, clear=True),
+        ):
+            status = get_provider_auth_status("ollama")
+            legacy = has_provider_credentials("ollama")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.env_var == "OLLAMA_API_KEY"
+        assert legacy is True
+
+    def test_google_vertexai_missing_project_uses_implicit_auth(self):
+        """Vertex AI should not fail just because GOOGLE_CLOUD_PROJECT is unset."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("google_vertexai")
+            legacy = has_provider_credentials("google_vertexai")
+
+        assert status.state is ProviderAuthState.IMPLICIT
+        assert legacy is True
 
     def test_falls_back_to_config_with_key_set(self, tmp_path):
         """Returns True for config provider with api_key_env set in env."""
@@ -1708,6 +2673,148 @@ api_key_env = "CIS_API_KEY"
         auth failures at model-creation time.
         """
         assert has_provider_credentials("nonexistent_provider_xyz") is None
+
+
+class TestIsLocalEndpoint:
+    """Tests for _is_local_endpoint URL classification."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            None,
+            "",
+            "localhost",
+            "localhost:11434",
+            "http://localhost",
+            "http://localhost:11434",
+            "127.0.0.1:11434",
+            "http://127.0.0.1",
+            "::1",
+            "http://[::1]:11434",
+            "0.0.0.0",
+            "http://0.0.0.0:11434",
+        ],
+    )
+    def test_local_endpoints(self, url: str | None) -> None:
+        """Loopback hostnames and bare URLs resolve as local."""
+        assert _is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://ollama.example.com",
+            "http://192.168.1.5:11434",
+            "https://api.cloud.com/v1",
+            "remote-host:11434",
+        ],
+    )
+    def test_non_local_endpoints(self, url: str) -> None:
+        """Non-loopback hostnames resolve as remote."""
+        assert _is_local_endpoint(url) is False
+
+    def test_non_string_input_returns_false(self) -> None:
+        """Non-string input must not raise (defensive against TOML drift)."""
+        assert _is_local_endpoint(123) is False  # type: ignore[arg-type]
+
+
+class TestProviderAuthStatusBranches:
+    """Direct coverage of get_provider_auth_status states beyond Ollama."""
+
+    def test_managed_state_for_class_path_provider(self, tmp_path: Path) -> None:
+        """class_path without api_key_env returns MANAGED with custom-auth detail."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.cis]
+class_path = "agent_forge.integrations:CISChat"
+models = ["aviato-turbo"]
+""")
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            status = get_provider_auth_status("cis")
+
+        assert status.state is ProviderAuthState.MANAGED
+        assert status.detail == "custom auth"
+        assert status.env_var is None
+
+    def test_missing_state_for_known_provider_without_env(self) -> None:
+        """Hardcoded provider with no env set returns MISSING with the env name."""
+        with patch.dict("os.environ", {}, clear=True):
+            status = get_provider_auth_status("anthropic")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "ANTHROPIC_API_KEY"
+        assert status.blocks_start is True
+
+    def test_missing_state_for_config_provider_with_empty_env(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Config provider with api_key_env set but unset env returns MISSING."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.fireworks]
+models = ["llama-v3p1-70b"]
+api_key_env = "FIREWORKS_API_KEY"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            status = get_provider_auth_status("fireworks")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "FIREWORKS_API_KEY"
+
+    def test_ollama_host_env_drives_locality(self, tmp_path: Path) -> None:
+        """OLLAMA_HOST env var controls local vs. remote when no base_url is set."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.ollama]
+models = ["llama3"]
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"OLLAMA_HOST": "https://ollama.example.com"},
+                clear=True,
+            ),
+        ):
+            status = get_provider_auth_status("ollama")
+
+        assert status.state is ProviderAuthState.UNKNOWN
+        assert status.env_var == "OLLAMA_API_KEY"
+
+
+class TestProviderAuthStatusMissingDetail:
+    """Tests for ProviderAuthStatus.missing_detail() rendering."""
+
+    def test_with_env_var_uses_env_var_message(self) -> None:
+        """env_var presence yields a 'not set or is empty' message."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="anthropic",
+            env_var="ANTHROPIC_API_KEY",
+        )
+        assert status.missing_detail() == "ANTHROPIC_API_KEY is not set or is empty"
+
+    def test_with_detail_only_falls_back_to_detail(self) -> None:
+        """Without env_var but with a detail string, returns the detail."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="custom",
+            detail="bespoke auth missing",
+        )
+        assert status.missing_detail() == "bespoke auth missing"
+
+    def test_without_env_var_or_detail_returns_unknown_provider_hint(self) -> None:
+        """Bare MISSING falls back to a 'not recognized' hint."""
+        status = ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider="phantom",
+        )
+        message = status.missing_detail()
+        assert "phantom" in message
+        assert "not recognized" in message
 
 
 class TestModelConfigGetClassPath:
@@ -2467,6 +3574,194 @@ default = "ollama:qwen3:4b"
         assert config_path.exists()
 
 
+class TestRecentAgent:
+    """save_recent_agent + load_recent_agent round-trip."""
+
+    def test_save_creates_file_with_agents_recent(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        assert save_recent_agent("coder", config_path) is True
+
+        assert config_path.exists()
+        assert 'recent = "coder"' in config_path.read_text()
+
+    def test_save_preserves_unrelated_sections(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+
+[agents]
+recent = "researcher"
+""")
+        save_recent_agent("coder", config_path)
+
+        content = config_path.read_text()
+        assert 'default = "anthropic:claude-sonnet-4-5"' in content
+        assert 'recent = "coder"' in content
+        assert "researcher" not in content
+
+    def test_load_returns_recent(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        save_recent_agent("coder", config_path)
+
+        assert load_recent_agent(config_path) == "coder"
+
+    def test_load_missing_file_returns_none(self, tmp_path):
+        assert load_recent_agent(tmp_path / "missing.toml") is None
+
+    def test_load_missing_section_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "x"\n')
+
+        assert load_recent_agent(config_path) is None
+
+    def test_load_non_string_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\nrecent = 123\n")
+
+        assert load_recent_agent(config_path) is None
+
+
+class TestDefaultAgent:
+    """save_default_agent + clear_default_agent + load_default_agent round-trip."""
+
+    def test_save_creates_file_with_agents_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        assert save_default_agent("coder", config_path) is True
+
+        assert config_path.exists()
+        assert 'default = "coder"' in config_path.read_text()
+
+    def test_save_preserves_recent_and_other_sections(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models]
+default = "anthropic:claude-sonnet-4-5"
+
+[agents]
+recent = "researcher"
+""")
+        save_default_agent("coder", config_path)
+
+        content = config_path.read_text()
+        assert 'default = "anthropic:claude-sonnet-4-5"' in content
+        assert 'recent = "researcher"' in content
+        assert 'default = "coder"' in content
+
+    def test_load_returns_default(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        save_default_agent("coder", config_path)
+
+        assert load_default_agent(config_path) == "coder"
+
+    def test_load_missing_file_returns_none(self, tmp_path):
+        assert load_default_agent(tmp_path / "missing.toml") is None
+
+    def test_load_missing_section_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "x"\n')
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_non_string_returns_none(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = 123\n")
+
+        assert load_default_agent(config_path) is None
+
+    def test_load_independent_of_recent(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+recent = "researcher"
+""")
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_removes_default_only(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[agents]
+default = "coder"
+recent = "researcher"
+""")
+        assert clear_default_agent(config_path) is True
+
+        assert load_default_agent(config_path) is None
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_clear_missing_file_returns_true(self, tmp_path):
+        assert clear_default_agent(tmp_path / "missing.toml") is True
+
+    def test_clear_missing_key_returns_true(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\nrecent = "researcher"\n')
+        assert clear_default_agent(config_path) is True
+        assert load_recent_agent(config_path) == "researcher"
+
+    def test_save_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during write must produce `False`, not propagate.
+
+        The picker UI branches on the boolean — an unhandled exception
+        would crash the modal mid-action.
+        """
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_save_returns_false_on_typeerror(self, tmp_path, monkeypatch):
+        """TypeError from `tomli_w.dump` falls into the bool contract."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "unsupported type"
+            raise TypeError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert save_default_agent("coder", config_path) is False
+
+    def test_clear_returns_false_on_oserror(self, tmp_path, monkeypatch):
+        """OSError during clear must produce `False`, not propagate."""
+        import tomli_w
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "coder"\n')
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(tomli_w, "dump", boom)
+        assert clear_default_agent(config_path) is False
+
+    def test_load_returns_none_for_whitespace(self, tmp_path):
+        """Whitespace-only string is treated as missing, not as a valid name."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = "   "\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_empty_string(self, tmp_path):
+        """Empty string is treated as missing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[agents]\ndefault = ""\n')
+        assert load_default_agent(config_path) is None
+
+    def test_load_returns_none_for_list_type(self, tmp_path):
+        """A list under `[agents].default` is rejected, not coerced."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[agents]\ndefault = [1, 2]\n")
+        assert load_default_agent(config_path) is None
+
+
 class TestModelConfigLoadRecent:
     """Tests for ModelConfig.load() reading recent_model."""
 
@@ -2563,17 +3858,79 @@ recent = "openai:gpt-5.2"
 
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
             patch.object(settings, "openai_api_key", None),
             patch.object(settings, "anthropic_api_key", "test-key"),
             patch.dict(
                 "os.environ",
                 {"ANTHROPIC_API_KEY": "test-key"},
-                clear=False,
+                clear=True,
             ),
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-sonnet-4-6"
+        assert result == "anthropic:claude-opus-4-7"
+
+    def test_stored_key_used_when_neither_model_set(self, tmp_path):
+        """Falls back to stored TUI credentials when no env vars are set."""
+        from deepagents_cli.config import _get_default_model_spec
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        def stored_key(provider: str) -> str | None:
+            return "test-key" if provider == "anthropic" else None
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", side_effect=stored_key),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = _get_default_model_spec()
+
+        assert result == "anthropic:claude-opus-4-7"
+
+    def test_vertex_project_does_not_drive_env_default(self, tmp_path):
+        """Vertex project alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", "test-project"),
+            patch.object(settings, "nvidia_api_key", None),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
+
+    def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
+        """NVIDIA key alone should not select an automatic default model."""
+        from deepagents_cli.config import _get_default_model_spec, settings
+        from deepagents_cli.model_config import ModelConfigError
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch("deepagents_cli.auth_store.get_stored_key", return_value=None),
+            patch.dict("os.environ", {}, clear=True),
+            patch.object(settings, "openai_api_key", None),
+            patch.object(settings, "anthropic_api_key", None),
+            patch.object(settings, "google_api_key", None),
+            patch.object(settings, "google_cloud_project", None),
+            patch.object(settings, "nvidia_api_key", "test-key"),
+            pytest.raises(ModelConfigError),
+        ):
+            _get_default_model_spec()
 
 
 class TestIsWarningSuppressed:
@@ -2664,6 +4021,92 @@ class TestSuppressWarning:
             data = tomllib.load(f)
         assert data["models"]["default"] == "some:model"
         assert "ripgrep" in data["warnings"]["suppress"]
+
+
+class TestUnsuppressWarning:
+    """Tests for unsuppress_warning() function."""
+
+    def test_removes_key_from_suppress_list(self, tmp_path: Path) -> None:
+        """Removes the specified key from the suppression list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep", "tavily"]\n')
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is True
+        assert not is_warning_suppressed("tavily", config_path)
+        assert is_warning_suppressed("ripgrep", config_path)
+
+    def test_noop_when_key_not_present(self, tmp_path: Path) -> None:
+        """Returns True without error when key is not in the list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = ["ripgrep"]\n')
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is True
+        assert is_warning_suppressed("ripgrep", config_path)
+
+    def test_noop_when_file_missing(self, tmp_path: Path) -> None:
+        """Returns True when config file does not exist."""
+        config_path = tmp_path / "config.toml"
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_noop_when_no_warnings_section(self, tmp_path: Path) -> None:
+        """Returns True when config has no [warnings] section."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\ndefault = "some:model"\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_preserves_other_config(self, tmp_path: Path) -> None:
+        """Other config sections are preserved after unsuppressing."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "some:model"\n\n[warnings]\nsuppress = ["tavily"]\n'
+        )
+
+        unsuppress_warning("tavily", config_path)
+
+        assert not is_warning_suppressed("tavily", config_path)
+        import tomllib
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+        assert data["models"]["default"] == "some:model"
+
+    def test_returns_false_on_corrupt_toml(self, tmp_path: Path) -> None:
+        """Returns False when config file contains malformed TOML."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("this is not valid toml [[[")
+
+        result = unsuppress_warning("tavily", config_path)
+
+        assert result is False
+
+    def test_noop_when_suppress_is_not_a_list(self, tmp_path: Path) -> None:
+        """Returns True when suppress value is not a list."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[warnings]\nsuppress = "ripgrep"\n')
+
+        result = unsuppress_warning("ripgrep", config_path)
+
+        assert result is True
+
+    def test_roundtrip_suppress_unsuppress(self, tmp_path: Path) -> None:
+        """Suppress then unsuppress returns to original state."""
+        config_path = tmp_path / "config.toml"
+
+        suppress_warning("tavily", config_path)
+        assert is_warning_suppressed("tavily", config_path)
+
+        unsuppress_warning("tavily", config_path)
+        assert not is_warning_suppressed("tavily", config_path)
 
 
 class TestGetModelProfiles:
@@ -2777,8 +4220,16 @@ max_input_tokens = 4096
             get_model_profiles()
 
         assert model_config._profiles_cache is not None
+        model_config._ollama_installed_models_cache["http://localhost:11434"] = [
+            "qwen3:4b"
+        ]
+        model_config._ollama_model_profiles_cache[
+            "http://localhost:11434", "qwen3:4b"
+        ] = {"max_input_tokens": 262144}
         clear_caches()
         assert model_config._profiles_cache is None
+        assert model_config._ollama_installed_models_cache == {}
+        assert model_config._ollama_model_profiles_cache == {}
 
     def test_overridden_keys_subset_of_profile(self, tmp_path: Path) -> None:
         """overridden_keys is always a subset of profile keys."""

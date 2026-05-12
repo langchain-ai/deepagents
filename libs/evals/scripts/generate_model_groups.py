@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import types
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import types
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _EVALS_DIR = Path(__file__).resolve().parents[1]
@@ -38,13 +41,33 @@ def _import_models() -> types.ModuleType:
     return mod
 
 
+def _provider_heading(preset_name: str, registry: tuple) -> str:
+    """Render the provider-section heading, prefixing the human label when distinct.
+
+    Returns ``Anthropic (anthropic)`` when at least one registered model has a
+    `provider_label` that differs case-insensitively from the preset name (the
+    raw provider prefix), and ``anthropic`` otherwise. The check looks at the
+    registry rather than a fixed mapping so a future provider whose label
+    happens to lowercase to its prefix (e.g. ``Ollama`` → ``ollama``) keeps
+    the compact form automatically.
+    """
+    tag = f"eval:{preset_name}"
+    for m in registry:
+        if tag not in m.groups:
+            continue
+        label = m.provider_label
+        if label and label.lower() != preset_name.lower():
+            return f"{label} (`{preset_name}`)"
+        # First match decides — provider_label is uniform within a provider.
+        break
+    return f"`{preset_name}`"
+
+
 def generate() -> str:
     """Return the full markdown content for MODEL_GROUPS.md."""
     mod = _import_models()
     registry: tuple = mod.REGISTRY
-    sections: list[tuple[str | None, list[tuple[str, str | None]]]] = (
-        mod._PRESET_SECTIONS  # noqa: SLF001
-    )
+    sections: list[tuple[str | None, list[tuple[str, str | None]]]] = mod._PRESET_SECTIONS  # noqa: SLF001
 
     lines: list[str] = [_HEADER]
 
@@ -58,17 +81,19 @@ def generate() -> str:
                 models = [m.spec for m in registry if tag in m.groups]
             else:
                 # "all" — every model with any eval: tag
-                models = [
-                    m.spec
-                    for m in registry
-                    if any(g.startswith("eval:") for g in m.groups)
-                ]
+                models = [m.spec for m in registry if any(g.startswith("eval:") for g in m.groups)]
 
             count = len(models)
             label = "model" if count == 1 else "models"
             heading = "##" if section_name is None else "###"
-            lines.append(f"{heading} `{preset_name}` ({count} {label})\n")
-            lines.extend(f"- `{spec}`" for spec in models)
+            if section_name == "Provider groups":
+                title = _provider_heading(preset_name, registry)
+            else:
+                title = f"`{preset_name}`"
+            lines.append(f"{heading} {title} ({count} {label})\n")
+            # Sort alphabetically for human scannability — REGISTRY order is
+            # preserved upstream where it matters (matrix routing).
+            lines.extend(f"- `{spec}`" for spec in sorted(models))
             lines.append("")
 
     return "\n".join(lines)

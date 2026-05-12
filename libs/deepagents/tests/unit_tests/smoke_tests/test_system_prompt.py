@@ -13,6 +13,11 @@ from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
+def _smoke_model() -> GenericFakeChatModel:
+    """Return a fake model with enough canned responses for prompt snapshot tests."""
+    return GenericFakeChatModel(messages=iter([AIMessage(content="hello!") for _ in range(4)]))
+
+
 def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
@@ -20,15 +25,27 @@ def _system_message_as_text(message: SystemMessage) -> str:
     return "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content)
 
 
+def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:
+    """Invoke the agent and tolerate fake-model exhaustion after the first call."""
+    try:
+        if not hasattr(agent, "invoke"):
+            msg = f"Expected compiled agent with invoke(), got {type(agent)!r}"
+            raise TypeError(msg)
+        agent.invoke(payload)
+    except RuntimeError as exc:
+        if "StopIteration" not in str(exc):
+            raise
+
+
 def _assert_snapshot(snapshot_path: Path, actual: str, *, update_snapshots: bool) -> None:
     if update_snapshots or not snapshot_path.exists():
-        snapshot_path.write_text(actual)
+        snapshot_path.write_text(actual, encoding="utf-8")
         if update_snapshots:
             return
         msg = f"Created snapshot at {snapshot_path}. Re-run tests."
         raise AssertionError(msg)
 
-    expected = snapshot_path.read_text()
+    expected = snapshot_path.read_text(encoding="utf-8")
     assert actual == expected
 
 
@@ -53,11 +70,11 @@ def _assert_tools_snapshot(
 
 
 def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    model = _smoke_model()
     backend = LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True)
     agent = create_deep_agent(model=model, backend=backend)
 
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
     history = model.call_history
     assert len(history) >= 1
@@ -82,11 +99,11 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
 
 
 def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
     agent = create_deep_agent(model=model, backend=backend)
 
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
     history = model.call_history
     assert len(history) >= 1
@@ -111,7 +128,7 @@ def test_system_prompt_snapshot_without_execute(snapshots_dir: Path, *, update_s
 
 
 def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
     agent = create_deep_agent(
@@ -120,7 +137,7 @@ def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots
         system_prompt="You are Bobby a virtual assistant for company X",
     )
 
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
     history = model.call_history
     assert len(history) >= 1
@@ -145,7 +162,7 @@ def test_custom_system_message_snapshot(snapshots_dir: Path, *, update_snapshots
 
 
 def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
     agent = create_deep_agent(
@@ -172,7 +189,7 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
         ],
     )
 
-    agent.invoke({"messages": [HumanMessage(content="hi")]})
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
 
     history = model.call_history
     assert len(history) >= 1
@@ -197,7 +214,7 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 
 
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="hello!")]))
+    model = _smoke_model()
 
     agent = create_deep_agent(
         model=model,
@@ -252,7 +269,7 @@ description: Systematic code review process following best practices and style g
         "/memory/user/AGENTS.md": create_file_data(user_memory_content),
     }
 
-    agent.invoke({"messages": [HumanMessage(content="hi")], "files": files})
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")], "files": files})
 
     history = model.call_history
     assert len(history) >= 1

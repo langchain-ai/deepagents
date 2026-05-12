@@ -7,9 +7,16 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from deepagents_harbor.langsmith import _extract_reward
+from deepagents_harbor.langsmith import (
+    _dataset_ref,
+    _download_dataset,
+    _extract_reward,
+    _headers,
+    resolve_langsmith_api_key,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
     from pathlib import Path
 
 
@@ -21,6 +28,139 @@ def trial_dir(tmp_path: Path) -> Path:
 
 def _write_result(trial_dir: Path, data: dict[str, Any]) -> None:
     (trial_dir / "result.json").write_text(json.dumps(data))
+
+
+class _FakeRegistryClient:
+    """Offline fake for Harbor registry client behavior."""
+
+    def __init__(
+        self,
+        result: list[Any] | Awaitable[list[Any]],
+    ) -> None:
+        self.result = result
+        self.calls: list[tuple[str, bool, Path | None]] = []
+
+    def download_dataset(
+        self,
+        name: str,
+        *,
+        overwrite: bool = False,
+        output_dir: Path | None = None,
+    ) -> list[Any] | Awaitable[list[Any]]:
+        """Record the call and return the configured result."""
+        self.calls.append((name, overwrite, output_dir))
+        return self.result
+
+
+class TestResolveLangsmithApiKey:
+    """Tests for resolve_langsmith_api_key."""
+
+    def test_returns_none_when_no_vars_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        assert resolve_langsmith_api_key() is None
+
+    def test_returns_sandbox_key_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "sandbox-key")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
+        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        assert value == "sandbox-key"
+        assert name == "LANGSMITH_SANDBOX_API_KEY"
+
+    def test_falls_back_to_langsmith_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
+        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        assert value == "ls-key"
+        assert name == "LANGSMITH_API_KEY"
+
+    def test_falls_back_to_langchain_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
+        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        assert value == "lc-key"
+        assert name == "LANGCHAIN_API_KEY"
+
+    def test_skips_empty_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        value, name = resolve_langsmith_api_key()  # type: ignore[misc]
+        assert value == "ls-key"
+        assert name == "LANGSMITH_API_KEY"
+
+
+class TestHeaders:
+    """Tests for _headers."""
+
+    def test_returns_api_key_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LANGSMITH_API_KEY", "test-key")
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        assert _headers() == {"x-api-key": "test-key"}
+
+    def test_raises_when_no_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="No LangSmith API key found"):
+            _headers()
+
+
+class TestDownloadDataset:
+    """Tests for Harbor registry client compatibility helpers."""
+
+    def test_dataset_ref_appends_version_to_unversioned_name(self) -> None:
+        assert _dataset_ref("terminal-bench", "2.0") == "terminal-bench@2.0"
+
+    def test_dataset_ref_preserves_explicit_version(self) -> None:
+        assert _dataset_ref("terminal-bench@2.0", "head") == "terminal-bench@2.0"
+
+    def test_download_dataset_uses_factory_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeRegistryClient(result=[])
+
+        monkeypatch.setattr(
+            "deepagents_harbor.langsmith.RegistryClientFactory.create",
+            lambda: fake,
+        )
+
+        result = _download_dataset(
+            "terminal-bench",
+            version="2.0",
+            overwrite=True,
+            output_dir=tmp_path,
+        )
+
+        assert result == []
+        assert fake.calls == [("terminal-bench@2.0", True, tmp_path)]
+
+    def test_download_dataset_unwraps_async_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _result() -> list[Any]:
+            return ["downloaded"]
+
+        fake = _FakeRegistryClient(result=_result())
+
+        monkeypatch.setattr(
+            "deepagents_harbor.langsmith.RegistryClientFactory.create",
+            lambda: fake,
+        )
+
+        result = _download_dataset(
+            "terminal-bench",
+            version="2.0",
+            overwrite=False,
+            output_dir=tmp_path,
+        )
+
+        assert result == ["downloaded"]
 
 
 class TestExtractReward:

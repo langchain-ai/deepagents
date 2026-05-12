@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
-from deepagents_evals.radar import ALL_CATEGORIES, CATEGORY_LABELS, EVAL_CATEGORIES
+from deepagents_evals.radar import (
+    ALL_CATEGORIES,
+    CATEGORY_LABELS,
+    EVAL_CATEGORIES,
+    load_results_from_summary,
+)
+from tests.evals.pytest_reporter import _CATEGORY_RESULTS
 
 # ---------------------------------------------------------------------------
 # Category definitions consistency
@@ -20,6 +28,7 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_tool_selection",
         "test_tool_usage_relational",
         "test_todos",
+        "test_tool_usage_incident_graph",
         "test_external_benchmarks",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
@@ -27,7 +36,6 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
     "summarization": ["test_summarization"],
     "unit_test": [
         "test_system_prompt",
-        "test_hitl",
         "test_subagents",
         "test_skills",
     ],
@@ -56,19 +64,22 @@ def test_unit_test_excluded_from_radar():
     assert "unit_test" not in EVAL_CATEGORIES
 
 
-def _is_eval_category_call(node: object) -> str | None:
-    """Return the category name if *node* is a ``pytest.mark.eval_category("name")`` call, else ``None``."""
-    import ast
-
+def _is_marker_call(node: object, marker_name: str) -> str | None:
+    """Return the marker value if *node* is a `pytest.mark.<marker_name>("value")` call, else `None`."""
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "eval_category"
+        and node.func.attr == marker_name
         and node.args
         and isinstance(node.args[0], ast.Constant)
     ):
         return None
     return str(node.args[0].value)
+
+
+def _is_eval_category_call(node: object) -> str | None:
+    """Return the category name if *node* is a `pytest.mark.eval_category("name")` call, else `None`."""
+    return _is_marker_call(node, "eval_category")
 
 
 def test_expected_modules_match_filesystem():
@@ -79,9 +90,6 @@ def test_expected_modules_match_filesystem():
     mixed per-function categories (e.g. test_external_benchmarks,
     test_file_operations) are detected correctly.
     """
-    import ast
-    from pathlib import Path
-
     evals_dir = Path(__file__).resolve().parent.parent / "evals"
     discovered: dict[str, set[str]] = {}
 
@@ -116,14 +124,68 @@ def test_expected_modules_match_filesystem():
     )
 
 
+def _has_eval_tier_marker(tree: object) -> bool:
+    """Return True if the AST tree has any `eval_tier` marker anywhere in the module.
+
+    Walks the entire AST to catch eval_tier in pytestmark lists, function
+    decorators, and helper functions like `_tiered_params`.
+    """
+    if not isinstance(tree, ast.Module):
+        return False
+
+    has_test_functions = any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_")
+        for node in ast.iter_child_nodes(tree)
+    )
+
+    # Files with no test functions (e.g. empty placeholder files) are fine.
+    if not has_test_functions:
+        return True
+
+    # Walk entire module — catches pytestmark, decorators, and helper functions.
+    # Check both constant-arg calls (via _is_marker_call) and dynamic-arg calls
+    # (e.g. conditional expressions in _tiered_params) by looking for any
+    # pytest.mark.eval_tier attribute access.
+    for node in ast.walk(tree):
+        if _is_marker_call(node, "eval_tier"):
+            return True
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "eval_tier"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "mark"
+        ):
+            return True
+    return False
+
+
+def test_all_eval_modules_have_eval_tier():
+    """Every eval test module must have at least one `eval_tier` marker.
+
+    Ensures new eval files cannot silently lack tier annotations, which would
+    cause them to be excluded when running `--eval-tier baseline`.
+    """
+    evals_dir = Path(__file__).resolve().parent.parent / "evals"
+    missing: list[str] = []
+
+    for path in sorted(evals_dir.rglob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if not _has_eval_tier_marker(tree):
+            missing.append(str(path.relative_to(evals_dir)))
+
+    assert not missing, (
+        f"Eval test modules missing eval_tier marker: {missing}. "
+        f"Add @pytest.mark.eval_tier('baseline') or @pytest.mark.eval_tier('hillclimb') "
+        f"to each test function or module-level pytestmark."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Reporter per-category scoring logic
 # ---------------------------------------------------------------------------
 
 
 def test_category_scores_computation():
-    from tests.evals.pytest_reporter import _CATEGORY_RESULTS
-
     # Save original state and restore after test.
     original = dict(_CATEGORY_RESULTS)
     try:
@@ -149,8 +211,6 @@ def test_category_scores_computation():
 
 
 def test_load_results_with_category_scores(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [
         {
             "model": "test:model-a",
@@ -166,8 +226,6 @@ def test_load_results_with_category_scores(tmp_path):
 
 
 def test_load_results_missing_category_scores_raises(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [{"model": "test:model-b", "correctness": 0.72}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -177,8 +235,6 @@ def test_load_results_missing_category_scores_raises(tmp_path):
 
 
 def test_load_results_empty_category_scores(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [{"model": "test:model-c", "category_scores": {}}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_cli._env_vars import SERVER_ENV_PREFIX
+from deepagents_cli._git import find_git_root
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -133,10 +134,7 @@ def get_server_project_context(
 
 
 def find_project_root(start_path: str | Path | None = None) -> Path | None:
-    """Find the project root by looking for .git directory.
-
-    Walks up the directory tree from start_path (or cwd) looking for a .git
-    directory, which indicates the project root.
+    """Find the project root by looking for git metadata.
 
     Args:
         start_path: Directory to start searching from.
@@ -146,14 +144,7 @@ def find_project_root(start_path: str | Path | None = None) -> Path | None:
         Path to the project root if found, None otherwise.
     """
     current = Path(start_path or Path.cwd()).expanduser().resolve()
-
-    # Walk up the directory tree
-    for parent in [current, *list(current.parents)]:
-        git_dir = parent / ".git"
-        if git_dir.exists():
-            return parent
-
-    return None
+    return find_git_root(current)
 
 
 def find_project_agent_md(project_root: Path) -> list[Path]:
@@ -165,24 +156,76 @@ def find_project_agent_md(project_root: Path) -> list[Path]:
 
     Both files will be loaded and combined if both exist.
 
+    Candidates with symlinked path components are followed only when the
+    resolved target stays inside `project_root`. The returned `Path` is the
+    resolved target when any symlink component was traversed, so
+    `FilesystemBackend.download_files` opens a regular file rather than
+    tripping `O_NOFOLLOW` on the link itself. Symlinks pointing outside the
+    project root, symlink loops, and unreadable parents are skipped with a
+    warning. Broken symlinks are treated as missing files (no warning),
+    matching the pre-existing behavior for absent candidates.
+
+    Why: project AGENTS.md is auto-discovered and loaded into the system
+    prompt before the first model call. Without the in-tree check, a
+    malicious clone could ship `AGENTS.md -> ~/.ssh/config` (or any other
+    locally-readable file) and have its contents injected as agent
+    instructions on first run.
+
     Args:
         project_root: Path to the project root directory.
 
     Returns:
-        Existing AGENTS.md paths.
-
-            Empty if neither file exists, one entry if only one is present, or
-            two entries if both locations have the file.
+        Existing AGENTS.md paths, with in-tree symlinked path components
+            pre-resolved to their targets. Empty if neither file exists, one
+            entry if only one is present, or two entries if both locations
+            have the file.
     """
+    # Resolve the root once so the candidate-equality check below works even
+    # when the caller passes a non-canonical `project_root` (e.g., macOS
+    # `/var` -> `/private/var`, or a path with symlinked ancestors).
+    project_root_resolved = project_root.resolve()
     candidates = [
-        project_root / ".deepagents" / "AGENTS.md",
-        project_root / "AGENTS.md",
+        project_root_resolved / ".deepagents" / "AGENTS.md",
+        project_root_resolved / "AGENTS.md",
     ]
     paths: list[Path] = []
     for candidate in candidates:
         try:
-            if candidate.exists():
-                paths.append(candidate)
-        except OSError:
-            pass
+            # Single syscall handles existence, broken symlinks, loops, and
+            # canonicalization. `strict=True` raises rather than returning
+            # the unresolved path.
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            # Absent file or broken symlink — matches the pre-existing
+            # silent-skip behavior for missing candidates. `Path.exists()`
+            # also returns False for symlink loops on some Python versions,
+            # so loops do NOT come through here; see the OSError branch.
+            continue
+        except (OSError, RuntimeError) as exc:
+            # `OSError(ELOOP)` on Python 3.13+, `RuntimeError("Symlink loop
+            # ...")` on 3.11-3.12; bare `OSError` for permission/unreadable
+            # parent. Security-relevant — warn and skip.
+            logger.warning(
+                "Skipping AGENTS.md candidate %s: %s",
+                candidate,
+                exc,
+            )
+            continue
+
+        try:
+            resolved.relative_to(project_root_resolved)
+        except ValueError:
+            logger.warning(
+                "Skipping AGENTS.md symlink %s: target %s is outside "
+                "the project root %s",
+                candidate,
+                resolved,
+                project_root_resolved,
+            )
+            continue
+
+        if candidate.absolute() == resolved:
+            paths.append(candidate)
+        else:
+            paths.append(resolved)
     return paths

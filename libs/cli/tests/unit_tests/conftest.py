@@ -60,13 +60,26 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local debug onboarding env vars from affecting tests."""
+    monkeypatch.delenv("DEEPAGENTS_CLI_DEBUG_ONBOARDING", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent local alpha event-listener env vars from affecting tests."""
+    monkeypatch.delenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make app-specific CSS variables available to all test `App` instances.
 
     Production code defines these in `DeepAgentsApp.get_theme_variable_defaults`
     but many tests use lightweight `App[None]` subclasses that lack the override.
-    Patching the base class ensures `$mode-bash`, `$mode-command` resolve
-    everywhere without requiring each test app to opt in.
+    Patching the base class ensures custom mode variables resolve everywhere
+    without requiring each test app to opt in.
     """
     from textual.app import App
 
@@ -131,10 +144,25 @@ def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect ChatInput history to a temp file.
 
     Without this, every test that mounts a `ChatInput` widget writes to the
-    real `~/.deepagents/history.jsonl`, causing duplicate/stale entries that
-    persist across test runs and branch switches.
+    real `~/.deepagents/.state/history.jsonl`, causing duplicate/stale
+    entries that persist across test runs and branch switches.
     """
     monkeypatch.setattr(
         "deepagents_cli.widgets.chat_input._default_history_path",
         lambda: tmp_path / "history.jsonl",
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_kitty_kbd_probe_cache() -> None:
+    """Reset the `functools.cache` on the kitty-keyboard-protocol probe.
+
+    The probe is cached for the lifetime of the process in production,
+    but stale state leaks across tests that patch the probe function or
+    rely on platform-specific behaviour. Clearing on every test keeps
+    results deterministic regardless of file order or `pytest-xdist`
+    sharding.
+    """
+    from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    supports_kitty_keyboard_protocol.cache_clear()

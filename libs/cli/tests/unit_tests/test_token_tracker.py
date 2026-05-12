@@ -123,3 +123,28 @@ class TestPersistContextTokens:
 
         # Should not raise
         await _persist_context_tokens(agent, config, 1000)  # type: ignore[arg-type]
+
+    async def test_disables_tracing_during_update(self):
+        """`aupdate_state` should run with LangSmith tracing disabled.
+
+        The token-count write is a private bookkeeping update; surfacing it as a
+        standalone `UpdateState` run in LangSmith clutters traces.
+        """
+        from unittest.mock import AsyncMock
+
+        from langsmith import get_tracing_context
+
+        from deepagents_cli.textual_adapter import _persist_context_tokens
+
+        captured: dict[str, object] = {}
+
+        async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029  # AsyncMock side_effect must be a coroutine function
+            captured["enabled"] = get_tracing_context().get("enabled")
+
+        agent = AsyncMock()
+        agent.aupdate_state.side_effect = _capture
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        await _persist_context_tokens(agent, config, 4200)  # type: ignore[arg-type]
+
+        assert captured["enabled"] is False

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from deepagents_cli.agent import (
     DEFAULT_AGENT_NAME,
+    _add_interrupt_on,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -23,6 +24,7 @@ from deepagents_cli.agent import (
     _format_write_file_description,
     build_model_identity_section,
     create_cli_agent,
+    get_available_agent_names,
     get_system_prompt,
     list_agents,
     load_async_subagents,
@@ -36,6 +38,14 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+def test_add_interrupt_on_gates_async_task_tools() -> None:
+    """Async subagent tools should use their actual tool names in HITL config."""
+    interrupt_on = _add_interrupt_on()
+
+    for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
+        assert tool_name in interrupt_on
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -953,6 +963,60 @@ class TestListAgentsJson:
         result = json.loads(buf.getvalue())
         assert result["data"] == []
 
+    def test_json_output_excludes_state_dir(self, tmp_path: Path) -> None:
+        """`.state/` is never surfaced as an agent in JSON output."""
+        import json
+        from io import StringIO
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME).mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME / "AGENTS.md").touch()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".state" / "sessions.db").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        buf = StringIO()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("sys.stdout", buf),
+        ):
+            list_agents(output_format="json")
+
+        result = json.loads(buf.getvalue())
+        names = [a["name"] for a in result["data"]]
+        assert names == [DEFAULT_AGENT_NAME]
+        assert ".state" not in names
+
+    def test_text_output_excludes_state_dir(self, tmp_path: Path) -> None:
+        """`.state/` is never surfaced as an agent in Rich output."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME).mkdir()
+        (agents_dir / DEFAULT_AGENT_NAME / "AGENTS.md").touch()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".state" / "sessions.db").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert ".state" not in joined
+
 
 class TestResetAgentJson:
     """Tests for reset_agent JSON output."""
@@ -1065,14 +1129,116 @@ class TestCreateCliAgentSkillsSources:
         assert len(captured_sources) == 1
         sources = captured_sources[0]
         assert sources == [
+            (str(built_in_dir), "Built-in"),
+            (str(skills_dir), "User Deepagents"),
+            (str(user_agent_skills_dir), "User Agents"),
+            (str(project_skills_dir), "Project Deepagents"),
+            (str(project_agent_skills_dir), "Project Agents"),
+            (str(tmp_path / "user-claude-skills"), "User Claude"),
+            (str(tmp_path / "project-claude-skills"), "Project Claude"),
+        ]
+
+        # End-to-end: the captured tuple list should produce distinct
+        # labels when formatted by the real middleware. Guards against
+        # a regression that drops labels back to leaf-only derivation
+        # (which would collapse user- vs project-scoped `.claude/skills`
+        # and `.agents/skills` / `.deepagents/skills` directories).
+        from deepagents.middleware.skills import (
+            SkillsMiddleware as RealSkillsMiddleware,
+        )
+
+        real_middleware = RealSkillsMiddleware(
+            backend=None,  # type: ignore[arg-type]
+            sources=sources,
+        )
+        rendered = real_middleware._format_skills_locations()
+        for expected in (
+            "**Built-in Skills**:",
+            "**User Deepagents Skills**:",
+            "**User Agents Skills**:",
+            "**Project Deepagents Skills**:",
+            "**Project Agents Skills**:",
+            "**User Claude Skills**:",
+            "**Project Claude Skills**:",
+        ):
+            assert expected in rendered, f"missing {expected!r} in:\n{rendered}"
+        assert rendered.rstrip().endswith("(higher priority)")
+
+    def test_skills_sources_fallback_to_bare_paths_on_old_sdk(
+        self, tmp_path: Path
+    ) -> None:
+        """If the installed SDK lacks `SkillSource`, CLI passes bare paths.
+
+        Backwards-compat: SDKs < 0.5.4 only accept `list[str]`. The CLI
+        detects the missing alias at import time and strips labels
+        before handing sources to `SkillsMiddleware`, so the middleware
+        never receives an unsupported tuple.
+        """
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        user_agent_skills_dir = tmp_path / "user-agent-skills"
+        user_agent_skills_dir.mkdir()
+        built_in_dir = Settings.get_built_in_skills_dir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_claude_skills_dir.return_value = tmp_path / "nonexistent"
+        mock_settings.get_project_claude_skills_dir.return_value = None
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[Any]] = []
+
+        class FakeSkillsMiddleware:
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent._SUPPORTS_SKILL_SOURCE_TUPLES", False),
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        # Fallback stripped all labels; middleware receives bare strings.
+        assert sources == [
             str(built_in_dir),
             str(skills_dir),
             str(user_agent_skills_dir),
-            str(project_skills_dir),
-            str(project_agent_skills_dir),
-            str(tmp_path / "user-claude-skills"),
-            str(tmp_path / "project-claude-skills"),
         ]
+        for source in sources:
+            assert isinstance(source, str), f"expected str, got {type(source)!r}"
 
 
 class TestCreateCliAgentMemorySources:
@@ -1294,8 +1460,10 @@ class TestCreateCliAgentProjectContext:
 
         assert len(captured_sources) == 1
         sources = captured_sources[0]
-        assert str(project_skills_dir) in sources
-        assert str(project_agent_skills_dir) in sources
+        # Sources are (path, label) tuples; assert the project paths are wired.
+        source_paths = [s[0] if isinstance(s, tuple) else s for s in sources]
+        assert str(project_skills_dir) in source_paths
+        assert str(project_agent_skills_dir) in source_paths
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
             project_agents_dir=project_agents_dir,
@@ -1703,33 +1871,6 @@ class TestLoadAsyncSubagents:
         assert result == []
 
 
-class TestLsEntriesShim:
-    """Remind us to remove the `_ls_entries` compat shim in test_end_to_end.py.
-
-    The PyPI SDK <0.5 returns a raw `list` from `ls`; >=0.5 returns
-    `LsResult` with `.entries`. Once the pin is bumped to >=0.5.0 the shim
-    should be deleted and callers inlined to `backend.ls(path).entries`.
-    """
-
-    def test_remove_ls_entries_shim_when_sdk_pin_is_bumped(self) -> None:
-        import tomllib
-
-        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        with pyproject.open("rb") as f:
-            data = tomllib.load(f)
-
-        deps = data["project"]["dependencies"]
-        sdk_pin = next(d for d in deps if d.startswith("deepagents=="))
-        pinned_version = sdk_pin.split("==")[1]
-        major, minor = (int(x) for x in pinned_version.split(".")[:2])
-
-        assert (major, minor) < (0, 5), (
-            f"SDK pin is now {pinned_version} (>=0.5.0). "
-            "Delete `_ls_entries()` from test_end_to_end.py and inline "
-            "`backend.ls(path).entries` at call sites."
-        )
-
-
 class TestShellAllowListMiddleware:
     """Tests for inline shell command validation middleware."""
 
@@ -1778,17 +1919,8 @@ class TestShellAllowListMiddleware:
         handler.assert_awaited_once_with(request)
         assert result == "ok"
 
-    @pytest.mark.parametrize(
-        ("tool_name", "command"),
-        [
-            pytest.param("execute", "ls -la", id="execute-tool"),
-            pytest.param("bash", "cat README.md", id="bash-tool"),
-        ],
-    )
-    async def test_allows_approved_shell_command(
-        self, tool_name: str, command: str
-    ) -> None:
-        """Shell commands in the allow-list pass through for all SHELL_TOOL_NAMES."""
+    async def test_allows_approved_shell_command(self) -> None:
+        """Shell commands in the allow-list pass through to the handler."""
         from unittest.mock import AsyncMock
 
         from deepagents_cli.agent import ShellAllowListMiddleware
@@ -1796,8 +1928,8 @@ class TestShellAllowListMiddleware:
         middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
         request = Mock()
         request.tool_call = {
-            "name": tool_name,
-            "args": {"command": command},
+            "name": "execute",
+            "args": {"command": "ls -la"},
             "id": "tc2",
         }
         handler = AsyncMock(return_value="output")
@@ -1908,8 +2040,6 @@ class TestShellAllowListMiddleware:
 
     def test_rejects_empty_allow_list(self) -> None:
         """Constructor rejects empty allow-list."""
-        import pytest
-
         from deepagents_cli.agent import ShellAllowListMiddleware
 
         with pytest.raises(ValueError, match="must not be empty"):
@@ -1917,8 +2047,6 @@ class TestShellAllowListMiddleware:
 
     def test_rejects_shell_allow_all(self) -> None:
         """Constructor rejects SHELL_ALLOW_ALL sentinel."""
-        import pytest
-
         from deepagents_cli.agent import ShellAllowListMiddleware
         from deepagents_cli.config import SHELL_ALLOW_ALL
 
@@ -2197,3 +2325,82 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert not any(
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Subagent {subagent['name']!r} should not have shell middleware"
+
+
+def _mock_agents_dir(agents_dir: Path) -> Mock:
+    mock_settings = Mock()
+    mock_settings.user_deepagents_dir = agents_dir
+    return mock_settings
+
+
+class TestGetAvailableAgentNames:
+    """Tests for `get_available_agent_names`."""
+
+    def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
+        """No ~/.deepagents directory → empty list, no error."""
+        missing = tmp_path / "does_not_exist"
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(missing)):
+            assert get_available_agent_names() == []
+
+    def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
+        """Subdirectories are returned sorted."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        for name in ("zebra", "alpha", "mango"):
+            (agents_dir / name).mkdir()
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["alpha", "mango", "zebra"]
+
+    def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
+        """Files sitting next to agent directories are excluded."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / "config.toml").write_text("")
+        (agents_dir / ".DS_Store").write_text("")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_symlinks(self, tmp_path: Path) -> None:
+        """Symlinked directories are excluded — a dangling link must not show up."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "real").mkdir()
+        # Symlink to a real dir — still excluded because we only want files
+        # that live inside `~/.deepagents/` directly.
+        real_target = tmp_path / "outside"
+        real_target.mkdir()
+        (agents_dir / "linked").symlink_to(real_target, target_is_directory=True)
+        # Dangling symlink (target doesn't exist).
+        (agents_dir / "broken").symlink_to(tmp_path / "ghost")
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["real"]
+
+    def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
+        """`.state/` and other hidden dirs are excluded from the agent list."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / ".state").mkdir()
+        (agents_dir / ".cache").mkdir()
+
+        with patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
+        """PermissionError on iterdir → logged + empty list, not raised."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        def boom(_self: Path) -> list[Path]:
+            msg = "forbidden"
+            raise PermissionError(msg)
+
+        with (
+            patch("deepagents_cli.agent.settings", _mock_agents_dir(agents_dir)),
+            patch.object(Path, "iterdir", boom),
+        ):
+            assert get_available_agent_names() == []

@@ -21,9 +21,9 @@ def _format_table(
             r.get("skipped", 0),
             r.get("total", 0),
             r.get("correctness", 0.0),
-            r.get("solve_rate") or "n/a",
-            r.get("step_ratio") or "n/a",
-            r.get("tool_call_ratio") or "n/a",
+            "n/a" if r.get("solve_rate") is None else r.get("solve_rate"),
+            "n/a" if r.get("step_ratio") is None else r.get("step_ratio"),
+            "n/a" if r.get("tool_call_ratio") is None else r.get("tool_call_ratio"),
             r.get("median_duration_s", 0.0),
         ]
         for r in rows
@@ -145,6 +145,11 @@ def main() -> None:
     lines: list[str] = []
     lines.append("## Evals summary")
     lines.append("")
+    lines.append(
+        "> These are the final aggregated results across all models after"
+        " every eval job has completed."
+    )
+    lines.append("")
 
     table_rows = _format_table(by_provider, _HEADERS)
     if table_rows:
@@ -161,7 +166,7 @@ def main() -> None:
         rows,
         key=lambda r: (
             -float(r.get("correctness", 0.0)),
-            -float(r.get("solve_rate") or 0.0),
+            -float(0.0 if r.get("solve_rate") is None else r.get("solve_rate")),
         ),
     )
 

@@ -1,21 +1,27 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
-from collections.abc import Awaitable, Callable, Sequence
+import contextlib
+import dataclasses
+import json
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.filesystem import FilesystemPermission
 
 
 class SubAgent(TypedDict):
@@ -50,6 +56,12 @@ class SubAgent(TypedDict):
         skills: Skill source paths for SkillsMiddleware.
 
             List of paths to skill directories (e.g., `["/skills/user/", "/skills/project/"]`).
+        permissions: Filesystem permission rules for this subagent.
+
+            If omitted, inherits the parent agent's permissions. If provided,
+            replaces the parent agent's rules entirely for this subagent.
+
+            Rules are evaluated in declaration order; the first match wins.
     """
 
     name: str
@@ -75,6 +87,53 @@ class SubAgent(TypedDict):
 
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
+
+    permissions: NotRequired[list[FilesystemPermission]]
+    """List of ``FilesystemPermission`` rules for this subagent.
+
+    If omitted, inherits the parent agent's permissions. If specified, replaces
+    the parent's permissions entirely for this subagent.
+
+    Rules are evaluated in declaration order; the first match wins.
+    `FilesystemMiddleware` enforces these rules for the built-in filesystem
+    tools on the subagent stack.
+    """
+
+    response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
+    """Structured output response format for the subagent.
+
+    When specified, the subagent will produce a `structured_response` conforming to the
+    given schema. The structured response is JSON-serialized and returned as the
+    ToolMessage content to the parent agent, replacing the default last-message extraction.
+
+    Accepted formats (from `langchain.agents.structured_output`):
+
+    - `ToolStrategy(schema)`: Use tool calling to extract structured output from the model.
+    - `ProviderStrategy(schema)`: Use the model provider's native structured output mode.
+    - `AutoStrategy(schema)`: Automatically select the best strategy.
+    - A bare Python `type`: A Pydantic `BaseModel` subclass, `dataclass`, or `TypedDict`
+      class. Equivalent to `AutoStrategy(schema)`.
+    - `dict[str, Any]`: A JSON schema dictionary (e.g.,
+      `{"type": "object", "properties": {...}, "required": [...]}`).
+
+    Example:
+        ```python
+        from pydantic import BaseModel
+
+        class Findings(BaseModel):
+            findings: str
+            confidence: float
+
+        analyzer: SubAgent = {
+            "name": "analyzer",
+            "description": "Analyzes data and returns structured findings",
+            "system_prompt": "Analyze the data and return your findings.",
+            "model": "openai:gpt-4o",
+            "tools": [],
+            "response_format": Findings,
+        }
+        ```
+    """
 
 
 class CompiledSubAgent(TypedDict):
@@ -118,12 +177,20 @@ DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks
 # 1. The messages key is handled explicitly to ensure only the final message is included
 # 2. The todos and structured_response keys are excluded as they do not have a defined reducer
 #    and no clear meaning for returning them from a subagent to the main agent.
-# 3. The skills_metadata and memory_contents keys are automatically excluded from subagent output
+# 3. The skills_metadata, skills_load_errors, and memory_contents keys are
+#    automatically excluded from subagent output
 #    via PrivateStateAttr annotations on their respective state schemas. However, they must ALSO
 #    be explicitly filtered from runtime.state when invoking a subagent to prevent parent state
 #    from leaking to child agents (e.g., the general-purpose subagent loads its own skills via
 #    SkillsMiddleware).
-_EXCLUDED_STATE_KEYS = {"messages", "todos", "structured_response", "skills_metadata", "memory_contents"}
+_EXCLUDED_STATE_KEYS = {
+    "messages",
+    "todos",
+    "structured_response",
+    "skills_metadata",
+    "skills_load_errors",
+    "memory_contents",
+}
 
 
 class TaskToolSchema(BaseModel):
@@ -295,7 +362,28 @@ class _SubagentSpec(TypedDict):
     runnable: Runnable
 
 
-def _build_task_tool(  # noqa: C901
+@contextlib.contextmanager
+def _subagent_tracing_context() -> Generator[None, None, None]:
+    """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
+
+    Sets `ls_agent_type` on the langsmith tracing context `metadata`, which is
+    propagated to LangSmith runs. This mirrors
+    langchain's `ls_agent_type="root"` tagging behavior.
+
+    Forwards all other current tracing-context fields (parent, client, tags,
+    etc.) unchanged so this wrapper does not clobber the enclosing context.
+    """
+    current = get_tracing_context()
+    merged_metadata = {**(current.get("metadata") or {}), "ls_agent_type": "subagent"}
+    # Pass every field from the current tracing context through to
+    # `tracing_context` so we don't accidentally clobber fields that may be
+    # added to langsmith in the future. The only change is `metadata`.
+    kwargs: dict[str, Any] = {**current, "metadata": merged_metadata}
+    with tracing_context(**kwargs):
+        yield
+
+
+def _build_task_tool(  # noqa: C901, PLR0915
     subagents: list[_SubagentSpec],
     task_description: str | None = None,
 ) -> BaseTool:
@@ -332,12 +420,23 @@ def _build_task_tool(  # noqa: C901
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-        # Strip trailing whitespace to prevent API errors with Anthropic
-        message_text = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
+        structured = result.get("structured_response")
+        if structured is not None:
+            if hasattr(structured, "model_dump_json"):
+                content: str = structured.model_dump_json()
+            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+                content = json.dumps(dataclasses.asdict(structured))
+            else:
+                content = json.dumps(structured)
+        else:
+            # Strip trailing whitespace to prevent API errors with Anthropic
+            content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(message_text, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
             }
         )
 
@@ -348,6 +447,27 @@ def _build_task_tool(  # noqa: C901
         subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
         subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent, subagent_state
+
+    def _build_subagent_config(runtime: ToolRuntime) -> RunnableConfig:
+        """Derive the subagent's RunnableConfig from the parent's runtime config.
+
+        Only ``callbacks``, ``tags``, and ``configurable`` are forwarded.
+        Callbacks let Pregel's streaming handlers propagate into the
+        subagent so its events land on the parent's stream.  Tags are
+        forwarded for tracing continuity.  ``configurable`` is needed
+        for Pregel to recognize the subagent as a nested subgraph.
+
+        ``recursion_limit`` and ``metadata`` are intentionally *not*
+        forwarded — the subagent's own bound config must take precedence.
+        Passing ``metadata`` in the invoke config replaces the
+        subagent's bound metadata (e.g. ``lc_agent_name``).
+        """
+        parent_config = runtime.config or {}
+        config: RunnableConfig = {}
+        for key in ("callbacks", "tags", "configurable"):
+            if key in parent_config:
+                config[key] = parent_config[key]  # type: ignore[literal-required]
+        return config
 
     def task(
         description: str,
@@ -361,7 +481,16 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = subagent.invoke(subagent_state)
+        subagent_config = _build_subagent_config(runtime)
+        # Tag the subagent's configurable so downstream readers (e.g. middleware
+        # that key off `runtime.config["configurable"]["ls_agent_type"]`) see the
+        # subagent context, in addition to the langsmith tracing-context tag.
+        subagent_config["configurable"] = {
+            **subagent_config.get("configurable", {}),
+            "ls_agent_type": "subagent",
+        }
+        with _subagent_tracing_context():
+            result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     async def atask(
@@ -376,7 +505,15 @@ def _build_task_tool(  # noqa: C901
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-        result = await subagent.ainvoke(subagent_state)
+        subagent_config = _build_subagent_config(runtime)
+        # Mirror `task()` — tag the subagent's configurable as well as the
+        # langsmith tracing context so both code paths see `ls_agent_type`.
+        subagent_config["configurable"] = {
+            **subagent_config.get("configurable", {}),
+            "ls_agent_type": "subagent",
+        }
+        with _subagent_tracing_context():
+            result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
     return StructuredTool.from_function(
@@ -454,6 +591,9 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._backend = backend
         self._subagents = subagents
         subagent_specs = self._get_subagents()
+        self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagent_specs)
+        """Declared subagent names. Public so streamers can discover them
+        without introspecting the `task` tool's closure."""
 
         task_tool = _build_task_tool(subagent_specs, task_description)
 
@@ -476,9 +616,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         for spec in self._subagents:
             if "runnable" in spec:
-                # CompiledSubAgent - use as-is
+                # Use with_config (not attribute mutation) so the original runnable is
+                # untouched and a shared instance can be registered under multiple names.
                 compiled = cast("CompiledSubAgent", spec)
-                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": compiled["runnable"]})
+                runnable = compiled["runnable"].with_config({"metadata": {"lc_agent_name": compiled["name"]}, "run_name": compiled["name"]})
+                specs.append({"name": compiled["name"], "description": compiled["description"], "runnable": runnable})
                 continue
 
             # SubAgent - validate required fields
@@ -511,6 +653,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                         tools=spec["tools"],
                         middleware=middleware,
                         name=spec["name"],
+                        response_format=spec.get("response_format"),
                     ),
                 }
             )

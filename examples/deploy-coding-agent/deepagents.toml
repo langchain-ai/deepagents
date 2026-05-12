@@ -1,0 +1,8 @@
+[agent]
+name = "deepagents-deploy-coding-agent"
+model = "anthropic:claude-sonnet-4-5"
+
+[sandbox]
+provider = "langsmith"
+template = "coding-agent"
+image = "python:3.12"

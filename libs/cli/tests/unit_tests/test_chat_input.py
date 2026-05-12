@@ -25,7 +25,6 @@ from deepagents_cli.widgets.chat_input import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
     from textual.pilot import Pilot
 
 
@@ -225,6 +224,34 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+class TestChatTextAreaKeybindings:
+    """Regression tests for terminal key aliases in the chat input."""
+
+    def test_newline_bindings_do_not_shadow_enter_alias(self) -> None:
+        """`ctrl+m` is carriage return in terminals, so it must remain plain Enter."""
+        newline_keys = {
+            key.strip()
+            for binding in ChatTextArea.BINDINGS
+            if binding.action == "insert_newline"
+            for key in binding.key.split(",")
+        }
+
+        assert "ctrl+m" not in newline_keys
+        assert "ctrl+m" not in ChatTextArea._NEWLINE_KEYS
+
+    def test_modified_backspace_deletes_word_left(self) -> None:
+        """Modified Backspace aliases should delete the previous word."""
+        word_delete_keys = {
+            key.strip()
+            for binding in ChatTextArea.BINDINGS
+            if binding.action == "delete_word_left"
+            for key in binding.key.split(",")
+        }
+
+        assert "ctrl+backspace" in word_delete_keys
+        assert "alt+backspace" in word_delete_keys
+
+
 class _ImagePasteApp(App[None]):
     """App that wires a shared tracker into ChatInput for paste tests."""
 
@@ -262,6 +289,11 @@ def _prompt_text(prompt: Static) -> str:
     return str(prompt._Static__content)  # type: ignore[attr-defined]  # accessing internal content store
 
 
+def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
+    """Render a text-area line and trim widget padding for assertions."""
+    return text_area.render_line(y).text.rstrip()
+
+
 class TestPromptIndicator:
     """Test that the prompt indicator reflects the current input mode."""
 
@@ -278,6 +310,41 @@ class TestPromptIndicator:
             chat_input.mode = "shell"
             await pilot.pause()
             assert _prompt_text(prompt) == "$"
+            assert chat_input.has_class("mode-shell")
+
+    async def test_prompt_shows_shell_style_in_incognito_shell_mode(self) -> None:
+        """Incognito shell mode sets the `$` prompt, border title, and class."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            prompt = chat_input.query_one("#prompt", Static)
+
+            chat_input.mode = "shell_incognito"
+            await pilot.pause()
+
+            assert _prompt_text(prompt) == "$"
+            assert chat_input.border_title == "incognito"
+            assert chat_input.has_class("mode-shell-incognito")
+
+    async def test_incognito_shell_to_shell_clears_incognito_styling(self) -> None:
+        """Transitioning out of incognito must clear the incognito styling.
+
+        Regression guard: a future change forgetting to drop the incognito
+        title or CSS class would leave stale styling on the input.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+
+            chat_input.mode = "shell_incognito"
+            await pilot.pause()
+            assert chat_input.border_title == "incognito"
+            assert chat_input.has_class("mode-shell-incognito")
+
+            chat_input.mode = "shell"
+            await pilot.pause()
+            assert chat_input.border_title is None
+            assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
 
     async def test_prompt_shows_slash_in_command_mode(self) -> None:
@@ -307,6 +374,7 @@ class TestPromptIndicator:
             chat_input.mode = "normal"
             await pilot.pause()
             assert _prompt_text(prompt) == ">"
+            assert chat_input.border_title is None
             assert not chat_input.has_class("mode-shell")
             assert not chat_input.has_class("mode-command")
 
@@ -983,6 +1051,103 @@ class TestModePrefixStripping:
             assert app.submitted[0].value == "!ls"
             assert app.submitted[0].mode == "shell"
 
+    async def test_submission_prepends_incognito_shell_prefix(self) -> None:
+        """Submitting in incognito shell mode should preserve the `'!!'` prefix."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "!!pwd"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "pwd"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
+
+    async def test_typing_second_bang_enters_incognito_shell_mode(self) -> None:
+        """Typing `!!pwd` as separate keypresses should submit incognito shell."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            chat._text_area.insert("pwd")
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
+
+    async def test_third_bang_stays_in_incognito_shell_mode(self) -> None:
+        """Typing `!`+`!`+`!` must not demote `shell_incognito` back to `shell`.
+
+        Regression guard for the privacy-sensitive parser path: a stray third
+        bang should be treated as command-body content, not as a mode change
+        out of incognito.
+        """
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "!"
+
+            chat._text_area.insert("ls")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "shell_incognito"
+            assert app.submitted[0].value == "!!!ls"
+
+    async def test_pasted_three_bangs_routes_to_incognito(self) -> None:
+        """Pasting `!!!ls` must enter `shell_incognito` with body `!ls`."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "!!!ls"
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "!ls"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].mode == "shell_incognito"
+            assert app.submitted[0].value == "!!!ls"
+
     async def test_submission_prepends_command_prefix(self) -> None:
         """Submitting in command mode should prepend `'/'` to the value."""
         app = _RecordingApp()
@@ -1264,6 +1429,28 @@ class TestSlashCompletionCursorMapping:
 
             assert chat._text_area.text == "help e"
 
+    async def test_click_completion_at_end_updates_hint_without_extra_frame(
+        self,
+    ) -> None:
+        """Click-selecting a command should render final text immediately."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("re")
+            await pilot.pause()
+
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
     async def test_tab_completion_at_end_replaces_whole_token(self) -> None:
         """Tab-completing at end should replace all typed command text."""
         app = _ChatInputTestApp()
@@ -1327,6 +1514,28 @@ class TestHistorySlashPrefixRecall:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == "/help"
             assert app.submitted[0].mode == "command"
+
+    async def test_history_incognito_shell_entry_enters_incognito_mode(self) -> None:
+        """Recalling a `!!` history entry should enter incognito shell mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append("!!pwd")
+
+            await pilot.press("up")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == "pwd"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "!!pwd"
+            assert app.submitted[0].mode == "shell_incognito"
 
 
 class TestCompletionIndexToTextIndex:
@@ -1949,6 +2158,105 @@ class TestDroppedVideoPaste:
             assert len(app.tracker.get_videos()) == 1
 
 
+class TestPathPayloadDetectionGating:
+    """Single-keystroke edits should skip the blocking path-detection helpers.
+
+    `_is_dropped_path_payload` and `_apply_inline_dropped_path_replacement`
+    reach `Path.exists()` / `Path.is_file()` via
+    `deepagents_cli.input.parse_pasted_path_payload`, which are synchronous
+    stat syscalls on the event-loop thread. They are only meaningful when a
+    text change inserts more than one character (drag-drop / bracketed paste);
+    on normal typing they cost real wall-clock time for no possible match.
+    """
+
+    async def test_typing_does_not_invoke_path_detection(self) -> None:
+        """Char-by-char keypresses must not run path-detection helpers."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            detect_calls = 0
+            replace_calls = 0
+            original_detect = chat._is_dropped_path_payload
+            original_replace = chat._apply_inline_dropped_path_replacement
+
+            def counting_detect(text: str) -> bool:
+                nonlocal detect_calls
+                detect_calls += 1
+                return original_detect(text)
+
+            def counting_replace(text: str) -> bool:
+                nonlocal replace_calls
+                replace_calls += 1
+                return original_replace(text)
+
+            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+            chat._apply_inline_dropped_path_replacement = counting_replace  # type: ignore[method-assign]
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert detect_calls == 0
+            assert replace_calls == 0
+
+    async def test_bulk_text_change_invokes_path_detection(
+        self, tmp_path: Path
+    ) -> None:
+        """Multi-char Changed events (drag-drop / paste) must still detect paths."""
+        target = tmp_path / "dropped.txt"
+        target.write_text("payload")
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            detect_calls = 0
+            original_detect = chat._is_dropped_path_payload
+
+            def counting_detect(text: str) -> bool:
+                nonlocal detect_calls
+                detect_calls += 1
+                return original_detect(text)
+
+            chat._is_dropped_path_payload = counting_detect  # type: ignore[method-assign]
+
+            ta.text = str(target)
+            await pilot.pause()
+
+            assert detect_calls >= 1
+
+    async def test_replacement_edit_with_small_length_delta_detects_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Replacing selected text with a similar-length path should attach it."""
+        img_path = tmp_path / "similar-length.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (3, 3), color="orange")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.text = "x" * len(str(img_path))
+            await pilot.pause()
+
+            ta.text = str(img_path)
+            await pilot.pause()
+
+            assert ta.text == "[image 1] "
+            assert chat.mode == "normal"
+            assert len(app.tracker.get_images()) == 1
+
+
 class TestBackslashEnterNewline:
     """Test that backslash followed quickly by enter inserts a newline.
 
@@ -1957,8 +2265,15 @@ class TestBackslashEnterNewline:
     pair and collapses it into a newline.
     """
 
-    async def test_backslash_then_enter_inserts_newline(self) -> None:
+    async def test_backslash_then_enter_inserts_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Rapid backslash + enter should produce a newline, not submit."""
+        # Widen the gap so wall-clock timing between pilot.press calls on slow
+        # CI runners cannot push the enter past the 150ms default and trip the
+        # submit path.
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2003,8 +2318,12 @@ class TestBackslashEnterNewline:
 
             assert ta.text == "\\a"
 
-    async def test_backslash_enter_on_empty_prompt_does_not_submit(self) -> None:
+    async def test_backslash_enter_on_empty_prompt_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Backslash + enter on empty prompt should not submit."""
+        monkeypatch.setattr(chat_input_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -2179,6 +2498,28 @@ class TestCtrlUDeleteToLineStart:
             assert ta.cursor_location == (1, 0)
 
 
+class TestModifiedBackspaceDeleteWordLeft:
+    """Test modified Backspace aliases for word deletion."""
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_deletes_previous_word(self, key: str) -> None:
+        """Modified Backspace should delete the word before the cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            ta = chat._text_area
+            assert ta is not None
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert ta.text == "hello "
+            assert ta.cursor_location == (0, 6)
+
+
 class _TextAreaTypingApp(App[None]):
     """Minimal app that captures ChatTextArea.Typing and ChatInput.Typing events."""
 
@@ -2265,6 +2606,209 @@ class TestChatInputTypingBubble:
             assert app.chat_input_typing_count == 2
 
 
+class TestArgumentHints:
+    """Test inline argument-hint ghost text for slash commands."""
+
+    def test_rebuild_argument_hints_populates_lookup(self) -> None:
+        """Commands with hints produce a name → hint mapping."""
+        from deepagents_cli.command_registry import CommandEntry
+
+        commands = [
+            CommandEntry("/remember", "Update memory", "", "[context]"),
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/skill-creator", "Create skills", "", "[task]"),
+        ]
+        chat = ChatInput()
+        chat._rebuild_argument_hints(commands)
+        assert chat._argument_hints == {
+            "remember": "[context]",
+            "skill-creator": "[task]",
+        }
+
+    def test_rebuild_argument_hints_excludes_empty(self) -> None:
+        """Commands without hints are excluded from the lookup."""
+        from deepagents_cli.command_registry import CommandEntry
+
+        commands = [
+            CommandEntry("/help", "Show help", "", ""),
+            CommandEntry("/quit", "Exit", "", ""),
+        ]
+        chat = ChatInput()
+        chat._rebuild_argument_hints(commands)
+        assert chat._argument_hints == {}
+
+    async def test_hint_shown_after_command_and_space(self) -> None:
+        """Ghost text appears when text is a known command + trailing space."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            # Enter command mode and type "remember "
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
+    async def test_hint_cleared_when_args_typed(self) -> None:
+        """Ghost text disappears once the user starts typing arguments."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == "[context]"
+
+            chat._text_area.insert("x")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember x"
+
+    async def test_hint_stays_at_end_when_cursor_moves(self) -> None:
+        """Moving the cursor should not move the rendered argument hint."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
+            for _ in "remember ":
+                await pilot.press("left")
+            await pilot.pause()
+
+            assert chat._text_area.cursor_location == (0, 0)
+            assert chat._text_area.argument_hint == "[context]"
+            assert _render_text_area_line(chat._text_area) == "remember [context]"
+
+    async def test_hint_clears_when_extra_space_is_inserted(self) -> None:
+        """Typing another space should leave the exact placeholder state."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat._text_area.argument_hint == "[context]"
+
+            await pilot.press("left")
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+
+            assert chat._text_area.text == "remember  "
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember"
+
+    async def test_hint_cleared_when_command_mode_exits_via_submit(self) -> None:
+        """Submitting a command clears ghost text when mode resets to normal."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == "[context]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.argument_hint == ""
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "/remember"
+
+    async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
+        """Backspace mode exit clears ghost text without needing a text edit."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+            assert chat._text_area.argument_hint == "[context]"
+
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "remember "
+            assert chat._text_area.argument_hint == ""
+            assert _render_text_area_line(chat._text_area) == "remember"
+
+    async def test_hint_not_shown_in_normal_mode(self) -> None:
+        """Ghost text does not appear when not in command mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("remember ")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.argument_hint == ""
+
+    async def test_hint_not_shown_for_unknown_command(self) -> None:
+        """Ghost text does not appear for commands without argument hints."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("help ")
+            await pilot.pause()
+
+            assert chat._text_area.argument_hint == ""
+
+    async def test_pre_key_dismiss_hides_popup_on_space(self) -> None:
+        """Popup is hidden before TextArea processes the space character."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Trigger command mode with active suggestions
+            chat._text_area.insert("/")
+            await _pause_for_strip(pilot)
+            chat._text_area.insert("rem")
+            await pilot.pause()
+            assert chat._current_suggestions
+            assert popup.styles.display == "block"
+
+            # Type space — popup should dismiss
+            await pilot.press("space")
+            await pilot.pause()
+            assert popup.styles.display == "none"
+
+
 class TestScrollCursorVisibleDesync:
     """scroll_cursor_visible should not crash on cursor/document desync."""
 
@@ -2289,3 +2833,37 @@ class TestScrollCursorVisibleDesync:
                 result = text_area.scroll_cursor_visible()
 
             assert result == Offset(0, 0)
+
+
+class TestSetCursorBlink:
+    """`ChatInput.set_cursor_blink` toggles cursor blink without changing focus."""
+
+    async def test_toggles_reactive(self) -> None:
+        """Pause flips `cursor_blink` to False; resume flips it back to True."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            assert chat._text_area.cursor_blink is True
+
+            chat.set_cursor_blink(blink=False)
+            await pilot.pause()
+            assert chat._text_area.cursor_blink is False
+
+            chat.set_cursor_blink(blink=True)
+            await pilot.pause()
+            assert chat._text_area.cursor_blink is True
+
+    async def test_preserves_widget_focus(self) -> None:
+        """Pausing must not blur the widget."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+            chat._text_area.focus()
+            await pilot.pause()
+
+            chat.set_cursor_blink(blink=False)
+            await pilot.pause()
+
+            assert chat._text_area.has_focus is True

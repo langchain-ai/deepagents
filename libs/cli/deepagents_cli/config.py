@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlparse
 
+from deepagents_cli._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
+from deepagents_cli._git import resolve_git_branch
 from deepagents_cli._version import __version__
 
 logger = logging.getLogger(__name__)
@@ -32,8 +34,8 @@ _bootstrap_done = False
 """Whether `_ensure_bootstrap()` has executed."""
 
 _bootstrap_lock = threading.Lock()
-"""Guards `_ensure_bootstrap()` against concurrent access from the main
-thread and the prewarm worker thread."""
+"""Guards `_ensure_bootstrap()` against concurrent access from the main thread
+and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
@@ -243,12 +245,14 @@ if TYPE_CHECKING:
     console: Console
 
 MODE_PREFIXES: dict[str, str] = {
+    "shell_incognito": "!!",
     "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
 
 MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell_incognito": "$",
     "shell": "$",
     "command": "/",
 }
@@ -263,8 +267,33 @@ if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
     )
     raise ValueError(msg)
 
-PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
+_MODE_PREFIXES_BY_LENGTH: tuple[tuple[str, str], ...] = tuple(
+    sorted(MODE_PREFIXES.items(), key=lambda item: len(item[1]), reverse=True)
+)
+"""Mode entries ordered longest-prefix-first.
+
+Pre-sorted at import so `detect_mode_prefix` runs in constant time per
+keystroke without re-sorting.
+"""
+
+
+def detect_mode_prefix(text: str) -> tuple[str, str] | None:
+    """Return the longest mode prefix and mode for `text`, if any.
+
+    Longer prefixes win so multi-character triggers like `!!` are matched
+    before their single-character prefixes (`!`).
+
+    Args:
+        text: Input text that may start with a mode trigger.
+
+    Returns:
+        Tuple of `(prefix, mode)` for the longest matching trigger, otherwise
+        `None`.
+    """
+    for mode, prefix in _MODE_PREFIXES_BY_LENGTH:
+        if text.startswith(prefix):
+            return prefix, mode
+    return None
 
 
 class CharsetMode(StrEnum):
@@ -495,14 +524,22 @@ def is_ascii_mode() -> bool:
 
 
 def newline_shortcut() -> str:
-    """Return the platform-native label for the newline keyboard shortcut.
+    """Return the terminal-appropriate label for the newline keyboard shortcut.
 
-    macOS labels the modifier "Option" while other platforms use Ctrl+J
-    as the most reliable cross-terminal shortcut.
+    Prefers `Shift+Enter` when the terminal is known to support the kitty
+    keyboard protocol, either via conservative terminal-identity heuristics
+    or the `DEEPAGENTS_CLI_KITTY_KEYBOARD` override. Falls back to
+    `Option+Enter` on macOS and `Ctrl+J` elsewhere — both survive legacy
+    terminals that strip the shift modifier from `Enter`.
 
     Returns:
-        A human-readable shortcut string, e.g. `'Option+Enter'` or `'Ctrl+J'`.
+        A human-readable shortcut string,
+            e.g. `'Shift+Enter'`, `'Option+Enter'`, or `'Ctrl+J'`.
     """
+    from deepagents_cli.terminal_capabilities import supports_kitty_keyboard_protocol
+
+    if supports_kitty_keyboard_protocol():
+        return "Shift+Enter"
     return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
 
 
@@ -553,6 +590,9 @@ def get_banner() -> str:
     else:
         banner = _UNICODE_BANNER
 
+    if is_env_truthy(HIDE_SPLASH_VERSION):
+        return banner.replace(f"v{__version__}", "")
+
     if _is_editable_install():
         banner = banner.replace(f"v{__version__}", f"v{__version__} (local)")
 
@@ -578,16 +618,14 @@ hitting the default LangGraph ceiling.
 _git_branch_cache: dict[str, str | None] = {}
 """Per-cwd cache of resolved git branch names.
 
-Avoids repeated `git rev-parse` subprocess calls within the same session. Keyed
-by `str(Path.cwd())`; `None` values indicate the directory is not inside a git
-repository.
+Avoids repeated git branch resolution within the same session. Keyed by
+`str(Path.cwd())`; `None` values indicate the directory is not inside a git
+repository or that resolution failed.
 """
 
 
 def _get_git_branch() -> str | None:
     """Return the current git branch name, or `None` if not in a repo."""
-    import subprocess  # noqa: S404
-
     try:
         cwd = str(Path.cwd())
     except OSError:
@@ -597,21 +635,13 @@ def _get_git_branch() -> str | None:
         return _git_branch_cache[cwd]
 
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip() or None
-            _git_branch_cache[cwd] = branch
-            return branch
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        branch = resolve_git_branch(cwd) or None
+    except OSError:
         logger.debug("Could not determine git branch", exc_info=True)
-    _git_branch_cache[cwd] = None
-    return None
+        branch = None
+
+    _git_branch_cache[cwd] = branch
+    return branch
 
 
 def build_stream_config(
@@ -1434,14 +1464,6 @@ class SessionState:
         return self.auto_approve
 
 
-SHELL_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "execute"})
-"""Tool names recognized as shell/command-execution tools.
-
-Only `'execute'` is registered by the SDK and CLI backends in practice.
-`'bash'` and `'shell'` are legacy names carried over and kept as
-backwards-compatible aliases.
-"""
-
 DANGEROUS_SHELL_PATTERNS = (
     "$(",  # Command substitution
     "`",  # Backtick command substitution
@@ -1817,12 +1839,18 @@ def _get_default_model_spec() -> str:
     3. Auto-detection based on available API credentials.
 
     Returns:
-        Model specification in provider:model format.
+        Model specification in `provider:model` format.
 
     Raises:
-        ModelConfigError: If no credentials are configured.
+        NoCredentialsConfiguredError: If no credentials are configured for any
+            of the auto-detectable providers. Callers may catch this to defer
+            startup and prompt for credentials interactively.
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+    from deepagents_cli.model_config import (
+        ModelConfig,
+        NoCredentialsConfiguredError,
+        get_provider_auth_status,
+    )
 
     config = ModelConfig.load()
     if config.default_model:
@@ -1831,24 +1859,25 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
-    s = _get_settings()
-    if s.has_openai:
-        return "openai:gpt-5.2"
-    if s.has_anthropic:
-        return "anthropic:claude-sonnet-4-6"
-    if s.has_google:
+    # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
+    # to `as_legacy_bool() -> None`). For the three explicit-credential
+    # providers below, an UNKNOWN result means we cannot prove auth works, so
+    # we fall through rather than pick an unverifiable default. If an
+    # implicit-auth provider (e.g., Vertex ADC) is added to this fallback
+    # list, switch to checking `state` against the relevant
+    # `ProviderAuthState` members directly.
+    if get_provider_auth_status("openai").as_legacy_bool() is True:
+        return "openai:gpt-5.5"
+    if get_provider_auth_status("anthropic").as_legacy_bool() is True:
+        return "anthropic:claude-opus-4-7"
+    if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
-    if s.has_vertex_ai:
-        return "google_vertexai:gemini-3.1-pro-preview"
-    if s.has_nvidia:
-        return "nvidia:nvidia/nemotron-3-super-120b-a12b"
 
     msg = (
         "No credentials configured. Please set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
-        "GOOGLE_CLOUD_PROJECT, or NVIDIA_API_KEY"
+        "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
     )
-    raise ModelConfigError(msg)
+    raise NoCredentialsConfiguredError(msg)
 
 
 _OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"
@@ -1863,36 +1892,52 @@ _OPENROUTER_APP_TITLE = "Deep Agents CLI"
 _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 """Default `app_categories` (maps to `X-OpenRouter-Categories`) for OpenRouter."""
 
+_cli_openrouter_profile_registered = False
+"""Process-wide guard so the CLI OpenRouter profile is registered exactly once."""
 
-def _apply_openrouter_defaults(kwargs: dict[str, Any]) -> None:
-    """Inject default OpenRouter attribution kwargs.
 
-    Sets `app_url`, `app_title`, and `app_categories` via `setdefault` so
-    that user-supplied values in config take precedence. These map to the
-    `HTTP-Referer`, `X-Title`, and `X-OpenRouter-Categories` headers that
-    `ChatOpenRouter` sends for app attribution
-    (see https://openrouter.ai/docs/app-attribution).
+def _cli_openrouter_attribution_kwargs() -> dict[str, Any]:
+    """CLI-specific OpenRouter attribution kwargs.
 
-    Users can override either value provider-wide or per-model in
-    `~/.deepagents/config.toml`:
+    Layered on top of the SDK's built-in factory via profile stacking; these
+    values override the SDK defaults but still sit beneath any caller-supplied
+    `kwargs` (i.e. `config.toml`-resolved values), preserving the precedence
+    documented on `apply_provider_profile`.
 
-    ```toml
-    # Provider-wide
-    [models.providers.openrouter.params]
-    app_url = "https://myapp.com"
-    app_title = "My App"
-
-    # Per-model (shallow-merges on top of provider-wide)
-    [models.providers.openrouter.params."openai/gpt-oss-120b"]
-    app_title = "My App (GPT)"
-    ```
-
-    Args:
-        kwargs: Mutable kwargs dict to update in place.
+    Returns:
+        Mapping of `app_url` and `app_title` to spread into `init_chat_model`.
     """
-    kwargs.setdefault("app_url", _OPENROUTER_APP_URL)
-    kwargs.setdefault("app_title", _OPENROUTER_APP_TITLE)
-    kwargs.setdefault("app_categories", _OPENROUTER_APP_CATEGORIES)
+    return {
+        "app_url": _OPENROUTER_APP_URL,
+        "app_title": _OPENROUTER_APP_TITLE,
+    }
+
+
+def _ensure_cli_openrouter_profile_registered() -> None:
+    """Stack the CLI OpenRouter attribution onto the SDK's built-in profile.
+
+    Stacking (vs. duplicating the inline `_get_provider_kwargs` path) means the
+    SDK's `pre_init` version check fires exactly once and the CLI's app-
+    attribution defaults are composed via the same `apply_provider_profile`
+    path used for every other provider. `register_provider_profile` merges on
+    top of the existing built-in registration: the CLI's `init_kwargs` and
+    factory output win on shared keys, while the built-in's `pre_init` and
+    factory still chain.
+    """
+    global _cli_openrouter_profile_registered  # noqa: PLW0603
+    if _cli_openrouter_profile_registered:
+        return
+
+    from deepagents.profiles.provider import ProviderProfile, register_provider_profile
+
+    register_provider_profile(
+        "openrouter",
+        ProviderProfile(
+            init_kwargs={"app_categories": _OPENROUTER_APP_CATEGORIES},
+            init_kwargs_factory=_cli_openrouter_attribution_kwargs,
+        ),
+    )
+    _cli_openrouter_profile_registered = True
 
 
 def _get_provider_kwargs(
@@ -1920,7 +1965,11 @@ def _get_provider_kwargs(
     base_url = config.get_base_url(provider)
     if base_url:
         result["base_url"] = base_url
-    from deepagents_cli.model_config import PROVIDER_API_KEY_ENV, resolve_env_var
+    from deepagents_cli.model_config import (
+        OPTIONAL_AUTH_ENV,
+        PROVIDER_API_KEY_ENV,
+        resolve_env_var,
+    )
 
     api_key_env = config.get_api_key_env(provider)
     if not api_key_env:
@@ -1936,11 +1985,38 @@ def _get_provider_kwargs(
         if api_key:
             result["api_key"] = api_key
 
-    if provider == "openrouter":
-        from deepagents._models import check_openrouter_version  # noqa: PLC2701
-
-        check_openrouter_version()
-        _apply_openrouter_defaults(result)
+    # `langchain-ollama` has no `api_key` kwarg; hosted Ollama (Cloud or
+    # gateway) needs the bearer token threaded through `client_kwargs.headers`.
+    if provider == "ollama":
+        optional_env = OPTIONAL_AUTH_ENV.get(provider)
+        optional_key = resolve_env_var(optional_env) if optional_env else None
+        if optional_key:
+            client_kwargs = result.get("client_kwargs")
+            if client_kwargs is not None and not isinstance(client_kwargs, dict):
+                logger.warning(
+                    "Provider 'ollama' has non-mapping client_kwargs (%s);"
+                    " skipping Authorization header injection",
+                    type(client_kwargs).__name__,
+                )
+            else:
+                client_kwargs = dict(client_kwargs) if client_kwargs else {}
+                headers = client_kwargs.get("headers")
+                if headers is not None and not isinstance(headers, dict):
+                    logger.warning(
+                        "Provider 'ollama' has non-mapping client_kwargs.headers"
+                        " (%s); skipping Authorization header injection",
+                        type(headers).__name__,
+                    )
+                else:
+                    headers = dict(headers) if headers else {}
+                    has_auth_header = any(
+                        isinstance(k, str) and k.lower() == "authorization"
+                        for k in headers
+                    )
+                    if not has_auth_header:
+                        headers["Authorization"] = f"Bearer {optional_key}"
+                        client_kwargs["headers"] = headers
+                        result["client_kwargs"] = client_kwargs
 
     return result
 
@@ -2024,11 +2100,15 @@ def _create_model_via_init(
         Instantiated `BaseChatModel`.
 
     Raises:
-        ModelConfigError: On import, value, or runtime errors.
+        UnknownProviderError: When `provider` is empty and
+            `init_chat_model` also fails to infer one. Carries the
+            model spec and docs URL as attributes so the UI can render
+            a clickable link.
+        ModelConfigError: On other import, value, or runtime errors.
     """
     from langchain.chat_models import init_chat_model
 
-    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_cli.model_config import ModelConfigError, UnknownProviderError
 
     try:
         if provider:
@@ -2065,7 +2145,12 @@ def _create_model_via_init(
             )
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
-        spec = f"{provider}:{model_name}" if provider else model_name
+        if not provider:
+            # Both CLI auto-detection and `init_chat_model`'s own inference
+            # failed; surface a structured error so the UI can render the
+            # docs URL as a clickable link.
+            raise UnknownProviderError(model_spec=model_name) from e
+        spec = f"{provider}:{model_name}"
         msg = f"Invalid model configuration for '{spec}': {e}"
         raise ModelConfigError(msg) from e
     except Exception as e:  # provider SDK auth/network errors
@@ -2185,9 +2270,10 @@ def create_model(
         A `ModelResult` containing the model and its metadata.
 
     Raises:
-        ModelConfigError: If provider cannot be determined from the model name,
-            required provider package is not installed, or no credentials are
-            configured.
+        ModelConfigError: If provider cannot be determined from the model name
+            or required provider package is not installed.
+        MissingCredentialsError: If no credentials are configured for the
+            resolved provider.
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
@@ -2195,7 +2281,15 @@ def create_model(
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError, ModelSpec
+    from deepagents_cli.model_config import (
+        IMPLICIT_AUTH_PROVIDERS,
+        ModelConfig,
+        ModelConfigError,
+        ModelSpec,
+        apply_stored_credentials,
+        get_credential_env_var,
+        has_provider_credentials,
+    )
 
     if not model_spec:
         model_spec = _get_default_model_spec()
@@ -2225,8 +2319,62 @@ def create_model(
         model_name = model_spec
         provider = detect_provider(model_spec) or ""
 
+    # Stored API keys (added via `/auth`) take effect by being copied onto
+    # the env var name LangChain reads. Apply before the credential check so
+    # `has_provider_credentials` and the downstream SDK see the same value.
+    if provider:
+        apply_stored_credentials(provider)
+
+    # Early credential check — fail fast with an actionable message instead of
+    # letting the provider SDK raise an opaque auth error on first invocation.
+    # Providers that support implicit auth (e.g., Vertex AI ADC) are excluded
+    # because their env-var mapping is not a reliable indicator.
+    if provider and provider not in IMPLICIT_AUTH_PROVIDERS:
+        cred_status = has_provider_credentials(provider)
+        if cred_status is False:
+            from deepagents_cli.model_config import MissingCredentialsError
+
+            env_var = get_credential_env_var(provider)
+            display_env = env_var or f"<{provider} API key>"
+            msg = (
+                f"No credentials found for provider '{provider}'. "
+                f"Please set the {display_env} environment variable."
+            )
+            raise MissingCredentialsError(msg, provider=provider, env_var=env_var)
+
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
+
+    # Compose under existing kwargs: profile < config.toml < --model-params
+    # (applied below). The CLI's OpenRouter profile is stacked on top of the
+    # built-in SDK profile so its `pre_init` (version check) and factory
+    # (app attribution) compose into a single `apply_provider_profile` call.
+    if provider:
+        from deepagents.profiles.provider import apply_provider_profile
+
+        if provider == "openrouter":
+            _ensure_cli_openrouter_profile_registered()
+
+        spec = f"{provider}:{model_name}" if model_name else provider
+        try:
+            kwargs = apply_provider_profile(spec, kwargs)
+        except ModelConfigError:
+            raise
+        except Exception as exc:
+            # `pre_init` and `init_kwargs_factory` callables registered on a
+            # `ProviderProfile` may raise arbitrary exceptions (e.g. an
+            # `ImportError` from the OpenRouter min-version check). Surface
+            # them as `ModelConfigError` so the CLI's error path renders an
+            # actionable message instead of a raw stack trace.
+            logger.debug(
+                "ProviderProfile resolution for %r failed.", spec, exc_info=True
+            )
+            msg = (
+                f"Failed to apply provider profile for '{spec}': {exc}. "
+                f"Check that the provider package is installed and up to date, "
+                f"or set explicit kwargs via `--model-params`."
+            )
+            raise ModelConfigError(msg) from exc
 
     # CLI --model-params take highest priority
     if extra_kwargs:

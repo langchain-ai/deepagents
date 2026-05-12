@@ -66,7 +66,7 @@ def load_benchmark_data(
     Raises:
         ValueError: If the split name is not recognized.
     """
-    from datasets import load_dataset
+    from datasets import load_dataset  # noqa: PLC0415  # heavy optional dep
 
     if split not in SUPPORTED_SPLITS:
         msg = f"Unknown split {split!r}. Available: {sorted(SUPPORTED_SPLITS)}"
@@ -115,8 +115,8 @@ def chunk_text(text: str, *, chunk_size: int = 4096) -> list[str]:
     Returns:
         List of text chunks.
     """
-    import nltk
-    import tiktoken
+    import nltk  # noqa: PLC0415  # heavy optional dep, lazy-loaded only when chunking is invoked
+    import tiktoken  # noqa: PLC0415  # heavy optional dep, lazy-loaded only when chunking is invoked
 
     _ensure_nltk_tokenizer(nltk)
 

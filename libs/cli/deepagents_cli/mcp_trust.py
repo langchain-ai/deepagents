@@ -18,10 +18,9 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from deepagents_cli.model_config import DEFAULT_CONFIG_PATH as _DEFAULT_CONFIG_PATH
 
-_DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
-_DEFAULT_CONFIG_PATH = _DEFAULT_CONFIG_DIR / "config.toml"
+logger = logging.getLogger(__name__)
 
 
 def compute_config_fingerprint(config_paths: list[Path]) -> str:

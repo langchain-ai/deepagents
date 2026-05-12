@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from langchain.chat_models import init_chat_model
@@ -11,9 +11,21 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 from deepagents import __version__ as deepagents_version
-from deepagents.graph import get_default_model
 
 pytest_plugins = ["tests.evals.pytest_reporter"]
+
+
+def _parse_openrouter_providers(value: str) -> list[str]:
+    """Split a comma-separated provider spec into OpenRouter's `only` list."""
+    # Keep this local instead of importing from `deepagents_harbor.deepagents_wrapper`.
+    # Pytest imports conftest during collection, and the wrapper import path pulls
+    # in Harbor/LangSmith integration modules that are not needed for model setup.
+    parts = [part.strip() for part in value.split(",")]
+    providers = [part for part in parts if part]
+    if not providers:
+        msg = "openrouter_provider must contain at least one non-empty provider name"
+        raise ValueError(msg)
+    return providers
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -26,6 +38,14 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "eval_category(name): tag an eval test with a category for grouping and reporting",
+    )
+    config.addinivalue_line(
+        "markers",
+        "eval_tier(name): tag an eval as 'baseline' (regression gate) or 'hillclimb' (progress tracking)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "repl(*allowed): declare optional REPL backends allowed for a test/module; used with --repl quickjs|langchain",
     )
 
     tracing_enabled = any(
@@ -47,13 +67,20 @@ def pytest_configure(config: pytest.Config) -> None:
             returncode=1,
         )
 
+    if not config.getoption("--model"):
+        pytest.exit(
+            "Aborting: --model is required. Pass an explicit model identifier, "
+            "e.g. `--model claude-sonnet-4-6`.",
+            returncode=1,
+        )
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--model",
         action="store",
         default=None,
-        help="Model to run evals against. If omitted, uses deepagents.graph.get_default_model().model.",
+        help="Model to run evals against (required). E.g. --model claude-sonnet-4-6.",
     )
     parser.addoption(
         "--eval-category",
@@ -62,34 +89,100 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Run only evals tagged with this category (repeatable). E.g. --eval-category memory --eval-category tool_use",
     )
     parser.addoption(
+        "--eval-category-exclude",
+        action="append",
+        default=[],
+        help="Skip evals tagged with this category, even when --eval-category would include them (repeatable). E.g. --eval-category-exclude memory",
+    )
+    parser.addoption(
+        "--eval-tier",
+        action="append",
+        default=[],
+        help="Run only evals tagged with this tier (repeatable). E.g. --eval-tier baseline --eval-tier hillclimb",
+    )
+    parser.addoption(
         "--openrouter-provider",
         action="store",
         default=None,
-        help="Pin OpenRouter to a specific provider. E.g. --openrouter-provider MiniMax",
+        help=(
+            "Pin OpenRouter to one or more providers (comma-separated allowlist). "
+            "E.g. --openrouter-provider MiniMax or --openrouter-provider MiniMax,Fireworks"
+        ),
+    )
+    parser.addoption(
+        "--openrouter-allow-fallbacks",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow OpenRouter to fall back outside --openrouter-provider when the "
+            "listed providers are unavailable. Default is strict (no fallbacks)."
+        ),
+    )
+    parser.addoption(
+        "--openai-reasoning-effort",
+        action="store",
+        choices=("minimal", "low", "medium", "high", "xhigh"),
+        default=None,
+        help="Apply reasoning effort to OpenAI models. E.g. --openai-reasoning-effort high",
+    )
+    parser.addoption(
+        "--repl",
+        action="store",
+        choices=("quickjs", "langchain"),
+        default=None,
+        help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests bind their tools directly instead of routing through a REPL.",
     )
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    categories = config.getoption("--eval-category")
-    if not categories:
+def _filter_by_marker(
+    config: pytest.Config,
+    items: list[pytest.Item],
+    *,
+    option: str,
+    marker_name: str,
+    exclude_option: str | None = None,
+) -> None:
+    """Keep items whose *marker_name* value is in the include list and not in the exclude list.
+
+    An empty include list means "include everything"; an empty exclude list
+    means "exclude nothing". When a marker value appears in both lists, the
+    exclude list wins.
+
+    Exits the test session with returncode 1 if any include or exclude value
+    does not match a marker on the collected tests.
+
+    Args:
+        config: The pytest config object.
+        items: Mutable list of collected test items (modified in-place).
+        option: CLI include option name (e.g. `--eval-category`).
+        marker_name: Pytest marker to read (e.g. `eval_category`).
+        exclude_option: CLI exclude option name, if supported.
+    """
+    values = config.getoption(option)
+    excluded = config.getoption(exclude_option) if exclude_option else []
+    if not values and not excluded:
         return
 
-    known = {
-        m.args[0] for item in items if (m := item.get_closest_marker("eval_category")) and m.args
-    }
-    unknown = set(categories) - known
-    if unknown:
-        msg = (
-            f"Unknown --eval-category values: {sorted(unknown)}. "
-            f"Known categories in collected tests: {sorted(known)}"
-        )
+    known = {m.args[0] for item in items if (m := item.get_closest_marker(marker_name)) and m.args}
+    unknown = set(values) - known
+    unknown_excluded = set(excluded) - known
+    if unknown or unknown_excluded:
+        parts = []
+        if unknown:
+            parts.append(f"Unknown {option} values: {sorted(unknown)}")
+        if unknown_excluded:
+            parts.append(f"Unknown {exclude_option} values: {sorted(unknown_excluded)}")
+        msg = f"{'; '.join(parts)}. Known values in collected tests: {sorted(known)}"
         pytest.exit(msg, returncode=1)
 
     selected: list[pytest.Item] = []
     deselected: list[pytest.Item] = []
     for item in items:
-        marker = item.get_closest_marker("eval_category")
-        if marker and marker.args and marker.args[0] in categories:
+        marker = item.get_closest_marker(marker_name)
+        marker_value = marker.args[0] if marker and marker.args else None
+        included = not values or marker_value in values
+        is_excluded = marker_value in excluded
+        if included and not is_excluded:
             selected.append(item)
         else:
             deselected.append(item)
@@ -97,12 +190,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     config.hook.pytest_deselected(items=deselected)
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    _filter_by_marker(
+        config,
+        items,
+        option="--eval-category",
+        marker_name="eval_category",
+        exclude_option="--eval-category-exclude",
+    )
+    _filter_by_marker(config, items, option="--eval-tier", marker_name="eval_tier")
+
+
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "model_name" not in metafunc.fixturenames:
         return
 
-    model_opt = metafunc.config.getoption("--model")
-    model_name = model_opt or str(get_default_model().model)
+    model_name = metafunc.config.getoption("--model")
     metafunc.parametrize("model_name", [model_name])
 
 
@@ -111,15 +214,29 @@ def model_name(request: pytest.FixtureRequest) -> str:
     return str(request.param)
 
 
+ReplName = Literal["quickjs", "langchain"]
+
+
+@pytest.fixture
+def repl_name(request: pytest.FixtureRequest) -> ReplName | None:
+    marker = request.node.get_closest_marker("repl")
+    selected = request.config.getoption("--repl")
+    if selected is None:
+        return None
+    if marker is None or not marker.args:
+        pytest.skip("--repl was provided but this test is not marked with @pytest.mark.repl(...)")
+    allowed = tuple(str(arg) for arg in marker.args)
+    if selected not in allowed:
+        pytest.skip(
+            f"--repl={selected} is not supported for this test; allowed values: {', '.join(allowed)}"
+        )
+    return selected
+
+
 @pytest.fixture(scope="session")
 def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, Any]:
-    model_opt = request.config.getoption("--model")
-    default_model = get_default_model()
-    model_name = model_opt or str(
-        getattr(default_model, "model", None) or getattr(default_model, "model_name", "")
-    )
     return {
-        "model": model_name,
+        "model": request.config.getoption("--model"),
         "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
         "deepagents_version": deepagents_version,
     }
@@ -129,17 +246,35 @@ def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, A
 def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
     kwargs: dict[str, Any] = {}
     provider = request.config.getoption("--openrouter-provider")
+    allow_fallbacks = bool(request.config.getoption("--openrouter-allow-fallbacks"))
     if provider:
         if not model_name.startswith("openrouter:"):
             msg = "--openrouter-provider requires an openrouter: model prefix"
             raise ValueError(msg)
         kwargs["openrouter_provider"] = {
-            "only": [provider],
-            "allow_fallbacks": False,
+            "only": _parse_openrouter_providers(provider),
+            "allow_fallbacks": allow_fallbacks,
         }
+    elif allow_fallbacks:
+        msg = "--openrouter-allow-fallbacks requires --openrouter-provider"
+        raise ValueError(msg)
     if model_name.startswith("openrouter:"):
         # OpenRouter SDK passes timeout=None to httpx, disabling its default
         # 5s read timeout. This causes indefinite hangs on TCP stalls.
         # See: https://github.com/OpenRouterTeam/python-sdk/issues/72
         kwargs["timeout"] = 120_000  # ms
+    if model_name.startswith("openai:"):
+        # Match the SDK's built-in `openai` provider profile, which sets
+        # `use_responses_api=True` for all openai: models. The fixture
+        # pre-builds the model so the profile layer doesn't apply
+        # automatically — mirror it explicitly. Also required for
+        # `reasoning_effort` + function tools, which OpenAI gates to
+        # /v1/responses for gpt-5.x.
+        kwargs["use_responses_api"] = True
+    reasoning_effort = request.config.getoption("--openai-reasoning-effort")
+    if reasoning_effort:
+        if not model_name.startswith("openai:"):
+            msg = "--openai-reasoning-effort requires an openai: model prefix"
+            raise ValueError(msg)
+        kwargs["reasoning_effort"] = reasoning_effort
     return init_chat_model(model_name, **kwargs)

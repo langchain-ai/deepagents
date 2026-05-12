@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
@@ -72,6 +74,11 @@ configure_debug_logging(logger)
 
 _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
+
+_ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+_TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
+"""Tool calls whose argument/approval phase can be long enough to need feedback."""
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -225,6 +232,7 @@ class TextualUIAdapter:
             ]
             | None
         ) = None,
+        on_tool_complete: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -259,6 +267,14 @@ class TextualUIAdapter:
         When awaited, returns a `Future` that resolves to user answers.
         """
 
+        self._on_tool_complete = on_tool_complete
+        """Sync callback fired after each `ToolMessage` is processed.
+
+        The app uses this to refresh the footer's git branch as soon as an
+        agent-executed tool (e.g. `git checkout`) returns, instead of waiting
+        for the full turn to finish.
+        """
+
         # State tracking
         self._current_tool_messages: dict[str, ToolCallMessage] = {}
         """Map of tool call IDs to their message widgets."""
@@ -267,8 +283,8 @@ class TextualUIAdapter:
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
 
-        self._on_tokens_hide: Callable[[], None] | None = None
-        """Called to hide the token display during streaming."""
+        self._on_tokens_pending: Callable[[], None] | None = None
+        """Called to show an unknown token count during streaming."""
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
@@ -465,25 +481,21 @@ async def execute_task_textual(
     # should be set together to avoid inconsistent status-bar behavior.
     token_cbs = (
         adapter._on_tokens_update,
-        adapter._on_tokens_hide,
+        adapter._on_tokens_pending,
         adapter._on_tokens_show,
     )
     if any(token_cbs) and not all(token_cbs):
         logger.warning(
-            "Token callbacks partially wired (update=%s, hide=%s, show=%s); "
+            "Token callbacks partially wired (update=%s, pending=%s, show=%s); "
             "token display may behave inconsistently",
             adapter._on_tokens_update is not None,
-            adapter._on_tokens_hide is not None,
+            adapter._on_tokens_pending is not None,
             adapter._on_tokens_show is not None,
         )
 
-    # Show spinner
-    if adapter._set_spinner:
-        await adapter._set_spinner("Thinking")
-
-    # Hide token display during streaming (will be shown with accurate count at end)
-    if adapter._on_tokens_hide:
-        adapter._on_tokens_hide()
+    # Show unknown token count during streaming; the accurate count arrives at turn end.
+    if adapter._on_tokens_pending:
+        adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
@@ -512,6 +524,14 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+
+            # Show the Thinking spinner before each astream iteration so
+            # both the first turn and HITL/ask_user resumes surface feedback
+            # while the model processes input. Skip when
+            # `_current_tool_messages` is non-empty so running-tool
+            # indicators remain the dominant signal.
+            if adapter._set_spinner and not adapter._current_tool_messages:
+                await adapter._set_spinner("Thinking")
 
             async for chunk in agent.astream(
                 stream_input,
@@ -557,6 +577,31 @@ async def execute_task_textual(
                                         pending_ask_user[interrupt_obj.id] = (
                                             validated_ask_user
                                         )
+                                        tool_id = validated_ask_user["tool_call_id"]
+                                        if tool_id not in displayed_tool_ids:
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+                                            tool_msg = ToolCallMessage(
+                                                "ask_user",
+                                                {
+                                                    "questions": validated_ask_user[
+                                                        "questions"
+                                                    ]
+                                                },
+                                            )
+                                            try:
+                                                await adapter._mount_message(tool_msg)
+                                            except Exception:
+                                                logger.exception(
+                                                    "Failed to mount ask_user "
+                                                    "tool row for %s",
+                                                    tool_id,
+                                                )
+                                            else:
+                                                displayed_tool_ids.add(tool_id)
+                                                adapter._current_tool_messages[
+                                                    tool_id
+                                                ] = tool_msg
                                         interrupt_occurred = True
                                         await dispatch_hook("input.required", {})
                                     except ValidationError:
@@ -677,12 +722,6 @@ async def execute_task_textual(
                                 tool_id,
                             )
 
-                        # Reshow spinner only when all in-flight tools have
-                        # completed (avoids premature "Thinking..." when
-                        # parallel tool calls are active).
-                        if adapter._set_spinner and not adapter._current_tool_messages:
-                            await adapter._set_spinner("Thinking")
-
                         # Show file operation results - always show diffs in chat
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -697,6 +736,25 @@ async def execute_task_textual(
                             if record.diff:
                                 await adapter._mount_message(
                                     DiffMessage(record.diff, record.display_path)
+                                )
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active). Must happen after
+                        # the diff is mounted so the spinner stays at the
+                        # bottom of the messages container.
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
+
+                        if adapter._on_tool_complete is not None:
+                            try:
+                                adapter._on_tool_complete()
+                            except Exception:
+                                # A footer refresh failure must never abort
+                                # agent streaming — log and keep going.
+                                logger.warning(
+                                    "on_tool_complete callback failed",
+                                    exc_info=True,
                                 )
                         continue
 
@@ -755,9 +813,6 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    # Hide spinner when assistant starts responding
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner(None)
                                     msg_id = f"asst-{uuid.uuid4().hex[:8]}"
                                     # Mark active BEFORE mounting so pruning
                                     # (triggered by mount) won't remove it
@@ -769,6 +824,19 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
+                                    # Keep the Thinking spinner visible after
+                                    # the streaming message so the user still
+                                    # sees activity if the model pauses between
+                                    # finishing text and emitting its next
+                                    # action (e.g. a tool call). The mount
+                                    # above placed the new message at the end
+                                    # of the container; this re-anchors the
+                                    # spinner after it.
+                                    if (
+                                        adapter._set_spinner
+                                        and not adapter._current_tool_messages
+                                    ):
+                                        await adapter._set_spinner("Thinking")
 
                                 # Append just the new text chunk for smoother
                                 # streaming (uses MarkdownStream internally for
@@ -864,8 +932,16 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                # Hide spinner before showing tool call
-                                if adapter._set_spinner:
+                                keep_thinking_spinner = (
+                                    buffer_name in _TOOL_CALLS_KEEP_THINKING_SPINNER
+                                )
+
+                                # Hide spinner before showing most tool calls.
+                                # `edit_file` can spend noticeable time between
+                                # argument streaming, HITL interrupt delivery, and
+                                # approval handling, so re-anchor Thinking below
+                                # the row instead of leaving the UI visually idle.
+                                if adapter._set_spinner and not keep_thinking_spinner:
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
@@ -877,6 +953,8 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
+                                if adapter._set_spinner and keep_thinking_spinner:
+                                    await adapter._set_spinner("Thinking")
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -918,6 +996,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
@@ -970,15 +1049,22 @@ async def execute_task_textual(
                                 }
 
                         result_type = result.get("type")
+                        tool_id = ask_req["tool_call_id"]
                         if result_type == "answered":
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                tool_id = ask_req["tool_call_id"]
-                                if tool_id in adapter._current_tool_messages:
-                                    tool_msg = adapter._current_tool_messages[tool_id]
+                                tool_msg = adapter._current_tool_messages.pop(
+                                    tool_id, None
+                                )
+                                if tool_msg is not None:
                                     tool_msg.set_success("User answered")
-                                    adapter._current_tool_messages.pop(tool_id, None)
+                                else:
+                                    logger.warning(
+                                        "ask_user tool_id %s missing from "
+                                        "_current_tool_messages on answered",
+                                        tool_id,
+                                    )
                             else:
                                 logger.error(
                                     "ask_user answered payload had non-list "
@@ -991,12 +1077,31 @@ async def execute_task_textual(
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
+                                tool_msg = adapter._current_tool_messages.pop(
+                                    tool_id, None
+                                )
+                                if tool_msg is not None:
+                                    tool_msg.set_error(
+                                        "invalid ask_user answers payload"
+                                    )
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            # Halt the turn on cancel; error branches still
+                            # resume so the agent can react to the failure.
+                            ask_user_cancelled = True
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            if tool_msg is not None:
+                                tool_msg.set_rejected()
+                            else:
+                                logger.warning(
+                                    "ask_user tool_id %s missing from "
+                                    "_current_tool_messages on cancelled",
+                                    tool_id,
+                                )
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1007,6 +1112,9 @@ async def execute_task_textual(
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            if tool_msg is not None:
+                                tool_msg.set_error(error_text)
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1014,9 +1122,13 @@ async def execute_task_textual(
                         )
                         resume_payload[interrupt_id] = {
                             "status": "error",
-                            "error": "ask_user not supported by this UI",
+                            "error": _ASK_USER_UNSUPPORTED_ERROR,
                             "answers": ["" for _ in questions],
                         }
+                        tool_id = ask_req["tool_call_id"]
+                        tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                        if tool_msg is not None:
+                            tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
@@ -1038,10 +1150,32 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        future = await adapter._request_approval(
-                            action_requests, assistant_id
-                        )
-                        decision = await future
+                        # Hide shell tool widgets while the approval renders the
+                        # same command; restore before processing the decision
+                        # so subsequent status updates render on the visible
+                        # widget.
+                        suppressed_tool_msgs = [
+                            tool_msg
+                            for tool_msg in adapter._current_tool_messages.values()
+                            if tool_msg.tool_name == "execute"
+                        ]
+                        for tool_msg in suppressed_tool_msgs:
+                            tool_msg.set_awaiting_approval()
+                        try:
+                            future = await adapter._request_approval(
+                                action_requests, assistant_id
+                            )
+                            decision = await future
+                        finally:
+                            for tool_msg in suppressed_tool_msgs:
+                                try:
+                                    tool_msg.clear_awaiting_approval()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to clear awaiting-approval "
+                                        "state on tool widget %s",
+                                        tool_msg.tool_name,
+                                    )
 
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")
@@ -1094,17 +1228,35 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                decisions = [
-                                    RejectDecision(type="reject")
-                                    for _ in action_requests
-                                ]
+                                reject_message = decision.get("message")
+                                reject_message = (
+                                    reject_message
+                                    if isinstance(reject_message, str)
+                                    and reject_message.strip()
+                                    else None
+                                )
+                                reject_decision: RejectDecision = (
+                                    RejectDecision(
+                                        type="reject", message=reject_message
+                                    )
+                                    if reject_message
+                                    else RejectDecision(type="reject")
+                                )
+                                decisions = [reject_decision for _ in action_requests]
                                 tool_msgs = list(
                                     adapter._current_tool_messages.values()
                                 )
                                 for tool_msg in tool_msgs:
-                                    tool_msg.set_rejected()
+                                    tool_msg.set_rejected(reason=reject_message)
                                 adapter._current_tool_messages.clear()
-                                any_rejected = True
+                                # Bare reject aborts the turn and shows the
+                                # canned "Command rejected" banner so the user
+                                # can redirect. When a reason is supplied, the
+                                # reason itself serves as feedback for the
+                                # agent: keep `any_rejected=False` so the
+                                # stream resumes and the banner is suppressed.
+                                if reject_message is None:
+                                    any_rejected = True
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1143,13 +1295,24 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
-                if suppress_resumed_output and not pending_ask_user:
-                    await adapter._mount_message(
-                        AppMessage(
-                            "Command rejected. Tell the agent what you'd like instead."
-                        )
+                if suppress_resumed_output and (
+                    ask_user_cancelled or not pending_ask_user
+                ):
+                    message = (
+                        "Question cancelled. Tell the agent what you'd like instead."
+                        if ask_user_cancelled
+                        else "Command rejected. Tell the agent what you'd like instead."
                     )
+                    await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    await _report_and_persist_tokens(
+                        adapter,
+                        agent,
+                        config,
+                        captured_input_tokens,
+                        captured_output_tokens,
+                        shield=True,
+                    )
                     return turn_stats
 
                 stream_input = Command(resume=resume_payload)
@@ -1236,6 +1399,8 @@ async def _handle_interrupt_cleanup(
             "Previous operation was cancelled."
         )
         await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning("Could not save interrupted state (network): %s", e)
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 
@@ -1267,13 +1432,29 @@ async def _persist_context_tokens(
 ) -> None:
     """Best-effort persist of the context token count into graph state.
 
+    The `aupdate_state` call is wrapped in `tracing_context(enabled=False)` so
+    this purely-internal bookkeeping write does not surface as a separate
+    `UpdateState` run in LangSmith. `_context_tokens` is already marked
+    `PrivateStateAttr`, but `aupdate_state` itself creates its own traced run
+    that would otherwise clutter the project's traces.
+
     Args:
         agent: The LangGraph agent (must support `aupdate_state`).
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
+    from langsmith import tracing_context
+
     try:
-        await agent.aupdate_state(config, {"_context_tokens": tokens})
+        with tracing_context(enabled=False):
+            await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning(
+            "Could not persist _context_tokens=%d (network): %s; "
+            "token count may be stale on resume",
+            tokens,
+            e,
+        )
     except Exception:  # non-critical; stale count on resume is acceptable
         logger.warning(
             "Failed to persist _context_tokens=%d; token count may be stale on resume",

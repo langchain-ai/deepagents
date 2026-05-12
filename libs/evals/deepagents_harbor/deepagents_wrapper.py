@@ -11,7 +11,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents.graph import get_default_model
 from deepagents_cli.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
@@ -47,6 +46,23 @@ load_dotenv()
 
 _MAX_FILE_LISTING = 10  # maximum files shown in the system prompt directory context
 
+
+def _parse_openrouter_providers(value: str) -> list[str]:
+    """Split a comma-separated provider spec into OpenRouter's `only` list.
+
+    Empty tokens (e.g. trailing commas, double commas, whitespace-only
+    entries) are dropped silently; the result must contain at least one
+    provider name or `ValueError` is raised so a typo can't silently
+    relax the routing pin to "any provider".
+    """
+    parts = [p.strip() for p in value.split(",")]
+    providers = [p for p in parts if p]
+    if not providers:
+        msg = "openrouter_provider must contain at least one non-empty provider name"
+        raise ValueError(msg)
+    return providers
+
+
 SYSTEM_MESSAGE = """
 You are an autonomous agent executing tasks in a sandboxed environment. Follow these instructions carefully.
 
@@ -75,51 +91,70 @@ class DeepAgentsWrapper(BaseAgent):
     def __init__(
         self,
         logs_dir: Path,
-        model_name: str | None = None,
+        model_name: str,
         temperature: float = 0.0,
         verbose: bool = True,
         use_cli_agent: bool = True,
         openrouter_provider: str | None = None,
         *args: Any,
+        openrouter_allow_fallbacks: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize Deep AgentsWrapper.
 
         Args:
-            logs_dir: Directory for storing logs
-            model_name: Name of the LLM model to use
-            temperature: Temperature setting for the model
-            verbose: Enable verbose output
-            use_cli_agent: If True, use create_cli_agent from deepagents-cli (default).
-                If False, use create_deep_agent from SDK.
-            openrouter_provider: Pin OpenRouter routing to a single provider
-                (e.g. `"MiniMax"`).
+            logs_dir: Directory for storing logs.
+            model_name: Name of the LLM model to use.
+            temperature: Temperature setting for the model.
+            verbose: Enable verbose output.
+            use_cli_agent: If `True`, use `create_cli_agent` from
+                `deepagents-cli` (default). If `False`, use
+                `create_deep_agent` from the SDK.
+            openrouter_provider: Pin OpenRouter routing to one or more
+                providers. Accepts a single name (e.g. `"MiniMax"`) or a
+                comma-separated allowlist (e.g. `"MiniMax,Fireworks"`),
+                fed into OpenRouter's `provider.only` field.
 
                 Requires an `openrouter:` model prefix.
+            openrouter_allow_fallbacks: When `False` (default), OpenRouter
+                will only route to a provider in `openrouter_provider` and
+                hard-fail otherwise (strict allowlist). When `True`, the
+                listed providers are preferred but OpenRouter may fall
+                back to any other provider hosting the model. Has no
+                effect on its own and requires `openrouter_provider` to
+                be set.
+
+        Raises:
+            ValueError: If `model_name` is empty/whitespace, if
+                `openrouter_provider` is set without an `openrouter:`
+                prefix, if `openrouter_provider` is non-empty but
+                contains no provider names (e.g. only commas/whitespace),
+                or if `openrouter_allow_fallbacks` is `True` without
+                `openrouter_provider`.
         """
+        if not model_name or not model_name.strip():
+            msg = "model_name must be a non-empty string"
+            raise ValueError(msg)
+
+        if openrouter_allow_fallbacks and not openrouter_provider:
+            msg = "openrouter_allow_fallbacks requires openrouter_provider"
+            raise ValueError(msg)
+
         super().__init__(logs_dir, model_name, *args, **kwargs)
 
-        if openrouter_provider and (model_name is None or not model_name.startswith("openrouter:")):
+        if openrouter_provider and not model_name.startswith("openrouter:"):
             msg = "openrouter_provider requires an openrouter: model prefix"
             raise ValueError(msg)
 
-        if model_name is None:
-            # Keep Harbor default aligned with the SDK default model.
-            model = get_default_model()
-            # Apply Harbor's runtime temperature knob to the SDK default when supported.
-            if hasattr(model, "temperature"):
-                model = model.model_copy(update={"temperature": temperature})
-            self._model = model
-            self._model_name = model.model
-        else:
-            self._model_name = model_name
-            model_kwargs: dict[str, Any] = {}
-            if openrouter_provider:
-                model_kwargs["openrouter_provider"] = {
-                    "only": [openrouter_provider],
-                    "allow_fallbacks": False,
-                }
-            self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
+        self._model_name = model_name
+        model_kwargs: dict[str, Any] = {}
+        if openrouter_provider:
+            providers = _parse_openrouter_providers(openrouter_provider)
+            model_kwargs["openrouter_provider"] = {
+                "only": providers,
+                "allow_fallbacks": openrouter_allow_fallbacks,
+            }
+        self._model = init_chat_model(model_name, temperature=temperature, **model_kwargs)
 
         self._temperature = temperature
         self._verbose = verbose
@@ -210,7 +245,7 @@ class DeepAgentsWrapper(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,  # noqa: ARG002  # required by BaseAgent interface
     ) -> None:
-        """Execute the Deep Agent on the given instruction.
+        """Execute the deep agent on the given instruction.
 
         Args:
             instruction: The task to complete

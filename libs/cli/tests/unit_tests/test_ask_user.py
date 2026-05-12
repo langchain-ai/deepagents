@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Markdown, Static
 
 from deepagents_cli.tool_display import format_tool_display
-from deepagents_cli.widgets.ask_user import AskUserMenu, _QuestionWidget
+from deepagents_cli.widgets.ask_user import (
+    _TRAILING_ANNOTATION_RE,
+    AskUserMenu,
+    AskUserTextArea,
+    _QuestionWidget,
+)
 
 if TYPE_CHECKING:
     from deepagents_cli._ask_user_types import AskUserWidgetResult, Question
 
 
 class _AskUserTestApp(App[None]):
+    CSS_PATH = Path(__file__).resolve().parents[2] / "deepagents_cli" / "app.tcss"
+
     def __init__(self, questions: list[Question]) -> None:
         super().__init__()
         self._questions = questions
@@ -66,6 +74,58 @@ class TestAskUserToolDisplay:
         assert "ask_user" in result
 
 
+class TestTrailingAnnotationRegex:
+    """Strips LLM-appended '(optional)'/'- required' annotations from question text."""
+
+    def test_strips_dash_optional(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? - optional") == "Your name?"
+
+    def test_strips_parens_optional(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? (optional)") == "Your name?"
+
+    def test_strips_brackets_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one [required]") == "Pick one"
+
+    def test_strips_em_dash(self) -> None:
+        text = "Your name? \u2014 optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_en_dash(self) -> None:
+        text = "Your name? \u2013 optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_parens_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one (required)") == "Pick one"
+
+    def test_strips_dash_required(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one - required") == "Pick one"
+
+    def test_strips_with_trailing_whitespace(self) -> None:
+        text = "Your name? (optional)   "
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_with_trailing_newline(self) -> None:
+        text = "Your name? (optional)\n"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+
+    def test_strips_with_trailing_punctuation(self) -> None:
+        text = "Your name? \u2014 Optional."
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == "Your name?"
+        assert _TRAILING_ANNOTATION_RE.sub("", "Pick one (OPTIONAL!)") == "Pick one"
+
+    def test_case_insensitive(self) -> None:
+        assert _TRAILING_ANNOTATION_RE.sub("", "Your name? (Optional)") == "Your name?"
+
+    def test_preserves_trailing_word_optional_without_delimiter(self) -> None:
+        """Bare trailing 'optional' with no delimiter is not an annotation."""
+        text = "Which field is optional"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == text
+
+    def test_leaves_question_without_annotation(self) -> None:
+        text = "What is your name?"
+        assert _TRAILING_ANNOTATION_RE.sub("", text) == text
+
+
 class TestAskUserMenu:
     def test_find_menu_logs_when_hierarchy_is_missing(
         self,
@@ -78,13 +138,13 @@ class TestAskUserMenu:
         assert "Failed to find AskUserMenu ancestor" in caplog.text
 
     async def test_text_input_receives_focus_on_mount(self) -> None:
-        """The text Input must have focus after mount so the user can type."""
+        """The text area must have focus after mount so the user can type."""
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])
 
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            text_input = menu.query_one(".ask-user-text-input", Input)
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
             assert text_input.has_focus
 
     async def test_multiple_choice_question_widget_receives_focus_on_mount(
@@ -107,6 +167,30 @@ class TestAskUserMenu:
             qw = menu._question_widgets[0]
             assert qw.has_focus
 
+    async def test_multiple_choice_option_wraps_in_narrow_menu(self) -> None:
+        """Long choice labels should wrap instead of being clipped to one row."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [
+                        {
+                            "value": (
+                                "this option label is intentionally long enough "
+                                "to wrap in a narrow ask user menu"
+                            )
+                        }
+                    ],
+                }
+            ]
+        )
+
+        async with app.run_test(size=(36, 24)) as pilot:
+            await pilot.pause()
+            choice = app.query_one(".ask-user-choice", Static)
+            assert choice.size.height > 1
+
     async def test_text_question_submits_typed_answer(self) -> None:
         app = _AskUserTestApp([{"question": "What is your name?", "type": "text"}])
 
@@ -118,8 +202,8 @@ class TestAskUserMenu:
             menu.set_future(future)
 
             await pilot.pause()
-            text_input = menu.query_one(".ask-user-text-input", Input)
-            text_input.value = "Alice"
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
             text_input.focus()
             await pilot.pause()
             await pilot.press("enter")
@@ -127,6 +211,66 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
+
+    async def test_text_input_soft_wraps_long_answers(self) -> None:
+        """Soft-wrap is enabled so long answers wrap visually without newlines."""
+        app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            assert text_input.soft_wrap is True
+
+    async def test_enter_submits_without_inserting_newline(self) -> None:
+        """Enter submits the answer instead of inserting a newline."""
+        app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "hi"
+            text_input.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["hi"]}
+
+    async def test_shift_enter_inserts_newline_for_multiline_answer(self) -> None:
+        """Shift+Enter inserts a literal newline for multi-paragraph answers."""
+        app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            await pilot.pause()
+
+            await pilot.press("a")
+            await pilot.press("shift+enter")
+            await pilot.press("b")
+            await pilot.pause()
+            assert text_input.text == "a\nb"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["a\nb"]}
 
     async def test_escape_cancels_and_resolves_future(self) -> None:
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
@@ -196,8 +340,8 @@ class TestAskUserMenu:
             await pilot.press("enter")
             await pilot.pause()
 
-            other_input = menu.query_one(".ask-user-other-input", Input)
-            other_input.value = "green"
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "green"
             other_input.focus()
             await pilot.pause()
             await pilot.press("enter")
@@ -250,12 +394,12 @@ class TestAskUserMenu:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-            text_input = menu.query_one(".ask-user-text-input", Input)
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
             assert text_input.has_focus
             assert not future.done(), "Should not submit yet"
 
             # Type answer for Q3 and submit
-            text_input.value = "Alice"
+            text_input.text = "Alice"
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
@@ -509,7 +653,7 @@ class TestAskUserMenu:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-            other_input = menu.query_one(".ask-user-other-input", Input)
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
             assert other_input.has_focus
 
             # Single up press should select "blue" (last real choice)
@@ -518,6 +662,40 @@ class TestAskUserMenu:
             assert qw._selected_choice == 1
             assert not qw._is_other_selected
             assert qw.has_focus
+
+    async def test_down_in_wrapped_other_input_moves_cursor(self) -> None:
+        """Down inside a wrapped Other answer should not leave the text input."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test(size=(50, 24)) as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            qw = menu._question_widgets[0]
+
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = " ".join(["wrapped"] * 20)
+            other_input.move_cursor((0, 0))
+            other_input.focus()
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            assert other_input.has_focus
+            assert qw._is_other_selected
+            assert other_input.cursor_location != (0, 0)
 
     async def test_return_to_mc_other_refocuses_input(self) -> None:
         """Tab away from Other input and Shift+Tab back refocuses it."""
@@ -541,7 +719,7 @@ class TestAskUserMenu:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-            other_input = menu.query_one(".ask-user-other-input", Input)
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
             assert other_input.has_focus
 
             # Tab to next question
@@ -567,8 +745,8 @@ class TestAskUserMenu:
             menu.set_future(future)
 
             await pilot.pause()
-            text_input = menu.query_one(".ask-user-text-input", Input)
-            text_input.value = "Alice"
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()

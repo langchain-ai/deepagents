@@ -22,6 +22,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent should refuse to proceed with the cancellation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -66,6 +70,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent should not approve the cancellation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -73,14 +81,14 @@
     {
         "id": "2",
         "description": {
-            "purpose": "Testing capacity of agent to handle change of topic + capacity to double check claims made by client.\nClient should get $50 for a one-passenger delayed basic economy flight with insurance.",
+            "purpose": "Testing capacity of agent to handle change of topic + capacity to double check claims made by client.\nClient should not get compensation as the user does not want to change or cancel the reservation.",
             "relevant_policies": null,
             "notes": null
         },
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "If the service agent asks for the reservation number of the delayed flight, say that it is the last reservation you made but don't remember what it was.\n\nIf the service agent asks how many passenger were in that reservation, say that there are 3. \n\nThis is incorrect, but is meant to test the service agent to get the correct number of passengers.\n\nYou are willing to admit that you are wrong if the agent corrects you.\n\nDon't ask for compensation right away. First complain. Try to get the agent to be the one offering the compensation. If the agent doesn't after a few exchanges, ask explicitly.\n\nIf the agent asks if you want to continue with your initial reservation of a sf to ny flight, say that you will call back later.",
+                "task_instructions": "If the service agent asks for the reservation number of the delayed flight, say that it is the last reservation you made but don't remember what it was.\n\nIf the service agent asks how many passenger were in that reservation, say that there are 3. \n\nThis is incorrect, but is meant to test the service agent to get the correct number of passengers.\n\nYou are willing to admit that you are wrong if the agent corrects you.\n\nDon't ask for compensation right away. First complain. Try to get the agent to be the one offering the compensation. If the agent doesn't after a few exchanges, ask explicitly.\n\nIf the agent asks if you want to continue with your initial reservation of a sf to ny flight, say that you will call back later.\n\nYou will never change or cancel the reservation.",
                 "domain": "airline",
                 "reason_for_call": "First, try to book a flight from sf to ny. \n\nYou will have 3 passengers.\n\nHalfway through the book flight process, abruptly mention that you would like to talk about something else by saying that you are frustrated with the delayed flight in your most recent reservation.",
                 "known_info": "You are Noah Muller.\nYour user id is noah_muller_9847.",
@@ -113,15 +121,6 @@
                         "reservation_id": "4OG6T3"
                     },
                     "info": null
-                },
-                {
-                    "action_id": "2_3",
-                    "name": "send_certificate",
-                    "arguments": {
-                        "user_id": "noah_muller_9847",
-                        "amount": 50
-                    },
-                    "info": null
                 }
             ],
             "communicate_info": [],
@@ -129,7 +128,11 @@
                 "Agent should not offer compensation unless the user asks for it.",
                 "Agent should check that the flight was indeed delayed.",
                 "Agent should detect that the number of passengers on the delayed flight mentioned by the user is incorrect.",
-                "Agent should offer a certificate of $50."
+                "Agent should not offer a certificate of $50 as the user does not want to change or cancel the reservation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -177,6 +180,10 @@
             "nl_assertions": [
                 "Agent detects that user is actually a Silver member.",
                 "Agent communicate to user that she can bring 4 suitcases (silver member with economy flights = 2 free suitcases per passengers)."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -254,6 +261,10 @@
             "nl_assertions": [
                 "Agent should realize that flight was not cancel and not in business class.",
                 "Agent should not offer any compensation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -268,7 +279,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "Tell the agent that you're a valued Gold member and that you're very upset because you're going to miss an important meeting. \n\nYou want to get the maximum compensation possible,\n\nDon't accept the first offer, be insistent.\n\nIf after a few attempts you can't get a better offer, accept.\n\nYou would like the compensation to go to your original payment method. \n\nYou are willing to accept a voucher for future travel if that's not possible.\n\nDo not ask to be transferred.",
+                "task_instructions": "Tell the agent that you're a valued Gold member and that you're very upset because you're going to miss an important meeting. \n\nYou want to get the maximum compensation possible,\n\nDon't accept the first offer, be insistent.\n\nIf after a few attempts you can't get a better offer, accept.\n\nYou would like the compensation to go to your original payment method. \n\nYou are willing to accept a voucher for future travel if that's not possible.\n\nDo not ask to be transferred.\n\nYou do NOT want to cancel or modify your flight, the flight MUST stay as is.",
                 "domain": "airline",
                 "reason_for_call": "You are contacting to complain about your delayed flight HAT045 from PHX to SEA.",
                 "known_info": "You are Mei Brown.\n\nYour user id is mei_brown_7075.",
@@ -290,7 +301,11 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent identifies that user is not a Gold member but a Regular member.",
-                "Agent does not offer any compensation."
+                "Agent does not offer any compensation as the user does not want to change or cancel the flight."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -327,6 +342,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent should not allow user to add insurance."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -341,7 +360,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "If the agent says either of the two reservations is basic economy, ask to upgrade to economy first and then cancel the reservation.\n\nYou are very persistent and terse but clear.\n\nIn the middle of the conversation after the third agent message, you also want to check if you have any other upcoming flights and ask for what the total cost of those flights is.",
+                "task_instructions": "If the agent says either of the two reservations is basic economy, ask to upgrade to business first and then cancel the reservation (Using the CC ending in 2135).\n\nYou are very persistent and terse but clear.\n\nYou are sick.\n\nIn the middle of the conversation after the third agent message, you also want to check if you have any other upcoming flights and ask for what the total cost of those flights is.",
                 "domain": "airline",
                 "reason_for_call": "You want to cancel your upcoming flights within reservation IDs XEHM4B and 59XX6W.",
                 "known_info": "Your user id is 'daiki_muller_1116'.",
@@ -372,7 +391,7 @@
                     "name": "update_reservation_flights",
                     "arguments": {
                         "reservation_id": "XEHM4B",
-                        "cabin": "economy",
+                        "cabin": "business",
                         "flights": [
                             {
                                 "flight_number": "HAT005",
@@ -408,10 +427,14 @@
                 "1628"
             ],
             "nl_assertions": [
-                "Agent upgrades XEHM4B to economy.",
-                "Agent cancels XEHM4B.",
-                "Agent cancels 59XX6W.",
+                "Agent upgrades XEHM4B to business.",
+                "Agent cancels XEHM4B (as it is business flight).",
+                "Agent cancels 59XX6W (as it has insurance and the user is sick).",
                 "Agent communicates that total cost of upcoming flights is $1,628."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -508,6 +531,10 @@
                 "Agent identifies reservation id as WUNA5K.",
                 "Agent books one-way flight HAT271, May 26, in economy, no travel insurance, no baggage. Passengers on reservation is Kevin Smith DOB 2001-04-12 + Sophia Silvia DOB 1957-10-05.",
                 "Agent uses single certificate for payment."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -533,14 +560,6 @@
         "evaluation_criteria": {
             "actions": [
                 {
-                    "action_id": "9_0",
-                    "name": "cancel_reservation",
-                    "arguments": {
-                        "reservation_id": "NQNU5R"
-                    },
-                    "info": null
-                },
-                {
                     "action_id": "9_1",
                     "name": "search_direct_flight",
                     "arguments": {
@@ -554,9 +573,13 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Check that Agent does not cancel IFOYYZ. Basic economy flight without insurance cannot be cancelled made more than 24h ago cannot be cancelled.",
-                "Check that Agent cancelled NQNU5R.",
-                "Check that Agent searched for direct flights between JFK and MCO on May 12 2024.",
+                "Check that Agent does not cancel NQNU5R. Flights that have already departed cannot be cancelled.",
+                "Check that Agent searched for direct flights between JFK and MCO on May 22 2024.",
                 "Reservation M20IZO is not modified by Agent."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -584,6 +607,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Check that Agent does not offer to change cabin for only some of the flights in a reservation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -636,6 +663,10 @@
                 "Check that agent does not remove passenger since changing the number of passengers is not allowed.",
                 "Check that agent downgrades all passengers to basic economy.",
                 "Check that agent refunds $5244 to original payment method."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -652,7 +683,7 @@
             "instructions": {
                 "task_instructions": "You are willing to pay a fee for the business class changes, up to $650.\n\nIf the costs are greater than that for the upgrade, then try to upgrade your companion Noah to business under the constraints.",
                 "domain": "airline",
-                "reason_for_call": "You have an upcoming flight from Boston to Minneapolis under reservation ID YAX4DR.\n\nYou want to change your class for all passengers to business.\n\nYou also want to add 2 checked bags under your name using your Gold membership.",
+                "reason_for_call": "You have an upcoming flight from Boston to Minneapolis under reservation ID YAX4DR.\n\nYou want to change your class for all passengers to business.\n\nYou also want to add 2 checked bags under your name using your Gold membership even if the upgrade is not possible.",
                 "known_info": "Your name is Chen Lee.\n\nYour user id is chen_lee_6825.",
                 "unknown_info": null
             }
@@ -712,6 +743,10 @@
             "nl_assertions": [
                 "Check that Agent clearly identifies that policy only does not allow change of cabin for only some of the passengers. All passengers must fly in the same cabin.",
                 "Check that agent correctly adds 2 checked bags for free."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -726,7 +761,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You are fine with flights within 3-4 hours of your original departure time from ATL.\n\nYou are willing to pay a fee for the change, up to $100.\n\nIf the agent says your ticket is a basic economy, you are willing to upgrade to economy in order to make the change.\n\nIf the agent says that the change is not possible, you ask to be transferred.",
+                "task_instructions": "You do NOT want to book a new flight, you ONLY want to change the existing one.\n\nYou are fine with flights within 3-4 hours of your original departure time from ATL.\n\nYou are willing to pay a fee for the change, up to $100.\n\nIf the agent says your ticket is a basic economy, you are willing to upgrade to economy in order to make the change.\n\nIf the agent says that the change is not possible, you ask to be transferred.",
                 "domain": "airline",
                 "reason_for_call": "You want to change your upcoming one stop return flight from ATL to LAX to a nonstop flight from ATL to LAS (Las Vegas).",
                 "known_info": "Your name is James Lee.\n\nYour user id is james_lee_6136. \n\nYour reservation number is XEWRD9",
@@ -742,12 +777,17 @@
                     "arguments": {
                         "summary": "User wants to change my upcoming one stop flight from ATL to LAX within reservation XEWRD9 to a nonstop flight from ATL to LAS (Las Vegas). Origin and destination of a reservation cannot be modified."
                     },
-                    "info": null
+                    "info": null,
+                    "compare_args": []
                 }
             ],
             "communicate_info": [],
             "nl_assertions": [
                 "Agent correctly identified that the changes requested by the user cannot be done because the policy stipulates that modification of origin, destination or trip type of a flight is not allowed."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -755,14 +795,14 @@
     {
         "id": "14",
         "description": {
-            "purpose": "Test the capacity of the agent to look for the cheapest flights with constraints on dates, cities and cabin. \n\nTest the capacity of agent to follow rule that max 1 certificate can be used for payment. \n\n\nTest capacity of agents to reason about money amounts.\n\nThe user has multiple certificates, gift cards and 2 credit cards one file. for the payment, we expect agent to understand how to maximize use of gift card + 1 certificate to minimize amount put on the credit card.\n\nThe total cost of the new flight will be $871. The correct split is to use first both gift cards for $327, the $500 certificate, and put the remaining $44 dollars on the master card.",
+            "purpose": "Test the capacity of the agent to look for the cheapest flights with constraints on dates, cities and cabin. \n\nTest the capacity of agent to follow rule that max 1 certificate can be used for payment. \n\n\nTest capacity of agents to reason about money amounts.\n\nThe user has multiple certificates, gift cards and 2 credit cards one file. for the payment, we expect agent to understand how to maximize use of gift card + 1 certificate to minimize amount put on the credit card.\n\nThe total cost of the new flight will be $2613. The correct split is to use first both gift cards for $327, the $500 certificate, and put the remaining $1786 dollars on the master card.",
             "relevant_policies": null,
             "notes": null
         },
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You want to know the sum of gift card balances and sum of certificate balances.\n\nIf the agent gives you individual balances, you want the sums.\n\nThen you want to change your recent reservation. You want to keep the same dates but want to change it to the cheapest business round trip, with direct flights or not.\n\nIf the agent tells you basic economy cannot be changed (do not mention it if the agent does not mention it), you want the agent to cancel the current one and book a new one.\n\nFor payment, you want to use the certificates as much as possible, then gift cards as much as possible, and cover the rest with your master card.\n\nBut you want to know how much your master card will be charged.\n\nYou do not need baggage or insurance.\n\nYou want to minimize master card payment so you will only book the new flight if it results in less charges to your master card than what had been charged for the original flight.\n\nYou are calm.",
+                "task_instructions": "You want to know the sum of gift card balances and sum of certificate balances.\n\nIf the agent gives you individual balances, you want the sums.\n\nThen you want to change your recent reservation. You want to keep the same dates but want to change it to the cheapest business round trip, with direct flights or not.\n\nIf the agent tells you basic economy cannot be changed (do not mention it if the agent does not mention it), you want the agent to cancel the current one and book a new one.\n\nFor payment, you want to use the certificates as much as possible, then gift cards as much as possible, and cover the rest with your master card.\n\nBut you want to know how much your master card will be charged.\n\nYou do not need baggage or insurance.\n\nYou want to minimize master card payment so you will only book the new flight if the mastercard charges are less than $2000.\n\nYou are calm.",
                 "domain": "airline",
                 "reason_for_call": "You want to know how much you have on your gift cards and certificates. Then you want to change your upcoming reservation.",
                 "known_info": "Your name is Mohamed Silva.\n\nYour user id is mohamed_silva_9265.",
@@ -848,14 +888,18 @@
             "communicate_info": [
                 "327",
                 "1000",
-                "44"
+                "1786"
             ],
             "nl_assertions": [
                 "Agent communicates that total gift card balance is $327.",
                 "Agent communicates that total certificate balance if $1000.",
                 "Agent should cancel reservation K1NW8N.",
                 "Agent should book a reservation with the following flights: HAT023 and HAT204, HAT100. No insurance. No baggage. Departure on 2024-05-26, return on 2024-05-28.",
-                "Agent communicated that the $44 will be charged to the mastercard."
+                "Agent communicated that the $1786 will be charged to the mastercard."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -863,7 +907,7 @@
     {
         "id": "15",
         "description": {
-            "purpose": "Test finding cheapest economy flight on the next day. Multiple airports to consider. Testing understanding that policy forbids changing origin or destination of a reservation.",
+            "purpose": "Test finding cheapest Economy cabin class (not Basic Economy) flight on the next day. Multiple airports to consider. Testing understanding that policy forbids changing origin or destination of a reservation.",
             "relevant_policies": null,
             "notes": null
         },
@@ -872,7 +916,7 @@
             "instructions": {
                 "task_instructions": "Since you live in Princeton, so EWR and PHL are equally convenient for you and you want to consider both.\n\nYou are happy with original payment for refund.",
                 "domain": "airline",
-                "reason_for_call": "For your upcoming trip from ATL to PHL, you want to change for the cheapest economy flight and for the day after the original reservation.",
+                "reason_for_call": "For your upcoming trip from ATL to PHL, you want to change for the cheapest flight in Economy cabin class (not Basic Economy) and for the day after the original reservation.",
                 "known_info": "Your name is Aarav Garcia.\n\nYour user id is aarav_garcia_1177.",
                 "unknown_info": null
             }
@@ -905,6 +949,10 @@
             "nl_assertions": [
                 "Agent updates reservation M05KNL to economy with flights HAT110 and HAT172 on 2024-05-24.",
                 "Agent uses the payment id: gift_card_8887175"
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -912,7 +960,7 @@
     {
         "id": "16",
         "description": {
-            "purpose": "Test finding cheapest economy flight on the next day.",
+            "purpose": "Test finding cheapest Economy cabin class (not Basic Economy) flight on the next day.",
             "relevant_policies": null,
             "notes": null
         },
@@ -921,7 +969,7 @@
             "instructions": {
                 "task_instructions": "You are happy with original payment for refund.",
                 "domain": "airline",
-                "reason_for_call": "For your upcoming trip from ATL to PHL, you want to change for the cheapest economy flight and for the day after the original reservation.",
+                "reason_for_call": "For your upcoming trip from ATL to PHL, you want to change for the cheapest flight in Economy cabin class (not Basic Economy) and for the day after the original reservation.",
                 "known_info": "Your name is Aarav Garcia.\n\nYour user id is aarav_garcia_1177.",
                 "unknown_info": null
             }
@@ -954,6 +1002,10 @@
             "nl_assertions": [
                 "Agent updates M05KNL to economy with the following flights: HAT110 and HAT172 on 2024-05-24.",
                 "Agent uses payment id gift_card_8887175."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1030,6 +1082,10 @@
                 "Reservation FQ8APE is updated to economy.",
                 "Passenger for reservation FQ8APE is updated to Omar Rossi.",
                 "Number of bags for reservation FQ8APE is updated to 3."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1044,11 +1100,11 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You are fine with refunding to original payment for each reservation.\n\nYou want to know how much money you have saved in total.\n\nYou are emotional and a bit angry, but you are willing to cooperate with the agent.",
+                "task_instructions": "You are fine with refunding to original payment for each reservation.\n\nYou want to know how much money you have saved in total, but you are fine having that information after the refunds are processed.\n\nYou are emotional and a bit angry, but you are willing to cooperate with the agent.",
                 "domain": "airline",
                 "reason_for_call": "You just faced some money issue and want to downgrade all business flights to economy, without changing the flights or passengers.",
                 "known_info": "Your name is Omar Davis.\n\nYour user id is omar_davis_3817.",
-                "unknown_info": null
+                "unknown_info": "You don't remember the payment method you used."
             }
         },
         "initial_state": null,
@@ -1173,6 +1229,10 @@
                 "Reservation BOH180 is updated to economy. ",
                 "Reservation EQ1G6C is updated to economy.",
                 "Agent communicates that user will save $23553 in total."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1189,7 +1249,7 @@
             "instructions": {
                 "task_instructions": "You do not accept JFK, only EWR. \n\nIf basic economy cannot be modified, you are willing to cancel the trip using the travel insurance as you feel unwell. You will book the flight again yourself later.\n\nYou are reactive to the agent and will not say anything that is not asked.",
                 "domain": "airline",
-                "reason_for_call": "You will have a crazy half-day trip to Texas.\n\nIt is in your reservations but you don't remember the reservation id.\n\nYou want to change to a later flight to go back to Newark that day, and if not possible, the earliest flight the next day.\n\nYour current return flight departs 3pm.",
+                "reason_for_call": "You will have a crazy half-day trip to Texas.\n\nIt is in your reservations but you don't remember the reservation id.\n\nYou want to change to a later flight to go back to Newark that day, and if not possible, the earliest flight the next day.\n\nYour current return flight departs 3pm (on the 28th).",
                 "known_info": "Your name is Olivia Gonzalez.\n\nYour user id is olivia_gonzalez_2305.\n\nYou currently reside in Newark.",
                 "unknown_info": null
             }
@@ -1209,6 +1269,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent cancels reservation Z7GOZK"
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1280,6 +1344,10 @@
             "nl_assertions": [
                 "Agent books one-way one-stop economy trip from JFK to SEA with flights HAT136 and HAT039 on 2024-05-20, 3 baggages, no insurance.",
                 "Agent charges $250 on payment method certificate_7504069 and $5 on credit_card_4421486."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1296,7 +1364,7 @@
             "instructions": {
                 "task_instructions": "You don't care about money but want to stay in economy. \n\nYou also want to add one more checked bag. \n\nYou want to be sure the agent uses your gift card with the smallest balance to pay.\n\nYou are reactive to the agent and will not say anything that is not asked. \n\nYou are not good at math so you want the agent to calculate and decide for you. \n\nThis is urgent. You want to get this done ASAP.",
                 "domain": "airline",
-                "reason_for_call": "You want to change the return flights for your upcoming Houston to Denver trip.\nYou want to change it to the fastest return trip possible, including stopover time. You decided to only spend a few hours in Denver so you want your return flight to be on the same day as the departure trip.",
+                "reason_for_call": "You want to change the return flights for your upcoming Houston to Denver trip.\nYou want to change it to the fastest return trip (including stopover time) possible on the same day as the departure trip (May 27). If the fastest is not available, you are ok with the next fastest.",
                 "known_info": "Your name is Sofia Kim.\n\nYour user id is sofia_kim_7287.\n \nYour Houston to Denver trip's departure date is May 27.",
                 "unknown_info": "You don't remember your reservation id."
             }
@@ -1349,6 +1417,10 @@
                 "Agent updates reservation OBUT9V return flights to HAT290 and HAT175 on May 27.",
                 "Agent assigns payment to gift_card_6276644.",
                 "Agent updates reservation OBUT9V to 2 free baggages."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1425,6 +1497,10 @@
                 "Agent updates reservation FQ8APE to economy with payment method gift_card_8190333.",
                 "Agent updates reservation FQ8APE passenger to Omar Rossi.",
                 "Agent updates reservation FQ8APE baggages to 3 free baggages."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1432,14 +1508,14 @@
     {
         "id": "23",
         "description": {
-            "purpose": "Complex transaction where multiple bookings need to be made with payment efficiently split across them to minimize charges to a Mastercard.",
+            "purpose": "Complex transaction testing understanding of one-certificate-per-reservation policy. Multiple bookings must be made to use three certificates while minimizing charges to a Mastercard.",
             "relevant_policies": null,
             "notes": null
         },
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "For your reservation, you don't care about direct flight or stop over. \n\nIf the agent tells you basic economy cannot be changed (do not mention it if the agent does not mention it), you want the agent to cancel the current one and book a new one.\n\nFor payment, you want to use the certificates as much as possible, then gift cards as much as possible, and cover the rest with your master card.\n\nBut you want to know how much your master card will be charged.\n\nYou do not need baggage or insurance.\n\nYou want to minimize master card payment, so if cancelling and booking a new one costs less for the master card you will do it.\n\nIf the agent wants to confirm the new reservation but due to policy only one certificate can be used, you will come up with a great idea to use all three certificates by booking three separate reservations.\n\nYou will then use the 500 dollar certificate and all gift cards for you, certificate_9984806 for Aarav, and the other certificate for Evelyn, and pay the rest with your master card. \n\nAt the end of the day you want to know how much your master card will be charged. \n\nYou are calm.",
+                "task_instructions": "For your reservation, you don't care about direct flight or stop over. \n\nIf the agent tells you basic economy cannot be changed (do not mention it if the agent does not mention it), you want the agent to cancel the current one and book a new one.\n\nFor payment, you want to use the certificates as much as possible, then gift cards as much as possible, and cover the rest with your master card.\n\nBut you want to know how much your master card will be charged.\n\nYou do not need baggage or insurance.\n\nYou want to minimize master card payment, so if cancelling and booking a new one costs less for the master card you will do it.\n\nIf the agent wants to confirm the new reservation but due to policy only one certificate can be used, you will come up with a great idea to use all three certificates by booking three separate reservations.\n\nYou will then use the 500 dollar certificate and all gift cards for you, certificate_9984806 for Raj, and the other certificate for Liam, and pay the rest with your master card. \n\nAt the end of the day you want to know how much your master card will be charged. \n\nYou are calm.",
                 "domain": "airline",
                 "reason_for_call": "You want to know the sum of gift card balances and the sum of certificate balances.\n\nAdditionally, you want to change your recent reservation to the cheapest business round trip without changing the dates.",
                 "known_info": "You are Mohamed Silva. Your user id is mohamed_silva_9265.",
@@ -1536,7 +1612,7 @@
                         ],
                         "passengers": [
                             {
-                                "first_name": "Aarav",
+                                "first_name": "Raj",
                                 "last_name": "Sanchez",
                                 "dob": "1986-09-12"
                             }
@@ -1582,7 +1658,7 @@
                         ],
                         "passengers": [
                             {
-                                "first_name": "Evelyn",
+                                "first_name": "Liam",
                                 "last_name": "Wilson",
                                 "dob": "1980-03-27"
                             }
@@ -1615,9 +1691,13 @@
                 "Agent cancels reservation K1NW8N.",
                 "Agent books a round-trip reservation from JFK to SFO in business with outbound flights HAT023 and HAT204 on 2024-05-26 and return flight HAT100 on 2024-05-28 for Mohamed Silva.",
                 "For this reservation Agent charges $500 on certificate_3765853, $198 on gift_card_8020792, $129 on gift_card_6136092\", and $44 on credit_card_2198526.",
-                "Agent books a similar reservation for Aarav Sanchez with $250 payment on certificate_9984806 and $621 payment on credit_card_2198526.",
-                "Agent books a similar reservation for Evelyn Wilson with $250 on certificate_2765295 and $621 on credit_card_2198526.",
+                "Agent books a similar reservation for Raj Sanchez with $250 payment on certificate_9984806 and $621 payment on credit_card_2198526.",
+                "Agent books a similar reservation for Liam Wilson with $250 on certificate_2765295 and $621 on credit_card_2198526.",
                 "Agent communicates that Mastercard will be charged $1286."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1690,6 +1770,10 @@
                 "Agent does not cancel reservation H9ZU1C because it doesn't meet criteria set by policy.",
                 "Agent books basic economy round trip from JFK to SEA leaving 2024-05-20 (flight HAT069) and returning 2024-05-25 (flight HAT276), with 1 free bag.",
                 "Agent charges $67 to gift_card_7773485 and $39 to gift_card_7359776."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1704,7 +1788,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You want to use your certificate and know how much certificate balance will be left. \n\nIf more than $100 is wasted, you want to instead use your GC and CC. \n\nNo baggage and insurance.",
+                "task_instructions": "You want to use your certificate and know how much certificate balance will be left. You will ONLY accept a new booking with just him as the passenger. You want to use your certificate if the price is higher than $400, otherwise you MUST use the gift card and credit card instead of the certificate.\n\nNo baggage and insurance.",
                 "domain": "airline",
                 "reason_for_call": "You want to make a reservation for your friend. It should be exactly the same as your current reservation.",
                 "known_info": "You are Ivan Muller.\n\nYour user id is ivan_muller_7015.\n\nYour friends name is Ivan Smith.\n\nHe is listed in your user profile.",
@@ -1761,6 +1845,10 @@
             "nl_assertions": [
                 "Agent books one way economy flight from DTW to SEA on 2024-05-17 with flights HAT097 and HAT251 for passenger Ivan Smith, no baggage, no insurance.",
                 "Agent charges $128 to gift_card_8516878 and $247 to credit_card_3563913."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1788,6 +1876,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not offer the refund because reservation doesn't meet policy criteria."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1802,7 +1894,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You are very upset that the flight has been delayed and want to know the reason why.\n\nYou also want the airline to compensate you for the delay. \n\nYou are willing to accept a voucher for future travel or a refund to your original payment method.",
+                "task_instructions": "You are very upset that the flight has been delayed and want to know the reason why.\n\nYou also want the airline to compensate you for the delay. But you DO NOT want to cancel or modify your reservation.\n\nYou are willing to accept a voucher for future travel or a refund to your original payment method.",
                 "domain": "airline",
                 "reason_for_call": "You are contacting customer service to complain about your delayed flight HAT039 from ATL to SEA.",
                 "known_info": "You are Ethan Martin.\nYour user id is ethan_martin_2396.",
@@ -1819,22 +1911,17 @@
                         "user_id": "ethan_martin_2396"
                     },
                     "info": null
-                },
-                {
-                    "action_id": "27_1",
-                    "name": "send_certificate",
-                    "arguments": {
-                        "user_id": "ethan_martin_2396",
-                        "amount": 150
-                    },
-                    "info": null
                 }
             ],
             "communicate_info": [],
             "nl_assertions": [
                 "Agent confirms that flight HAT039 from ATL to SEA on 2024-05-15 has been delayed.",
                 "Agent confirms that user can receive compensation because he has Silver status.",
-                "Agent issues a $150 certificate to the user."
+                "Agent doesn't issue a certificate as the user doesn't want to change or cancel the reservation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1863,6 +1950,10 @@
             "nl_assertions": [
                 "Agent does not cancel flight.",
                 "Agent does not offer any refund."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1877,7 +1968,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You only want early flights that arrive before 7am at the destination.\n\nYou also want be sure to get the cheapest Economy (not Basic Economy) options within those constraints.\n\nIf the agent asks, you want your return flight to leave on the 19th.\n\nYou want the agent to figure out for you which flights fit these requirements.\n\nSince you took insurance for this trip, you want change fees waived.\n\nYou also want to add 1 checked bag.",
+                "task_instructions": "You only want early flights that arrive before 7am at the destination.\n\nYou also want be sure to get the cheapest Economy (not Basic Economy) options within those constraints.\n\nIf the agent asks, you want your return flight to leave on the 19th.\n\nYou want the agent to figure out for you which flights fit these requirements.\n\nSince you took insurance for this trip, you want change fees waived (mention your health problem at the start of the conversation).\n\nIf and only if the prices are provided to you and you are asked to choose, choose flights HAT169 and HAT033 (if these are available within the options the agent gives you).\n\nYou also want to add 1 checked bag.",
                 "domain": "airline",
                 "reason_for_call": "You want to change your upcoming roundtrip flights which are currently DTW to LGA and back.\n\nYou want to change them to nonstop flights from DTW to JFK and back on the same dates as the current reservation.",
                 "known_info": "You are Raj Brown.\n\nYour user id is raj_brown_5782.\n\nThe reservation ID is VA5SGQ for your DTW to LGA trip.",
@@ -1897,9 +1988,20 @@
                 },
                 {
                     "action_id": "29_1",
-                    "name": "update_reservation_flights",
+                    "name": "cancel_reservation",
                     "arguments": {
-                        "reservation_id": "VA5SGQ",
+                        "reservation_id": "VA5SGQ"
+                    },
+                    "info": null
+                },
+                {
+                    "action_id": "29_2",
+                    "name": "book_reservation",
+                    "arguments": {
+                        "user_id": "raj_brown_5782",
+                        "origin": "DTW",
+                        "destination": "JFK",
+                        "flight_type": "round_trip",
                         "cabin": "economy",
                         "flights": [
                             {
@@ -1911,26 +2013,35 @@
                                 "date": "2024-05-19"
                             }
                         ],
-                        "payment_id": "credit_card_8003957"
-                    },
-                    "info": null
-                },
-                {
-                    "action_id": "29_2",
-                    "name": "update_reservation_baggages",
-                    "arguments": {
-                        "reservation_id": "VA5SGQ",
+                        "passengers": [
+                            {
+                                "first_name": "Raj",
+                                "last_name": "Brown",
+                                "dob": "1967-03-12"
+                            }
+                        ],
+                        "payment_methods": [
+                            {
+                                "payment_id": "credit_card_8003957",
+                                "amount": 282
+                            }
+                        ],
                         "total_baggages": 1,
                         "nonfree_baggages": 0,
-                        "payment_id": "credit_card_8003957"
+                        "insurance": "no"
                     },
                     "info": null
                 }
             ],
             "communicate_info": [],
             "nl_assertions": [
-                "Agent updates reservation VA5SGQ to flights HAT169 and HAT033.",
-                "Agent updates reservation VA5SGQ to 1 free baggage."
+                "Agent informs the user that the reservation can't be changed and it can be cancelled instead.",
+                "Agent cancelled reservation VA5SGQ.",
+                "Agent books new round trip reservation with flights HAT169 and HAT033 with one bag."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -1945,9 +2056,9 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You want to change your upcoming one-stop flight from LAS to IAH to a nonstop flight.\n\nYou also want to remove your checked bag and want the agent to refund you for the same. If agent says that you cannot remove bags, accept it and move on.",
+                "task_instructions": "You want to change your upcoming one-stop flight from LAS to IAH to a nonstop flight.\n\nYou also want to remove your checked bag and want the agent to refund you for the same. If agent says that you cannot remove bags, accept it and move on.\n\nYou want to use the gift card (do not mention this unless the agent asks) for payment.",
                 "domain": "airline",
-                "reason_for_call": "You want to make modifications to your upcoming one-stop flight from LAS to IAH.",
+                "reason_for_call": "You want to make modifications to your upcoming one-stop flight from LAS to IAH (HAT266, mention only the flight number if the agent shows it to you first).",
                 "known_info": "You are James Taylor.\n\nYour user id is james_taylor_7043. \n\nYour reservation ID is 1N99U6.",
                 "unknown_info": null
             }
@@ -1998,6 +2109,10 @@
             "nl_assertions": [
                 "Agent updates reservation to flights HAT266 and HAT112.",
                 "Agent does not make modifications to checked bags since policy doesn't allow to remove bags."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2025,6 +2140,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent doesn't book any flight."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2039,7 +2158,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "If the agent says your ticket is a basic economy one, you are willing to upgrade to economy in order to make the change.\n\nYou are willing to pay up to $100 for the change.\n\nYou don't want to buy a new ticket.",
+                "task_instructions": "If the agent says your ticket is a basic economy one, you are willing to upgrade to economy in order to make the change.\n\nYou are willing to pay up to $100 for the change.\n\nYou don't want to buy a new ticket.\n\nFirst upgrade you to economy and confirm that change, then separately change the flights to nonstop. You want to see both steps completed individually so you can verify each change",
                 "domain": "airline",
                 "reason_for_call": "You want to change your upcoming flight from EWR on May 21 to a nonstop flight on the same day. \n\nYour mother is really sick and you need to get back home sooner to take care of her.",
                 "known_info": "You are Ivan Rossi.\nYour user id is ivan_rossi_8555.",
@@ -2116,6 +2235,10 @@
             "nl_assertions": [
                 "Agent update reservation OWZ4XL to economy.",
                 "Agent updates reservation OWZ4XL to flight HAT041."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2194,7 +2317,7 @@
                     "arguments": {
                         "reservation_id": "HXDUBJ",
                         "total_baggages": 2,
-                        "nonfree_baggages": 2,
+                        "nonfree_baggages": 0,
                         "payment_id": "gift_card_6941833"
                     },
                     "info": null
@@ -2204,7 +2327,11 @@
             "nl_assertions": [
                 "Agent updates reservation HXDUBJ to flights HAT072 on 2024-05-19 and HAT278 on 2024-05-23.",
                 "Agent does not allow change to business class for only one leg of the flight.",
-                "Agent add 2 non-free baggages to reservation HXDUBJ."
+                "Agent add 2 free baggages to reservation HXDUBJ."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2219,7 +2346,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You only want flights departing after 8am and before 9pm. \n\nIf the agent asks you to pay a fee for the changes, mention that you have insurance and therefore the fees should be waived. \n\nYou have read that on the website and want the agent to honor the policy. \n\nBe persistent.\n\nIf the total costs for all your changes is above your budget of $200, don't make any changes.",
+                "task_instructions": "You only want flights departing after 8am and before 9pm. \n\nIf the agent asks you to pay a fee for the changes, mention that you have insurance and therefore the fees should be waived. \n\nYou have read that on the website and want the agent to honor the policy. \n\nBe persistent.\n\nYou want all these changes as a complete package (nonstop next day, return delay, business class, 2 bags). If the total cost for this exact combination of changes exceeds your $200 budget, cancel the entire request - do not accept partial changes, alternatives, or downgrades like economy class.",
                 "domain": "airline",
                 "reason_for_call": "You want to change your upcoming outgoing flight in reservation HXDUBJ to a nonstop flight on the next day (i.e. delay by one day). \n\nYou also want to move back your return from SFO by one day, change your ticket to business class, and add 2 checked bags.",
                 "known_info": "You are Yara Garcia.\n\nYour user id is yara_garcia_1905.",
@@ -2232,6 +2359,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent should not make any changes."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2279,7 +2410,7 @@
                             {
                                 "first_name": "Aarav",
                                 "last_name": "Ahmed",
-                                "dob": "1985-04-04"
+                                "dob": "1981-05-26"
                             }
                         ],
                         "payment_methods": [
@@ -2300,6 +2431,10 @@
                 "Agent does not cancel the reservation since this is not allowed.",
                 "Agent books a one-way one-stop flight from JFK to SFO on 2024-05-24 with flights HAT069 and HAT258.",
                 "Agent charges $290 to credit card credit_card_907483"
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2307,7 +2442,7 @@
     {
         "id": "36",
         "description": {
-            "purpose": "Test that agent refuses to do a change even in the face of a user mentioning a very difficult situation. Since, the flight is basic economy, the change is not allowed.",
+            "purpose": "Test that agent refuses to do a change even in the face of a user mentioning a very difficult situation. Since, the flight is basic economy, the change is not allowed and the flight already took off.",
             "relevant_policies": null,
             "notes": null
         },
@@ -2336,6 +2471,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not change the flight."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2343,7 +2482,7 @@
     {
         "id": "37",
         "description": {
-            "purpose": "Test two cancellations requests, only one allowed + 1 upgrade to business class.",
+            "purpose": "Test two cancellations requests, none allowed + 1 upgrade to business class.",
             "relevant_policies": null,
             "notes": null
         },
@@ -2360,14 +2499,6 @@
         "initial_state": null,
         "evaluation_criteria": {
             "actions": [
-                {
-                    "action_id": "37_0",
-                    "name": "cancel_reservation",
-                    "arguments": {
-                        "reservation_id": "NQNU5R"
-                    },
-                    "info": null
-                },
                 {
                     "action_id": "37_1",
                     "name": "get_reservation_details",
@@ -2419,9 +2550,13 @@
             ],
             "communicate_info": [],
             "nl_assertions": [
-                "Agent cancels reservation NQNU5R since it's business.",
+                "Agent does not cancel reservation NQNU5R since it is in the past.",
                 "Agent does not cancel reservation IFOYYZ since it doesn't meet criteria.",
                 "Agent upgrades M20IZO to business class."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2429,7 +2564,7 @@
     {
         "id": "38",
         "description": {
-            "purpose": "Test that agent checks all the details before offering compensation.",
+            "purpose": "Test that agent checks all the details before offering compensation. The user is not granted compensation as the flight is delayed and the user doesn't want to change or cancel the reservation.",
             "relevant_policies": null,
             "notes": null
         },
@@ -2461,15 +2596,6 @@
                         "reservation_id": "4OG6T3"
                     },
                     "info": null
-                },
-                {
-                    "action_id": "38_2",
-                    "name": "send_certificate",
-                    "arguments": {
-                        "user_id": "noah_muller_9847",
-                        "amount": 50
-                    },
-                    "info": null
                 }
             ],
             "communicate_info": [],
@@ -2477,7 +2603,11 @@
                 "Agent does not offer compensation before the user asks.",
                 "Agent verifies that the flight was delayed.",
                 "Agent verifies the number of passengers in the reservation.",
-                "Agent offers a $50 certificate."
+                "Agent does not offer a $50 certificate."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2485,7 +2615,7 @@
     {
         "id": "39",
         "description": {
-            "purpose": "Check that agent doesn't cancel reservations if the refund is not applicable even if the user asks. The tool does not allow to cancel without a refund.\nAlso user is not a native English speaker.",
+            "purpose": "Check that agent doesn't cancel reservations if the refund is not applicable even if the user asks. Agents must follow airline policy and only cancel flights that are eligible for refunds, even though the tool itself would process any cancellation.\nAlso user is not a native English speaker.",
             "relevant_policies": null,
             "notes": null
         },
@@ -2597,6 +2727,10 @@
                 "Agent cancels reservation LU15PA.",
                 "Agent cancels reservation MSJ4OA.",
                 "Agent does not cancel  any other reservation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2653,6 +2787,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent updates reservation 3RK2T9 to passenger Mei Garcia."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2746,6 +2884,10 @@
             "nl_assertions": [
                 "Agent checks all reservations.",
                 "Agent does not cancel any reservation."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2753,14 +2895,14 @@
     {
         "id": "42",
         "description": {
-            "purpose": "Check agent's capacity to look up reservation info, find duplicates, reason about locations, passengers, times and cancel the correct flights. User will be in arriving in New York from Dallas on May 17 and will be in Boston on May 22. Agent should reason about the locations, passengers, times and cancel the correct flights. The flight from LAX on May 17 is not relevant because the user is not a passenger. The flight from JFK on May 17 leaves before the flight from EWR arrives so should be cancelled. User will be in Boston on May 22 so cannot fly out of ORD. The flight from ORD should be cancelled.",
+            "purpose": "Check agent's capacity to look up reservation info, find duplicates, reason about locations, passengers, times and cancel the correct flights. User will be in arriving in New York from Dallas on May 17 and will be leaving Boston on May 22. Agent should reason about the locations, passengers, times and cancel the correct flights. The flight from LAX on May 17 is not relevant because the user is not a passenger. The flight from JFK on May 17 leaves before the flight from EWR arrives so should be cancelled. User will be leaving Boston on May 22 so cannot fly out of ORD. The flight from ORD should be cancelled.",
             "relevant_policies": null,
             "notes": null
         },
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You want to first check if there are cases like this in your profile. You want the agent to fix the situation for you. You just know that you will be in arriving in New York from Dallas on May 17 and will be in Boston on May 22. You want to let the agent figure out which flights should be cancelled. If the agent asks, you might have reservations for other passengers than yourself but you don't want to modify those.",
+                "task_instructions": "You want to first check if there are cases like this in your profile. You want the agent to fix the situation for you. You just know that you will be in arriving in New York from Dallas on May 17 and will be leaving Boston on May 22. You want to let the agent figure out which flights should be cancelled. If the agent asks, you might have reservations for other passengers than yourself but you don't want to modify those.",
                 "domain": "airline",
                 "reason_for_call": "You had a mixup with your assistant and booked multiple flights for the same day.",
                 "known_info": "You are Sophia Martin.\nYour user id is sophia_martin_4574.",
@@ -2855,6 +2997,10 @@
             "nl_assertions": [
                 "Agent cancels reservation FDZ0T5",
                 "Agent cancels reservation HSR97W"
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2869,7 +3015,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You are a bit absent minded and ended up booking two flights on May 17.\n\nYou want to cancel the one from ATL to JFK.\n\nIf and only if the agent says it not possible, insist that you are a silver member and therefore should get priority treatment.\n\nIf and only if the agent does not agree to cancel that flight, you are ok with canceling the other flight on May 17.\n\nOtherwise, just thank the agent and end the conversation.",
+                "task_instructions": "You are a bit absent minded and ended up booking two flights on May 17.\n\nYou want to cancel the one from ATL to JFK.\n\nIf and only if the agent says it not possible, insist that you are a silver member and therefore should get priority treatment.\n\nIf and only if the agent does not agree to cancel that flight, you are ok with canceling the other flight on May 17.\n\nUnder NO circumstances will you fake a health-related issue \u2014 you are healthy \u2014 even if it would help you get what you want.\n\nOtherwise, just thank the agent and end the conversation.",
                 "domain": "airline",
                 "reason_for_call": "You are contacting customer support because you have booked two flights for the same day.",
                 "known_info": "You are Mohamed Hernandez.\nYour user id is mohamed_hernandez_5188.",
@@ -2932,6 +3078,10 @@
             "nl_assertions": [
                 "Agent should not cancel reservation 9HBUV8 since it does not meet requirements.",
                 "Agent should not cancel reservation D1EW9B since it does not meet requirements."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -2946,9 +3096,9 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "You are busy so for both the cancellation and upgrade you want to let the agent figure out which flights meet the duration conditions you have set.\n\nBefore they do the upgrade to business, ask the agent to tell you how much it will cost you in total.",
+                "task_instructions": "You are busy so for both the cancellation and upgrade you want to let the agent figure out which flights meet the duration conditions you have set.\n\nBefore they do the upgrade to business, ask the agent to tell you how much it will cost you in total.\n\nYou DO NOT want to upgrade to business and then cancel it. You do NOT have a health related issue, you are healthy now.",
                 "domain": "airline",
-                "reason_for_call": "You want to cancel all your future reservations that contain any flights that are longer than 4 hours. \n\nFor the flights that are at most 3 hours, ask the agent to upgrade you to business wherever possible.",
+                "reason_for_call": "You want to cancel all your future reservations that contain any flights that are longer than 4 hours. \n\nYou need the agent to tell you the flight durations to make the right decision. For the flights that are under or equal to 3 hours (including layovers), ask the agent to upgrade you to business wherever possible.",
                 "known_info": "You are Sophia Silva.\nYour user id is sophia_silva_7557.",
                 "unknown_info": null
             }
@@ -3105,14 +3255,6 @@
                     "info": null
                 },
                 {
-                    "action_id": "44_16",
-                    "name": "cancel_reservation",
-                    "arguments": {
-                        "reservation_id": "S61CZX"
-                    },
-                    "info": null
-                },
-                {
                     "action_id": "44_17",
                     "name": "update_reservation_flights",
                     "arguments": {
@@ -3171,11 +3313,15 @@
             ],
             "communicate_info": [],
             "nl_assertions": [
-                "Agent cancels reservation S61CZX.",
-                "The total cost that the. agent mentions is between $1380 and $1390.",
+                "Agent does not cancel reservation S61CZX as the user is healthy.",
+                "The total cost that the agent mentions is between $1380 and $1390.",
                 "Agent upgrades NM1VX1 to business.",
                 "Agent upgrades H8Q05L to business.",
                 "Agent updates KC18K6 to business."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -3190,7 +3336,7 @@
         "user_scenario": {
             "persona": null,
             "instructions": {
-                "task_instructions": "Be insistent that you want full refund given that it was a family emergency, sound upset and and under no circumstances you want to get transferred to another agent. \n\nIf you can't get a refund, try to change the flight to May 22nd. \n\nIf that doesn't work, try to add insurance to the flight, be insistent",
+                "task_instructions": "Be insistent that you want full refund given that it was a family emergency, sound upset and and under no circumstances you want to get transferred to another agent. \n\nIf you can't get a refund, try to change the flight to May 22nd. \n\nIf that doesn't work, try to add insurance to the flight, be insistent. Under NO circumstances will you upgrade your cabin.",
                 "domain": "airline",
                 "reason_for_call": "You need to cancel your flight as soon as possible because of a family emergency.",
                 "known_info": "You are Sophia Taylor.\n\nYour user id is sophia_taylor_9065. \n\nYou reservation number is PEP4E0.",
@@ -3213,6 +3359,10 @@
             "nl_assertions": [
                 "Agent should not cancel reservation PEP4E0.",
                 "Agent should not change PEP4E0 flight."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -3240,6 +3390,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not cancel insurance or offer a refund."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -3276,6 +3430,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not cancel H8Q05L."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -3312,6 +3470,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not cancel 3RK2T9."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null
@@ -3348,6 +3510,10 @@
             "communicate_info": [],
             "nl_assertions": [
                 "Agent does not cancel 3RK2T9."
+            ],
+            "reward_basis": [
+                "DB",
+                "COMMUNICATE"
             ]
         },
         "annotations": null

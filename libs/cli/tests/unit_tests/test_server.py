@@ -134,6 +134,39 @@ class TestWaitForServerHealthy:
                 read_log=lambda: "some log output",
             )
 
+    async def test_early_exit_promotes_marked_startup_error(self) -> None:
+        """Marked server startup errors should survive app error trimming."""
+        process = MagicMock()
+        process.poll.return_value = 1
+        process.returncode = 3
+
+        log = (
+            "Traceback (most recent call last):\n"
+            "ValueError: No Runloop API key found\n"
+            "Sandbox creation failed for 'runloop': No Runloop API key found. "
+            "Set RUNLOOP_API_KEY or DEEPAGENTS_CLI_RUNLOOP_API_KEY.\n"
+            "DEEPAGENTS_STARTUP_ERROR:Sandbox creation failed for 'runloop': "
+            "No Runloop API key found. Set RUNLOOP_API_KEY or "
+            "DEEPAGENTS_CLI_RUNLOOP_API_KEY.\n"
+            "2026-05-11T03:37:44.911664Z [error    ] "
+            "Application startup failed. Exiting. [uvicorn.error]"
+        )
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await wait_for_server_healthy(
+                "http://localhost:2024",
+                timeout=5,
+                process=process,
+                read_log=lambda: log,
+            )
+
+        first_line = str(exc_info.value).splitlines()[0]
+        assert first_line == (
+            "Server process exited with code 3: Sandbox creation failed for "
+            "'runloop': No Runloop API key found. Set RUNLOOP_API_KEY or "
+            "DEEPAGENTS_CLI_RUNLOOP_API_KEY."
+        )
+
     async def test_raises_on_timeout(self) -> None:
         """Timeout exhaustion raises RuntimeError."""
         import httpx

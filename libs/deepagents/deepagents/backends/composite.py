@@ -18,7 +18,6 @@ Examples:
 """
 
 from collections import defaultdict
-from dataclasses import replace
 from typing import cast
 
 from deepagents.backends.protocol import (
@@ -126,6 +125,8 @@ class CompositeBackend(BackendProtocol):
         default: Backend for paths that don't match any route.
         routes: Map of path prefixes to backends (e.g., {"/memories/": store_backend}).
         sorted_routes: Routes sorted by length (longest first) for correct matching.
+        artifacts_root: Root path for artifacts, such as messages offloaded by middleware.
+            Defaults to `"/"`.
 
     Examples:
         ```python
@@ -140,6 +141,8 @@ class CompositeBackend(BackendProtocol):
         self,
         default: BackendProtocol | StateBackend,
         routes: dict[str, BackendProtocol],
+        *,
+        artifacts_root: str = "/",
     ) -> None:
         """Initialize composite backend.
 
@@ -147,6 +150,8 @@ class CompositeBackend(BackendProtocol):
             default: Backend for paths that don't match any route.
             routes: Map of path prefixes to backends. Prefixes must start with "/"
                 and should end with "/" (e.g., "/memories/").
+            artifacts_root: Root path for artifacts, such as messages offloaded
+                by middleware. Defaults to `"/"`.
         """
         # Default backend
         self.default = default
@@ -156,6 +161,8 @@ class CompositeBackend(BackendProtocol):
 
         # Sort routes by length (longest first) for correct prefix matching
         self.sorted_routes = sorted(routes.items(), key=lambda x: len(x[0]), reverse=True)
+
+        self.artifacts_root = artifacts_root
 
     def _get_backend_and_key(self, key: str) -> tuple[BackendProtocol, str]:
         backend, stripped_key, _route_prefix = _route_for_path(
@@ -474,7 +481,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.write(stripped_key, content)
         if res.path is not None:
-            res = replace(res, path=file_path)
+            res.path = file_path
         return res
 
     async def awrite(
@@ -486,7 +493,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.awrite(stripped_key, content)
         if res.path is not None:
-            res = replace(res, path=file_path)
+            res.path = file_path
         return res
 
     def edit(
@@ -510,7 +517,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
-            res = replace(res, path=file_path)
+            res.path = file_path
         return res
 
     async def aedit(
@@ -524,7 +531,7 @@ class CompositeBackend(BackendProtocol):
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
-            res = replace(res, path=file_path)
+            res.path = file_path
         return res
 
     def execute(
@@ -549,7 +556,8 @@ class CompositeBackend(BackendProtocol):
 
         Raises:
             NotImplementedError: If the default backend is not a
-                `SandboxBackendProtocol` (i.e., it doesn't support execution).
+                [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]
+                (i.e., it doesn't support execution).
         """
         if isinstance(self.default, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self.default)):

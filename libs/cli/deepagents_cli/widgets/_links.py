@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import webbrowser
 from typing import TYPE_CHECKING
@@ -9,9 +10,41 @@ from typing import TYPE_CHECKING
 from deepagents_cli.unicode_security import check_url_safety, strip_dangerous_unicode
 
 if TYPE_CHECKING:
+    from textual.app import App
     from textual.events import Click
 
 logger = logging.getLogger(__name__)
+
+
+async def open_url_async(url: str, *, app: App) -> bool:
+    """Open url in a browser and toast on failure.
+
+    Runs `webbrowser.open` in a thread, catches the platform errors
+    that can arise when no browser backend is available, and posts a
+    warning toast containing the URL so the user can copy it manually
+    instead of the failure vanishing into a background worker log.
+
+    Args:
+        url: The URL to open.
+        app: App used to post the failure toast.
+
+    Returns:
+        `True` when the browser accepted the URL; `False` otherwise
+            (in which case a warning toast has already been posted).
+    """
+    try:
+        opened = await asyncio.to_thread(webbrowser.open, url)
+    except (webbrowser.Error, OSError) as exc:
+        logger.warning("webbrowser.open failed for %s: %s", url, exc, exc_info=True)
+        opened = False
+    if not opened:
+        app.notify(
+            f"Could not open a browser. URL: {url}",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+    return opened
 
 
 def open_style_link(event: Click) -> None:

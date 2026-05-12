@@ -34,7 +34,12 @@ jobs:
     # or when "missing-issue-link" is removed (triggers maintainer override check).
     # Skip entirely when the PR already carries "trusted-contributor" or
     # "bypass-issue-check".
+    # Skip merged PRs: editing the title/body or relabeling a merged PR must
+    # not re-fire enforcement (label, comment, "close" no-op, failed check).
+    # Closed-but-not-merged PRs still flow through so contributors editing the
+    # body to add a `Fixes #N` link will be reopened.
     if: >-
+      github.event.pull_request.merged == false &&
       !contains(github.event.pull_request.labels.*.name, 'trusted-contributor') &&
       !contains(github.event.pull_request.labels.*.name, 'bypass-issue-check') &&
       (
@@ -50,7 +55,7 @@ jobs:
     steps:
       - name: Check for issue link and assignee
         id: check-link
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -283,7 +288,7 @@ jobs:
         if: >-
           env.ENFORCE_ISSUE_LINK == 'true' &&
           (steps.check-link.outputs.has-link != 'true' || steps.check-link.outputs.is-assigned != 'true')
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -312,7 +317,7 @@ jobs:
         if: >-
           env.ENFORCE_ISSUE_LINK == 'true' &&
           steps.check-link.outputs.has-link == 'true' && steps.check-link.outputs.is-assigned == 'true'
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -366,7 +371,7 @@ jobs:
         if: >-
           env.ENFORCE_ISSUE_LINK == 'true' &&
           (steps.check-link.outputs.has-link != 'true' || steps.check-link.outputs.is-assigned != 'true')
-        uses: actions/github-script@v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const { owner, repo } = context.repo;

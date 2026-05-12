@@ -12,6 +12,9 @@ Config format (`~/.deepagents/hooks.json`):
 ```
 
 If `events` is omitted or empty the hook receives **all** events.
+
+Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
+after the user submits a non-empty preferred name.
 """
 
 from __future__ import annotations

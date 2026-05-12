@@ -14,11 +14,15 @@ import tempfile
 import threading
 import tomllib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, TypedDict, cast
+from urllib.parse import urlparse
 
 import tomli_w
+
+from deepagents_cli import _env_vars, auth_store
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -26,6 +30,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CLI_"
+
+
+def resolved_env_var_name(canonical: str) -> str:
+    """Return whichever env var name actually carries the resolved value.
+
+    Mirrors `resolve_env_var`'s precedence: when the prefixed variant is
+    present in `os.environ` (even empty), it wins; otherwise the canonical
+    name is returned. Useful for UI labels that need to reflect what the
+    CLI is actually reading rather than the canonical name.
+
+    Args:
+        canonical: The canonical environment variable name.
+
+    Returns:
+        The resolving env var name (prefixed or canonical).
+    """
+    if not canonical.startswith(_ENV_PREFIX):
+        prefixed = f"{_ENV_PREFIX}{canonical}"
+        if prefixed in os.environ:
+            return prefixed
+    return canonical
 
 
 def resolve_env_var(name: str) -> str | None:
@@ -62,12 +87,195 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
+            if val:
+                logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 
 
+PROVIDERS_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
+)
+"""Public CLI docs page for configuring model providers.
+
+Referenced by `UnknownProviderError` and the `/auth` manager so the same
+URL is used everywhere a user is sent to read about provider setup.
+"""
+
+
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
+
+
+class NoCredentialsConfiguredError(ModelConfigError):
+    """Raised when no credentials are configured for any default-resolvable provider.
+
+    Distinct from `MissingCredentialsError` (which targets a specific provider
+    the user has selected): this fires from `_get_default_model_spec()` when
+    auto-detection finds no usable credentials at all. Callers (the deferred-
+    start path in the TUI and CLI) `isinstance`-check this type to recover by
+    launching the TUI with model creation deferred, rather than string-matching
+    the formatted message.
+    """
+
+
+class UnknownProviderError(ModelConfigError):
+    """Raised when neither the CLI nor `init_chat_model` can infer a provider.
+
+    Carries the offending model spec as an attribute and exposes
+    `PROVIDERS_DOCS_URL` as a class-level constant so callers can render
+    a clickable link without string-scanning the formatted message. This
+    mirrors how `MissingCredentialsError` exposes `provider` / `env_var`
+    for targeted recovery hints.
+    """
+
+    docs_url: ClassVar[str] = PROVIDERS_DOCS_URL
+    """Provider-reference docs URL. Class-level so callers don't pass it."""
+
+    def __init__(self, *, model_spec: str) -> None:
+        """Initialize the error.
+
+        Args:
+            model_spec: The bare model name the user supplied (e.g.
+                `'mystery-model'`). When the input had a `provider:model`
+                form, parsing succeeds and this exception does not fire.
+
+        Raises:
+            ValueError: If `model_spec` is empty.
+        """
+        if not model_spec:
+            msg = "model_spec must be non-empty"
+            raise ValueError(msg)
+        message = (
+            f"Unable to infer a model provider for {model_spec!r}. "
+            f"Specify one explicitly (e.g. 'anthropic:{model_spec}') "
+            f"or see the provider reference at {self.docs_url}."
+        )
+        super().__init__(message)
+        self.model_spec = model_spec
+
+
+class MissingCredentialsError(ModelConfigError):
+    """Raised when a provider is selected but its API key env var is unset.
+
+    Subclasses `ModelConfigError` so existing `except ModelConfigError` blocks
+    keep working. Carries the `provider` name and the canonical `env_var` so
+    callers can render targeted recovery hints (e.g., "set OPENAI_API_KEY" or
+    "run `/model <other_provider>:<model>`") without string-matching on the
+    formatted exception message and without re-deriving the env-var name.
+    """
+
+    def __init__(
+        self, message: str, *, provider: str, env_var: str | None = None
+    ) -> None:
+        """Initialize the error.
+
+        Args:
+            message: Human-readable message describing the missing credential.
+            provider: The provider whose credentials are missing
+                (e.g., `'openai'`).
+            env_var: The canonical env var name expected to hold the
+                credential (e.g., `'OPENAI_API_KEY'`). `None` when the
+                provider has no registered env-var mapping.
+        """
+        super().__init__(message)
+        self.provider = provider
+        self.env_var = env_var
+
+
+class ProviderAuthState(StrEnum):
+    """Credential readiness state for a model provider."""
+
+    CONFIGURED = "configured"
+    """An explicit credential source is configured and non-empty."""
+
+    MISSING = "missing"
+    """An explicit credential source is required but missing."""
+
+    NOT_REQUIRED = "not_required"
+    """This provider configuration does not require API-key credentials."""
+
+    IMPLICIT = "implicit"
+    """The provider supports ambient auth outside CLI env-var checks."""
+
+    MANAGED = "managed"
+    """A custom provider class is expected to manage auth itself."""
+
+    UNKNOWN = "unknown"
+    """The CLI cannot determine whether provider auth is ready."""
+
+
+class ProviderAuthSource(StrEnum):
+    """Origin of a `CONFIGURED` credential, used to discriminate display."""
+
+    STORED = "stored"
+    """Persisted via `/auth` in `~/.deepagents/.state/auth.json`."""
+
+    ENV = "env"
+    """Resolved from an environment variable."""
+
+
+@dataclass(frozen=True)
+class ProviderAuthStatus:
+    """Credential readiness information for a provider.
+
+    Args:
+        state: Provider auth state.
+        provider: Provider name.
+        env_var: Env var name associated with the state, when applicable.
+        source: For `CONFIGURED` states, where the credential value came
+            from. `None` for non-configured states or when the source is
+            not meaningful (e.g., implicit/managed auth).
+        detail: Short user-facing context for selectors and logs.
+    """
+
+    state: ProviderAuthState
+    provider: str
+    env_var: str | None = None
+    source: ProviderAuthSource | None = None
+    detail: str | None = None
+
+    def __post_init__(self) -> None:
+        """Enforce the source-vs-state invariant.
+
+        Raises:
+            ValueError: If `source` is set but `state` is not `CONFIGURED`,
+                or if `state` is `CONFIGURED` but no `source` is recorded.
+        """
+        is_configured = self.state is ProviderAuthState.CONFIGURED
+        has_source = self.source is not None
+        if is_configured != has_source:
+            msg = (
+                f"ProviderAuthStatus invariant violated: "
+                f"state={self.state!r} requires "
+                f"{'a source' if is_configured else 'source=None'}, "
+                f"got source={self.source!r}"
+            )
+            raise ValueError(msg)
+
+    @property
+    def blocks_start(self) -> bool:
+        """Whether this status should block model creation or switching."""
+        return self.state is ProviderAuthState.MISSING
+
+    def as_legacy_bool(self) -> bool | None:
+        """Return the historic `has_provider_credentials` tri-state value."""
+        if self.state is ProviderAuthState.MISSING:
+            return False
+        if self.state is ProviderAuthState.UNKNOWN:
+            return None
+        return True
+
+    def missing_detail(self) -> str:
+        """Return a user-facing reason for a missing-credential status."""
+        if self.env_var:
+            return f"{self.env_var} is not set or is empty"
+        if self.detail:
+            return self.detail
+        return (
+            f"provider '{self.provider}' is not recognized. "
+            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+        )
 
 
 @dataclass(frozen=True)
@@ -185,7 +393,12 @@ class ProviderConfig(TypedDict, total=False):
     """List of model identifiers available from this provider."""
 
     api_key_env: str
-    """Environment variable name containing the API key."""
+    """Name of the environment variable that holds the API key.
+
+    This is the env var *name* (e.g., `"OPENAI_API_KEY"`), not the secret
+    itself. The CLI resolves it at startup to verify credentials before model
+    creation.
+    """
 
     base_url: str
     """Custom base URL."""
@@ -206,6 +419,10 @@ class ProviderConfig(TypedDict, total=False):
     every model from this provider. Model-keyed sub-tables (e.g.,
     `[params."qwen3:4b"]`) override individual values for that model only;
     the merge is shallow (model wins on conflict).
+
+    Do not set `api_key` here — the early credential check runs before
+    `params` are read, so the CLI will reject the model before it sees the key.
+    Use `api_key_env` to point at an environment variable instead.
     """
 
     profile: dict[str, Any]
@@ -222,6 +439,15 @@ DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
 
 DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
 """Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
+
+DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
+"""Directory for CLI-managed internal state (`~/.deepagents/.state`).
+
+Holds files the CLI writes for its own bookkeeping — OAuth tokens, the
+sessions database, version-check caches, input history. Kept separate from
+top-level user-facing config and agent directories so listing/iterating
+`~/.deepagents` doesn't conflate state with agents.
+"""
 
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -255,6 +481,35 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+"""Providers that support ambient auth outside CLI env-var checks.
+
+These providers can authenticate without the env var listed in
+`PROVIDER_API_KEY_ENV`, so a missing env var should not be treated as a hard
+credential failure. Used by `create_model` to skip the early credential check
+and by `get_provider_auth_status` for user-facing auth labels.
+"""
+
+NO_AUTH_REQUIRED_PROVIDERS: frozenset[str] = frozenset({"ollama"})
+"""Providers whose default local configuration does not require API keys."""
+
+OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
+"""Optional env vars that enable authenticated provider modes when present."""
+
+PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
+"""Provider-specific env vars that can point a local provider at a remote host."""
+
+OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
+"""Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
+
+OLLAMA_DISCOVERY_TIMEOUT_SECONDS = 1.0
+"""Socket timeout for Ollama discovery probes.
+
+Kept short so a dead daemon does not stall switcher loading. Discovery runs
+off the UI loop in a worker thread and may call `/api/tags` and `/api/show`,
+so this caps the worst-case wait visible to the user.
+"""
+
 
 # Module-level caches — cleared by `clear_caches()`.
 _available_models_cache: dict[str, list[str]] | None = None
@@ -262,6 +517,8 @@ _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
+_ollama_installed_models_cache: dict[str, list[str]] = {}
+_ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
 
@@ -276,6 +533,8 @@ def clear_caches() -> None:
     _builtin_providers_cache = None
     _default_config_cache = None
     _provider_profiles_cache.clear()
+    _ollama_installed_models_cache.clear()
+    _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
     invalidate_thread_config_cache()
@@ -539,6 +798,31 @@ def get_available_models() -> dict[str, list[str]]:
                 if model not in existing:
                     available[provider_name].append(model)
 
+    # `langchain-ollama` ships no profile data, so the steps above leave the
+    # switcher empty unless the user hand-curates `models = [...]` in config.
+    # Probe the daemon for installed models and merge them in,
+    # preserving explicit config order (config wins) with discoveries appended.
+    # Cached alongside the rest of `available`; refresh by
+    # calling `clear_caches()` (e.g. via the `/reload` slash command).
+    if (
+        _ollama_discovery_enabled()
+        and "ollama" in registry_providers
+        and config.is_provider_enabled("ollama")
+        and importlib.util.find_spec("langchain_ollama") is not None
+    ):
+        endpoint = _get_provider_endpoint("ollama", config)
+        discovered = _get_ollama_installed_models(endpoint)
+        if discovered:
+            available["ollama"] = list(
+                dict.fromkeys([*available.get("ollama", []), *discovered])
+            )
+        else:
+            logger.debug(
+                "Ollama discovery returned no models for %s; "
+                "daemon may be down or have no pulls",
+                endpoint or OLLAMA_DEFAULT_BASE_URL,
+            )
+
     _available_models_cache = available
     return available
 
@@ -696,6 +980,42 @@ def get_model_profiles(
                 )
                 result[spec] = _build_entry({}, overrides, cli_override)
 
+    # `langchain-ollama` does not ship static profile data. When discovery is
+    # enabled, ask the daemon for model metadata so the selector can show
+    # context length and capabilities for locally pulled models.
+    if (
+        _ollama_discovery_enabled()
+        and "ollama" in registry_providers
+        and config.is_provider_enabled("ollama")
+        and importlib.util.find_spec("langchain_ollama") is not None
+    ):
+        endpoint = _get_provider_endpoint("ollama", config)
+        discovered_model_names = _get_ollama_installed_models(endpoint)
+        configured_model_names = [
+            spec.removeprefix("ollama:")
+            for spec in result
+            if spec.startswith("ollama:")
+        ]
+        model_names = list(
+            dict.fromkeys([*configured_model_names, *discovered_model_names])
+        )
+        if model_names:
+            discovered_profiles = _fetch_ollama_installed_model_profiles(
+                endpoint,
+                model_names,
+            )
+            for model_name in model_names:
+                profile = discovered_profiles.get(model_name, {})
+                spec = f"ollama:{model_name}"
+                existing = result.get(spec)
+                base = dict(existing["profile"]) if existing is not None else {}
+                base.update(profile)
+                overrides = config.get_profile_overrides(
+                    "ollama", model_name=model_name
+                )
+                result[spec] = _build_entry(base, overrides, cli_override)
+                seen_specs.add(spec)
+
     frozen = MappingProxyType(result)
     if cli_override is None:
         _profiles_cache = frozen
@@ -704,46 +1024,556 @@ def get_model_profiles(
     return frozen
 
 
-def has_provider_credentials(provider: str) -> bool | None:
-    """Check if credentials are available for a provider.
+_LOCAL_HOSTNAMES: frozenset[str] = frozenset(
+    {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",  # noqa: S104  # hostname comparison, not socket binding
+    }
+)
 
-    Resolution order:
 
-    1. Config-file providers (`config.toml`) with `api_key_env` — takes
-        priority so user overrides are respected.
-    2. Config-file providers with `class_path` but no `api_key_env` —
-        assumed to manage their own auth (e.g., custom headers, JWT, mTLS).
-    3. Hardcoded `PROVIDER_API_KEY_ENV` mapping (anthropic, openai, etc.).
-    4. For any other provider (e.g., third-party langchain provider
-        packages), credential status is unknown — the provider itself will
-        report auth failures at model-creation time.
+def _is_local_endpoint(url: str | None) -> bool:
+    """Return whether a provider endpoint points at the local machine."""
+    if not url:
+        return True
+    if not isinstance(url, str):
+        return False
+
+    # Bare hostname literal (no scheme, no port) — short-circuit so IPv6
+    # forms like `::1` don't get misparsed by urlparse.
+    if url in _LOCAL_HOSTNAMES:
+        return True
+
+    candidate = url if "://" in url else f"http://{url}"
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return False
+    return parsed.hostname in _LOCAL_HOSTNAMES
+
+
+def _get_provider_endpoint(provider: str, config: ModelConfig) -> str | None:
+    """Return a provider endpoint from config or provider-specific env vars."""
+    base_url = config.get_base_url(provider)
+    if base_url:
+        return base_url
+
+    host_env = PROVIDER_HOST_ENV.get(provider)
+    if not host_env:
+        return None
+    return resolve_env_var(host_env)
+
+
+_OLLAMA_DISCOVERY_FALSY: frozenset[str] = frozenset({"0", "false", "no", "off"})
+"""Normalized values that disable Ollama discovery when set in `OLLAMA_DISCOVERY`."""
+
+_OLLAMA_DISCOVERY_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+"""Normalized values that enable Ollama discovery when set in `OLLAMA_DISCOVERY`."""
+
+
+def _ollama_discovery_enabled() -> bool:
+    """Return whether Ollama model/profile discovery may run.
+
+    Defaults to enabled. Opt out via `_env_vars.OLLAMA_DISCOVERY` set to a
+    falsy value (`0`, `false`, `no`, `off`); truthy values (`1`, `true`,
+    `yes`, `on`) explicitly enable. Unrecognized values warn and fall through
+    to the default because the user clearly tried to configure something.
+    """
+    raw = resolve_env_var(_env_vars.OLLAMA_DISCOVERY)
+    if raw is None:
+        return True
+    normalized = raw.strip().lower()
+    if normalized in _OLLAMA_DISCOVERY_FALSY:
+        return False
+    if normalized in _OLLAMA_DISCOVERY_TRUTHY:
+        return True
+    logger.warning(
+        "Unrecognized value for %s: %r; expected one of %s. Defaulting to enabled.",
+        _env_vars.OLLAMA_DISCOVERY,
+        raw,
+        sorted(_OLLAMA_DISCOVERY_FALSY | _OLLAMA_DISCOVERY_TRUTHY),
+    )
+    return True
+
+
+def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
+    """Return cached Ollama model names for `endpoint`.
 
     Args:
-        provider: Provider name.
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`.
 
     Returns:
-        True if credentials are confirmed available or the provider is
-            expected to manage its own auth (e.g., `class_path` providers),
-            False if confirmed missing, or None if credential status cannot
-            be determined.
+        Sorted list of model names reported by `/api/tags`.
+    """
+    key = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    cached = _ollama_installed_models_cache.get(key)
+    if cached is not None:
+        return list(cached)
+    models = _fetch_ollama_installed_models(endpoint)
+    if models:
+        _ollama_installed_models_cache[key] = models
+    return list(models)
+
+
+def _fetch_ollama_installed_models(
+    endpoint: str | None,
+    *,
+    timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS,
+) -> list[str]:
+    """Discover models installed in a local or hosted Ollama daemon.
+
+    Issues a `GET {endpoint}/api/tags` and returns the sorted list of model
+    names reported by the daemon. The probe is best-effort: any error
+    (timeout, connection refused, malformed JSON) yields an empty list and is
+    logged at debug level so the model switcher can fall back gracefully.
+
+    When probing a local endpoint and `OLLAMA_API_KEY` (or the
+    `DEEPAGENTS_CLI_`-prefixed variant) is set, its value is forwarded as a
+    `Bearer` token. Discovery never forwards credentials to non-local endpoints.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+        timeout: Socket timeout in seconds.
+
+    Returns:
+        Sorted list of model names; empty when the daemon is unreachable or
+            returns no models.
+    """
+    import json
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        logger.warning(
+            "Skipping Ollama discovery: %r has no http:// or https:// scheme. "
+            "Set base_url or OLLAMA_HOST to e.g. http://localhost:11434.",
+            base,
+        )
+        return []
+    url = f"{base}/api/tags"
+
+    headers = _ollama_discovery_headers(base, content_type=False)
+    request = Request(url, headers=headers)  # noqa: S310  # scheme guarded above
+    # Catch-all is intentional: discovery is best-effort and must never break
+    # the model selector. The narrow tuple is fully subsumed by `Exception`
+    # below; we keep it only to log expected transport failures at debug while
+    # surfacing unexpected ones at warning so a real bug doesn't disappear.
+    # Notably catches `pytest-socket`'s `SocketBlockedError`, which inherits
+    # from `Exception` (not `OSError`) and would otherwise propagate during
+    # unit tests run with `--disable-socket`. `KeyboardInterrupt` and
+    # `SystemExit` derive from `BaseException` and bypass both branches.
+    try:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310  # scheme guarded above
+            payload = json.loads(response.read().decode("utf-8"))
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        logger.debug("Ollama model discovery failed for %s: %s", url, exc)
+        return []
+    except Exception as exc:  # noqa: BLE001  # see comment above
+        logger.warning(
+            "Ollama model discovery raised unexpected %s for %s: %s",
+            type(exc).__name__,
+            url,
+            exc,
+        )
+        return []
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        logger.debug(
+            "Ollama discovery: %s returned unexpected payload shape (%s); "
+            "endpoint may not be an Ollama daemon",
+            url,
+            type(payload).__name__,
+        )
+        return []
+
+    names: list[str] = []
+    for entry in payload["models"]:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    names.sort()
+    return names
+
+
+def _ollama_discovery_headers(endpoint: str, *, content_type: bool) -> dict[str, str]:
+    """Build headers for Ollama discovery requests.
+
+    Args:
+        endpoint: Base URL for the discovery request.
+        content_type: Whether to include a JSON `Content-Type` header.
+
+    Returns:
+        HTTP headers including optional bearer auth for local endpoints.
+    """
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    optional_env = OPTIONAL_AUTH_ENV.get("ollama")
+    if optional_env and _is_local_endpoint(endpoint):
+        api_key = resolve_env_var(optional_env)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    """Return `value` as a positive integer, or `None` when unavailable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, float) and value > 0 and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _profile_from_ollama_show_payload(payload: object) -> dict[str, Any]:
+    """Extract LangChain-style profile fields from an Ollama `/api/show` payload.
+
+    Args:
+        payload: Decoded JSON response from `POST /api/show`.
+
+    Returns:
+        Profile fields understood by the model selector, such as
+        `max_input_tokens` and `tool_calling`.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    payload_dict = cast("dict[str, object]", payload)
+
+    profile: dict[str, Any] = {}
+    model_info = payload_dict.get("model_info")
+    if isinstance(model_info, dict):
+        context_lengths = [
+            length
+            for key, value in model_info.items()
+            if isinstance(key, str)
+            and (key == "context_length" or key.endswith(".context_length"))
+            and (length := _coerce_positive_int(value)) is not None
+        ]
+        if context_lengths:
+            profile["max_input_tokens"] = max(context_lengths)
+
+    capabilities = payload_dict.get("capabilities")
+    if isinstance(capabilities, list):
+        capability_names = {item for item in capabilities if isinstance(item, str)}
+        if "completion" in capability_names:
+            profile["text_inputs"] = True
+            profile["text_outputs"] = True
+        if "tools" in capability_names:
+            profile["tool_calling"] = True
+        if "thinking" in capability_names:
+            profile["reasoning_output"] = True
+
+    if not profile and ("model_info" in payload_dict or "capabilities" in payload_dict):
+        logger.debug(
+            "Ollama profile discovery returned a payload with no recognized "
+            "profile fields; top-level keys: %s",
+            sorted(str(key) for key in payload_dict),
+        )
+
+    return profile
+
+
+def _fetch_ollama_installed_model_profiles(
+    endpoint: str | None,
+    model_names: list[str],
+    *,
+    timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS,
+) -> dict[str, dict[str, Any]]:
+    """Discover profile metadata for installed Ollama models.
+
+    Issues `POST {endpoint}/api/show` for each model. The probe is best-effort:
+    failures for one model are logged and do not stop profile discovery for the
+    remaining models.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+        model_names: Model names to inspect.
+        timeout: Socket timeout in seconds.
+
+    Returns:
+        Mapping of model name to extracted profile fields.
+    """
+    import json
+    from urllib.error import URLError
+    from urllib.request import Request, urlopen
+
+    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    if not base.startswith(("http://", "https://")):
+        logger.warning(
+            "Skipping Ollama profile discovery: %r has no http:// or https:// scheme. "
+            "Set base_url or OLLAMA_HOST to e.g. http://localhost:11434.",
+            base,
+        )
+        return {}
+
+    url = f"{base}/api/show"
+    profiles: dict[str, dict[str, Any]] = {}
+    headers = _ollama_discovery_headers(base, content_type=True)
+
+    for model_name in model_names:
+        cache_key = (base, model_name)
+        cached = _ollama_model_profiles_cache.get(cache_key)
+        if cached is not None:
+            profiles[model_name] = dict(cached)
+            continue
+
+        body = json.dumps({"model": model_name}).encode("utf-8")
+        request = Request(  # noqa: S310  # scheme guarded above
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310  # scheme guarded above
+                payload = json.loads(response.read().decode("utf-8"))
+        except (URLError, TimeoutError, OSError, ValueError) as exc:
+            logger.debug(
+                "Ollama profile discovery failed for %s via %s: %s",
+                model_name,
+                url,
+                exc,
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001  # see _fetch_ollama_installed_models
+            logger.warning(
+                "Ollama profile discovery raised unexpected %s for %s via %s: %s",
+                type(exc).__name__,
+                model_name,
+                url,
+                exc,
+            )
+            continue
+
+        profile = _profile_from_ollama_show_payload(payload)
+        if profile:
+            _ollama_model_profiles_cache[cache_key] = profile
+            profiles[model_name] = profile
+
+    return profiles
+
+
+def _has_stored_credential(provider: str) -> bool:
+    """Return whether `provider` has a credential persisted via `/auth`.
+
+    A corrupt `auth.json` is swallowed (logged, treated as absent) so the
+    model selector and other read-side callers can keep listing providers.
+    The user-visible signal lives in `AuthManagerScreen` — opening `/auth`
+    surfaces a corruption banner directly. Read-side resilience here means
+    you can still pick a different provider while the file is broken.
+    """
+    try:
+        return auth_store.get_stored_key(provider) is not None
+    except RuntimeError:
+        logger.warning(
+            "Could not read stored credentials for provider %s; treating as absent",
+            provider,
+        )
+        return False
+
+
+def resolve_provider_credential(provider: str) -> str | None:
+    """Resolve the credential value for `provider` from any configured source.
+
+    Lookup order:
+
+    1. Stored API key in `~/.deepagents/.state/auth.json` (added via `/auth`).
+    2. Canonical env var via `resolve_env_var()` (which honors the
+        `DEEPAGENTS_CLI_` prefix and dotenv files).
+
+    A user who has *both* a stored key and an env var set gets the stored
+    key — entering one in the TUI is the more deliberate, more recent
+    action, so "I just typed this in" beats whatever the shell exported.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`).
+
+    Returns:
+        The credential value, or `None` when no source has one or the
+        provider has no env-var mapping at all.
+    """
+    try:
+        stored = auth_store.get_stored_key(provider)
+    except RuntimeError:
+        logger.warning(
+            "Could not read stored credentials for provider %s; falling back to env",
+            provider,
+        )
+        stored = None
+    if stored:
+        return stored
+    env_var = get_credential_env_var(provider)
+    if env_var:
+        return resolve_env_var(env_var)
+    return None
+
+
+def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
+    """Return a `CONFIGURED` status if a stored or env credential is set.
+
+    Stored credentials beat env vars (matches `resolve_provider_credential`).
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`).
+        env_var: Canonical env var name to check when no stored credential
+            exists. Recorded on the returned status either way.
+
+    Returns:
+        A `CONFIGURED` status, or `None` when neither source is set.
+    """
+    if _has_stored_credential(provider):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=env_var,
+            source=ProviderAuthSource.STORED,
+            detail="stored credential",
+        )
+    if resolve_env_var(env_var):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=provider,
+            env_var=env_var,
+            source=ProviderAuthSource.ENV,
+            detail="credentials set",
+        )
+    return None
+
+
+def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
+    """Return credential readiness details for a provider.
+
+    Combines config, well-known provider metadata, optional provider auth,
+    and implicit-auth provider metadata before attempting model creation:
+
+    1. **Config-file providers** (`config.toml`
+        `[models.providers.<name>]`):
+        - If the section declares `api_key_env`, that env var is checked
+            via `resolve_env_var()` (which honors `DEEPAGENTS_CLI_` prefixes).
+        - If the section has `class_path` but no `api_key_env`, the provider is
+            assumed to manage its own auth (e.g., custom headers, JWT, mTLS).
+        - If neither `api_key_env` nor `class_path` is set, falls through
+            to provider-specific defaults.
+    2. **Hardcoded registry** (`PROVIDER_API_KEY_ENV`): a module-level dict
+        mapping well-known provider names to their canonical env var
+        (e.g., `"anthropic"` → `"ANTHROPIC_API_KEY"`). The env var is checked
+        via `resolve_env_var()`.
+    3. **Implicit auth providers** (e.g., Vertex AI ADC): a missing env var is
+        not treated as missing credentials.
+    4. **Optional auth env vars** (`OPTIONAL_AUTH_ENV`): when present, mark
+        the provider as configured for hosted/cloud use.
+    5. **No-auth-required providers** (`NO_AUTH_REQUIRED_PROVIDERS`): default
+        local endpoints report `NOT_REQUIRED`; non-local endpoints fall back
+        to `UNKNOWN` so the SDK can decide.
+    6. **Unknown providers** not present in any source defer auth failures to
+        the provider SDK.
+
+    Use `has_provider_credentials()` when compatibility with the historic
+    `True`/`False`/`None` contract is required.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
+
+    Returns:
+        Provider auth status for selectors, startup checks, and compatibility
+            wrappers.
     """
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     provider_config = config.providers.get(provider)
     if provider_config:
-        result = config.has_credentials(provider)
-        if result is not None:
-            return result
+        env_var = provider_config.get("api_key_env")
+        if env_var:
+            configured = _resolve_configured(provider, env_var)
+            if configured:
+                return configured
+            return ProviderAuthStatus(
+                state=ProviderAuthState.MISSING,
+                provider=provider,
+                env_var=env_var,
+                detail=f"{env_var} is not set or is empty",
+            )
         # class_path providers that omit api_key_env manage their own auth
-        # (e.g., custom headers, JWT, mTLS) — treat as available.
+        # (e.g., custom headers, JWT, mTLS).
         if provider_config.get("class_path"):
-            return True
-        # No api_key_env in config — fall through to hardcoded map.
+            return ProviderAuthStatus(
+                state=ProviderAuthState.MANAGED,
+                provider=provider,
+                detail="custom auth",
+            )
+        # No api_key_env in config — fall through to provider-specific and
+        # hardcoded maps.
 
     # Fall back to hardcoded well-known providers.
     env_var = PROVIDER_API_KEY_ENV.get(provider)
     if env_var:
-        return bool(resolve_env_var(env_var))
+        configured = _resolve_configured(provider, env_var)
+        if configured:
+            return configured
+        if provider in IMPLICIT_AUTH_PROVIDERS:
+            return ProviderAuthStatus(
+                state=ProviderAuthState.IMPLICIT,
+                provider=provider,
+                env_var=env_var,
+                detail="implicit auth",
+            )
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=provider,
+            env_var=env_var,
+            detail=f"{env_var} is not set or is empty",
+        )
+
+    if provider in IMPLICIT_AUTH_PROVIDERS:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.IMPLICIT,
+            provider=provider,
+            detail="implicit auth",
+        )
+
+    optional_env = OPTIONAL_AUTH_ENV.get(provider)
+    if optional_env:
+        configured = _resolve_configured(provider, optional_env)
+        if configured:
+            return configured
+
+    if provider in NO_AUTH_REQUIRED_PROVIDERS:
+        endpoint = _get_provider_endpoint(provider, config)
+        if _is_local_endpoint(endpoint):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider=provider,
+                detail="local provider",
+            )
+        # Remote endpoint may or may not require auth (private network vs.
+        # hosted). Don't block; surface the optional env var as a hint.
+        detail = (
+            f"remote endpoint; set {optional_env} if auth is required"
+            if optional_env
+            else "remote endpoint"
+        )
+        return ProviderAuthStatus(
+            state=ProviderAuthState.UNKNOWN,
+            provider=provider,
+            env_var=optional_env,
+            detail=detail,
+        )
 
     # Provider not found in config or hardcoded map — credential status is
     # unknown. The provider itself will report auth failures at
@@ -752,7 +1582,31 @@ def has_provider_credentials(provider: str) -> bool | None:
         "No credential information for provider '%s'; deferring auth to provider",
         provider,
     )
-    return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.UNKNOWN,
+        provider=provider,
+        detail="credentials unknown",
+    )
+
+
+def has_provider_credentials(provider: str) -> bool | None:
+    """Check if credentials are available for a provider.
+
+    This compatibility wrapper preserves the historic tri-state contract while
+    `get_provider_auth_status()` carries the richer user-facing distinctions:
+    configured credentials, missing credentials, no-auth local providers,
+    implicit auth, custom provider-managed auth, and unknown providers.
+
+    Args:
+        provider: Provider name (e.g., `"anthropic"`, `"openai"`).
+
+    Returns:
+        `True` if auth is configured, implicit, provider-managed, or not
+            required.
+        `False` if a required env var is known but not set.
+        `None` if credential status cannot be determined.
+    """
+    return get_provider_auth_status(provider).as_legacy_bool()
 
 
 def get_credential_env_var(provider: str) -> str | None:
@@ -772,6 +1626,41 @@ def get_credential_env_var(provider: str) -> str | None:
     if config_env:
         return config_env
     return PROVIDER_API_KEY_ENV.get(provider)
+
+
+def apply_stored_credentials(provider: str) -> bool:
+    """Export this provider's stored API key into `os.environ` for SDK use.
+
+    LangChain's chat-model factories read credentials from process env vars,
+    so a stored key only takes effect once it's copied onto the env var name
+    registered for that provider. This is a no-op when the provider has no
+    env-var mapping (custom auth) or no stored credential.
+
+    The env var is overwritten whether or not it was already set, matching
+    the precedence rule documented on `resolve_provider_credential`: a
+    credential the user typed in `/auth` is the most recent deliberate
+    action and should take effect.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        `True` if a stored key was applied, `False` otherwise.
+    """
+    env_var = get_credential_env_var(provider)
+    if not env_var:
+        return False
+    try:
+        stored = auth_store.get_stored_key(provider)
+    except RuntimeError:
+        logger.warning("Could not read stored credentials for provider %s", provider)
+        return False
+    if not stored:
+        return False
+    if os.environ.get(env_var) == stored:
+        return True
+    os.environ[env_var] = stored
+    return True
 
 
 @dataclass(frozen=True)
@@ -1082,14 +1971,18 @@ class ModelConfig:
         return result
 
 
-def _save_model_field(
-    field: str, model_spec: str, config_path: Path | None = None
+def _save_toml_field(
+    section: str,
+    field: str,
+    value: str,
+    config_path: Path | None = None,
 ) -> bool:
-    """Read-modify-write a `[models].<field>` key in the config file.
+    """Read-modify-write a `[section].<field>` key in the config file.
 
     Args:
-        field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
-        model_spec: The model to save in `provider:model` format.
+        section: TOML table name (e.g., `'models'`, `'agents'`).
+        field: Key within the table (e.g., `'default'`, `'recent'`).
+        value: String value to persist.
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -1110,9 +2003,9 @@ def _save_model_field(
         else:
             data = {}
 
-        if "models" not in data:
-            data["models"] = {}
-        data["models"][field] = model_spec
+        if section not in data:
+            data[section] = {}
+        data[section][field] = value
 
         # Write to temp file then rename to prevent corruption if write is interrupted
         fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
@@ -1125,14 +2018,38 @@ def _save_model_field(
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
-        logger.exception("Could not save %s model preference", field)
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
+        # payload; `ValueError` covers things like `os.fdopen` on a
+        # closed fd. Folding them in keeps the `bool` contract intact for
+        # the UI branches that toggle on the return value.
+        logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
         # Invalidate config cache so the next load() picks up the change.
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         _default_config_cache = None
         return True
+
+
+def _save_model_field(
+    field: str, model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Read-modify-write a `[models].<field>` key in the config file.
+
+    Thin wrapper around `_save_toml_field` for the `[models]` section.
+
+    Args:
+        field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
+        model_spec: The model to save in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("models", field, model_spec, config_path)
 
 
 def save_default_model(model_spec: str, config_path: Path | None = None) -> bool:
@@ -1195,7 +2112,9 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # See `_save_toml_field` for why `TypeError` / `ValueError` are
+        # folded into the bool return contract.
         logger.exception("Could not clear default model preference")
         return False
     else:
@@ -1277,7 +2196,14 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
 
         if "warnings" not in data:
             data["warnings"] = {}
-        suppress_list: list[str] = data["warnings"].get("suppress", [])
+        suppress_list = data["warnings"].get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            suppress_list = []
         if key not in suppress_list:
             suppress_list.append(key)
         data["warnings"]["suppress"] = suppress_list
@@ -1293,6 +2219,61 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save warning suppression for '%s'", key)
+        return False
+    return True
+
+
+def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
+    """Remove a warning key from the suppression list in the config file.
+
+    Reads existing config (if any), removes `key` from `[warnings].suppress`,
+    and writes back using atomic temp-file rename. No-op if the key is not
+    present or the file does not exist.
+
+    Args:
+        key: Warning identifier to unsuppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed due to I/O errors.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    try:
+        if not config_path.exists():
+            return True  # nothing to remove
+
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        suppress_list = data.get("warnings", {}).get("suppress", [])
+        if not isinstance(suppress_list, list):
+            logger.debug(
+                "[warnings].suppress in %s should be a list, got %s",
+                config_path,
+                type(suppress_list).__name__,
+            )
+            return True  # treat as nothing to remove
+        if key not in suppress_list:
+            return True  # already unsuppressed
+
+        suppress_list.remove(key)
+        data.setdefault("warnings", {})["suppress"] = suppress_list
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     return True
 
@@ -1618,3 +2599,151 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
         This function does not preserve comments in the config file.
     """
     return _save_model_field("recent", model_spec, config_path)
+
+
+def save_recent_agent(agent_name: str, config_path: Path | None = None) -> bool:
+    """Update the recently used agent in config file.
+
+    Writes to `[agents].recent` so a later bare `deepagents` launch (no
+    `-a`) can bring the user back to their last agent instead of the
+    default.
+
+    Args:
+        agent_name: The agent directory name (e.g., `'coder'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("agents", "recent", agent_name, config_path)
+
+
+def load_recent_agent(config_path: Path | None = None) -> str | None:
+    """Read `[agents].recent` from the config file.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved agent name, or `None` if the file or key is missing or
+        the file is unreadable.
+    """
+    return _load_agents_field("recent", config_path)
+
+
+def save_default_agent(agent_name: str, config_path: Path | None = None) -> bool:
+    """Update the default agent in config file.
+
+    Writes to `[agents].default`. This is the user's intentional sticky
+    default — set via `Ctrl+S` in the `/agents` picker — and takes
+    precedence over `[agents].recent` on bare-launch resolution.
+
+    Args:
+        agent_name: The agent directory name (e.g., `'coder'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("agents", "default", agent_name, config_path)
+
+
+def clear_default_agent(config_path: Path | None = None) -> bool:
+    """Remove the default agent from the config file.
+
+    Deletes the `[agents].default` key so that future launches fall back
+    to `[agents].recent` and then `DEFAULT_AGENT_NAME`.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed (or was already absent), False on I/O error.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        return True
+
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+
+        agents_section = data.get("agents")
+        if not isinstance(agents_section, dict) or "default" not in agents_section:
+            return True
+
+        del agents_section["default"]
+
+        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                tomli_w.dump(data, f)
+            Path(tmp_path).replace(config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                Path(tmp_path).unlink()
+            raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # See `_save_toml_field` for why `TypeError` / `ValueError` are
+        # folded into the bool return contract.
+        logger.exception("Could not clear default agent preference")
+        return False
+    else:
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+        _default_config_cache = None
+        return True
+
+
+def load_default_agent(config_path: Path | None = None) -> str | None:
+    """Read `[agents].default` from the config file.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The saved agent name, or `None` if the file or key is missing or
+        the file is unreadable.
+    """
+    return _load_agents_field("default", config_path)
+
+
+def _load_agents_field(field: str, config_path: Path | None = None) -> str | None:
+    """Read `[agents].<field>` from the config file.
+
+    Args:
+        field: Key under the `[agents]` table (e.g., `'recent'`, `'default'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        The trimmed string value, or `None` if the file, section, or key
+        is missing or the file is unreadable.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        return None
+    try:
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning("Could not read agents.%s from config", field, exc_info=True)
+        return None
+    agents_section = data.get("agents", {})
+    value = agents_section.get(field)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None

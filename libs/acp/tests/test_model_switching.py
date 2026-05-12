@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from acp.schema import (
     NewSessionResponse,
+    SessionConfigOptionSelect,
     SetSessionConfigOptionResponse,
 )
 from deepagents import create_deep_agent
@@ -13,6 +14,21 @@ from langchain_anthropic import ChatAnthropic
 from langgraph.checkpoint.memory import MemorySaver
 
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
+
+
+def _select(opt: Any) -> SessionConfigOptionSelect:
+    """Normalize cross-version config-option shape.
+
+    agent-client-protocol v0.8.x wraps config options in SessionConfigOption
+    with a .root attribute; v0.9.0+ emits the Select instance directly.
+    Fails loudly if the unwrapped value isn't a SessionConfigOptionSelect so
+    a future wrapper shape can't silently pass through.
+    """
+    inner = getattr(opt, "root", opt)
+    assert isinstance(inner, SessionConfigOptionSelect), (
+        f"expected SessionConfigOptionSelect, got {type(inner).__name__}"
+    )
+    return inner
 
 
 class MockClient:
@@ -80,13 +96,13 @@ async def test_new_session_returns_config_options(agent_factory, models):
     assert len(response.config_options) == 1
 
     # Check model config option
-    model_config = response.config_options[0]
-    assert model_config.root.id == "model"
-    assert model_config.root.name == "Model"
-    assert model_config.root.category == "model"
-    assert model_config.root.type == "select"
-    assert model_config.root.current_value == "anthropic:claude-opus-4-6"
-    assert len(model_config.root.options) == 3
+    model_config = _select(response.config_options[0])
+    assert model_config.id == "model"
+    assert model_config.name == "Model"
+    assert model_config.category == "model"
+    assert model_config.type == "select"
+    assert model_config.current_value == "anthropic:claude-opus-4-6"
+    assert len(model_config.options) == 3
 
 
 @pytest.mark.asyncio
@@ -100,7 +116,8 @@ async def test_set_config_option_switches_model(agent_factory, models):
     session_id = new_session_response.session_id
 
     # Verify initial model
-    assert new_session_response.config_options[0].root.current_value == "anthropic:claude-opus-4-6"
+    initial = _select(new_session_response.config_options[0])
+    assert initial.current_value == "anthropic:claude-opus-4-6"
 
     # Switch to a different model
     response = await server.set_config_option(
@@ -111,7 +128,7 @@ async def test_set_config_option_switches_model(agent_factory, models):
 
     assert isinstance(response, SetSessionConfigOptionResponse)
     assert len(response.config_options) == 1
-    assert response.config_options[0].root.current_value == "anthropic:claude-sonnet-4"
+    assert _select(response.config_options[0]).current_value == "anthropic:claude-sonnet-4"
 
     # Verify the model was updated in session state
     assert server._session_models[session_id] == "anthropic:claude-sonnet-4"
@@ -162,12 +179,14 @@ async def test_config_options_with_modes_and_models(agent_factory, models):
     assert len(response.config_options) == 2
 
     # Check that mode comes first
-    assert response.config_options[0].root.id == "mode"
-    assert response.config_options[0].root.category == "mode"
+    mode_opt = _select(response.config_options[0])
+    assert mode_opt.id == "mode"
+    assert mode_opt.category == "mode"
 
     # Check that model comes second
-    assert response.config_options[1].root.id == "model"
-    assert response.config_options[1].root.category == "model"
+    model_opt = _select(response.config_options[1])
+    assert model_opt.id == "model"
+    assert model_opt.category == "model"
 
 
 @pytest.mark.asyncio
@@ -197,7 +216,7 @@ async def test_switching_mode_via_config_option(agent_factory, models):
         value="manual",
     )
 
-    assert response.config_options[0].root.current_value == "manual"
+    assert _select(response.config_options[0]).current_value == "manual"
     assert server._session_modes[session_id] == "manual"
 
 

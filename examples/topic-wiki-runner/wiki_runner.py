@@ -1,18 +1,18 @@
-"""CLI entrypoint for the topic wiki runner example."""
+"""CLI entrypoint for the wiki runner example."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from topic_wiki_helpers import TopicWikiError, parse_config, run
+from wiki_helpers import WikiError, parse_config, run
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the topic wiki runner CLI."""
+    """Run the wiki runner CLI."""
     try:
         config = parse_config(argv)
         run_result = run(config)
-    except TopicWikiError as exc:
+    except WikiError as exc:
         print(f"error: {exc}")  # noqa: T201
         return 1
 

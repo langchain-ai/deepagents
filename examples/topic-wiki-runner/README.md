@@ -1,19 +1,30 @@
-# Topic Wiki Runner
+# Wiki Runner
 
-A script-first DeepAgents example that builds a per-topic wiki and syncs via `langsmith` CLI.
+A script-first DeepAgents example that builds a persistent topic wiki and syncs it through `langsmith hub` commands.
 
 ## Structure
 
-- `topic_wiki_runner.py` - thin CLI entrypoint
-- `topic_wiki_helpers.py` - runner helpers and workflow logic
+- `wiki_runner.py` - thin CLI entrypoint
+- `wiki_helpers.py` - shared helpers, CLI parsing, and mode orchestration
+- `wiki_init.py` - `init` mode workflow and internal-source enforcement
+- `wiki_ingest.py` - `ingest` mode source expansion + review/apply flow
 - `README.md` - setup and usage
 - `pyproject.toml` - example-local dependency config
+
+## Workspace layout
+
+`init` creates this top-level layout in the wiki repo:
+
+- `AGENTS.md` - schema and workflow rules the LLM follows for ingest/query/lint.
+- `raw/` - immutable source files dropped in for ingest (articles, notes, datasets).
+- `wiki/` - LLM-maintained knowledge pages (entities, concepts, summaries, syntheses).
+- `wiki/index.md` - content catalog for wiki navigation; read first during query flows.
+- `log.md` - append-only chronological operation log (`ingest`, `query`, `lint` runs).
 
 ## Requirements
 
 - Python 3.11+
-- LangSmith CLI installed (`langsmith` or `langsmith-cli`) with `hub` commands available
-- A recent LangSmith CLI build with both `hub` and `api` commands
+- LangSmith CLI installed as `langsmith` with `hub` commands available
 - Access to `langsmith.sandbox` (via `langsmith[sandbox]`)
 - `LANGSMITH_API_KEY` set for `ingest`, `query`, and `lint` modes
 
@@ -29,61 +40,65 @@ uv sync
 ```bash
 # Verify your CLI supports Hub commands.
 langsmith hub --help
-# If your binary name is `langsmith-cli`, run:
-langsmith-cli hub --help
 
-# Verify your CLI supports the API helper used to enforce source=internal.
-langsmith api info POST repos
-
-# If you have multiple binaries, confirm which one is first on PATH.
-which -a langsmith
-which -a langsmith-cli
+# Verify init exposes an internal source option.
+langsmith hub init --help
 
 # Verify auth env var for sandbox-backed modes.
 echo "${LANGSMITH_API_KEY:+set}"
 ```
 
-If `hub` commands are missing (`No such command 'hub'`), install a LangSmith CLI build that includes Hub operations.
-
-If multiple `langsmith` binaries are installed, put the hub-capable, up-to-date one first on `PATH` before running this example.
-
 ## Usage
 
 ```bash
-# Initialize topic workspace + first Hub push
-uv run python topic_wiki_runner.py --mode init --topic "Ada Lovelace"
+# Initialize workspace + first Hub push
+uv run python wiki_runner.py \
+  --mode init \
+  --repo "ada-lovelace-wiki" \
+  --description "Persistent research wiki about Ada Lovelace"
 
-# Ingest local text sources
-uv run python topic_wiki_runner.py \
+# Initialize with explicit owner
+uv run python wiki_runner.py \
+  --mode init \
+  --repo "ada-lovelace-wiki" \
+  --description "Persistent research wiki about Ada Lovelace" \
+  --owner "acme"
+
+# Default ingest (no approval)
+uv run python wiki_runner.py \
   --mode ingest \
-  --topic "Ada Lovelace" \
+  --repo "ada-lovelace-wiki" \
   --source ./notes/ada.md \
-  --source ./notes/timeline.txt
+  --source ./speeches/
+
+# Optional review + confirmation before apply
+uv run python wiki_runner.py \
+  --mode ingest \
+  --repo "ada-lovelace-wiki" \
+  --source ./notes/timeline.txt \
+  --source ./speeches/ \
+  --review
 
 # Query from wiki
-uv run python topic_wiki_runner.py \
+uv run python wiki_runner.py \
   --mode query \
-  --topic "Ada Lovelace" \
+  --repo "ada-lovelace-wiki" \
   --question "What did Ada contribute to computing?"
 
 # Lint wiki consistency/linking
-uv run python topic_wiki_runner.py \
+uv run python wiki_runner.py \
   --mode lint \
-  --topic "Ada Lovelace"
+  --repo "ada-lovelace-wiki"
 ```
 
-## Notes
+## Ingest workflow
 
-- Sync flow is always CLI-driven: `hub init/pull/push`.
-- `init` pre-creates the repo via `langsmith api` with `source=internal` before the first push.
-- v1 is text-only (`md/txt/json/yaml/yml/csv`); binary files are rejected.
-- Runtime backend routes `/memories/` to local workspace and uses LangSmith sandbox for `execute`.
-- `ingest`, `query`, and `lint` require `LANGSMITH_API_KEY` because they create a sandbox backend.
+`ingest` applies directly by default.
 
-## Troubleshooting
+If you pass `--review`, ingest becomes a two-phase, operator-in-the-loop flow:
 
-If the repo opens at `/hub/<owner>/<repo>` but does not appear in the `/context` table:
+1. Review phase (read-only): the model reads staged source files and returns key takeaways, proposed wiki updates, contradictions, and index/log changes.
+2. Apply phase (write): after your confirmation, the model writes source summary updates, concept/entity updates, index updates, and a log entry.
+3. If you decline confirmation, ingest exits without applying wiki changes.
 
-- Confirm you are viewing the same organization/workspace where the repo was created.
-- If multiple `langsmith` binaries are installed, ensure the newer one is first on `PATH`.
-- Upgrade the CLI and re-run `--mode init` with a new repo handle if listing behavior is inconsistent.
+Batch ingest is the default. A single run can process multiple files and directories.

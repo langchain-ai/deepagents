@@ -1,4 +1,4 @@
-"""Helper utilities for the topic wiki runner example."""
+"""Helper utilities for the wiki runner example."""
 
 from __future__ import annotations
 
@@ -28,17 +28,16 @@ if TYPE_CHECKING:
 
 Mode = Literal["init", "ingest", "query", "lint"]
 _ALLOWED_TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".csv"}
-_DEFAULT_SNAPSHOT_NAME = "deepagents-topic-wiki"
+_DEFAULT_SNAPSHOT_NAME = "deepagents-wiki"
 _DEFAULT_DOCKER_IMAGE = "python:3"
 _DEFAULT_FS_CAPACITY = 16 * 1024**3
-_DEFAULT_REPO_SOURCE = "internal"
-_LANGSMITH_BINARY_CANDIDATES = ("langsmith", "langsmith-cli")
+_LANGSMITH_BINARY_CANDIDATES = ("langsmith",)
 _HUB_COMPATIBLE_BINARIES: set[str] = set()
 _BASE_SYSTEM_PROMPT = """You are an expert research synthesizer building a long-lived topic knowledge base.
 
 Mission:
-- Build an accurate, high-signal, source-grounded topic corpus in `/memories/wiki/`.
-- Treat `/memories/raw/` as immutable evidence inputs.
+- Build an accurate, high-signal, source-grounded topic corpus in `/wiki/`.
+- Treat `/raw/` as immutable evidence inputs.
 - Convert raw notes into canonical, reusable understanding.
 
 Reasoning style:
@@ -52,7 +51,7 @@ Writing and organization rules:
 - Maintain canonical pages per concept/entity/theme rather than many overlapping fragments.
 - Keep pages scannable with clear headings.
 - Include concise "What changed" updates in the log.
-- Keep `wiki/index.md` authoritative for navigation.
+- Keep `/wiki/index.md` authoritative for navigation.
 
 Evidence rules:
 - Every non-trivial claim should be traceable to the ingested source set.
@@ -60,13 +59,13 @@ Evidence rules:
 - If evidence is weak or missing, say so directly.
 
 Filesystem policy:
-- Never write to `/memories/raw/`.
-- Write only under `/memories/wiki/`.
+- Never write to `/raw/`.
+- Write only under `/wiki/`, plus `/log.md`.
 """
 
 
-class TopicWikiError(RuntimeError):
-    """Raised when the topic wiki runner cannot complete a requested operation."""
+class WikiError(RuntimeError):
+    """Raised when the wiki runner cannot complete a requested operation."""
 
 
 @dataclass(frozen=True)
@@ -75,12 +74,15 @@ class RunnerConfig:
 
     mode: Mode
     topic: str
-    hub_id: str
+    repo: str
+    owner: str | None
     topic_dir: Path
     sources: tuple[Path, ...]
     note: str | None
     question: str | None
     model: str | None
+    description: str | None
+    review: bool
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,8 @@ class CliDeps:
 
     run_langsmith_cli: Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
     run_agent_mode: Callable[[Path, str, str, str | None], str]
+    run_agent_review_mode: Callable[[Path, str, str, str | None], str]
+    ask_user: Callable[[str], str]
     tempdir_factory: Callable[[], tempfile.TemporaryDirectory[str]]
 
 
@@ -98,6 +102,14 @@ class RunResult:
 
     answer: str | None
     hub_url: str | None
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    """Result from one ingest workspace pass."""
+
+    answer: str | None
+    should_push: bool
 
 
 def _slugify_topic(topic: str) -> str:
@@ -116,49 +128,75 @@ def _slugify_topic(topic: str) -> str:
     return slug or "topic"
 
 
-def _default_hub_id(topic: str) -> str:
-    """Build the default hub id for a topic."""
-    return f"-/{_slugify_topic(topic)}"
-
-
-def _repo_name_from_hub_id(hub_id: str) -> str:
-    """Extract the repository name component from a hub id."""
-    owner, sep, repo = hub_id.partition("/")
-    if sep == "" or not owner or not repo:
-        msg = f"Invalid --hub-id {hub_id!r}; expected [OWNER/]REPO"
-        raise TopicWikiError(msg)
-    return repo
-
-
-def _owner_name_from_hub_id(hub_id: str) -> str:
-    """Extract the owner component from a hub id."""
-    owner, sep, _repo = hub_id.partition("/")
-    if sep == "" or not owner:
-        msg = f"Invalid --hub-id {hub_id!r}; expected [OWNER/]REPO"
-        raise TopicWikiError(msg)
-    return owner
-
-
 def _topic_dir_for(topic: str, explicit: str | None) -> Path:
     """Resolve the local topic directory path."""
     if explicit:
         return Path(explicit).expanduser().resolve()
-    return (Path.cwd() / "topic-wikis" / _slugify_topic(topic)).resolve()
+    return (Path.cwd() / "wikis" / _slugify_topic(topic)).resolve()
+
+
+def _default_topic_from_repo(repo: str) -> str:
+    """Create a display topic from a repo name."""
+    return repo.replace("-", " ").replace("_", " ").strip().title() or repo
+
+
+def _normalize_repo_and_owner(
+    parser: argparse.ArgumentParser, repo: str, owner: str | None
+) -> tuple[str, str | None]:
+    """Normalize repo and owner arguments into canonical pieces."""
+    candidate_repo = repo.strip()
+    candidate_owner = owner.strip() if owner is not None else None
+
+    if not candidate_repo:
+        parser.error("--repo must be non-empty")
+
+    if "/" in candidate_repo:
+        parsed_owner, sep, parsed_repo = candidate_repo.partition("/")
+        if sep == "" or not parsed_owner or not parsed_repo or "/" in parsed_repo:
+            parser.error("--repo must be REPO or OWNER/REPO")
+        if candidate_owner and candidate_owner != parsed_owner:
+            parser.error("--owner must match owner in --repo when both are provided")
+        candidate_owner = parsed_owner
+        candidate_repo = parsed_repo
+
+    if "/" in candidate_repo:
+        parser.error("--repo must not contain additional '/' segments")
+
+    if candidate_owner == "":
+        parser.error("--owner must be non-empty when provided")
+
+    return candidate_repo, candidate_owner
+
+
+def _hub_identifier(owner: str | None, repo: str) -> str:
+    """Build a canonical hub identifier string."""
+    if owner:
+        return f"{owner}/{repo}"
+    return f"-/{repo}"
 
 
 def _build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description="Topic wiki runner (DeepAgents + LangSmith Hub CLI)"
+        description="Wiki runner (DeepAgents + LangSmith Hub CLI)"
     )
     parser.add_argument(
         "--mode", required=True, choices=["init", "ingest", "query", "lint"]
     )
-    parser.add_argument("--topic", required=True, help="Topic name")
     parser.add_argument(
-        "--hub-id",
+        "--topic",
         default=None,
-        help="Hub repo id [OWNER/]REPO (default: -/<topic-slug>)",
+        help="Optional display topic name (defaults from --repo)",
+    )
+    parser.add_argument(
+        "--repo",
+        required=True,
+        help="Context Hub repo name or owner/name handle",
+    )
+    parser.add_argument(
+        "--owner",
+        default=None,
+        help="Optional Context Hub owner when --repo is only a repo name",
     )
     parser.add_argument(
         "--topic-dir", default=None, help="Local topic directory for init mode"
@@ -167,7 +205,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source",
         action="append",
         default=[],
-        help="Source file for ingest mode (repeatable)",
+        help="Source file or directory for ingest mode (repeatable)",
     )
     parser.add_argument(
         "--note", default=None, help="Optional note to include in ingest/lint prompt"
@@ -178,6 +216,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model", default=None, help="Optional model override for create_deep_agent"
     )
+    parser.add_argument(
+        "--description",
+        default=None,
+        help="Optional hub repo description to set during init (if supported by CLI)",
+    )
+    parser.add_argument(
+        "--review",
+        action="store_true",
+        help="Opt in to ingest review/confirmation before applying wiki updates",
+    )
     return parser
 
 
@@ -186,23 +234,27 @@ def parse_config(argv: Sequence[str] | None = None) -> RunnerConfig:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    hub_id = args.hub_id or _default_hub_id(args.topic)
     mode = args.mode
-
     if mode == "ingest" and not args.source:
         parser.error("--source is required in ingest mode")
     if mode == "query" and not args.question:
         parser.error("--question is required in query mode")
 
+    repo, owner = _normalize_repo_and_owner(parser, args.repo, args.owner)
+    topic = (args.topic or "").strip() or _default_topic_from_repo(repo)
+
     return RunnerConfig(
         mode=mode,
-        topic=args.topic,
-        hub_id=hub_id,
-        topic_dir=_topic_dir_for(args.topic, args.topic_dir),
+        topic=topic,
+        repo=repo,
+        owner=owner,
+        topic_dir=_topic_dir_for(topic, args.topic_dir),
         sources=tuple(Path(source).expanduser().resolve() for source in args.source),
         note=args.note,
         question=args.question,
         model=args.model,
+        description=args.description,
+        review=bool(args.review),
     )
 
 
@@ -213,10 +265,10 @@ def _resolve_langsmith_binary() -> str:
         if binary:
             return binary
     msg = (
-        "LangSmith CLI was not found on PATH. Install a LangSmith CLI binary (`langsmith` or "
-        "`langsmith-cli`) before running topic wiki sync."
+        "LangSmith CLI was not found on PATH. Install `langsmith` before running "
+        "wiki sync."
     )
-    raise TopicWikiError(msg)
+    raise WikiError(msg)
 
 
 def _ensure_hub_command_support(binary: str) -> None:
@@ -240,7 +292,7 @@ def _ensure_hub_command_support(binary: str) -> None:
         f"`{cmd}` is installed but does not support `hub` commands required by this example. "
         f"Verify with `{cmd} hub --help` and install a hub-capable LangSmith CLI.\n{output}"
     )
-    raise TopicWikiError(msg)
+    raise WikiError(msg)
 
 
 def _ensure_mode_prerequisites(mode: Mode) -> None:
@@ -250,7 +302,7 @@ def _ensure_mode_prerequisites(mode: Mode) -> None:
             "LANGSMITH_API_KEY is required for ingest/query/lint modes because they run agent "
             "operations inside `langsmith.sandbox`."
         )
-        raise TopicWikiError(msg)
+        raise WikiError(msg)
 
 
 def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -271,10 +323,10 @@ def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
             "LangSmith authentication failed. Set LANGSMITH_API_KEY and confirm CLI auth. "
             f"Command: {cmd} {' '.join(args)}\n{output}"
         )
-        raise TopicWikiError(msg)
+        raise WikiError(msg)
 
     msg = f"{cmd} {' '.join(args)} failed with exit code {result.returncode}:\n{output}"
-    raise TopicWikiError(msg)
+    raise WikiError(msg)
 
 
 def _parse_cli_json_output(
@@ -304,72 +356,19 @@ def _app_base_url() -> str:
     return f"{scheme}://{host}"
 
 
-def _resolve_hub_url(
-    hub_id: str, deps: CliDeps, push_result: subprocess.CompletedProcess[str]
-) -> str | None:
-    """Resolve a browser URL for the hub repo after sync."""
-    payload = _parse_cli_json_output(push_result) or {}
-
-    owner: str | None = None
-    repo: str | None = None
-
-    owner_value = payload.get("owner")
-    if isinstance(owner_value, str) and owner_value and owner_value != "-":
-        owner = owner_value
-
-    repo_value = payload.get("repo")
-    if isinstance(repo_value, str) and repo_value:
-        repo = repo_value
-
-    if repo is None:
-        _owner, _sep, repo_part = hub_id.partition("/")
-        if repo_part:
-            repo = repo_part
-
-    try:
-        hub_get = deps.run_langsmith_cli(
-            [
-                "hub",
-                "get",
-                _hub_cli_repo_arg(hub_id),
-                "--format",
-                "json",
-            ]
-        )
-    except TopicWikiError:
-        hub_get = None
-
-    if hub_get is not None:
-        get_payload = _parse_cli_json_output(hub_get) or {}
-        full_name = get_payload.get("full_name")
-        if isinstance(full_name, str) and "/" in full_name:
-            owner_from_full, repo_from_full = full_name.split("/", 1)
-            owner = owner_from_full or owner
-            repo = repo_from_full or repo
-        else:
-            get_owner = get_payload.get("owner")
-            if isinstance(get_owner, str) and get_owner:
-                owner = get_owner
-            get_repo = get_payload.get("repo_handle")
-            if isinstance(get_repo, str) and get_repo:
-                repo = get_repo
-
-    if not repo:
-        return None
-
+def _resolve_hub_url(owner: str | None, repo: str) -> str:
+    """Resolve a browser URL for the hub repo."""
     base = _app_base_url()
     if owner:
         return f"{base}/hub/{owner}/{repo}"
     return f"{base}/hub/{repo}"
 
 
-def _hub_cli_repo_arg(hub_id: str) -> str:
+def _hub_cli_repo_arg(hub_identifier: str) -> str:
     """Normalize hub id values for cobra-based CLI parsing."""
-    # Cobra treats values beginning with `-` as flags; `-/repo` is equivalent
-    # to passing just `repo` (owner defaults to current tenant).
-    if hub_id.startswith("-/"):
-        return hub_id[2:]
-    return hub_id
+    if hub_identifier.startswith("-/"):
+        return hub_identifier[2:]
+    return hub_identifier
 
 
 def _iter_tree_paths(root_dir: Path) -> Iterator[Path]:
@@ -393,19 +392,19 @@ def _ensure_no_symlinks(root_dir: Path) -> None:
         with suppress(ValueError):
             relative = path.relative_to(root_dir)
             msg = (
-                f"Symlinks are not supported in topic wiki workspaces for security reasons: "
+                "Symlinks are not supported in wiki workspaces for security reasons: "
                 f"{relative}"
             )
-            raise TopicWikiError(msg)
-        msg = f"Symlinks are not supported in topic wiki workspaces for security reasons: {path}"
-        raise TopicWikiError(msg)
+            raise WikiError(msg)
+        msg = f"Symlinks are not supported in wiki workspaces for security reasons: {path}"
+        raise WikiError(msg)
 
 
 def _safe_write_text(path: Path, content: str, *, append: bool = False) -> None:
     """Write UTF-8 text while refusing symlink targets."""
     if path.is_symlink():
         msg = f"Refusing to write to symlink path: {path}"
-        raise TopicWikiError(msg)
+        raise WikiError(msg)
 
     flags = os.O_WRONLY | os.O_CREAT
     if append:
@@ -422,7 +421,7 @@ def _safe_write_text(path: Path, content: str, *, append: bool = False) -> None:
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             msg = f"Refusing to write to symlink path: {path}"
-            raise TopicWikiError(msg) from exc
+            raise WikiError(msg) from exc
         raise
 
     mode = "a" if append else "w"
@@ -434,7 +433,7 @@ def _write_if_missing(path: Path, content: str) -> None:
     """Write file content only when the target does not already exist."""
     if path.is_symlink():
         msg = f"Refusing to write to symlink path: {path}"
-        raise TopicWikiError(msg)
+        raise WikiError(msg)
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -447,9 +446,10 @@ def _agents_md(topic: str) -> str:
         f"# {topic} Topic Wiki\n\n"
         "Maintain a concise, source-grounded wiki for this topic.\n\n"
         "Rules:\n"
-        "- Treat `/memories/raw/` as read-only source material.\n"
-        "- Write curated pages to `/memories/wiki/`.\n"
-        "- Keep `/memories/wiki/index.md` current and append changes to `/memories/wiki/log.md`.\n"
+        "- Treat `/raw/` as read-only source material.\n"
+        "- Ingest flow should be supervised: review takeaways first, then apply updates.\n"
+        "- Ingest updates should include source summaries and relevant concept/entity pages.\n"
+        "- Keep `/wiki/index.md` current and append changes to `/log.md`.\n"
     )
 
 
@@ -463,7 +463,7 @@ def _ensure_scaffold(
         topic_dir / "wiki" / "index.md",
         f"# {topic} Wiki\n\n## Pages\n\n- _No pages yet._\n",
     )
-    _write_if_missing(topic_dir / "wiki" / "log.md", "# Change Log\n")
+    _write_if_missing(topic_dir / "log.md", "# Change Log\n")
 
     agents_path = topic_dir / "AGENTS.md"
     if overwrite_agents or not agents_path.exists():
@@ -482,13 +482,13 @@ def _validate_text_only_directory(root_dir: Path) -> None:
                 f"Unsupported file for v1 text-only hub pushes: {rel}. "
                 "Allowed extensions: md, txt, json, yaml, yml, csv."
             )
-            raise TopicWikiError(msg)
+            raise WikiError(msg)
         try:
             file_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             rel = file_path.relative_to(root_dir)
             msg = f"File {rel} is not valid UTF-8 text. Binary uploads are not supported in v1."
-            raise TopicWikiError(msg) from exc
+            raise WikiError(msg) from exc
 
 
 def _stage_sources(sources: Sequence[Path], workspace_dir: Path) -> list[Path]:
@@ -500,19 +500,19 @@ def _stage_sources(sources: Sequence[Path], workspace_dir: Path) -> list[Path]:
     for source in sources:
         if not source.exists() or not source.is_file():
             msg = f"Source file not found: {source}"
-            raise TopicWikiError(msg)
+            raise WikiError(msg)
         if source.suffix.lower() not in _ALLOWED_TEXT_SUFFIXES:
             msg = (
                 f"Unsupported source file type for {source}. "
                 "Use text files with extensions: md, txt, json, yaml, yml, csv."
             )
-            raise TopicWikiError(msg)
+            raise WikiError(msg)
 
         try:
             text = source.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             msg = f"Source file must be UTF-8 text: {source}"
-            raise TopicWikiError(msg) from exc
+            raise WikiError(msg) from exc
 
         destination = raw_dir / source.name
         suffix = source.suffix
@@ -546,6 +546,8 @@ def _extract_text(content: object) -> str:
 def _extract_final_ai_message(result: dict[str, object]) -> str:
     """Return the final assistant text message from an agent invoke result."""
     messages = result.get("messages", [])
+    if not isinstance(messages, list):
+        return ""
     for message in reversed(messages):
         msg_type = getattr(message, "type", None)
         if msg_type is None and isinstance(message, dict):
@@ -569,8 +571,8 @@ def _refresh_index(topic: str, workspace_dir: Path) -> None:
 
     pages = [
         path
-        for path in sorted(wiki_dir.glob("*.md"))
-        if path.name not in {"index.md", "log.md"}
+        for path in sorted(wiki_dir.rglob("*.md"))
+        if path.name != "index.md"
     ]
 
     lines = [f"# {topic} Wiki", "", "## Pages", ""]
@@ -578,97 +580,22 @@ def _refresh_index(topic: str, workspace_dir: Path) -> None:
         lines.append("- _No pages yet._")
     else:
         for page in pages:
+            relative = page.relative_to(wiki_dir).as_posix()
             title = page.stem.replace("-", " ").replace("_", " ").strip().title()
-            lines.append(f"- [{title}]({page.name})")
+            lines.append(f"- [{title}]({relative})")
 
     _safe_write_text((wiki_dir / "index.md"), "\n".join(lines).rstrip() + "\n")
 
 
 def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
     """Append a timestamped operation entry to the wiki log."""
-    log_path = workspace_dir / "wiki" / "log.md"
+    log_path = workspace_dir / "log.md"
     _write_if_missing(log_path, "# Change Log\n")
+
+    date_text = datetime.now(UTC).strftime("%Y-%m-%d")
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _safe_write_text(log_path, f"- {timestamp} | {mode} | {detail}\n", append=True)
-    _normalize_log_chronology(log_path)
-
-
-def _parse_log_timestamp(entry: str) -> datetime | None:
-    """Parse an ISO timestamp from a log bullet entry."""
-    if not entry.startswith("- "):
-        return None
-    timestamp = entry[2:].split("|", 1)[0].strip()
-    if not timestamp:
-        return None
-    normalized = timestamp.replace("Z", "+00:00")
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-
-
-def _normalize_log_chronology(log_path: Path) -> None:
-    """Sort parseable log entries chronologically while preserving non-entry lines."""
-    lines = log_path.read_text(encoding="utf-8").splitlines()
-    if not lines:
-        return
-
-    header_lines: list[str] = []
-    entry_lines: list[str] = []
-    passthrough_lines: list[str] = []
-
-    for line in lines:
-        if line.startswith("- "):
-            entry_lines.append(line)
-            continue
-        if entry_lines:
-            passthrough_lines.append(line)
-            continue
-        header_lines.append(line)
-
-    sortable_entries: list[tuple[datetime, int, str]] = []
-    unsortable_entries: list[str] = []
-    for index, line in enumerate(entry_lines):
-        parsed = _parse_log_timestamp(line)
-        if parsed is None:
-            unsortable_entries.append(line)
-            continue
-        sortable_entries.append((parsed, index, line))
-
-    sortable_entries.sort(key=lambda item: (item[0], item[1]))
-    sorted_lines = (
-        header_lines
-        + [line for _, _, line in sortable_entries]
-        + unsortable_entries
-        + passthrough_lines
-    )
-    _safe_write_text(log_path, "\n".join(sorted_lines).rstrip() + "\n")
-
-
-def _build_ingest_prompt(
-    topic: str, staged_paths: Sequence[Path], note: str | None
-) -> str:
-    """Build the ingest prompt for staged source material."""
-    memory_paths = [f"/memories/raw/{path.name}" for path in staged_paths]
-    source_block = "\n".join(f"- {path}" for path in memory_paths)
-    note_block = note or "(none)"
-    return (
-        f"Ingest the staged sources and update the topic knowledge base for '{topic}'.\n\n"
-        "Required workflow:\n"
-        "1) Read all staged source files under `/memories/raw/`.\n"
-        "2) Create or update canonical pages under `/memories/wiki/`.\n"
-        "3) De-duplicate overlapping content and merge into strongest canonical page structure.\n"
-        "4) Ensure each important claim in wiki pages is grounded in staged evidence.\n"
-        "5) Update `/memories/wiki/index.md` with complete page navigation.\n"
-        "6) Append one concise ingest entry to `/memories/wiki/log.md` describing files touched and key changes.\n\n"
-        "Content requirements:\n"
-        "- Focus on high-signal synthesis over raw paraphrase.\n"
-        "- If evidence conflicts, include both claims and mark unresolved points.\n"
-        "- If information is missing, add explicit open questions in the most relevant page.\n"
-        "- Never write to `/memories/raw/`.\n\n"
-        f"Staged sources:\n{source_block}\n\n"
-        f"Operator note: {note_block}\n"
-    )
+    entry = f"\n## [{date_text}] {mode} | {detail}\n- timestamp: {timestamp}\n"
+    _safe_write_text(log_path, entry, append=True)
 
 
 def _build_query_prompt(topic: str, question: str) -> str:
@@ -676,15 +603,15 @@ def _build_query_prompt(topic: str, question: str) -> str:
     return (
         f"Answer this question about '{topic}': {question}\n\n"
         "Required workflow:\n"
-        "1) Read `/memories/wiki/index.md` first.\n"
-        "2) Read all relevant `/memories/wiki/*.md` pages before answering.\n"
+        "1) Read `/wiki/index.md` first.\n"
+        "2) Read all relevant `/wiki/*.md` pages before answering.\n"
         "3) Provide a direct answer first, then concise supporting rationale.\n"
         "4) Cite the wiki file paths that support the answer.\n\n"
         "Quality bar:\n"
         "- Prioritize grounded claims over speculation.\n"
         "- If the wiki lacks enough evidence, say what is unknown.\n"
-        "- If synthesis would materially improve future answers, update/create `/memories/wiki/synthesis.md`.\n"
-        "- Never write to `/memories/raw/`.\n"
+        "- If synthesis would materially improve future answers, update/create `/wiki/synthesis.md`.\n"
+        "- Never write to `/raw/`.\n"
     )
 
 
@@ -692,27 +619,35 @@ def _build_lint_prompt(topic: str, note: str | None) -> str:
     """Build the lint prompt for wiki consistency checks."""
     note_text = note or "(none)"
     return (
-        f"Run a full consistency lint pass for the '{topic}' wiki under `/memories/wiki/`.\n\n"
+        f"Run a full consistency lint pass for the '{topic}' wiki under `/wiki/`.\n\n"
         "Required checks:\n"
         "- Fix broken links, stale references, and structural inconsistencies.\n"
         "- Normalize duplicated concepts into one canonical page where appropriate.\n"
-        "- Ensure `/memories/wiki/index.md` references all wiki pages.\n"
+        "- Ensure `/wiki/index.md` references all wiki pages.\n"
         "- Ensure major claims remain evidence-grounded and uncertainty is explicit.\n"
-        "- Keep `wiki/log.md` chronological and append one lint entry summarizing fixes.\n"
-        "- Never write to `/memories/raw/`.\n\n"
+        "- Append one lint entry summarizing fixes to `/log.md`.\n"
+        "- Never write to `/raw/`.\n\n"
         f"Operator note: {note_text}\n"
     )
 
 
 def _permissions() -> list[FilesystemPermission]:
-    """Define filesystem write policy for topic wiki operations."""
+    """Define filesystem write policy for wiki operations."""
     return [
-        FilesystemPermission(
-            operations=["write"], paths=["/memories/raw/**"], mode="deny"
-        ),
-        FilesystemPermission(
-            operations=["write"], paths=["/memories/wiki/**"], mode="allow"
-        ),
+        FilesystemPermission(operations=["write"], paths=["/raw/**"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/AGENTS.md"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/wiki/**"], mode="allow"),
+        FilesystemPermission(operations=["write"], paths=["/log.md"], mode="allow"),
+    ]
+
+
+def _review_permissions() -> list[FilesystemPermission]:
+    """Define filesystem policy for ingest review (read-only over wiki/raw)."""
+    return [
+        FilesystemPermission(operations=["write"], paths=["/raw/**"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/wiki/**"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/log.md"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/AGENTS.md"], mode="deny"),
     ]
 
 
@@ -722,24 +657,24 @@ def _create_langsmith_sandbox_backend() -> Iterator[SandboxBackendProtocol]:
     env_key = os.getenv("LANGSMITH_API_KEY")
     if not env_key:
         msg = "LANGSMITH_API_KEY is required to create the LangSmith sandbox backend."
-        raise TopicWikiError(msg)
+        raise WikiError(msg)
 
     try:
         from langsmith.sandbox import SandboxClient  # noqa: PLC0415
     except ModuleNotFoundError as exc:
         msg = "langsmith.sandbox is unavailable. Install with `pip install 'langsmith[sandbox]'`."
-        raise TopicWikiError(msg) from exc
+        raise WikiError(msg) from exc
 
-    resolved_snapshot = os.getenv("TOPIC_WIKI_SANDBOX_SNAPSHOT", _DEFAULT_SNAPSHOT_NAME)
-    docker_image = os.getenv("TOPIC_WIKI_SANDBOX_IMAGE", _DEFAULT_DOCKER_IMAGE)
+    resolved_snapshot = os.getenv("WIKI_SANDBOX_SNAPSHOT", _DEFAULT_SNAPSHOT_NAME)
+    docker_image = os.getenv("WIKI_SANDBOX_IMAGE", _DEFAULT_DOCKER_IMAGE)
     fs_capacity_raw = os.getenv(
-        "TOPIC_WIKI_SANDBOX_FS_CAPACITY_BYTES", str(_DEFAULT_FS_CAPACITY)
+        "WIKI_SANDBOX_FS_CAPACITY_BYTES", str(_DEFAULT_FS_CAPACITY)
     )
     try:
         fs_capacity = int(fs_capacity_raw)
     except ValueError as exc:
-        msg = "TOPIC_WIKI_SANDBOX_FS_CAPACITY_BYTES must be an integer"
-        raise TopicWikiError(msg) from exc
+        msg = "WIKI_SANDBOX_FS_CAPACITY_BYTES must be an integer"
+        raise WikiError(msg) from exc
 
     client = SandboxClient(api_key=env_key)
     snapshots = client.list_snapshots(name_contains=resolved_snapshot)
@@ -762,18 +697,29 @@ def _create_langsmith_sandbox_backend() -> Iterator[SandboxBackendProtocol]:
 
 
 def _run_agent_mode(
-    workspace_dir: Path, topic: str, prompt: str, model: str | None
+    workspace_dir: Path,
+    topic: str,
+    prompt: str,
+    model: str | None,
+    *,
+    permissions: list[FilesystemPermission],
 ) -> str:
     """Execute one agent operation against the pulled workspace."""
     with _create_langsmith_sandbox_backend() as sandbox_backend:
-        memories_backend = FilesystemBackend(root_dir=workspace_dir, virtual_mode=True)
+        workspace_backend = FilesystemBackend(root_dir=workspace_dir, virtual_mode=True)
         backend = CompositeBackend(
-            default=sandbox_backend, routes={"/memories/": memories_backend}
+            default=sandbox_backend,
+            routes={
+                "/raw/": workspace_backend,
+                "/wiki/": workspace_backend,
+                "/log.md": workspace_backend,
+                "/AGENTS.md": workspace_backend,
+            },
         )
         agent = create_deep_agent(
             model=model,
             backend=backend,
-            permissions=_permissions(),
+            permissions=permissions,
             system_prompt=_BASE_SYSTEM_PROMPT,
         )
         result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
@@ -784,94 +730,109 @@ def _run_agent_mode(
     return f"Completed {topic} wiki operation."
 
 
-def _ensure_internal_repo_source(hub_id: str, deps: CliDeps) -> None:
-    """Create the target repo with `source=internal` when possible."""
-    owner = _owner_name_from_hub_id(hub_id)
-    if owner not in {"-", ""}:
-        return
+def _run_agent_apply_mode(
+    workspace_dir: Path, topic: str, prompt: str, model: str | None
+) -> str:
+    """Run a mutating agent operation against wiki files."""
+    return _run_agent_mode(
+        workspace_dir,
+        topic,
+        prompt,
+        model,
+        permissions=_permissions(),
+    )
 
-    repo_name = _repo_name_from_hub_id(hub_id)
-    try:
-        deps.run_langsmith_cli(
-            [
-                "api",
-                "repos",
-                "-X",
-                "POST",
-                "-F",
-                f"repo_handle={repo_name}",
-                "-F",
-                "repo_type=agent",
-                "-F",
-                "is_public=false",
-                "-F",
-                f"source={_DEFAULT_REPO_SOURCE}",
-            ]
-        )
-    except TopicWikiError as exc:
-        output = str(exc).lower()
-        if "409" in output or "conflict" in output or "already exists" in output:
-            return
-        msg = (
-            "Failed to ensure repo `source=internal` before first push. "
-            "Use a LangSmith CLI build that supports `api` and retry."
-        )
-        raise TopicWikiError(msg) from exc
+
+def _run_agent_review_mode(
+    workspace_dir: Path, topic: str, prompt: str, model: str | None
+) -> str:
+    """Run a read-only ingest review operation."""
+    return _run_agent_mode(
+        workspace_dir,
+        topic,
+        prompt,
+        model,
+        permissions=_review_permissions(),
+    )
+
+
+def _resolve_internal_source_flag(deps: CliDeps) -> tuple[str, ...]:
+    """Resolve an init flag set that enforces internal repo source."""
+    from wiki_init import resolve_internal_source_flag
+
+    return resolve_internal_source_flag(deps)
+
+
+def _extract_repo_source(payload: dict[str, object]) -> str | None:
+    """Extract repo source metadata from hub get payload."""
+    from wiki_init import extract_repo_source
+
+    return extract_repo_source(payload)
+
+
+def _verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
+    """Verify that the target hub repo source is internal."""
+    from wiki_init import verify_internal_repo_source
+
+    verify_internal_repo_source(hub_identifier, deps)
 
 
 def _run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Initialize a local topic repo and push its first hub revision."""
-    config.topic_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_no_symlinks(config.topic_dir)
-    _ensure_internal_repo_source(config.hub_id, deps)
-    _ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
+    from wiki_init import run_init
 
-    repo_name = _repo_name_from_hub_id(config.hub_id)
-    deps.run_langsmith_cli(
-        [
-            "hub",
-            "init",
-            "--type",
-            "agent",
-            "--dir",
-            str(config.topic_dir),
-            "--name",
-            repo_name,
-            "--force",
-        ]
-    )
+    return run_init(config, deps)
 
-    _ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
-    _validate_text_only_directory(config.topic_dir)
 
-    push_result = deps.run_langsmith_cli(
-        [
-            "hub",
-            "push",
-            _hub_cli_repo_arg(config.hub_id),
-            "--type",
-            "agent",
-            "--dir",
-            str(config.topic_dir),
-        ]
-    )
-    hub_url = _resolve_hub_url(config.hub_id, deps, push_result)
-    return RunResult(answer=None, hub_url=hub_url)
+def _collect_directory_sources(directory: Path) -> list[Path]:
+    """Collect allowed file paths from a source directory recursively."""
+    from wiki_ingest import collect_directory_sources
+
+    return collect_directory_sources(directory)
+
+
+def _expand_sources(sources: Sequence[Path]) -> list[Path]:
+    """Expand source arguments into a deterministic list of file paths."""
+    from wiki_ingest import expand_sources
+
+    return expand_sources(sources)
+
+
+def _build_ingest_review_prompt(
+    topic: str, staged_paths: Sequence[Path], note: str | None
+) -> str:
+    """Build the ingest review prompt for staged source material."""
+    from wiki_ingest import build_ingest_review_prompt
+
+    return build_ingest_review_prompt(topic, staged_paths, note)
+
+
+def _build_ingest_apply_prompt(
+    topic: str,
+    staged_paths: Sequence[Path],
+    review_summary: str,
+    note: str | None,
+) -> str:
+    """Build the ingest apply prompt after operator approval."""
+    from wiki_ingest import build_ingest_apply_prompt
+
+    return build_ingest_apply_prompt(topic, staged_paths, review_summary, note)
+
+
+def _confirm_ingest_apply(review: str, ask_user: Callable[[str], str]) -> bool:
+    """Ask operator to approve ingest apply after the review phase."""
+    from wiki_ingest import confirm_ingest_apply
+
+    return confirm_ingest_apply(review, ask_user)
 
 
 def _run_ingest_workspace(
     config: RunnerConfig, workspace_dir: Path, deps: CliDeps
-) -> None:
+) -> IngestResult:
     """Run ingest mode against a pulled workspace directory."""
-    staged = _stage_sources(config.sources, workspace_dir)
-    prompt = _build_ingest_prompt(config.topic, staged, config.note)
-    deps.run_agent_mode(workspace_dir, config.topic, prompt, config.model)
-    _refresh_index(config.topic, workspace_dir)
-    sources_text = ", ".join(path.name for path in staged)
-    detail = f"sources=[{sources_text}]"
-    if config.note:
-        detail += f" note={config.note}"
-    _append_log_entry(workspace_dir, "ingest", detail)
+    from wiki_ingest import run_ingest_workspace
+
+    return run_ingest_workspace(config, workspace_dir, deps)
 
 
 def _run_query_workspace(
@@ -897,6 +858,8 @@ def _run_lint_workspace(
 
 def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Pull a hub repo, run the selected mode, and push updates."""
+    hub_identifier = _hub_identifier(config.owner, config.repo)
+
     with deps.tempdir_factory() as temp_dir:
         workspace_dir = Path(temp_dir)
 
@@ -904,7 +867,7 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
             [
                 "hub",
                 "pull",
-                _hub_cli_repo_arg(config.hub_id),
+                _hub_cli_repo_arg(hub_identifier),
                 "--dir",
                 str(workspace_dir),
                 "--yes",
@@ -915,27 +878,32 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
         _ensure_scaffold(workspace_dir, config.topic)
 
         if config.mode == "ingest":
-            _run_ingest_workspace(config, workspace_dir, deps)
-            answer: str | None = None
+            ingest_result = _run_ingest_workspace(config, workspace_dir, deps)
+            answer = ingest_result.answer
+            should_push = ingest_result.should_push
         elif config.mode == "query":
             answer = _run_query_workspace(config, workspace_dir, deps)
+            should_push = True
         else:
             _run_lint_workspace(config, workspace_dir, deps)
             answer = None
+            should_push = True
 
-        _validate_text_only_directory(workspace_dir)
-        push_result = deps.run_langsmith_cli(
-            [
-                "hub",
-                "push",
-                _hub_cli_repo_arg(config.hub_id),
-                "--type",
-                "agent",
-                "--dir",
-                str(workspace_dir),
-            ]
-        )
-        hub_url = _resolve_hub_url(config.hub_id, deps, push_result)
+        if should_push:
+            _validate_text_only_directory(workspace_dir)
+            deps.run_langsmith_cli(
+                [
+                    "hub",
+                    "push",
+                    _hub_cli_repo_arg(hub_identifier),
+                    "--type",
+                    "agent",
+                    "--dir",
+                    str(workspace_dir),
+                ]
+            )
+
+        hub_url = _resolve_hub_url(config.owner, config.repo)
         return RunResult(answer=answer, hub_url=hub_url)
 
 
@@ -944,7 +912,9 @@ def run(config: RunnerConfig, deps: CliDeps | None = None) -> RunResult:
     _ensure_mode_prerequisites(config.mode)
     resolved_deps = deps or CliDeps(
         run_langsmith_cli=_run_langsmith_cli,
-        run_agent_mode=_run_agent_mode,
+        run_agent_mode=_run_agent_apply_mode,
+        run_agent_review_mode=_run_agent_review_mode,
+        ask_user=input,
         tempdir_factory=tempfile.TemporaryDirectory,
     )
 
@@ -957,7 +927,7 @@ __all__ = [
     "CliDeps",
     "RunResult",
     "RunnerConfig",
-    "TopicWikiError",
+    "WikiError",
     "parse_config",
     "run",
 ]

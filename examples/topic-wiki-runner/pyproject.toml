@@ -1,7 +1,7 @@
 [project]
-name = "topic-wiki-runner-example"
+name = "wiki-runner-example"
 version = "0.1.0"
-description = "Topic wiki runner using DeepAgents + LangSmith CLI"
+description = "Wiki runner using DeepAgents + LangSmith CLI"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.5.7",

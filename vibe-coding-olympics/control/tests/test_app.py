@@ -52,6 +52,13 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("/static/fonts/aeonik-mono/aeonikmono-regular.woff2", response.text)
         self.assertIn("overlayMode = params.get('mode')", response.text)
         self.assertIn("fetch('/api/state'", response.text)
+        self.assertIn("Player: Player 1", response.text)
+        self.assertIn("function playerName", response.text)
+        self.assertIn('<div class="pane focus-terminal"></div>', response.text)
+        self.assertIn(".focus-prompt", response.text)
+        self.assertIn("bottom: 3%;", response.text)
+        self.assertNotIn("focus-terminal-title", response.text)
+        self.assertNotIn("focus-caption", response.text)
 
     def test_index_links_to_overlay_route(self) -> None:
         client = TestClient(app_mod.create_app())

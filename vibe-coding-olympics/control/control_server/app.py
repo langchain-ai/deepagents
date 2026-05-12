@@ -1823,27 +1823,19 @@ _OVERLAY_HTML = """<!doctype html>
   .focus-website {
     left: 2.2%;
     top: 18.8%;
+    bottom: 3%;
     width: 60.5%;
-    height: 59%;
   }
   .focus-terminal {
     right: 2.2%;
     top: 18.8%;
+    bottom: 3%;
     width: 33%;
-    height: 59%;
   }
   .focus-prompt {
     left: 2.2%;
     right: 2.2%;
-    top: 81%;
-  }
-  .focus-caption {
-    position: absolute;
-    right: 2.2%;
-    bottom: 2.6%;
-    font-size: min(1.3vw, 2.31vh);
-    font-weight: 700;
-    text-transform: uppercase;
+    top: 12.1%;
   }
   .status {
     position: absolute;
@@ -1955,8 +1947,8 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="bottom-band left gradient-left"></div>
       <div class="bottom-band right gradient-right"></div>
       <div class="divider"></div>
-      <div class="player-name left" id="split-p1-name">Player 1</div>
-      <div class="player-name right" id="split-p2-name">Player 2</div>
+      <div class="player-name left" id="split-p1-name">Player: Player 1</div>
+      <div class="player-name right" id="split-p2-name">Player: Player 2</div>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
       <div class="prompt-strip">
@@ -1985,21 +1977,17 @@ _OVERLAY_HTML = """<!doctype html>
 
     <div class="stage focus-shell">
       <div class="focus-top"></div>
-      <div class="focus-name" id="focus-name">Player 1</div>
+      <div class="focus-name" id="focus-name">Player: Player 1</div>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="chip timer-chip" id="focus-clock">--:--</div>
-      <div class="pane focus-website">
-        <div class="pane-label" id="focus-preview-label">P1 Live<br>Preview</div>
-      </div>
-      <div class="pane focus-terminal">
-        <div class="terminal-title" id="focus-terminal-title">P1 Terminal</div>
-        <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
-      </div>
       <div class="prompt-strip focus-prompt">
         <span>Prompt</span>
         <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
       </div>
-      <div class="focus-caption" id="focus-caption">Player Focus</div>
+      <div class="pane focus-website">
+        <div class="pane-label" id="focus-preview-label">P1 Live<br>Preview</div>
+      </div>
+      <div class="pane focus-terminal"></div>
     </div>
   </section>
 
@@ -2042,8 +2030,6 @@ const els = {
   focusClock: document.getElementById('focus-clock'),
   focusPrompt: document.getElementById('focus-prompt'),
   focusPreviewLabel: document.getElementById('focus-preview-label'),
-  focusTerminalTitle: document.getElementById('focus-terminal-title'),
-  focusCaption: document.getElementById('focus-caption'),
   scoreWrap: document.getElementById('score-wrap'),
   status: document.getElementById('status'),
 };
@@ -2058,6 +2044,10 @@ function text(value, fallback) {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
   return trimmed || fallback;
+}
+
+function playerName(value, fallback) {
+  return `Player: ${text(value, fallback)}`;
 }
 
 function formatClock(seconds) {
@@ -2096,17 +2086,15 @@ function renderCoding() {
   const focused = focusIndex === 0 ? p1 : p2;
   const focusedLabel = `P${focusIndex + 1}`;
 
-  els.splitP1Name.textContent = p1;
-  els.splitP2Name.textContent = p2;
+  els.splitP1Name.textContent = playerName(p1, 'Player 1');
+  els.splitP2Name.textContent = playerName(p2, 'Player 2');
   els.splitPrompt.textContent = prompt;
   els.splitClock.textContent = clock;
 
-  els.focusName.textContent = focused;
+  els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);
   els.focusPrompt.textContent = prompt;
   els.focusClock.textContent = clock;
   els.focusPreviewLabel.innerHTML = `${focusedLabel} Live<br>Preview`;
-  els.focusTerminalTitle.textContent = `${focusedLabel} Terminal`;
-  els.focusCaption.textContent = `${focusedLabel} Player Focus`;
 }
 
 function scoreEntries() {

@@ -405,9 +405,11 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.0a2,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
+    { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
     { name = "langsmith", specifier = ">=0.8.0" },
     { name = "wcmatch" },
 ]
+provides-extras = ["quickjs"]
 
 [package.metadata.requires-dev]
 test = [

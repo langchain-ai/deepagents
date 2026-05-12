@@ -35,6 +35,8 @@ dependencies = [
 # replacements ship.
 prerelease = "allow"
 
+[project.optional-dependencies]
+quickjs = ["langchain-quickjs"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

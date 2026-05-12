@@ -28,16 +28,9 @@ def _messages_delta_reducer(  # noqa: C901
 
     Dedups by ID, tombstones via `RemoveMessage`, resets on
     `REMOVE_ALL_MESSAGES`. ID-less messages are appended without ID
-    assignment — the reducer does not assign IDs because doing so breaks
-    the batching invariant required by `DeltaChannel`. Checkpointers
-    serialize pending writes before `update()` runs, so any IDs assigned
-    inside the reducer never reach the stored writes; on replay the same
-    ID-less message gets a different ID, defeating deduplication.
-
-    The correct fix is to ensure messages carry stable IDs before they are
-    written to the channel (e.g. auto-assignment at creation in
-    langchain-core). Until that lands, ID-less messages are simply appended
-    — consistent with LangGraph's own `_messages_delta_reducer`.
+    assignment — checkpointers serialize pending writes before
+    `update()` runs, so IDs assigned inside the reducer never reach
+    stored writes and would differ on replay, defeating deduplication.
 
     Raw dict / string / tuple inputs are coerced to typed `BaseMessage` so
     HTTP-driven graphs work without a separate coercion step.

@@ -1973,21 +1973,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires the state command uses ``Overwrite`` to
-        replace the entire messages channel value with a fully-identified list
-        rather than appending the tagged message.
-
-        This preserves correctness with DeltaChannel: the checkpointer
-        serializes pending writes *before* the reducer runs, so any ID
-        assigned inside the reducer never reaches stored writes. On replay a
-        simple ``Command(messages=[tagged(id=X)])`` would not match the
-        original ``HumanMessage(id=None)`` write (which gets a fresh UUID),
-        producing a duplicate. ``Overwrite`` bypasses the reducer entirely —
-        it sets the channel's base value directly, so the replay path sees the
-        fully-identified list as the new snapshot and the ID-less write is
-        never replayed against it.
-
-        Cost: O(N) writes only when a new eviction fires, not every turn.
+        When a new eviction fires, uses ``Overwrite`` to atomically replace
+        the messages channel with a fully-identified list. A plain append of
+        the tagged message would not survive DeltaChannel replay: the original
+        ``HumanMessage(id=None)`` write gets a fresh UUID on replay that
+        doesn't match the eviction Command's ID, producing a duplicate.
 
         Args:
             messages: The message list (may be modified if write succeeded).
@@ -2011,9 +2001,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            # Assign stable IDs to every ID-less message, then overwrite the
-            # channel so replay sees a clean snapshot rather than replaying the
-            # original id=None write alongside the eviction Command.
             stable: list[AnyMessage] = [(m.model_copy(update={"id": str(uuid.uuid4())}) if m.id is None else m) for m in messages[:-1]] + [tagged]
             state_command = Command(update={"messages": Overwrite(stable)})
             messages = stable

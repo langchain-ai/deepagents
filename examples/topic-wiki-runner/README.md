@@ -24,7 +24,7 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 - `raw/` - immutable source files dropped in for ingest (articles, notes, datasets).
 - `wiki/` - LLM-maintained knowledge pages (entities, concepts, summaries, syntheses).
 - `wiki/index.md` - content-oriented catalog for wiki navigation and retrieval: categorized page links with one-line summaries and optional metadata (for example date/source count). Query flows read this first.
-- `log.md` - append-only chronological interaction log. Every ingest/query/lint phase appends a parseable heading: `## [YYYY-MM-DD] mode.phase | outcome=...`.
+- `log.md` - append-only chronological interaction log. Every ingest/query/lint phase appends a parseable heading: `## [YYYY-MM-DD] mode.phase | outcome=...`, plus timestamp/summary bullets.
 
 ## Requirements
 
@@ -105,7 +105,7 @@ If you pass `--review`, ingest becomes a two-phase, operator-in-the-loop flow:
 1. Review phase (read-only): the model reads staged source files and returns key takeaways, proposed wiki updates, contradictions, and index updates.
 2. Apply phase (write): after your confirmation, the model writes source summary updates and concept/entity updates.
 3. The runner refreshes `wiki/index.md` and appends structured `ingest.review` / `ingest.apply` timeline entries in `log.md`.
-4. In `--review` mode, declining confirmation skips wiki edits, but still appends an `ingest.apply | outcome=canceled` entry so the timeline is complete.
+4. In `--review` mode, declining confirmation skips wiki edits, but still appends an `ingest.apply | outcome=canceled` entry and pushes so the timeline remains complete.
 
 Batch ingest is the default. A single run can process multiple files and directories.
 
@@ -121,13 +121,24 @@ Batch ingest is the default. A single run can process multiple files and directo
 
 `lint` is single-pass and applies immediately:
 
-1. Health-check phase (apply): the model reconciles contradictions, stale/superseded claims, orphan pages, missing cross-references, and key concept coverage directly in `/wiki/` (creating new canonical pages when needed).
+1. Health-check phase (apply): the model reads recent `log.md` entries for recency context, then reconciles contradictions, stale/superseded claims, orphan pages, missing cross-references, and key concept coverage directly in `/wiki/` (creating new canonical pages when needed).
 2. Gap reporting phase (in response): the model returns a concise summary with reconciled changes, remaining gaps, and suggested next questions/sources.
 3. The runner refreshes `wiki/index.md`, appends a structured `lint.apply` entry to `log.md`, and pushes.
 
 ## Log timeline
 
-`log.md` is append-only and designed to be parseable with simple shell tools.
+`log.md` is runner-managed, append-only, and designed to be parseable with simple shell tools.
+
+- The agent should not edit `log.md` directly; the runner appends entries.
+- Every interaction is recorded:
+  - `ingest.review` (when `--review` is enabled)
+  - `ingest.apply` (`outcome=applied` or `outcome=canceled`)
+  - `query.review` (`outcome=file` or `outcome=skip`)
+  - `query.apply` (only when filing, `outcome=filed`)
+  - `lint.apply` (`outcome=applied`)
+- Entry shape:
+  - Heading: `## [YYYY-MM-DD] mode.phase | outcome=... key=value ...`
+  - Body bullets: `timestamp` (UTC) and `summary`
 
 ```bash
 # Show the latest 5 timeline entries.

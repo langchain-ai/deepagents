@@ -8,7 +8,7 @@ A minimal one-file example that treats Context Hub as a living knowledge base:
 
 ## Single code file
 
-- `context_hub_kb_issues.py`
+- `deploy_memory_backed_agent.py`
   - defines `agent` with `CompositeBackend` + `ContextHubBackend`
   - deploys the graph (`langgraph deploy`)
   - create-or-patch wires `/issues-agent`
@@ -49,7 +49,7 @@ Optional:
 cd examples/context-hub-kb-issues
 
 # Deploy + auto-wire issues board
-uv run python context_hub_kb_issues.py --project-name my-agent
+uv run python deploy_memory_backed_agent.py --project-name my-agent
 ```
 
 ## What the wiring does

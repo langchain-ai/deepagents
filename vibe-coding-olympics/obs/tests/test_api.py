@@ -8,8 +8,11 @@ from obs_runner.state_machine import Phase
 
 
 class FakeCompositor:
+    def __init__(self) -> None:
+        self.scenes: list[str] = []
+
     def set_scene(self, name: str) -> None:
-        pass
+        self.scenes.append(name)
 
     def set_text(self, source: str, value: str) -> None:
         pass
@@ -69,3 +72,25 @@ def test_transition_maps_payload_validation_error_to_409() -> None:
 
     assert response.status_code == 409
     assert "contestants" in response.text
+
+
+def test_scene_switch_drives_obs_without_changing_state() -> None:
+    comp = FakeCompositor()
+    client = TestClient(create_app(config=_config(), compositor=comp))
+
+    response = client.post("/scene", json={"name": "p1 focus"})
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "idle"
+    assert comp.scenes == ["p1 focus"]
+
+
+def test_scene_switch_maps_compositor_connection_error_to_503() -> None:
+    client = TestClient(
+        create_app(config=_config(), compositor=DisconnectedCompositor())
+    )
+
+    response = client.post("/scene", json={"name": "p1 focus"})
+
+    assert response.status_code == 503
+    assert "OBS offline" in response.text

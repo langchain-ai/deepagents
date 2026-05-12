@@ -70,6 +70,19 @@ curl -sS -X POST localhost:8765/transition \
 
 Invalid transitions return `409`. An unreachable OBS returns `503`.
 
+### `POST /scene`
+
+Switches OBS directly to a scene without changing the FSM snapshot. This is for
+operator-controlled camera/layout cuts such as focus scenes.
+
+```bash
+curl -sS -X POST localhost:8765/scene \
+  -H 'content-type: application/json' \
+  -d '{"name":"p1 focus"}'
+```
+
+An unreachable OBS returns `503`.
+
 ### `GET /state`
 
 Returns the current snapshot (phase, round, prompt, contestants, scores).

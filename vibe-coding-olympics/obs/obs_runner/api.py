@@ -3,6 +3,7 @@
 Endpoints (MVP):
 
 - `POST /transition` — advance the FSM.
+- `POST /scene`      — switch OBS scenes without changing the FSM.
 - `GET  /state`      — current snapshot.
 - `GET  /healthz`    — OBS connection probe + current phase.
 
@@ -21,7 +22,12 @@ from fastapi import FastAPI, HTTPException
 
 from obs_runner.compositor import CompositorProtocol, ObsCompositor
 from obs_runner.config import Config, load_config
-from obs_runner.models import HealthResponse, StateResponse, TransitionRequest
+from obs_runner.models import (
+    HealthResponse,
+    SceneRequest,
+    StateResponse,
+    TransitionRequest,
+)
 from obs_runner.state_machine import InvalidTransitionError, StateMachine
 
 logger = logging.getLogger("obs_runner")
@@ -93,6 +99,14 @@ def create_app(
             machine.dispatch(req.event, req.payload)
         except InvalidTransitionError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ConnectionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _snapshot_response(machine)
+
+    @app.post("/scene", response_model=StateResponse)
+    async def set_scene(req: SceneRequest) -> StateResponse:
+        try:
+            comp.set_scene(req.name)
         except ConnectionError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return _snapshot_response(machine)

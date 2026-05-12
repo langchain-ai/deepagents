@@ -334,6 +334,12 @@ class OverlaySmokeRequest(BaseModel):
         return [name.strip() for name in value if name.strip()][:2]
 
 
+class ObsSceneRequest(BaseModel):
+    """Direct OBS scene switch request."""
+
+    scene: str = Field(min_length=1)
+
+
 def _reset_round_state() -> None:
     """Forget the in-flight round context and the last eval snapshot."""
     _round_context.clear()
@@ -525,6 +531,25 @@ async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     if response.status_code >= 400:
         # Unwrap the upstream JSON detail so the UI sees one error
         # layer, not `{"detail": "{\"detail\": ...}"}`.
+        try:
+            body = response.json()
+            detail = body.get("detail", body) if isinstance(body, dict) else body
+        except ValueError:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail)
+    return response.json()
+
+
+async def _set_obs_scene(scene: str) -> dict[str, Any]:
+    """Ask the OBS runner to switch scenes without changing FSM state."""
+    url = f"{VIBE_OBS_API}/scene"
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            response = await client.post(url, json={"name": scene})
+        except httpx.HTTPError as exc:
+            msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
+            raise HTTPException(status_code=502, detail=msg) from exc
+    if response.status_code >= 400:
         try:
             body = response.json()
             detail = body.get("detail", body) if isinstance(body, dict) else body
@@ -1811,6 +1836,24 @@ async function clearOverlaySmoke() {
   }
   return false;
 }
+async function switchObsScene(scene) {
+  const result = await api('/api/obs/scene', { scene });
+  if (result.ok) return true;
+  const message = result.json && result.json.detail
+    ? String(result.json.detail)
+    : result.text;
+  setSmokeError(message);
+  return false;
+}
+async function focusOverlayAndObs(player) {
+  const ok = await setOverlaySmoke('coding', {
+    mode: 'focus',
+    focus_player: player,
+    remaining_secs: 300,
+  });
+  if (!ok) return false;
+  return switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus');
+}
 async function runSmokeTour() {
   const button = document.getElementById('btn-smoke-tour');
   button.disabled = true;
@@ -1852,10 +1895,10 @@ document.getElementById('btn-smoke-layout-split').onclick = () => (
   setOverlaySmoke('coding', { mode: 'split', focus_player: 1, remaining_secs: 300 })
 );
 document.getElementById('btn-smoke-layout-p1').onclick = () => (
-  setOverlaySmoke('coding', { mode: 'focus', focus_player: 1, remaining_secs: 300 })
+  focusOverlayAndObs(1)
 );
 document.getElementById('btn-smoke-layout-p2').onclick = () => (
-  setOverlaySmoke('coding', { mode: 'focus', focus_player: 2, remaining_secs: 300 })
+  focusOverlayAndObs(2)
 );
 document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
 document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
@@ -2985,6 +3028,10 @@ def create_app() -> FastAPI:
     async def overlay_smoke_clear() -> dict[str, Any]:
         _clear_overlay_smoke()
         return {"state": await get_state()}
+
+    @app.post("/api/obs/scene")
+    async def obs_scene(req: ObsSceneRequest) -> dict[str, Any]:
+        return {"obs": await _set_obs_scene(req.scene)}
 
     @app.get("/api/prompts")
     async def prompts_list() -> dict[str, list[dict[str, Any]]]:

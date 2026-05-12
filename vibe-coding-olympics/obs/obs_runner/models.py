@@ -22,6 +22,12 @@ class TransitionRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class SceneRequest(BaseModel):
+    """Direct OBS scene switch request that leaves FSM state unchanged."""
+
+    name: str = Field(min_length=1)
+
+
 class StateResponse(BaseModel):
     """Current machine snapshot returned by `GET /state` and transitions."""
 

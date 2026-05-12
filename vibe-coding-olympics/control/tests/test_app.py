@@ -159,6 +159,22 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("btn-smoke-layout-split", response.text)
         self.assertIn("btn-smoke-layout-p1", response.text)
         self.assertNotIn("smoke-overlay-link", response.text)
+        self.assertIn("function focusOverlayAndObs(player)", response.text)
+        self.assertIn(
+            "switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus')",
+            response.text,
+        )
+
+    def test_obs_scene_endpoint_forwards_to_obs_runner(self) -> None:
+        client = TestClient(app_mod.create_app())
+        set_scene = AsyncMock(return_value={"phase": "coding"})
+
+        with patch("control_server.app._set_obs_scene", set_scene):
+            response = client.post("/api/obs/scene", json={"scene": "p1 focus"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"obs": {"phase": "coding"}})
+        set_scene.assert_awaited_once_with("p1 focus")
 
     def test_static_fonts_are_served(self) -> None:
         client = TestClient(app_mod.create_app())

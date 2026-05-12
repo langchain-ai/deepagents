@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import os
 import signal
 import time
@@ -4446,6 +4447,132 @@ class TestRemoteAgent:
         app = DeepAgentsApp()
         app._agent = MagicMock(spec=[])
         assert app._remote_agent() is None
+
+
+class TestTerminalBackgroundSync:
+    """Tests for syncing Textual theme background to terminal background."""
+
+    def test_initial_theme_sync_sets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        entry = theme.get_registry()[app.theme]
+
+        assert calls[-1] == entry.colors.background
+
+    def test_sync_terminal_background_uses_active_theme(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = "langchain-light"
+        app.sync_terminal_background()
+
+        assert calls == [theme.LIGHT_COLORS.background]
+
+    def test_sync_terminal_background_uses_custom_theme_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli import terminal_escape, theme
+
+        app = DeepAgentsApp()
+        calls: list[str] = []
+        entry = theme.ThemeEntry(
+            label="Custom Test",
+            dark=True,
+            colors=theme.DARK_COLORS,
+            custom=True,
+        )
+        c = entry.colors
+        app.register_theme(
+            TextualTheme(
+                name="custom-test",
+                primary=c.primary,
+                secondary=c.secondary,
+                accent=c.accent,
+                foreground=c.foreground,
+                background=c.background,
+                surface=c.surface,
+                panel=c.panel,
+                warning=c.warning,
+                error=c.error,
+                success=c.success,
+                dark=entry.dark,
+            )
+        )
+        monkeypatch.setattr(theme, "get_registry", lambda: {"custom-test": entry})
+        monkeypatch.setattr(
+            theme,
+            "get_theme_colors",
+            MagicMock(side_effect=AssertionError("custom themes use entry colors")),
+        )
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app.theme = "custom-test"
+        app.sync_terminal_background()
+
+        assert calls == [theme.DARK_COLORS.background]
+
+    def test_sync_terminal_background_swallows_terminal_errors(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        app = DeepAgentsApp()
+
+        def _raise(_color: str) -> bool:
+            msg = "terminal unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_background", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.app"):
+            app.sync_terminal_background()
+
+        assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_exit_resets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "reset_terminal_background",
+            lambda: calls.append(True) or True,
+        )
+        app = DeepAgentsApp()
+
+        with patch.object(App, "exit") as app_exit:
+            app.exit()
+
+        assert calls == [True]
+        app_exit.assert_called_once()
 
 
 class TestSlashCommandBypass:

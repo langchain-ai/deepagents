@@ -1151,6 +1151,7 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+        self.sync_terminal_background()
 
         # Injected session config
         self._agent = agent
@@ -3289,6 +3290,27 @@ class DeepAgentsApp(App):
             )
 
         return children[-1] == self._loading_widget
+
+    def sync_terminal_background(self) -> None:
+        """Best-effort sync of terminal default background to the active theme.
+
+        Custom themes use their stored registry colors; built-in Textual themes
+        resolve colors from the active app theme. Terminal write failures are
+        logged and swallowed because the OSC background sync is cosmetic.
+        """
+        from deepagents_cli.terminal_escape import set_terminal_background
+
+        entry = theme.get_registry().get(self.theme)
+        colors = (
+            entry.colors
+            if entry is not None and entry.custom
+            else theme.get_theme_colors(self)
+        )
+        try:
+            set_terminal_background(colors.background)
+        except Exception:
+            # Cosmetic only: must never break app startup or theme changes.
+            logger.warning("set_terminal_background raised unexpectedly", exc_info=True)
 
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
@@ -6603,6 +6625,15 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
+        from deepagents_cli.terminal_escape import reset_terminal_background
+
+        try:
+            reset_terminal_background()
+        except Exception:
+            # Cosmetic only: must never raise during shutdown.
+            logger.warning(
+                "reset_terminal_background raised unexpectedly", exc_info=True
+            )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
@@ -7007,6 +7038,7 @@ class DeepAgentsApp(App):
             """Handle the theme selector result."""
             if result is not None:
                 self.theme = result
+                self.sync_terminal_background()
                 self.refresh_css(animate=False)
 
                 async def _persist() -> None:

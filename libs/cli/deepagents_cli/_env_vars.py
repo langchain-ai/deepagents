@@ -110,6 +110,9 @@ KITTY_KEYBOARD = "DEEPAGENTS_CLI_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CLI_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+NO_TERMINAL_ESCAPE = "DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE"
+"""Disable all terminal escape/control sequence output when enabled."""
+
 NO_UPDATE_CHECK = "DEEPAGENTS_CLI_NO_UPDATE_CHECK"
 """Disable automatic update checking when set."""
 

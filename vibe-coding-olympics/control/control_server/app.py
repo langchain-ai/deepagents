@@ -1306,6 +1306,17 @@ async function api(path, body, options = {}) {
 
 function val(id) { return document.getElementById(id).value.trim(); }
 function num(id) { return parseFloat(document.getElementById(id).value); }
+function displayName(value, fallback = '') {
+  const raw = String(value || '').trim().replace(/\\s+/g, ' ');
+  if (!raw) return fallback;
+  const parts = raw.split(' ');
+  if (parts.length < 2) return raw;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const initial = last.charAt(0);
+  if (initial.toLocaleLowerCase() === initial.toLocaleUpperCase()) return raw;
+  return `${first} ${initial.toLocaleUpperCase()}.`;
+}
 function playerName(id) {
   const element = document.getElementById(id);
   return element.dataset.name || '';
@@ -1367,11 +1378,11 @@ function renderState(state) {
   document.getElementById('state-prompt').textContent = state.prompt || 'none';
   const contestants = state.contestants || [];
   document.getElementById('state-contestants').textContent =
-    contestants.length ? contestants.join(', ') : 'none';
+    contestants.length ? contestants.map((name) => displayName(name)).join(', ') : 'none';
   const scores = state.scores || {};
   const scoreEntries = Object.entries(scores);
   document.getElementById('state-scores').textContent = scoreEntries.length
-    ? scoreEntries.map(([name, score]) => `${name}: ${score}`).join(', ')
+    ? scoreEntries.map(([name, score]) => `${displayName(name)}: ${score}`).join(', ')
     : 'none';
   renderTimer(state.timer);
   renderEval((state.eval && state.eval.results) || []);
@@ -1417,7 +1428,7 @@ function renderEval(results) {
 
     const header = document.createElement('h3');
     const label = document.createElement('span');
-    label.textContent = `${entry.name || '?'} — ${(entry.obs_score || 0).toFixed(2)} / 10`;
+    label.textContent = `${displayName(entry.name, '?')} — ${(entry.obs_score || 0).toFixed(2)} / 10`;
     header.appendChild(label);
     if (entry.fallback) {
       const tag = document.createElement('span');
@@ -1494,7 +1505,7 @@ function orderedPlayerEntries(ready, connected) {
 }
 function playerSummary(entries) {
   const labels = entries.map((entry) => (
-    entry.name ? `${entry.name} (${entry.port})` : `Connected (${entry.port})`
+    entry.name ? `${displayName(entry.name)} (${entry.port})` : `Connected (${entry.port})`
   ));
   return labels.length ? labels.join(', ') : 'none';
 }
@@ -1510,7 +1521,7 @@ function renderReady(ready, modelReady, connected) {
     const next = entry ? entry.name : '';
     const isConnected = Boolean(entry && connectedPorts.has(entry.port));
     slot.dataset.name = next;
-    slot.textContent = next || (isConnected ? `Connected (${entry.port})` : 'Not connected');
+    slot.textContent = displayName(next) || (isConnected ? `Connected (${entry.port})` : 'Not connected');
     slot.classList.toggle('empty', !next);
     const badge = document.getElementById(`${id}-ready`);
     const isReady = Boolean(entry && modelReadyPorts.has(entry.port));
@@ -2598,8 +2609,20 @@ function text(value, fallback) {
   return trimmed || fallback;
 }
 
+function displayName(value, fallback = '') {
+  const raw = text(value, fallback).replace(/\\s+/g, ' ');
+  if (!raw) return '';
+  const parts = raw.split(' ');
+  if (parts.length < 2) return raw;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  const initial = last.charAt(0);
+  if (initial.toLocaleLowerCase() === initial.toLocaleUpperCase()) return raw;
+  return `${first} ${initial.toLocaleUpperCase()}.`;
+}
+
 function playerName(value, fallback) {
-  return `Player: ${text(value, fallback)}`;
+  return `Player: ${displayName(value, fallback)}`;
 }
 
 function syncOverlayMode(payload) {
@@ -2662,7 +2685,7 @@ function syncTimerWarning() {
 
 function renderIdle() {
   active('idle');
-  const names = state.contestants.filter(Boolean);
+  const names = state.contestants.filter(Boolean).map((name) => displayName(name));
   els.idleSubhead.textContent = names.length
     ? `Ready: ${names.join(' vs ')}`
     : 'Waiting for players';
@@ -2710,7 +2733,7 @@ function renderScoreboard() {
     card.className = `score-card ${index === 0 ? 'left' : 'right'}`;
     const name = document.createElement('div');
     name.className = 'score-name';
-    name.textContent = text(entry.name, 'Player');
+    name.textContent = displayName(entry.name, 'Player');
     const score = document.createElement('div');
     score.className = 'score-num';
     score.textContent = entry.score.toFixed(2);

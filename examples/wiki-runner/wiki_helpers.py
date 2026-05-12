@@ -87,7 +87,7 @@ def _slugify_topic(topic: str) -> str:
 
 
 def _topic_dir_for(topic: str, explicit: str | None) -> Path:
-    """Resolve the local topic directory path."""
+    """Resolve the local wiki directory path."""
     if explicit:
         return Path(explicit).expanduser().resolve()
     return (Path.cwd() / "wikis" / _slugify_topic(topic)).resolve()
@@ -142,11 +142,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode", required=True, choices=["init", "ingest", "query", "lint"]
     )
     parser.add_argument(
-        "--topic",
-        default=None,
-        help="Optional display topic name (defaults from --repo)",
-    )
-    parser.add_argument(
         "--repo",
         required=True,
         help="Context Hub repo name or owner/name handle",
@@ -157,7 +152,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional Context Hub owner when --repo is only a repo name",
     )
     parser.add_argument(
-        "--topic-dir", default=None, help="Local topic directory for init mode"
+        "--topic-dir", default=None, help="Local wiki directory for init mode"
     )
     parser.add_argument(
         "--source",
@@ -199,7 +194,7 @@ def parse_config(argv: Sequence[str] | None = None) -> RunnerConfig:
         parser.error("--question is required in query mode")
 
     repo, owner = _normalize_repo_and_owner(parser, args.repo, args.owner)
-    topic = (args.topic or "").strip() or _default_topic_from_repo(repo)
+    topic = _default_topic_from_repo(repo)
 
     return RunnerConfig(
         mode=mode,
@@ -401,7 +396,7 @@ def _write_if_missing(path: Path, content: str) -> None:
 def _agents_md(topic: str) -> str:
     """Build default AGENTS.md guidance content."""
     return (
-        f"# {topic} Topic Wiki\n\n"
+        f"# {topic} Wiki\n\n"
         "Maintain a concise, source-grounded wiki for this topic.\n\n"
         "Rules:\n"
         "- Treat `/raw/` as read-only source material.\n"
@@ -808,7 +803,7 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
 
 
 def run(config: RunnerConfig, deps: CliDeps | None = None) -> RunResult:
-    """Execute the requested topic wiki workflow."""
+    """Execute the requested wiki workflow."""
     _ensure_mode_prerequisites(config.mode)
     resolved_deps = deps or CliDeps(
         run_langsmith_cli=_run_langsmith_cli,

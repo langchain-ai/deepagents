@@ -1,6 +1,6 @@
 # Wiki Runner
 
-A script-first DeepAgents example that builds a persistent topic wiki and syncs it through `langsmith hub` commands.
+A script-first DeepAgents example that builds a persistent wiki and syncs it through `langsmith hub` commands.
 
 ## Structure
 
@@ -36,7 +36,7 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 ## Setup
 
 ```bash
-cd examples/topic-wiki-runner
+cd examples/wiki-runner
 uv sync
 ```
 

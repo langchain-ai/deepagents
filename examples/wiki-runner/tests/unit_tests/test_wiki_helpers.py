@@ -145,8 +145,6 @@ def test_parse_config_accepts_repo_owner_inputs() -> None:
         [
             "--mode",
             "init",
-            "--topic",
-            "Ada",
             "--repo",
             "acme/ada-wiki",
             "--owner",
@@ -159,7 +157,7 @@ def test_parse_config_accepts_repo_owner_inputs() -> None:
 
 
 def test_parse_config_defaults_topic_from_repo() -> None:
-    """Default topic name from repo when --topic is omitted."""
+    """Default topic name from repo."""
     config = helpers.parse_config(
         [
             "--mode",
@@ -197,8 +195,6 @@ def test_parse_config_rejects_owner_repo_conflict() -> None:
             [
                 "--mode",
                 "init",
-                "--topic",
-                "Ada",
                 "--repo",
                 "acme/ada-wiki",
                 "--owner",
@@ -214,8 +210,6 @@ def test_parse_config_requires_source_for_ingest() -> None:
             [
                 "--mode",
                 "ingest",
-                "--topic",
-                "Ada",
                 "--repo",
                 "ada-wiki",
             ]
@@ -229,8 +223,6 @@ def test_parse_config_requires_question_for_query() -> None:
             [
                 "--mode",
                 "query",
-                "--topic",
-                "Ada",
                 "--repo",
                 "ada-wiki",
             ]

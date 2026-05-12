@@ -2,7 +2,7 @@
   "libs/cli": "0.0.59",
   "libs/deepagents": "0.6.1",
   "libs/acp": "0.0.6",
-  "libs/code": "0.0.1",
+  "libs/code": "0.1.0",
   "libs/partners/daytona": "0.0.6",
   "libs/partners/modal": "0.0.4",
   "libs/partners/runloop": "0.0.5",

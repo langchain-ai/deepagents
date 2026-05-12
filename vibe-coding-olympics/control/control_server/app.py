@@ -2000,8 +2000,8 @@ _OVERLAY_HTML = """<!doctype html>
     --pink-b: #d5c3f7;
     --blue-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 20%, var(--paper) 50%);
     --pink-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 20%, var(--paper) 50%);
-    --blue-name-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 50%, var(--paper) 100%);
-    --pink-name-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 50%, var(--paper) 100%);
+    --blue-name-gradient: linear-gradient(0deg, var(--blue-a) 0%, var(--blue-b) 50%, var(--paper) 100%);
+    --pink-name-gradient: linear-gradient(0deg, var(--pink-a) 0%, var(--pink-b) 50%, var(--paper) 100%);
     --soft-blue: #d8efff;
     --soft-pink: #f5d8ff;
     --line: max(2px, 0.11vw);
@@ -2223,19 +2223,6 @@ _OVERLAY_HTML = """<!doctype html>
     width: 46.2%;
     background-image: var(--pink-name-gradient);
   }
-  .split-event-chip {
-    left: 2.2%;
-    top: 2.85%;
-    width: 27%;
-    height: auto;
-    justify-content: flex-start;
-    padding: 0;
-    background: transparent;
-    color: var(--ink);
-    clip-path: none;
-    transform: none;
-    font-size: min(1.45vw, 2.58vh);
-  }
   .prompt-strip {
     position: absolute;
     left: 2.2%;
@@ -2251,17 +2238,6 @@ _OVERLAY_HTML = """<!doctype html>
     font-size: min(1.16vw, 2.06vh);
     font-weight: 500;
     z-index: 4;
-  }
-  .split-prompt-strip {
-    left: 34%;
-    right: 14%;
-    top: 2.25%;
-    min-height: 5.5%;
-    justify-content: center;
-    padding: 0.65vh 1.2vw;
-  }
-  .split-prompt-strip span:first-child {
-    display: none;
   }
   .prompt-strip span:first-child {
     flex: 0 0 auto;
@@ -2292,11 +2268,9 @@ _OVERLAY_HTML = """<!doctype html>
     line-height: 1.18;
     text-transform: uppercase;
   }
-  .split-player.left .pane-label,
   #coding-view[data-focus="1"] .pane-label {
     background: linear-gradient(180deg, var(--paper), var(--soft-blue));
   }
-  .split-player.right .pane-label,
   #coding-view[data-focus="2"] .pane-label {
     background: linear-gradient(180deg, var(--paper), var(--soft-pink));
   }
@@ -2570,26 +2544,18 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="split-gap-line"></div>
       <div class="split-gap-dot"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
-      <div class="chip event-chip split-event-chip">Deep Agents PVP</div>
-      <div class="prompt-strip split-prompt-strip">
-        <span>Prompt</span>
-        <span class="prompt-text" id="split-prompt">Waiting for prompt</span>
-      </div>
+      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="player-name left" id="split-p1-name">Player: Player 1</div>
       <div class="player-name right" id="split-p2-name">Player: Player 2</div>
       <div class="split-player left">
-        <div class="pane preview">
-          <div class="pane-label">P1 Live<br>Preview</div>
-        </div>
+        <div class="pane preview"></div>
         <div class="pane terminal">
           <div class="terminal-title">P1 Terminal</div>
           <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
         </div>
       </div>
       <div class="split-player right">
-        <div class="pane preview">
-          <div class="pane-label">P2 Live<br>Preview</div>
-        </div>
+        <div class="pane preview"></div>
         <div class="pane terminal">
           <div class="terminal-title">P2 Terminal</div>
           <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
@@ -2656,7 +2622,6 @@ const els = {
   splitP1Name: document.getElementById('split-p1-name'),
   splitP2Name: document.getElementById('split-p2-name'),
   splitClock: document.getElementById('split-clock'),
-  splitPrompt: document.getElementById('split-prompt'),
   focusName: document.getElementById('focus-name'),
   focusClock: document.getElementById('focus-clock'),
   focusPrompt: document.getElementById('focus-prompt'),
@@ -2762,7 +2727,6 @@ function renderCoding() {
 
   els.splitP1Name.textContent = playerName(p1, 'Player 1');
   els.splitP2Name.textContent = playerName(p2, 'Player 2');
-  els.splitPrompt.textContent = prompt;
   els.splitClock.textContent = clock;
 
   els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);

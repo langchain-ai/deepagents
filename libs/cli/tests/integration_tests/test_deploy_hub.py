@@ -123,10 +123,14 @@ def test_hub_bundle_seeds_through_composite(
     pulled_paths = set(pulled.files.keys())
     assert "AGENTS.md" in pulled_paths
     assert "skills/echo/SKILL.md" in pulled_paths
-    repo = Client().request_with_retries(
-        "GET",
-        f"/repos/{hub_identifier}",
-    ).json()["repo"]
+    repo = (
+        Client()
+        .request_with_retries(
+            "GET",
+            f"/repos/{hub_identifier}",
+        )
+        .json()["repo"]
+    )
     assert repo["source"] == "internal"
 
     # Reads through a brand-new backend should round-trip the seeded content.
@@ -163,10 +167,14 @@ def test_seed_hub_repo_creates_repo_before_invocation(
 
     pulled = Client().pull_agent(hub_identifier)
     assert "AGENTS.md" in pulled.files
-    repo = Client().request_with_retries(
-        "GET",
-        f"/repos/{hub_identifier}",
-    ).json()["repo"]
+    repo = (
+        Client()
+        .request_with_retries(
+            "GET",
+            f"/repos/{hub_identifier}",
+        )
+        .json()["repo"]
+    )
     assert repo["source"] == "internal"
 
 

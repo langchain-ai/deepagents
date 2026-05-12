@@ -27,10 +27,10 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -2014,13 +2014,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Assign stable IDs to every ID-less message in the current list
             # so that REMOVE_ALL_MESSAGES + rewrite produces a fully identified
             # history that survives checkpoint replay without duplicates.
-            stable: list[AnyMessage] = [
-                (m.model_copy(update={"id": str(uuid.uuid4())}) if m.id is None else m)
-                for m in messages[:-1]
-            ] + [tagged]
-            state_command = Command(
-                update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *stable]}
-            )
+            stable: list[AnyMessage] = [(m.model_copy(update={"id": str(uuid.uuid4())}) if m.id is None else m) for m in messages[:-1]] + [tagged]
+            state_command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *stable]})
             messages = stable
 
         processed: list[AnyMessage] = []

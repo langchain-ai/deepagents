@@ -407,7 +407,13 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         """
 
     def ls(self, path: str) -> LsResult:
-        """Structured listing with file metadata using os.scandir."""
+        """Structured listing with file metadata using os.scandir.
+
+        Returns ``LsResult`` with ``entries`` populated on success. On failure
+        (path missing or unreadable), ``error`` is set so callers can
+        distinguish an empty directory from a non-existent or unreadable path,
+        matching the behaviour of ``read``, ``grep`` and ``glob``.
+        """
         path_b64 = base64.b64encode(path.encode("utf-8")).decode("ascii")
         cmd = f"""python3 -c "
 import os
@@ -425,9 +431,11 @@ try:
             }}
             print(json.dumps(result))
 except FileNotFoundError:
-    pass
+    print(json.dumps({{'error': 'path_not_found'}}))
 except PermissionError:
-    pass
+    print(json.dumps({{'error': 'permission_denied'}}))
+except NotADirectoryError:
+    print(json.dumps({{'error': 'not_a_directory'}}))
 " 2>/dev/null"""
 
         result = self.execute(cmd)
@@ -438,9 +446,19 @@ except PermissionError:
                 continue
             try:
                 data = json.loads(line)
-                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
             except json.JSONDecodeError:
                 continue
+            if isinstance(data, dict) and "error" in data:
+                code = data["error"]
+                if code == "path_not_found":
+                    return LsResult(error=f"Path '{path}': path_not_found")
+                if code == "permission_denied":
+                    return LsResult(error=f"Path '{path}': permission_denied")
+                if code == "not_a_directory":
+                    return LsResult(error=f"Path '{path}': not_a_directory")
+                return LsResult(error=f"Path '{path}': {code}")
+            if isinstance(data, dict) and "path" in data and "is_dir" in data:
+                file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
 
         return LsResult(entries=file_infos)
 

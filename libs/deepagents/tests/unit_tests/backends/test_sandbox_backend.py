@@ -243,6 +243,90 @@ def test_read_handles_non_dict_json_output() -> None:
     assert "unexpected server response" in result.error
 
 
+def test_ls_returns_entries_on_success() -> None:
+    """ls() should return entries when the directory exists."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "\n".join(
+        [
+            json.dumps({"path": "/a/foo.txt", "is_dir": False}),
+            json.dumps({"path": "/a/bar", "is_dir": True}),
+        ]
+    )
+
+    result = sandbox.ls("/a")
+
+    assert result.error is None
+    assert result.entries == [
+        {"path": "/a/foo.txt", "is_dir": False},
+        {"path": "/a/bar", "is_dir": True},
+    ]
+
+
+def test_ls_returns_error_for_missing_path() -> None:
+    """ls() must surface path_not_found, not silently return empty entries."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "path_not_found"})
+
+    result = sandbox.ls("/does/not/exist")
+
+    assert result.error is not None
+    assert "path_not_found" in result.error
+    assert "/does/not/exist" in result.error
+
+
+def test_ls_returns_error_for_permission_denied() -> None:
+    """ls() must surface permission_denied for unreadable directories."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "permission_denied"})
+
+    result = sandbox.ls("/locked")
+
+    assert result.error is not None
+    assert "permission_denied" in result.error
+
+
+def test_ls_returns_error_for_not_a_directory() -> None:
+    """ls() on a regular file path must surface not_a_directory."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": "not_a_directory"})
+
+    result = sandbox.ls("/some/file.txt")
+
+    assert result.error is not None
+    assert "not_a_directory" in result.error
+
+
+def test_ls_empty_directory_has_no_error() -> None:
+    """A genuinely empty directory should not set an error."""
+    sandbox = MockSandbox()
+    sandbox._next_output = ""
+
+    result = sandbox.ls("/empty")
+
+    assert result.error is None
+    assert result.entries == []
+
+
+def test_ls_inline_script_emits_error_markers() -> None:
+    """End-to-end check: the inline ls script must emit error markers when run."""
+    sandbox = MockSandbox()
+    sandbox.ls("/definitely/does/not/exist/xyz_abc")
+    command = sandbox.last_command
+    assert command is not None
+    # Extract and exercise the inline python script via a real subprocess.
+    m = re.search(r"python3 -c \"(.+)\" 2>/dev/null", command, re.DOTALL)
+    assert m is not None, command
+    script = m.group(1)
+    proc = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert payload == {"error": "path_not_found"}
+
+
 def test_read_allows_truncated_paginated_output() -> None:
     """Test that read() accepts truncated paginated content returned by the server."""
     sandbox = MockSandbox()

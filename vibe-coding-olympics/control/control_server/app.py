@@ -2281,6 +2281,12 @@ _OVERLAY_HTML = """<!doctype html>
     text-transform: uppercase;
     white-space: nowrap;
   }
+  .pane-label.right {
+    left: auto;
+    right: 0;
+    border-right: 0;
+    border-left: var(--line) solid var(--ink);
+  }
   #coding-view[data-focus="1"] .pane-label {
     background: linear-gradient(180deg, var(--paper), var(--soft-blue));
   }
@@ -2558,7 +2564,9 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="pane focus-website">
         <div class="pane-label" id="focus-preview-label">Live Preview</div>
       </div>
-      <div class="pane focus-terminal"></div>
+      <div class="pane focus-terminal">
+        <div class="pane-label right" id="focus-code-label">Deep Agents Code</div>
+      </div>
     </div>
   </section>
 

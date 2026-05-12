@@ -2038,7 +2038,10 @@ _OVERLAY_HTML = """<!doctype html>
   .split-shell {
     isolation: isolate;
   }
-  .focus-shell { display: none; }
+  .focus-shell {
+    display: none;
+    isolation: isolate;
+  }
   #coding-view.focus .split-shell { display: none; }
   #coding-view.focus .focus-shell { display: block; }
   .gradient-left {
@@ -2337,9 +2340,45 @@ _OVERLAY_HTML = """<!doctype html>
     top: 0;
     height: 10.5%;
     border-bottom: var(--line) solid var(--ink);
+    z-index: 1;
   }
   #coding-view[data-focus="1"] .focus-top { background: linear-gradient(90deg, var(--blue-a), var(--blue-b), var(--paper)); }
   #coding-view[data-focus="2"] .focus-top { background: linear-gradient(90deg, var(--pink-a), var(--pink-b), var(--paper)); }
+  .focus-bg {
+    position: absolute;
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
+    pointer-events: none;
+    z-index: 1;
+  }
+  #coding-view[data-focus="1"] .focus-bg {
+    background-image: linear-gradient(90deg, var(--blue-a) 0%, var(--blue-b) 45%, var(--paper) 100%);
+  }
+  #coding-view[data-focus="2"] .focus-bg {
+    background-image: linear-gradient(90deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+  }
+  .focus-bg.header-gap {
+    left: 0;
+    right: 0;
+    top: 10.5%;
+    height: 8.3%;
+  }
+  .focus-bg.outer-left,
+  .focus-bg.middle-gap,
+  .focus-bg.outer-right {
+    top: 18.8%;
+    bottom: 0;
+  }
+  .focus-bg.outer-left { left: 0; width: 2.2%; }
+  .focus-bg.middle-gap { left: 62.7%; width: 2.1%; }
+  .focus-bg.outer-right { right: 0; width: 2.2%; }
+  .focus-bg.bottom-website,
+  .focus-bg.bottom-terminal {
+    top: 97%;
+    bottom: 0;
+  }
+  .focus-bg.bottom-website { left: 2.2%; width: 60.5%; }
+  .focus-bg.bottom-terminal { right: 2.2%; width: 33%; }
   .focus-name {
     position: absolute;
     left: 2.2%;
@@ -2351,18 +2390,21 @@ _OVERLAY_HTML = """<!doctype html>
     font-size: min(1.9vw, 3.38vh);
     font-weight: 500;
     text-transform: uppercase;
+    z-index: 4;
   }
   .focus-website {
     left: 2.2%;
     top: 18.8%;
     bottom: 3%;
     width: 60.5%;
+    z-index: 2;
   }
   .focus-terminal {
     right: 2.2%;
     top: 18.8%;
     bottom: 3%;
     width: 33%;
+    z-index: 2;
   }
   .focus-prompt {
     left: 2.2%;
@@ -2521,6 +2563,12 @@ _OVERLAY_HTML = """<!doctype html>
 
     <div class="stage focus-shell">
       <div class="focus-top"></div>
+      <div class="focus-bg header-gap"></div>
+      <div class="focus-bg outer-left"></div>
+      <div class="focus-bg middle-gap"></div>
+      <div class="focus-bg outer-right"></div>
+      <div class="focus-bg bottom-website"></div>
+      <div class="focus-bg bottom-terminal"></div>
       <div class="focus-name" id="focus-name">Player: Player 1</div>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="chip timer-chip" id="focus-clock">--:--</div>

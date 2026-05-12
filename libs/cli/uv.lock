@@ -8,9 +8,6 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.8.0"
@@ -2879,7 +2876,7 @@ wheels = [
 
 [[package]]
 name = "langchain-modal"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "../partners/modal" }
 dependencies = [
     { name = "deepagents" },

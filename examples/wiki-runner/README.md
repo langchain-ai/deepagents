@@ -30,7 +30,7 @@ Each run syncs updates to Context Hub so teammates can review changes, comment, 
 
 `init` creates this top-level layout in the wiki repo:
 
-- `AGENTS.md` - wiki schema/config and workflow rules the LLM follows for ingest/query/lint. `init` creates it when missing and preserves existing edits on re-runs.
+- `AGENTS.md` - schema and workflow rules the LLM follows for ingest/query/lint.
 - `raw/` - immutable source files dropped in for ingest (articles, notes, datasets).
 - `wiki/` - LLM-maintained knowledge pages (entities, concepts, summaries, syntheses).
 - `wiki/index.md` - content-oriented catalog for wiki navigation and retrieval: categorized page links with one-line summaries and optional metadata (for example date/source count). Query flows read this first.

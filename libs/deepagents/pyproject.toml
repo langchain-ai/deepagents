@@ -28,6 +28,9 @@ dependencies = [
     "wcmatch",
 ]
 
+[project.optional-dependencies]
+chroma = ["chromadb>=0.4.0"]
+
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"

@@ -6,6 +6,7 @@ from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
+from deepagents.backends.chroma import ChromaVectorBackend
 from deepagents.backends.store import (
     BackendContext,
     NamespaceFactory,
@@ -23,4 +24,5 @@ __all__ = [
     "NamespaceFactory",
     "StateBackend",
     "StoreBackend",
+    "ChromaVectorBackend",
 ]

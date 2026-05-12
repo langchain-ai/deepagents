@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import shutil
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,15 @@ _FRONTEND_PLACEHOLDER_RE = re.compile(
     re.DOTALL,
 )
 """Matches the placeholder script we injected into index.html at build time."""
+
+
+def _resolve_deepagents_version() -> str:
+    """Resolve the installed `deepagents` version for bundle pinning."""
+    try:
+        return metadata.version("deepagents")
+    except metadata.PackageNotFoundError as exc:
+        msg = "Failed to resolve installed deepagents version for deploy bundle"
+        raise RuntimeError(msg) from exc
 
 
 def _build_runtime_config_json(config: DeployConfig) -> str:
@@ -222,15 +232,6 @@ def bundle(
     )
     logger.info("Generated deploy_graph.py")
 
-    # 5b. Vendor ContextHubBackend alongside the graph when hub-backed. The
-    # deployed bundle cannot import `deepagents_cli` (it is a dev-time CLI,
-    # not a cloud runtime dependency), so we ship a copy of the module and
-    # the generated graph imports it locally.
-    if config.memories.backend == "hub":
-        src = Path(__file__).parent / "context_hub.py"
-        shutil.copy2(src, build_dir / "_context_hub.py")
-        logger.info("Vendored %s → _context_hub.py", src.name)
-
     # 6. Generate auth.py from the [auth] provider, if any. Skipped
     # entirely when [auth] is omitted — in that case LangSmith Cloud's
     # default x-api-key auth applies. Validation guarantees [auth] is
@@ -276,9 +277,11 @@ def bundle(
         if (sa.root / MCP_FILENAME).is_file():
             has_subagent_mcp = True
 
+    deepagents_version = _resolve_deepagents_version()
     (build_dir / "pyproject.toml").write_text(
         _render_pyproject(
             config,
+            deepagents_version=deepagents_version,
             mcp_present=mcp_present,
             subagent_model_providers=subagent_model_providers,
             has_subagent_mcp=has_subagent_mcp,
@@ -465,6 +468,7 @@ def _render_langgraph_json(
 def _render_pyproject(
     config: DeployConfig,
     *,
+    deepagents_version: str | None = None,
     mcp_present: bool,
     subagent_model_providers: list[str] | None = None,
     has_subagent_mcp: bool = False,
@@ -503,16 +507,12 @@ def _render_pyproject(
         if auth_pkg:
             deps.append(auth_pkg)
 
-    # ContextHubBackend uses AgentContext/FileEntry from langsmith 0.7.35+.
-    # deepagents floors langsmith at a lower version, so pin explicitly when
-    # the deployed graph needs the hub APIs.
-    if config.memories.backend == "hub":
-        deps.append("langsmith>=0.7.35")
-
     extra_deps_lines = "".join(f'    "{dep}",\n' for dep in deps)
+    resolved_deepagents_version = deepagents_version or _resolve_deepagents_version()
 
     return PYPROJECT_TEMPLATE.format(
         agent_name=config.agent.name,
+        deepagents_version=resolved_deepagents_version,
         extra_deps=extra_deps_lines,
     )
 

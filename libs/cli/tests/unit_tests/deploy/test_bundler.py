@@ -131,6 +131,15 @@ class TestRenderLanggraphJson:
 
 
 class TestRenderPyproject:
+    def test_explicit_deepagents_pin(self) -> None:
+        config = _minimal_config(model="bare-model")
+        result = _render_pyproject(
+            config,
+            deepagents_version="9.9.9",
+            mcp_present=False,
+        )
+        assert '"deepagents==9.9.9"' in result
+
     def test_no_extra_deps(self) -> None:
         # Use a model without a provider prefix so no provider dep is inferred.
         config = _minimal_config(model="bare-model")
@@ -348,7 +357,7 @@ class TestRenderDeployGraph:
         result = _render_deploy_graph(config, mcp_present=False)
         assert "MEMORIES_BACKEND = 'hub'" in result
         assert "MEMORIES_HUB_IDENTIFIER = '-/hubtest'" in result
-        assert "from _context_hub import ContextHubBackend" in result
+        assert "from deepagents.backends.context_hub import ContextHubBackend" in result
         assert "_seed_hub_if_needed" in result
 
     def test_hub_backend_honors_identifier_override(self) -> None:
@@ -408,7 +417,7 @@ class TestBundle:
         with pytest.raises(ValueError, match="Unknown sandbox provider"):
             bundle(config, project, build)
 
-    def test_hub_bundle_vendors_context_hub(self, tmp_path: Path) -> None:
+    def test_hub_bundle_does_not_vendor_context_hub(self, tmp_path: Path) -> None:
         project = _minimal_project(tmp_path / "project")
         build = tmp_path / "build"
         config = DeployConfig(
@@ -416,12 +425,12 @@ class TestBundle:
             memories=MemoriesConfig(backend="hub"),
         )
         bundle(config, project, build)
-        vendored = build / "_context_hub.py"
-        assert vendored.exists()
-        # The vendored file must contain the class the graph imports.
-        assert "class ContextHubBackend" in vendored.read_text(encoding="utf-8")
-        # Generated graph should syntactically compile.
+        assert not (build / "_context_hub.py").exists()
         graph_py = (build / "deploy_graph.py").read_text(encoding="utf-8")
+        expected_import = (
+            "from deepagents.backends.context_hub import ContextHubBackend"
+        )
+        assert expected_import in graph_py
         compile(graph_py, "<hub_deploy_graph>", "exec")
 
     def test_store_bundle_does_not_vendor_context_hub(self, tmp_path: Path) -> None:
@@ -434,7 +443,13 @@ class TestBundle:
         bundle(config, project, build)
         assert not (build / "_context_hub.py").exists()
 
-    def test_hub_bundle_adds_langsmith_dep(self, tmp_path: Path) -> None:
+    def test_hub_bundle_uses_resolved_deepagents_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_cli.deploy.bundler._resolve_deepagents_version",
+            lambda: "9.9.9",
+        )
         project = _minimal_project(tmp_path / "project")
         build = tmp_path / "build"
         config = DeployConfig(
@@ -443,7 +458,8 @@ class TestBundle:
         )
         bundle(config, project, build)
         pyproject = (build / "pyproject.toml").read_text(encoding="utf-8")
-        assert "langsmith>=0.7.35" in pyproject
+        assert '"deepagents==9.9.9"' in pyproject
+        assert "langsmith>=0.7.35" not in pyproject
 
     def test_bundle_with_subagents(self, tmp_path: Path) -> None:
         """Full bundle with sync subagents produces valid artifacts."""

@@ -1,10 +1,10 @@
 """Integration tests for the hub-backed `deepagents deploy` bundle.
 
 These tests scaffold a tiny project, bundle it with
-``[memories].backend = "hub"``, load the vendored ContextHubBackend from
-the bundle directory, and exercise the seed flow against a real LangSmith
-Hub. Each test provisions a unique throwaway agent repo and deletes it on
-teardown so the suite is safe to run against a real tenant.
+``[memories].backend = "hub"``, and exercise the seed flow against a real
+LangSmith Hub via the SDK `ContextHubBackend`. Each test provisions a unique
+throwaway agent repo and deletes it on teardown so the suite is safe to run
+against a real tenant.
 
 Skipped unless ``LANGSMITH_API_KEY`` is set.
 """
@@ -12,11 +12,9 @@ Skipped unless ``LANGSMITH_API_KEY`` is set.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 import logging
 import os
-import sys
 import uuid
 from typing import TYPE_CHECKING
 
@@ -32,7 +30,6 @@ from deepagents_cli.deploy.config import (
 )
 
 if TYPE_CHECKING:
-    import types
     from collections.abc import Iterator
     from pathlib import Path
 
@@ -75,23 +72,12 @@ def _scaffold_project(project: Path) -> None:
     )
 
 
-def _load_vendored_hub_backend(build_dir: Path) -> types.ModuleType:
-    """Import the bundle's vendored ContextHubBackend module."""
-    sys.path.insert(0, str(build_dir))
-    try:
-        # Fresh import so we pick up the copy in this specific build dir.
-        if "_context_hub" in sys.modules:
-            del sys.modules["_context_hub"]
-        return importlib.import_module("_context_hub")
-    finally:
-        sys.path.remove(str(build_dir))
-
-
 def test_hub_bundle_seeds_through_composite(
     tmp_path: Path, hub_identifier: str
 ) -> None:
     """End-to-end: bundle a hub-backed project and seed it into a real repo."""
     from deepagents.backends.composite import CompositeBackend
+    from deepagents.backends.context_hub import ContextHubBackend
     from deepagents.backends.state import StateBackend
     from langsmith import Client
 
@@ -105,16 +91,15 @@ def test_hub_bundle_seeds_through_composite(
     )
     bundle(config, project, build)
 
-    # Bundle-level assertions: the vendored module and the hub wiring land.
-    assert (build / "_context_hub.py").exists()
+    # Bundle-level assertions: no vendored module, SDK import in graph.
+    assert not (build / "_context_hub.py").exists()
     graph_src = (build / "deploy_graph.py").read_text(encoding="utf-8")
     assert f"MEMORIES_HUB_IDENTIFIER = '{hub_identifier}'" in graph_src
-    assert "from _context_hub import ContextHubBackend" in graph_src
+    assert "from deepagents.backends.context_hub import ContextHubBackend" in graph_src
 
     # Build a composite matching the one the generated graph builds, and
     # exercise the seed path end-to-end against a real hub.
-    ctx_hub_mod = _load_vendored_hub_backend(build)
-    hub_backend = ctx_hub_mod.ContextHubBackend(identifier=hub_identifier)
+    hub_backend = ContextHubBackend(identifier=hub_identifier)
     composite = CompositeBackend(
         default=StateBackend(),
         routes={"/memories/": hub_backend},
@@ -140,7 +125,7 @@ def test_hub_bundle_seeds_through_composite(
     assert "skills/echo/SKILL.md" in pulled_paths
 
     # Reads through a brand-new backend should round-trip the seeded content.
-    fresh_backend = ctx_hub_mod.ContextHubBackend(identifier=hub_identifier)
+    fresh_backend = ContextHubBackend(identifier=hub_identifier)
     read = fresh_backend.read("/AGENTS.md")
     assert read.error is None
     assert read.file_data is not None
@@ -176,7 +161,7 @@ def test_seed_hub_repo_creates_repo_before_invocation(
 
 
 def test_store_bundle_omits_vendored_hub(tmp_path: Path) -> None:
-    """Regression: default store mode must not ship the hub module."""
+    """Regression: store mode must not ship a vendored hub module."""
     project = tmp_path / "project"
     _scaffold_project(project)
     build = tmp_path / "build"

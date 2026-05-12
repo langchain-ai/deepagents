@@ -957,8 +957,7 @@ def _build_backend_factory(assistant_id: str, user_id: str | None = None):
         sandbox_backend = _get_or_create_sandbox(cache_key)
 
         if MEMORIES_BACKEND == "hub":
-            # Vendored alongside the generated graph by the bundler.
-            from _context_hub import ContextHubBackend
+            from deepagents.backends.context_hub import ContextHubBackend
 
             routes = {{
                 MEMORIES_PREFIX: ContextHubBackend(identifier=MEMORIES_HUB_IDENTIFIER),
@@ -1101,7 +1100,7 @@ name = {agent_name!r}
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "deepagents==0.5.3",
+    "deepagents=={deepagents_version}",
 {extra_deps}]
 
 [tool.setuptools]

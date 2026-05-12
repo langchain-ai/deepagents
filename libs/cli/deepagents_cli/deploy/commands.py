@@ -459,7 +459,7 @@ def _seed_hub_repo(config: DeployConfig, build_dir: Path) -> None:
     """
     import json
 
-    from deepagents_cli.deploy.context_hub import ContextHubBackend
+    from deepagents.backends.context_hub import ContextHubBackend
 
     if config.memories.backend != "hub":
         return

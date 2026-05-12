@@ -4,9 +4,9 @@ Imports are intentionally limited to lightweight parser/config helpers so
 `from deepagents_cli.deploy import setup_deploy_parsers` (used by `--help`)
 does not pull in the heavy `deepagents` backend stack. Heavyweight symbols
 such as `ContextHubBackend` are deliberately not re-exported here; import
-them directly from their submodule when needed:
+them directly from `deepagents` when needed:
 
-    from deepagents_cli.deploy.context_hub import ContextHubBackend
+    from deepagents.backends.context_hub import ContextHubBackend
 """
 
 from deepagents_cli.deploy.commands import (

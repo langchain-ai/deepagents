@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import lint as lint_helpers
 import wiki_helpers as helpers
 import query as query_helpers
 
@@ -727,6 +728,127 @@ def test_run_pull_mode_skips_push_when_ingest_cancelled(tmp_path: Path) -> None:
 
     assert result.answer and "canceled" in result.answer.lower()
     assert not any(call[:2] == ("hub", "push") for call in calls)
+
+
+def test_build_lint_prompt_covers_health_checks_and_web_policy() -> None:
+    """Lint prompt should include required checks and web-fallback rules."""
+    prompt = lint_helpers.build_lint_prompt("Ada", "Focus on source freshness.")
+
+    assert "single-pass lint reconciliation" in prompt
+    assert "Reconcile contradictions across wiki pages" in prompt
+    assert "stale claims superseded by newer evidence" in prompt
+    assert "orphan pages with no inbound links" in prompt
+    assert "missing cross-references" in prompt
+    assert "important concept lacks a dedicated page" in prompt
+    assert "Use model-native web browsing/search only if available" in prompt
+    assert "If web access is unavailable" in prompt
+    assert "do not create a separate lint report directory" in prompt
+    assert "## Reconciled Changes" in prompt
+    assert "## Remaining Gaps" in prompt
+    assert "## Suggested Next Questions and Sources" in prompt
+
+
+def test_run_lint_workspace_returns_summary_and_updates_index_log(tmp_path: Path) -> None:
+    """Lint should run as apply-only, refresh index, and append a rich log detail."""
+    workspace_dir = tmp_path / "workspace"
+    wiki_dir = workspace_dir / "wiki"
+    wiki_dir.mkdir(parents=True)
+    (wiki_dir / "index.md").write_text("# Ada Wiki\n\n## Pages\n", encoding="utf-8")
+    (wiki_dir / "history.md").write_text("# History\n", encoding="utf-8")
+    (workspace_dir / "log.md").write_text("# Change Log\n", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def fake_apply(*_args: object) -> str:
+        calls.append("apply")
+        return (
+            "## Reconciled Changes\n- Fixed contradiction between timeline pages.\n\n"
+            "## Remaining Gaps\n- Need external confirmation for publication year.\n\n"
+            "## Suggested Next Questions and Sources\n- Look for primary publication records."
+        )
+
+    deps = _make_deps(
+        run_langsmith_cli=lambda args: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        ),
+        run_agent_mode=fake_apply,
+    )
+
+    config = helpers.RunnerConfig(
+        mode="lint",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "unused",
+        sources=(),
+        note="Focus on contradictions.",
+        question=None,
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    summary = lint_helpers.run_lint_workspace(config, workspace_dir, deps)
+
+    assert calls == ["apply"]
+    assert "## Reconciled Changes" in summary
+    assert "publication year" in summary
+
+    index_text = (wiki_dir / "index.md").read_text(encoding="utf-8")
+    assert "(history.md)" in index_text
+
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    assert "lint | summary=" in log_text
+    assert "Fixed contradiction between timeline pages." in log_text
+
+    assert not (wiki_dir / "lint").exists()
+
+
+def test_run_pull_mode_lint_returns_summary_and_pushes(tmp_path: Path) -> None:
+    """Lint mode should return summary text and still push updates."""
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(args))
+        if args[:2] == ["hub", "pull"]:
+            workspace = Path(args[args.index("--dir") + 1])
+            (workspace / "raw").mkdir(parents=True, exist_ok=True)
+            wiki_dir = workspace / "wiki"
+            wiki_dir.mkdir(parents=True, exist_ok=True)
+            (wiki_dir / "index.md").write_text("# Ada Wiki\n", encoding="utf-8")
+            (wiki_dir / "history.md").write_text("# History\n", encoding="utf-8")
+            (workspace / "log.md").write_text("# Change Log\n", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    deps = _make_deps(
+        run_langsmith_cli=fake_run_langsmith_cli,
+        run_agent_mode=lambda *_args: (
+            "## Reconciled Changes\n- Added missing backlinks.\n\n"
+            "## Remaining Gaps\n- Need stronger citation for milestone date.\n\n"
+            "## Suggested Next Questions and Sources\n- Check primary archives."
+        ),
+    )
+
+    config = helpers.RunnerConfig(
+        mode="lint",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "unused",
+        sources=(),
+        note=None,
+        question=None,
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    result = helpers._run_pull_mode(config, deps)
+
+    assert "## Reconciled Changes" in (result.answer or "")
+    assert any(call[:2] == ("hub", "push") for call in calls)
 
 
 def test_build_query_prompt_prefers_query_pages_for_discovery() -> None:

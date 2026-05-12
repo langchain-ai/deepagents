@@ -553,22 +553,6 @@ def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
     _safe_write_text(log_path, entry, append=True)
 
 
-def _build_lint_prompt(topic: str, note: str | None) -> str:
-    """Build the lint prompt for wiki consistency checks."""
-    note_text = note or "(none)"
-    return (
-        f"Run a full consistency lint pass for the '{topic}' wiki under `/wiki/`.\n\n"
-        "Required checks:\n"
-        "- Fix broken links, stale references, and structural inconsistencies.\n"
-        "- Normalize duplicated concepts into one canonical page where appropriate.\n"
-        "- Ensure `/wiki/index.md` references all wiki pages.\n"
-        "- Ensure major claims remain evidence-grounded and uncertainty is explicit.\n"
-        "- Append one lint entry summarizing fixes to `/log.md`.\n"
-        "- Never write to `/raw/`.\n\n"
-        f"Operator note: {note_text}\n"
-    )
-
-
 def _permissions() -> list[FilesystemPermission]:
     """Define filesystem write policy for wiki operations."""
     return [
@@ -773,16 +757,6 @@ def _run_ingest_workspace(
     return run_ingest_workspace(config, workspace_dir, deps)
 
 
-def _run_lint_workspace(
-    config: RunnerConfig, workspace_dir: Path, deps: CliDeps
-) -> None:
-    """Run lint mode to improve wiki consistency and links."""
-    prompt = _build_lint_prompt(config.topic, config.note)
-    deps.run_agent_mode(workspace_dir, config.topic, prompt, config.model)
-    _refresh_index(config.topic, workspace_dir)
-    _append_log_entry(workspace_dir, "lint", "lint pass")
-
-
 def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Pull a hub repo, run the selected mode, and push updates."""
     hub_identifier = _hub_identifier(config.owner, config.repo)
@@ -815,8 +789,9 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
             answer = query_result.answer
             should_push = query_result.should_push
         else:
-            _run_lint_workspace(config, workspace_dir, deps)
-            answer = None
+            from lint import run_lint_workspace
+
+            answer = run_lint_workspace(config, workspace_dir, deps)
             should_push = True
 
         if should_push:

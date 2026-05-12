@@ -10,6 +10,7 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 - `init.py` - `init` mode workflow and internal-source enforcement
 - `ingest.py` - `ingest` mode source expansion + review/apply flow
 - `query.py` - `query` mode analysis + optional durable filing flow
+- `lint.py` - `lint` mode health-check reconciliation flow
 - `README.md` - setup and usage
 - `pyproject.toml` - example-local dependency config
 
@@ -111,3 +112,11 @@ Batch ingest is the default. A single run can process multiple files and directo
 
 1. Analysis phase (read-only): the model reads `wiki/index.md`, then (when helpful) checks prior `wiki/query/*.md` pages first for discovery/routing, expands into canonical wiki pages for grounding, answers with citations, and decides whether the result should be filed for future reuse. Query pages are treated as routing hints rather than primary evidence.
 2. Filing phase (write, conditional): if the answer is durable, the runner files it into `wiki/query/<question-slug>.md`, refreshes `wiki/index.md`, appends a query entry to `log.md`, and pushes.
+
+## Lint workflow
+
+`lint` is single-pass and applies immediately:
+
+1. Health-check phase (apply): the model reconciles contradictions, stale/superseded claims, orphan pages, missing cross-references, and key concept coverage directly in `/wiki/` (creating new canonical pages when needed).
+2. Gap reporting phase (in response): the model returns a concise summary with reconciled changes, remaining gaps, and suggested next questions/sources.
+3. The runner refreshes `wiki/index.md`, appends a lint entry to `log.md`, and pushes.

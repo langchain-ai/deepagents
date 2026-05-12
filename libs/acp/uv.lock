@@ -8,9 +8,6 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.9.0"
@@ -477,7 +474,7 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.6"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },

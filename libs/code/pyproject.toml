@@ -7,7 +7,7 @@ name = "deepagents-code"
 description = "Reserved package name for Deep Agents Code."
 license = { text = "MIT" }
 readme = "README.md"
-version = "0.0.1"
+version = "0.1.0"
 requires-python = ">=3.11,<4.0"
 keywords = ["agents", "ai", "deepagents", "code"]
 classifiers = [

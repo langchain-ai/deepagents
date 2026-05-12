@@ -14,21 +14,15 @@ from __future__ import annotations
 
 import atexit
 import logging
-import os
 import pathlib
 import sys
 import threading
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from deepagents_cli._env_vars import (
-    FORCE_TERMINAL_PROGRESS,
-    NO_TERMINAL_ESCAPE,
-    is_env_truthy,
-)
+from deepagents_cli._env_vars import NO_TERMINAL_ESCAPE, is_env_truthy
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from typing import TextIO
 
 logger = logging.getLogger(__name__)
@@ -65,24 +59,6 @@ class TerminalProgressState(StrEnum):
 def _is_disabled() -> bool:
     """Return whether terminal-escape output is opt-out disabled."""
     return is_env_truthy(NO_TERMINAL_ESCAPE)
-
-
-def _terminal_identity_supports_progress(env: Mapping[str, str]) -> bool:
-    """Return whether `env` identifies a terminal with OSC 9;4 support."""
-    return bool(env.get("WT_SESSION", "").strip())
-
-
-def _terminal_progress_supported() -> bool:
-    """Return whether OSC 9;4 progress writes should be emitted.
-
-    OSC 9 is terminal-specific: Windows Terminal uses `9;4` for progress,
-    while iTerm2 interprets `OSC 9;...` as notifications. Keep detection
-    conservative and allow users to force-enable progress for terminals they
-    know are compatible.
-    """
-    return is_env_truthy(
-        FORCE_TERMINAL_PROGRESS
-    ) or _terminal_identity_supports_progress(os.environ)
 
 
 def _open_tty() -> TextIO | None:
@@ -211,8 +187,9 @@ def set_terminal_progress(
 ) -> bool:
     """Set the terminal's `OSC 9;4` progress indicator.
 
-    Only emits on terminals known to support `OSC 9;4`, or when explicitly
-    force-enabled. Some terminals repurpose `OSC 9` for notifications.
+    Fires unconditionally — terminals that don't recognize `OSC 9;4` silently
+    ignore the sequence. Set `DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE=1` to opt out
+    entirely.
 
     Args:
         progress: Percentage `0-100` for determinate states. Ignored for
@@ -223,9 +200,6 @@ def set_terminal_progress(
         `True` if the sequence was written.
     """
     global _atexit_registered, _progress_active  # noqa: PLW0603
-
-    if not (_progress_active or _terminal_progress_supported()):
-        return False
 
     value = _validate_progress(progress, state)
     payload = f"{state.value};{value}"

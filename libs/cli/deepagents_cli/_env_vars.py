@@ -89,9 +89,6 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH"
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CLI_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
 
-FORCE_TERMINAL_PROGRESS = "DEEPAGENTS_CLI_FORCE_TERMINAL_PROGRESS"
-"""Force-enable OSC 9;4 terminal progress writes for unrecognized terminals."""
-
 HIDE_CWD = "DEEPAGENTS_CLI_HIDE_CWD"
 """Hide local path displays in the TUI footer and startup splash when enabled."""
 

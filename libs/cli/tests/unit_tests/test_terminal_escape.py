@@ -24,15 +24,7 @@ def _reset_active_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset the module-level progress sentinel between tests."""
     monkeypatch.setattr(terminal_escape, "_progress_active", False)
     monkeypatch.setattr(terminal_escape, "_atexit_registered", False)
-    monkeypatch.delenv(terminal_escape.FORCE_TERMINAL_PROGRESS, raising=False)
     monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
-    monkeypatch.delenv("WT_SESSION", raising=False)
-    monkeypatch.delenv("TERM_PROGRAM", raising=False)
-
-
-def _enable_progress(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mark the test environment as OSC 9;4 compatible."""
-    monkeypatch.setenv("WT_SESSION", "test-session")
 
 
 class _FakeTTY(io.StringIO):
@@ -204,7 +196,6 @@ class TestSetTerminalProgress:
     def test_normal_progress_writes_state_and_percent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable_progress(monkeypatch)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         assert set_terminal_progress(75, state=TerminalProgressState.NORMAL) is True
@@ -213,32 +204,23 @@ class TestSetTerminalProgress:
     def test_indeterminate_emits_zero_progress(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable_progress(monkeypatch)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
         assert fake.getvalue() == "\x1b]9;4;3;0\a"
 
     def test_clear_emits_clear_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _enable_progress(monkeypatch)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         assert clear_terminal_progress() is True
         assert fake.getvalue() == "\x1b]9;4;0;0\a"
 
-    def test_iterm_does_not_emit_progress_by_default(
+    def test_fires_unconditionally_regardless_of_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """No terminal allowlist — unsupported terminals ignore the sequence."""
         monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
-        fake = _FakeTTY()
-        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
-        assert set_terminal_progress(state=TerminalProgressState.INDETERMINATE) is False
-        assert fake.getvalue() == ""
-
-    def test_force_progress_env_allows_unrecognized_terminal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv(terminal_escape.FORCE_TERMINAL_PROGRESS, "1")
+        monkeypatch.delenv("WT_SESSION", raising=False)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         assert set_terminal_progress(state=TerminalProgressState.INDETERMINATE) is True
@@ -247,7 +229,6 @@ class TestSetTerminalProgress:
     def test_active_sentinel_set_and_cleared(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable_progress(monkeypatch)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         registered: list[object] = []
@@ -259,7 +240,6 @@ class TestSetTerminalProgress:
         assert terminal_escape._progress_active is False
 
     def test_atexit_registered_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _enable_progress(monkeypatch)
         fake = _FakeTTY()
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
         registered: list[object] = []
@@ -273,7 +253,6 @@ class TestSetTerminalProgress:
     def test_failed_write_does_not_register_atexit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _enable_progress(monkeypatch)
         monkeypatch.setattr(terminal_escape, "_open_tty", lambda: None)
         monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: False)
         registered: list[object] = []

@@ -14,12 +14,14 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
 from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 from pydantic import Field
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
@@ -3578,3 +3580,50 @@ class TestDeltaChannels:
         state = agent.get_state(config)
         files = state.values.get("files", {})
         assert any("hello.txt" in k for k in files)
+
+
+def test_tool_command_parent_handoff_preserved() -> None:
+    # A tool returning Command(goto=..., graph=Command.PARENT) must propagate routing
+    # through FilesystemMiddleware so multi-agent handoffs reach the sibling node.
+    @tool
+    def transfer_to_b(runtime: ToolRuntime) -> Command:
+        """Transfer to agent_b."""
+        return Command(
+            goto="agent_b",
+            graph=Command.PARENT,
+            update={
+                "messages": [
+                    ToolMessage(content="transferred", tool_call_id=runtime.tool_call_id),
+                ],
+            },
+        )
+
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_xfer", "name": "transfer_to_b", "args": {}}],
+                ),
+            ]
+        )
+    )
+    agent_a = create_deep_agent(model=fake_model, tools=[transfer_to_b])
+
+    visited: list[str] = []
+
+    def agent_b_node(_state: dict) -> dict:
+        visited.append("agent_b")
+        return {}
+
+    parent = StateGraph(dict)
+    parent.add_node("agent_a", agent_a)
+    parent.add_node("agent_b", agent_b_node)
+    parent.add_edge(START, "agent_a")
+    parent.add_edge("agent_a", END)
+    parent.add_edge("agent_b", END)
+    compiled = parent.compile()
+
+    compiled.invoke({"messages": [HumanMessage(content="hi")]})
+
+    assert visited == ["agent_b"]

@@ -241,7 +241,9 @@ class TestRunTextualCliAsyncMcp:
 
         with (
             patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
-            patch("deepagents_code.onboarding.should_run_onboarding", return_value=True),
+            patch(
+                "deepagents_code.onboarding.should_run_onboarding", return_value=True
+            ),
         ):
             await run_textual_cli_async(
                 "agent",

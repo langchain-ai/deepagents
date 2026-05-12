@@ -479,8 +479,7 @@ class AuthManagerScreen(ModalScreen[None]):
                     Content.from_markup("$msg", msg=store_warning),
                     classes="auth-manager-warning",
                 )
-            option_list = OptionList(*options, id="auth-manager-options")
-            yield option_list
+            yield OptionList(*options, id="auth-manager-options")
             yield Static(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab "
                 f"navigate {glyphs.bullet} Enter add/replace/delete "

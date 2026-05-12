@@ -373,7 +373,9 @@ class TestIsUpdateAvailable:
         assert latest == "0.0.1"
 
     def test_fetch_failure(self) -> None:
-        with patch("deepagents_code.update_check.get_latest_version", return_value=None):
+        with patch(
+            "deepagents_code.update_check.get_latest_version", return_value=None
+        ):
             available, latest = is_update_available()
 
         assert available is False
@@ -394,7 +396,9 @@ class TestIsUpdateAvailable:
         ):
             up_to_date = is_update_available()
 
-        with patch("deepagents_code.update_check.get_latest_version", return_value=None):
+        with patch(
+            "deepagents_code.update_check.get_latest_version", return_value=None
+        ):
             fetch_failed = is_update_available()
 
         assert up_to_date == (False, "1.2.3")
@@ -890,7 +894,8 @@ class TestGetSdkReleaseTime:
         iso = "2026-04-10T09:30:00Z"
         releases = {"0.5.0": [{"upload_time_iso_8601": iso}]}
         with patch(
-            "requests.get", return_value=_mock_sdk_pypi_response(releases=releases)
+            "requests.get",
+            return_value=_mock_sdk_pypi_response(releases=releases),
         ):
             assert get_sdk_release_time("0.5.0") == iso
 

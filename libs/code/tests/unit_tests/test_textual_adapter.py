@@ -197,7 +197,9 @@ class TestInterruptCleanup:
         turn_stats = SessionStats()
         config = {"configurable": {"thread_id": "t-1"}}
 
-        with patch("deepagents_code.textual_adapter.time.monotonic", return_value=101.0):
+        with patch(
+            "deepagents_code.textual_adapter.time.monotonic", return_value=101.0
+        ):
             await _handle_interrupt_cleanup(
                 adapter=adapter,
                 agent=agent,

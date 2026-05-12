@@ -708,7 +708,9 @@ class TestListSkillsBuiltIn:
                 raise OSError(msg)
             return original_list(backend=backend, source_path=source_path)
 
-        with patch("deepagents_code.skills.load.list_skills_from_backend", patched_list):
+        with patch(
+            "deepagents_code.skills.load.list_skills_from_backend", patched_list
+        ):
             skills = list_skills(
                 built_in_skills_dir=built_in_dir,
                 user_skills_dir=user_dir,

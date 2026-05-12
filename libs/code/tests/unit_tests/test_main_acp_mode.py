@@ -83,7 +83,9 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         patch(
             "deepagents_code.config.create_model", return_value=model_result
         ) as mock_create_model,
-        patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(
@@ -147,7 +149,9 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
-        patch("deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
         patch("deepagents_code.tools.fetch_url", new=fetch_tool),
         patch("deepagents_code.tools.web_search", new=search_tool),
         patch(

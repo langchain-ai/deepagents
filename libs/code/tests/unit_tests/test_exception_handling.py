@@ -33,7 +33,9 @@ class TestToolsExceptionHandling:
         """Test that web_search catches Tavily UsageLimitExceededError."""
         mock_client = MagicMock()
         mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
-        with patch("deepagents_code.tools._get_tavily_client", return_value=mock_client):
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
             result = web_search("test query")
 
         assert "error" in result
@@ -44,7 +46,9 @@ class TestToolsExceptionHandling:
         """Test that web_search catches Tavily InvalidAPIKeyError."""
         mock_client = MagicMock()
         mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
-        with patch("deepagents_code.tools._get_tavily_client", return_value=mock_client):
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
             result = web_search("test query")
 
         assert "error" in result
@@ -54,7 +58,9 @@ class TestToolsExceptionHandling:
         """Test that web_search catches Tavily BadRequestError."""
         mock_client = MagicMock()
         mock_client.search.side_effect = BadRequestError("Bad request")
-        with patch("deepagents_code.tools._get_tavily_client", return_value=mock_client):
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
             result = web_search("test query")
 
         assert "error" in result
@@ -64,7 +70,9 @@ class TestToolsExceptionHandling:
         """Test that web_search catches Tavily TimeoutError."""
         mock_client = MagicMock()
         mock_client.search.side_effect = TavilyTimeoutError(30.0)
-        with patch("deepagents_code.tools._get_tavily_client", return_value=mock_client):
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
             result = web_search("test query")
 
         assert "error" in result

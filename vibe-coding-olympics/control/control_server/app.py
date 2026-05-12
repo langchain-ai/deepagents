@@ -2035,6 +2035,9 @@ _OVERLAY_HTML = """<!doctype html>
     position: absolute;
     inset: 0;
   }
+  .split-shell {
+    isolation: isolate;
+  }
   .focus-shell { display: none; }
   #coding-view.focus .split-shell { display: none; }
   #coding-view.focus .focus-shell { display: block; }
@@ -2060,6 +2063,54 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .bottom-band.left { left: 0; width: 50%; }
   .bottom-band.right { right: 0; width: 50%; }
+  .split-bg {
+    position: absolute;
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .split-bg.left {
+    background-image: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 42%, var(--paper) 100%);
+  }
+  .split-bg.right {
+    background-image: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+  }
+  .split-bg.header-gap {
+    top: 10.5%;
+    height: 8.3%;
+    width: 50%;
+  }
+  .split-bg.header-gap.left { left: 0; }
+  .split-bg.header-gap.right { right: 0; }
+  .split-bg.outer-left,
+  .split-bg.inner-left,
+  .split-bg.inner-right,
+  .split-bg.outer-right {
+    top: 18.8%;
+    bottom: 0;
+  }
+  .split-bg.outer-left { left: 0; width: 2.2%; }
+  .split-bg.inner-left { left: 48.4%; width: 1.6%; }
+  .split-bg.inner-right { left: 50%; width: 1.6%; }
+  .split-bg.outer-right { right: 0; width: 2.2%; }
+  .split-bg.preview-terminal-gap {
+    top: 61.8%;
+    height: 5.5%;
+    width: 46.2%;
+  }
+  .split-bg.name-preview-gap {
+    top: 17.2%;
+    height: 1.6%;
+    width: 46.2%;
+  }
+  .split-bg.bottom-gap {
+    top: 97%;
+    bottom: 0;
+    width: 46.2%;
+  }
+  .split-bg.column-left { left: 2.2%; }
+  .split-bg.column-right { right: 2.2%; }
   .divider {
     position: absolute;
     left: 50%;
@@ -2067,6 +2118,7 @@ _OVERLAY_HTML = """<!doctype html>
     bottom: 0;
     width: var(--line);
     background: var(--ink);
+    z-index: 3;
   }
   .chip {
     position: absolute;
@@ -2082,6 +2134,7 @@ _OVERLAY_HTML = """<!doctype html>
     font-weight: 700;
     text-transform: uppercase;
     white-space: nowrap;
+    z-index: 4;
   }
   .event-chip {
     left: 50%;
@@ -2129,6 +2182,7 @@ _OVERLAY_HTML = """<!doctype html>
     font-size: min(1.35vw, 2.4vh);
     font-weight: 500;
     text-transform: uppercase;
+    z-index: 4;
   }
   .player-name.left {
     left: 2.2%;
@@ -2165,6 +2219,7 @@ _OVERLAY_HTML = """<!doctype html>
     border: var(--line) solid var(--ink);
     font-size: min(1.16vw, 2.06vh);
     font-weight: 500;
+    z-index: 4;
   }
   .split-prompt-strip {
     left: 34%;
@@ -2254,7 +2309,13 @@ _OVERLAY_HTML = """<!doctype html>
     color: var(--paper);
     font-size: min(2vw, 3.55vh);
   }
-  .split-player { position: absolute; top: 18.8%; bottom: 3%; width: 46.2%; }
+  .split-player {
+    position: absolute;
+    top: 18.8%;
+    bottom: 3%;
+    width: 46.2%;
+    z-index: 2;
+  }
   .split-player.left { left: 2.2%; }
   .split-player.right { right: 2.2%; }
   .split-player .preview {
@@ -2417,6 +2478,18 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="top-band right gradient-right"></div>
       <div class="bottom-band left gradient-left"></div>
       <div class="bottom-band right gradient-right"></div>
+      <div class="split-bg header-gap left"></div>
+      <div class="split-bg header-gap right"></div>
+      <div class="split-bg outer-left left"></div>
+      <div class="split-bg inner-left left"></div>
+      <div class="split-bg inner-right right"></div>
+      <div class="split-bg outer-right right"></div>
+      <div class="split-bg name-preview-gap column-left left"></div>
+      <div class="split-bg name-preview-gap column-right right"></div>
+      <div class="split-bg preview-terminal-gap column-left left"></div>
+      <div class="split-bg preview-terminal-gap column-right right"></div>
+      <div class="split-bg bottom-gap column-left left"></div>
+      <div class="split-bg bottom-gap column-right right"></div>
       <div class="divider"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
       <div class="chip event-chip split-event-chip">Deep Agents PVP</div>

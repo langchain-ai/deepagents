@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
 from pydantic import Field
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -68,7 +68,7 @@ def _assert_result_contains(content: str, expected: str) -> None:
 
 def _make_agent(
     code: str,
-    middleware: REPLMiddleware,
+    middleware: CodeInterpreterMiddleware,
     *,
     final_message: str = "done",
 ) -> Any:
@@ -90,7 +90,7 @@ async def test_quickjs_async_ptc_runs_tools_on_outer_loop() -> None:
     outer_loop_id = str(id(asyncio.get_running_loop()))
     result = await _make_agent(
         "await tools.currentLoopId({})",
-        REPLMiddleware(ptc=[current_loop_id]),
+        CodeInterpreterMiddleware(ptc=[current_loop_id]),
     ).ainvoke(
         {
             "messages": [
@@ -146,7 +146,7 @@ async def test_quickjs_async_ptc_task_subagent_loop_affinity_e2e() -> None:
                     }
                 ],
             ),
-            REPLMiddleware(ptc=["task"]),
+            CodeInterpreterMiddleware(ptc=["task"]),
         ],
     )
 

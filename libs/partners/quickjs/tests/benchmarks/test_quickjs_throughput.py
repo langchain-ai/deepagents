@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests.benchmarks._common import (
     PTC_AND_CONSOLE_CODE,
     THROUGHPUT_ITERATIONS,
@@ -53,7 +53,7 @@ class TestQuickJSThroughputBenchmarks:
         benchmark: BenchmarkFixture,
     ) -> None:
         """Measure throughput for many eval calls in one thread and process."""
-        middleware = REPLMiddleware(capture_console=True, ptc=[echo_payload])
+        middleware = CodeInterpreterMiddleware(capture_console=True, ptc=[echo_payload])
 
         @benchmark
         def _() -> None:

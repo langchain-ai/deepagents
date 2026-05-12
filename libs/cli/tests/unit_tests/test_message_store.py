@@ -616,6 +616,23 @@ class TestVirtualizationFlow:
         assert restored._deferred_output == "file1.txt\nfile2.txt\nfile3.txt"
         assert restored._deferred_expanded is True
 
+    def test_tool_message_reject_reason_round_trips(self):
+        """The HITL reject reason should survive serialization."""
+        original = ToolCallMessage(
+            tool_name="execute",
+            args={"command": "rm -rf /"},
+            id="tool-2",
+        )
+        original._status = "rejected"
+        original._reject_reason = "let's avoid recursive deletes"
+
+        data = MessageData.from_widget(original)
+        assert data.tool_reject_reason == "let's avoid recursive deletes"
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        assert restored._deferred_reject_reason == "let's avoid recursive deletes"
+
     def test_streaming_message_protection(self):
         """Test that streaming (active) messages are never pruned.
 

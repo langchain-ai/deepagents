@@ -11,7 +11,7 @@ from deepagents.backends.state import StateBackend
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
 
 InvokeMode = Literal["invoke", "ainvoke"]
@@ -138,7 +138,7 @@ async def test_repl_snapshot_persists_state_between_turns(
     """REPL state survives across turns on the same thread_id."""
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(_script_two_turns())),
-        middleware=[REPLMiddleware()],
+        middleware=[CodeInterpreterMiddleware()],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-snapshot-thread"}}
@@ -174,7 +174,7 @@ async def test_repl_without_snapshots_resets_state_between_turns(
     """When snapshots are disabled, turn-2 eval starts with a fresh context."""
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(_script_two_turns_without_snapshots())),
-        middleware=[REPLMiddleware(snapshot_between_turns=False)],
+        middleware=[CodeInterpreterMiddleware(snapshot_between_turns=False)],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-no-snapshot-thread"}}
@@ -235,7 +235,7 @@ async def test_repl_snapshot_persists_skill_usage_between_turns(
         model=FakeChatModel(messages=iter(_script_two_turns_with_skill())),
         backend=backend,
         skills=["/skills"],
-        middleware=[REPLMiddleware(skills_backend=backend)],
+        middleware=[CodeInterpreterMiddleware(skills_backend=backend)],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-snapshot-skill-thread"}}
@@ -310,7 +310,7 @@ async def test_repl_snapshot_persists_top_level_await_binding_between_turns(
     ]
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(script)),
-        middleware=[REPLMiddleware()],
+        middleware=[CodeInterpreterMiddleware()],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-top-level-await-thread"}}

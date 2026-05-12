@@ -132,15 +132,12 @@ class TestMakeHitlDecision:
             )
             assert result == {"type": "approve"}
 
-    @pytest.mark.parametrize("tool_name", ["bash", "shell", "execute"])
-    def test_all_shell_tool_names_recognised(
-        self, tool_name: str, console: Console
-    ) -> None:
-        """All SHELL_TOOL_NAMES variants should be gated by the allow-list."""
+    def test_execute_tool_gated_by_allow_list(self, console: Console) -> None:
+        """The `execute` shell tool is gated by the allow-list."""
         with patch("deepagents_cli.non_interactive.settings") as mock_settings:
             mock_settings.shell_allow_list = ["ls"]
             result = _make_hitl_decision(
-                {"name": tool_name, "args": {"command": "rm -rf /"}}, console
+                {"name": "execute", "args": {"command": "rm -rf /"}}, console
             )
             assert result["type"] == "reject"
 

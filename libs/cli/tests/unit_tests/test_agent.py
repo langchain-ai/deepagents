@@ -1919,17 +1919,8 @@ class TestShellAllowListMiddleware:
         handler.assert_awaited_once_with(request)
         assert result == "ok"
 
-    @pytest.mark.parametrize(
-        ("tool_name", "command"),
-        [
-            pytest.param("execute", "ls -la", id="execute-tool"),
-            pytest.param("bash", "cat README.md", id="bash-tool"),
-        ],
-    )
-    async def test_allows_approved_shell_command(
-        self, tool_name: str, command: str
-    ) -> None:
-        """Shell commands in the allow-list pass through for all SHELL_TOOL_NAMES."""
+    async def test_allows_approved_shell_command(self) -> None:
+        """Shell commands in the allow-list pass through to the handler."""
         from unittest.mock import AsyncMock
 
         from deepagents_cli.agent import ShellAllowListMiddleware
@@ -1937,8 +1928,8 @@ class TestShellAllowListMiddleware:
         middleware = ShellAllowListMiddleware(allow_list=["ls", "cat"])
         request = Mock()
         request.tool_call = {
-            "name": tool_name,
-            "args": {"command": command},
+            "name": "execute",
+            "args": {"command": "ls -la"},
             "id": "tc2",
         }
         handler = AsyncMock(return_value="output")
@@ -2049,8 +2040,6 @@ class TestShellAllowListMiddleware:
 
     def test_rejects_empty_allow_list(self) -> None:
         """Constructor rejects empty allow-list."""
-        import pytest
-
         from deepagents_cli.agent import ShellAllowListMiddleware
 
         with pytest.raises(ValueError, match="must not be empty"):
@@ -2058,8 +2047,6 @@ class TestShellAllowListMiddleware:
 
     def test_rejects_shell_allow_all(self) -> None:
         """Constructor rejects SHELL_ALLOW_ALL sentinel."""
-        import pytest
-
         from deepagents_cli.agent import ShellAllowListMiddleware
         from deepagents_cli.config import SHELL_ALLOW_ALL
 

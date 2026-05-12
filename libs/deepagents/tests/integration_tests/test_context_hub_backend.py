@@ -134,9 +134,7 @@ def test_upload_files_round_trip(backend: ContextHubBackend) -> None:
     assert second.file_data["content"] == "two"
 
 
-def test_persists_across_backend_instances(
-    backend: ContextHubBackend, identifier: str
-) -> None:
+def test_persists_across_backend_instances(backend: ContextHubBackend, identifier: str) -> None:
     """A fresh ContextHubBackend on the same identifier sees prior writes."""
     assert backend.write("/persist.md", "original").error is None
 
@@ -147,9 +145,7 @@ def test_persists_across_backend_instances(
     assert result.file_data["content"] == "original"
 
 
-def test_parent_commit_conflict_surfaces_error(
-    backend: ContextHubBackend, identifier: str
-) -> None:
+def test_parent_commit_conflict_surfaces_error(backend: ContextHubBackend, identifier: str) -> None:
     """Concurrent writes against a stale parent_commit should be rejected."""
     assert backend.write("/shared.md", "v0").error is None
 

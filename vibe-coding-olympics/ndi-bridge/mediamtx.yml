@@ -1,0 +1,25 @@
+logLevel: info
+
+# NDI inputs can stall for >10s when discovery/jitter occurs.
+# Default readTimeout is 10s; bump it to avoid premature publisher drops.
+readTimeout: 2m
+writeTimeout: 30s
+
+# Keep RTSP publish simple through Docker NAT.
+rtspTransports: [tcp]
+
+# WebRTC browser playback.
+webrtc: true
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: false
+webrtcAdditionalHosts:
+  - 127.0.0.1
+
+# Explicitly allow publishers for bridge paths.
+paths:
+  p1-screen:
+    source: publisher
+  p2-screen:
+    source: publisher

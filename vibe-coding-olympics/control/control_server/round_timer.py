@@ -19,6 +19,43 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+TIMER_WARNING_MESSAGES: dict[int, str] = {
+    150: "2.5 minutes left",
+    60: "1 minute left",
+    30: "30 seconds left",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class TimerWarning:
+    """Warning threshold reached by an active countdown."""
+
+    threshold_secs: int
+    message: str
+
+
+def timer_warning_for_remaining(
+    *, duration_secs: float, remaining_secs: float
+) -> TimerWarning | None:
+    """Return the most recent warning threshold crossed by a countdown.
+
+    Args:
+        duration_secs: Total countdown duration.
+        remaining_secs: Current countdown time remaining.
+
+    Returns:
+        Timer warning metadata when a configured threshold has been reached.
+    """
+    if remaining_secs <= 0:
+        return None
+    for threshold_secs in sorted(TIMER_WARNING_MESSAGES):
+        if duration_secs >= threshold_secs and remaining_secs <= threshold_secs:
+            return TimerWarning(
+                threshold_secs=threshold_secs,
+                message=TIMER_WARNING_MESSAGES[threshold_secs],
+            )
+    return None
+
 
 @dataclass(frozen=True, slots=True)
 class TimerSnapshot:
@@ -33,6 +70,7 @@ class TimerSnapshot:
     duration_secs: float
     remaining_secs: float
     started_at: float | None
+    warning: TimerWarning | None = None
 
     def __post_init__(self) -> None:
         """Reject internally inconsistent snapshots."""
@@ -41,6 +79,9 @@ class TimerSnapshot:
             raise ValueError(msg)
         if not self.running and self.started_at is not None:
             msg = "idle snapshot must not have a started_at timestamp"
+            raise ValueError(msg)
+        if not self.running and self.warning is not None:
+            msg = "idle snapshot must not have a warning"
             raise ValueError(msg)
         if self.duration_secs < 0 or self.remaining_secs < 0:
             msg = "duration_secs and remaining_secs must be non-negative"
@@ -70,6 +111,10 @@ class TimerSnapshot:
             duration_secs=duration_secs,
             remaining_secs=remaining_secs,
             started_at=started_at,
+            warning=timer_warning_for_remaining(
+                duration_secs=duration_secs,
+                remaining_secs=remaining_secs,
+            ),
         )
 
 

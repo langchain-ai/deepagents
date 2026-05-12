@@ -1,7 +1,11 @@
 import asyncio
 import unittest
 
-from control_server.round_timer import RoundTimer, TimerSnapshot
+from control_server.round_timer import (
+    RoundTimer,
+    TimerSnapshot,
+    timer_warning_for_remaining,
+)
 
 
 class TestRoundTimer(unittest.TestCase):
@@ -162,6 +166,42 @@ class TestRoundTimer(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(scenario())
 
+    def test_warning_thresholds_match_cli_timer(self) -> None:
+        warning = timer_warning_for_remaining(
+            duration_secs=300.0,
+            remaining_secs=149.9,
+        )
+        self.assertIsNotNone(warning)
+        assert warning is not None
+        self.assertEqual(warning.threshold_secs, 150)
+        self.assertEqual(warning.message, "2.5 minutes left")
+
+        warning = timer_warning_for_remaining(
+            duration_secs=300.0,
+            remaining_secs=59.9,
+        )
+        self.assertIsNotNone(warning)
+        assert warning is not None
+        self.assertEqual(warning.threshold_secs, 60)
+        self.assertEqual(warning.message, "1 minute left")
+
+        warning = timer_warning_for_remaining(
+            duration_secs=300.0,
+            remaining_secs=29.9,
+        )
+        self.assertIsNotNone(warning)
+        assert warning is not None
+        self.assertEqual(warning.threshold_secs, 30)
+        self.assertEqual(warning.message, "30 seconds left")
+
+    def test_warning_ignores_thresholds_longer_than_timer(self) -> None:
+        warning = timer_warning_for_remaining(
+            duration_secs=120.0,
+            remaining_secs=119.0,
+        )
+
+        self.assertIsNone(warning)
+
 
 class TestTimerSnapshot(unittest.TestCase):
     def test_idle_factory_marks_snapshot_not_running(self) -> None:
@@ -178,6 +218,7 @@ class TestTimerSnapshot(unittest.TestCase):
         self.assertTrue(snap.running)
         self.assertEqual(snap.remaining_secs, 42.0)
         self.assertEqual(snap.started_at, 100.0)
+        self.assertEqual(snap.warning.threshold_secs, 60)
 
     def test_rejects_running_without_started_at(self) -> None:
         with self.assertRaises(ValueError):

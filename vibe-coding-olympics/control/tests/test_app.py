@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from control_server import app as app_mod
 from control_server import site_urls as site_urls_mod
-from control_server.round_timer import RoundTimer
+from control_server.round_timer import RoundTimer, TimerSnapshot
 
 
 def _reset_module_globals() -> None:
@@ -54,6 +54,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("fetch('/api/state'", response.text)
         self.assertIn("Player: Player 1", response.text)
         self.assertIn("function playerName", response.text)
+        self.assertIn("timer-warning", response.text)
+        self.assertIn("function syncTimerWarning", response.text)
+        self.assertIn("threshold_secs", response.text)
         self.assertIn('<div class="pane focus-terminal"></div>', response.text)
         self.assertIn(".focus-prompt", response.text)
         self.assertIn("bottom: 3%;", response.text)
@@ -755,6 +758,8 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["timer"]["running"], False)
         self.assertEqual(body["timer"]["duration_secs"], 0.0)
+        self.assertIsNone(body["timer"]["started_at"])
+        self.assertIsNone(body["timer"]["warning"])
         self.assertEqual(body["eval"]["results"], [])
         self.assertIsNone(body["obs_error"])
         self.assertEqual(body["phase"], "idle")
@@ -789,6 +794,28 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         body = response.json()
         self.assertIsNotNone(body["round"]["duration_warning"])
         self.assertIn("not-a-number", body["round"]["duration_warning"])
+
+    def test_state_includes_timer_warning_threshold(self) -> None:
+        client = TestClient(app_mod.create_app())
+        snapshot = TimerSnapshot.active(
+            duration_secs=300.0,
+            remaining_secs=59.0,
+            started_at=123.0,
+        )
+        with (
+            patch(
+                "control_server.app._get_obs_state",
+                new=AsyncMock(return_value={"phase": "coding"}),
+            ),
+            patch.object(app_mod._round_timer, "snapshot", return_value=snapshot),
+        ):
+            response = client.get("/api/state")
+        body = response.json()
+        self.assertEqual(body["timer"]["started_at"], 123.0)
+        self.assertEqual(
+            body["timer"]["warning"],
+            {"threshold_secs": 60, "message": "1 minute left"},
+        )
 
 
 if __name__ == "__main__":

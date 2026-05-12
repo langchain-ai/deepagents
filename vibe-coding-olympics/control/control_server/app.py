@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from control_server import eval_runner, iterm_ctrl, player_dispatch, site_urls
-from control_server.round_timer import RoundTimer
+from control_server.round_timer import RoundTimer, TimerWarning
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,16 @@ def _round_duration_secs() -> float:
     """Round length in seconds. Override with `VIBE_ROUND_SECONDS`."""
     duration, _ = _round_duration_config()
     return duration
+
+
+def _timer_warning_payload(warning: TimerWarning | None) -> dict[str, Any] | None:
+    """Return JSON metadata for the current timer warning threshold."""
+    if warning is None:
+        return None
+    return {
+        "threshold_secs": warning.threshold_secs,
+        "message": warning.message,
+    }
 
 
 DEFAULT_PROMPTS = (
@@ -1678,6 +1688,21 @@ _OVERLAY_HTML = """<!doctype html>
     height: 5.5%;
     font-size: min(1.55vw, 2.75vh);
   }
+  .timer-chip.timer-warning {
+    animation: timer-warning-flash 900ms ease-in-out 3;
+  }
+  @keyframes timer-warning-flash {
+    0%,
+    100% {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    18%,
+    72% {
+      background: var(--status);
+      color: var(--paper);
+    }
+  }
   .player-name {
     position: absolute;
     top: 2.85%;
@@ -2009,6 +2034,7 @@ const state = {
   contestants: [],
   scores: {},
   timer: null,
+  lastTimerWarningId: '',
   lastFetch: 0,
   connected: true,
 };
@@ -2063,6 +2089,38 @@ function currentRemaining() {
   if (!timer || !timer.running) return timer ? timer.remaining_secs : NaN;
   const elapsed = (Date.now() - state.lastFetch) / 1000;
   return Math.max(0, Number(timer.remaining_secs || 0) - elapsed);
+}
+
+let timerWarningClearHandle = null;
+
+function flashTimerWarning() {
+  const chips = [els.splitClock, els.focusClock];
+  for (const chip of chips) {
+    chip.classList.remove('timer-warning');
+    void chip.offsetWidth;
+    chip.classList.add('timer-warning');
+  }
+  if (timerWarningClearHandle !== null) {
+    window.clearTimeout(timerWarningClearHandle);
+  }
+  timerWarningClearHandle = window.setTimeout(() => {
+    for (const chip of chips) {
+      chip.classList.remove('timer-warning');
+    }
+    timerWarningClearHandle = null;
+  }, 3000);
+}
+
+function syncTimerWarning() {
+  if (state.phase !== 'coding' || !state.timer || !state.timer.warning) return;
+  const threshold = Number(state.timer.warning.threshold_secs);
+  if (!Number.isFinite(threshold)) return;
+  const startedAt = Number(state.timer.started_at);
+  const timerId = Number.isFinite(startedAt) ? startedAt.toFixed(3) : 'unknown';
+  const warningId = `${timerId}:${threshold}`;
+  if (state.lastTimerWarningId === warningId) return;
+  state.lastTimerWarningId = warningId;
+  flashTimerWarning();
 }
 
 function renderIdle() {
@@ -2172,6 +2230,7 @@ async function refreshState() {
     state.timer = payload.timer || null;
     state.lastFetch = Date.now();
     state.connected = !payload.obs_error;
+    syncTimerWarning();
   } catch (error) {
     state.connected = false;
   }
@@ -2221,6 +2280,8 @@ def create_app() -> FastAPI:
                 "running": snapshot.running,
                 "duration_secs": snapshot.duration_secs,
                 "remaining_secs": snapshot.remaining_secs,
+                "started_at": snapshot.started_at,
+                "warning": _timer_warning_payload(snapshot.warning),
             },
             "round": {
                 "prompt": _round_context.get("prompt"),

@@ -1998,6 +1998,10 @@ _OVERLAY_HTML = """<!doctype html>
     --blue-b: #82c9fe;
     --pink-a: #ed92ff;
     --pink-b: #d5c3f7;
+    --blue-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 20%, var(--paper) 50%);
+    --pink-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 20%, var(--paper) 50%);
+    --blue-name-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 50%, var(--paper) 100%);
+    --pink-name-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 50%, var(--paper) 100%);
     --soft-blue: #d8efff;
     --soft-pink: #f5d8ff;
     --line: max(2px, 0.11vw);
@@ -2045,10 +2049,14 @@ _OVERLAY_HTML = """<!doctype html>
   #coding-view.focus .split-shell { display: none; }
   #coding-view.focus .focus-shell { display: block; }
   .gradient-left {
-    background: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 42%, var(--paper) 100%);
+    background-image: var(--blue-gradient);
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
   }
   .gradient-right {
-    background: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+    background-image: var(--pink-gradient);
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
   }
   .top-band {
     position: absolute;
@@ -2074,10 +2082,10 @@ _OVERLAY_HTML = """<!doctype html>
     z-index: 1;
   }
   .split-bg.left {
-    background-image: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 42%, var(--paper) 100%);
+    background-image: var(--blue-gradient);
   }
   .split-bg.right {
-    background-image: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+    background-image: var(--pink-gradient);
   }
   .split-bg.header-gap {
     top: 10.5%;
@@ -2098,13 +2106,8 @@ _OVERLAY_HTML = """<!doctype html>
   .split-bg.inner-right { left: 50%; width: 1.6%; }
   .split-bg.outer-right { right: 0; width: 2.2%; }
   .split-bg.preview-terminal-gap {
-    top: 61.8%;
-    height: 5.5%;
-    width: 46.2%;
-  }
-  .split-bg.name-preview-gap {
-    top: 17.2%;
-    height: 1.6%;
+    top: 61.1%;
+    height: 5.6%;
     width: 46.2%;
   }
   .split-bg.bottom-gap {
@@ -2122,6 +2125,29 @@ _OVERLAY_HTML = """<!doctype html>
     width: var(--line);
     background: var(--ink);
     z-index: 3;
+  }
+  .split-gap-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 63.9%;
+    height: var(--line);
+    background: var(--ink);
+    transform: translateY(-50%);
+    z-index: 3;
+  }
+  .split-gap-dot {
+    position: absolute;
+    left: 50%;
+    top: 63.9%;
+    width: 0.72vw;
+    height: 0.72vw;
+    min-width: 10px;
+    min-height: 10px;
+    border-radius: 999px;
+    background: var(--ink);
+    transform: translate(-50%, -50%);
+    z-index: 4;
   }
   .chip {
     position: absolute;
@@ -2190,10 +2216,12 @@ _OVERLAY_HTML = """<!doctype html>
   .player-name.left {
     left: 2.2%;
     width: 46.2%;
+    background-image: var(--blue-name-gradient);
   }
   .player-name.right {
     right: 2.2%;
     width: 46.2%;
+    background-image: var(--pink-name-gradient);
   }
   .split-event-chip {
     left: 2.2%;
@@ -2314,7 +2342,7 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .split-player {
     position: absolute;
-    top: 18.8%;
+    top: 17.2%;
     bottom: 3%;
     width: 46.2%;
     z-index: 2;
@@ -2342,8 +2370,16 @@ _OVERLAY_HTML = """<!doctype html>
     border-bottom: var(--line) solid var(--ink);
     z-index: 1;
   }
-  #coding-view[data-focus="1"] .focus-top { background: linear-gradient(90deg, var(--blue-a), var(--blue-b), var(--paper)); }
-  #coding-view[data-focus="2"] .focus-top { background: linear-gradient(90deg, var(--pink-a), var(--pink-b), var(--paper)); }
+  #coding-view[data-focus="1"] .focus-top {
+    background-image: var(--blue-gradient);
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
+  }
+  #coding-view[data-focus="2"] .focus-top {
+    background-image: var(--pink-gradient);
+    background-attachment: fixed;
+    background-size: 100vw 100vh;
+  }
   .focus-bg {
     position: absolute;
     background-attachment: fixed;
@@ -2352,10 +2388,10 @@ _OVERLAY_HTML = """<!doctype html>
     z-index: 1;
   }
   #coding-view[data-focus="1"] .focus-bg {
-    background-image: linear-gradient(90deg, var(--blue-a) 0%, var(--blue-b) 45%, var(--paper) 100%);
+    background-image: var(--blue-gradient);
   }
   #coding-view[data-focus="2"] .focus-bg {
-    background-image: linear-gradient(90deg, var(--pink-a) 0%, var(--pink-b) 45%, var(--paper) 100%);
+    background-image: var(--pink-gradient);
   }
   .focus-bg.header-gap {
     left: 0;
@@ -2526,13 +2562,13 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="split-bg inner-left left"></div>
       <div class="split-bg inner-right right"></div>
       <div class="split-bg outer-right right"></div>
-      <div class="split-bg name-preview-gap column-left left"></div>
-      <div class="split-bg name-preview-gap column-right right"></div>
       <div class="split-bg preview-terminal-gap column-left left"></div>
       <div class="split-bg preview-terminal-gap column-right right"></div>
       <div class="split-bg bottom-gap column-left left"></div>
       <div class="split-bg bottom-gap column-right right"></div>
       <div class="divider"></div>
+      <div class="split-gap-line"></div>
+      <div class="split-gap-dot"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
       <div class="chip event-chip split-event-chip">Deep Agents PVP</div>
       <div class="prompt-strip split-prompt-strip">

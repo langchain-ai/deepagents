@@ -1620,6 +1620,66 @@ class TestExecuteTaskTextualAskUser:
         assert "Command rejected" in str(app_messages[0]._content)
         assert token_events == ["pending", "show:False"]
 
+    async def test_hitl_rejection_with_reason_resumes_agent(self) -> None:
+        """Rejected approval with a reason should resume so the agent can react."""
+        mounted: list[object] = []
+        future: asyncio.Future[object] = asyncio.Future()
+        future.set_result({"type": "reject", "message": "use a safer command"})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "rm file"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(agent.stream_inputs) == 2
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        decisions = resume_payload["interrupt-1"]["decisions"]
+        assert decisions == [{"type": "reject", "message": "use a safer command"}]
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        assert not any("Command rejected" in str(msg._content) for msg in app_messages)
+
     async def test_ask_user_invalid_answers_payload_marks_row_error(self) -> None:
         """Non-list answers should mark row as error and pop it."""
         mounted: list[ToolCallMessage] = []

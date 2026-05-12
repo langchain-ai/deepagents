@@ -2015,6 +2015,12 @@ _OVERLAY_HTML = """<!doctype html>
     --pink-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--soft-pink) 44%, var(--pink-a) 100%);
     --soft-blue: #d8efff;
     --soft-pink: #f5d8ff;
+    --feed-crop-top: -2.9%;
+    --feed-crop-height: 104.6%;
+    --feed-left-crop-left: -14.2%;
+    --feed-left-crop-width: 228.6%;
+    --feed-right-crop-left: -115.4%;
+    --feed-right-crop-width: 229.8%;
     --line: max(2px, 0.11vw);
     --status: #ef4444;
   }
@@ -2266,14 +2272,29 @@ _OVERLAY_HTML = """<!doctype html>
     position: absolute;
     border: var(--line) solid var(--ink);
     background: transparent;
+    overflow: hidden;
   }
   .ndi-feed {
     position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
+    top: var(--feed-crop-top);
+    height: var(--feed-crop-height);
     border: 0;
     background: var(--ink);
+  }
+  .ndi-feed.crop-left {
+    left: var(--feed-left-crop-left);
+    width: var(--feed-left-crop-width);
+  }
+  .ndi-feed.crop-right {
+    left: var(--feed-right-crop-left);
+    width: var(--feed-right-crop-width);
+  }
+  .focus-feed {
+    opacity: 0;
+  }
+  #coding-view[data-focus="1"] .focus-feed.p1,
+  #coding-view[data-focus="2"] .focus-feed.p2 {
+    opacity: 1;
   }
   .pane-label {
     position: absolute;
@@ -2288,6 +2309,7 @@ _OVERLAY_HTML = """<!doctype html>
     line-height: 1.18;
     text-transform: uppercase;
     white-space: nowrap;
+    z-index: 4;
   }
   .pane-label.right {
     left: auto;
@@ -2542,17 +2564,21 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="split-player left">
         <div class="pane preview">
-          <iframe class="ndi-feed" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 live preview" allow="autoplay; fullscreen"></iframe>
+          <iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>
           <div class="preview-name left" id="split-p1-name">Player 1</div>
         </div>
-        <div class="pane terminal"></div>
+        <div class="pane terminal">
+          <iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>
+        </div>
       </div>
       <div class="split-player right">
         <div class="pane preview">
-          <iframe class="ndi-feed" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 live preview" allow="autoplay; fullscreen"></iframe>
+          <iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>
           <div class="preview-name right" id="split-p2-name">Player 2</div>
         </div>
-        <div class="pane terminal"></div>
+        <div class="pane terminal">
+          <iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>
+        </div>
       </div>
     </div>
 
@@ -2572,10 +2598,13 @@ _OVERLAY_HTML = """<!doctype html>
         <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
       </div>
       <div class="pane focus-website">
-        <iframe class="ndi-feed" id="focus-feed" src="http://127.0.0.1:8889/p1-screen/" title="Focused player live preview" allow="autoplay; fullscreen"></iframe>
+        <iframe class="ndi-feed crop-left focus-feed p1" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>
+        <iframe class="ndi-feed crop-left focus-feed p2" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>
         <div class="pane-label" id="focus-preview-label">Live Preview</div>
       </div>
       <div class="pane focus-terminal">
+        <iframe class="ndi-feed crop-right focus-feed p1" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>
+        <iframe class="ndi-feed crop-right focus-feed p2" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>
         <div class="pane-label right" id="focus-code-label">Deep Agents Code</div>
       </div>
     </div>
@@ -2607,10 +2636,6 @@ const state = {
 const params = new URLSearchParams(window.location.search);
 const defaultOverlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
 const defaultFocusIndex = params.get('p') === '2' ? 1 : 0;
-const previewUrls = [
-  'http://127.0.0.1:8889/p1-screen/',
-  'http://127.0.0.1:8889/p2-screen/',
-];
 let overlayMode = defaultOverlayMode;
 let focusIndex = defaultFocusIndex;
 
@@ -2624,7 +2649,6 @@ const els = {
   splitClock: document.getElementById('split-clock'),
   focusName: document.getElementById('focus-name'),
   focusClock: document.getElementById('focus-clock'),
-  focusFeed: document.getElementById('focus-feed'),
   focusPrompt: document.getElementById('focus-prompt'),
   focusPreviewLabel: document.getElementById('focus-preview-label'),
   scoreWrap: document.getElementById('score-wrap'),
@@ -2744,10 +2768,6 @@ function renderCoding() {
   els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);
   els.focusPrompt.textContent = prompt;
   els.focusClock.textContent = clock;
-  const focusUrl = previewUrls[focusIndex] || previewUrls[0];
-  if (els.focusFeed.src !== focusUrl) {
-    els.focusFeed.src = focusUrl;
-  }
   els.focusPreviewLabel.textContent = 'Live Preview';
 }
 

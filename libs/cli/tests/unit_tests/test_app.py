@@ -7771,6 +7771,105 @@ class TestPrewarmAwait:
         for notify_call in warning_calls:
             assert notify_call.kwargs.get("markup") is False
 
+    async def test_discover_skills_awaits_prewarm_before_thread_offload(
+        self,
+    ) -> None:
+        """Locks the call-order invariant that prevents an import deadlock.
+
+        Skill discovery and prewarm import overlapping parts of the Deep Agents
+        graph in separate workers. A regression that drops the
+        `await _await_prewarm_imports()` re-introduces the production crash;
+        this is the only test that catches that ordering contract.
+        """
+        call_order: list[str] = []
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async def record_prewarm() -> None:
+            call_order.append("prewarm")
+            await asyncio.sleep(0)
+
+        def record_discover() -> tuple[list[Any], list[Any]]:
+            call_order.append("discover")
+            return [], []
+
+        with (
+            patch.object(app, "_await_prewarm_imports", side_effect=record_prewarm),
+            patch.object(
+                app, "_discover_skills_and_roots", side_effect=record_discover
+            ),
+        ):
+            await app._discover_skills()
+
+        assert call_order == ["prewarm", "discover"], (
+            f"prewarm must precede skill discovery thread; got {call_order}"
+        )
+
+    async def test_discover_skills_prewarm_failure_warns_with_debug_hint(
+        self,
+    ) -> None:
+        """A prewarm failure should use the discovery failure toast path."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.object(
+                app,
+                "_await_prewarm_imports",
+                AsyncMock(side_effect=RuntimeError("prewarm failed")),
+            ),
+            patch.object(app, "_discover_skills_and_roots") as discover_mock,
+            patch.object(app, "notify") as notify_mock,
+        ):
+            ok = await app._discover_skills()
+
+        assert ok is False
+        discover_mock.assert_not_called()
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
+        assert "RuntimeError" in message
+        assert "DEEPAGENTS_CLI_DEBUG=1" in message
+        assert notify_mock.call_args.kwargs["severity"] == "warning"
+        assert notify_mock.call_args.kwargs["markup"] is False
+
+    async def test_start_server_waits_for_skill_discovery_import_gate(
+        self,
+    ) -> None:
+        """Startup model creation must not import during skill discovery."""
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+
+        await app._deepagents_import_lock.acquire()
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(
+                cli_config, "create_model", side_effect=fake_create_model
+            ) as create_model_mock,
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch.object(app, "post_message"),
+        ):
+            task = asyncio.create_task(app._start_server_background())
+            await asyncio.sleep(0)
+            assert create_model_mock.call_count == 0
+            app._deepagents_import_lock.release()
+            with contextlib.suppress(Exception):
+                await task
+
+        create_model_mock.assert_called_once()
+
 
 class TestHeaderAndTitle:
     """Header widget visibility and custom title overrides."""

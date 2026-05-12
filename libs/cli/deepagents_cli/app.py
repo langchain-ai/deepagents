@@ -43,6 +43,7 @@ from deepagents_cli import (
 )
 from deepagents_cli._cli_context import CLIContext
 from deepagents_cli._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
+from deepagents_cli._debug import configure_debug_logging
 from deepagents_cli._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -90,6 +91,7 @@ from deepagents_cli.widgets.status import StatusBar
 from deepagents_cli.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -1388,6 +1390,14 @@ class DeepAgentsApp(App):
         loop re-enters the same module graph (see that method for why).
         """
 
+        self._deepagents_import_lock = asyncio.Lock()
+        """Serializes cold imports into the Deep Agents graph after prewarm.
+
+        Startup model creation and skill discovery can both be triggered during
+        first paint. If prewarm failed or did not cover a transitive module,
+        both paths may cold-import overlapping modules at the same time.
+        """
+
         # Lifecycle flags & re-entry guards
         self._connecting = (
             server_kwargs is not None and not self._server_startup_deferred
@@ -2144,7 +2154,12 @@ class DeepAgentsApp(App):
         from deepagents_cli.command_registry import SLASH_COMMANDS, build_skill_commands
 
         try:
-            skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
+            # Discovery and prewarm import overlapping parts of the Deep Agents
+            # graph in separate workers. Let prewarm finish first so CPython's
+            # per-module import locks cannot form a cycle.
+            await self._await_prewarm_imports()
+            async with self._deepagents_import_lock:
+                skills, roots = await asyncio.to_thread(self._discover_skills_and_roots)
         except OSError:
             logger.warning(
                 "Filesystem error during skill discovery",
@@ -2158,11 +2173,12 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             return False
-        except Exception:
+        except Exception as exc:
             logger.exception("Unexpected error during skill discovery")
             self.notify(
-                "Skill discovery failed unexpectedly. "
-                "/skill: commands may not work. Check logs for details.",
+                f"Skill discovery failed unexpectedly ({type(exc).__name__}). "
+                "/skill: commands may not work. "
+                "Set DEEPAGENTS_CLI_DEBUG=1 for details.",
                 severity="warning",
                 timeout=8,
                 markup=False,
@@ -2332,7 +2348,8 @@ class DeepAgentsApp(App):
             from deepagents_cli.model_config import ModelConfigError, save_recent_model
 
             try:
-                result = create_model(**self._model_kwargs)
+                async with self._deepagents_import_lock:
+                    result = create_model(**self._model_kwargs)
             except ModelConfigError as exc:
                 self.post_message(self.ServerStartFailed(error=exc))
                 return

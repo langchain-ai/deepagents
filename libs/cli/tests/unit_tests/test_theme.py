@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import fields
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -1915,6 +1916,150 @@ class TestThemeSelectorScreen:
             await pilot.pause()
             assert app.theme == "langchain"
             assert results == [None]
+
+    async def test_highlight_syncs_terminal_background_preview(self) -> None:
+        from textual.app import App
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        class SyncApp(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.synced: list[str] = []
+
+            def sync_terminal_background(self) -> None:
+                self.synced.append(self.theme)
+
+        app = SyncApp()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            c = theme.LIGHT_COLORS
+            app.register_theme(
+                TextualTheme(
+                    name="langchain-light",
+                    primary=c.primary,
+                    secondary=c.secondary,
+                    accent=c.accent,
+                    foreground=c.foreground,
+                    background=c.background,
+                    surface=c.surface,
+                    panel=c.panel,
+                    warning=c.warning,
+                    error=c.error,
+                    success=c.success,
+                    dark=False,
+                )
+            )
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+
+            target = next(key for key in theme.get_registry() if key != "langchain")
+            assert app.synced[-1] == target
+
+    async def test_escape_syncs_terminal_background_after_restore(self) -> None:
+        from textual.app import App
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        class SyncApp(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.synced: list[str] = []
+
+            def sync_terminal_background(self) -> None:
+                self.synced.append(self.theme)
+
+        app = SyncApp()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            c = theme.LIGHT_COLORS
+            app.register_theme(
+                TextualTheme(
+                    name="langchain-light",
+                    primary=c.primary,
+                    secondary=c.secondary,
+                    accent=c.accent,
+                    foreground=c.foreground,
+                    background=c.background,
+                    surface=c.surface,
+                    panel=c.panel,
+                    warning=c.warning,
+                    error=c.error,
+                    success=c.success,
+                    dark=False,
+                )
+            )
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.theme == "langchain"
+            assert app.synced[-1] == "langchain"
+
+    async def test_preview_failure_syncs_terminal_background_after_rollback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from textual.app import App
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli.widgets.theme_selector import ThemeSelectorScreen
+
+        class SyncApp(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.synced: list[str] = []
+
+            def sync_terminal_background(self) -> None:
+                self.synced.append(self.theme)
+                if self.theme != "langchain":
+                    msg = "preview sync failed"
+                    raise RuntimeError(msg)
+
+        app = SyncApp()
+        async with app.run_test() as pilot:
+            _register_lc_theme(app)
+            c = theme.LIGHT_COLORS
+            app.register_theme(
+                TextualTheme(
+                    name="langchain-light",
+                    primary=c.primary,
+                    secondary=c.secondary,
+                    accent=c.accent,
+                    foreground=c.foreground,
+                    background=c.background,
+                    surface=c.surface,
+                    panel=c.panel,
+                    warning=c.warning,
+                    error=c.error,
+                    success=c.success,
+                    dark=False,
+                )
+            )
+            screen = ThemeSelectorScreen(current_theme="langchain")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with caplog.at_level(
+                logging.WARNING, logger="deepagents_cli.widgets.theme_selector"
+            ):
+                await pilot.press("down")
+                await pilot.pause()
+
+            target = next(key for key in theme.get_registry() if key != "langchain")
+            assert app.synced[-2:] == [target, "langchain"]
+            assert app.theme == "langchain"
+            assert "Failed to preview theme" in caplog.text
 
     async def test_enter_selects_theme(self) -> None:
         from textual.app import App

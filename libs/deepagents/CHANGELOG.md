@@ -3,13 +3,9 @@
 ## [0.6.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.9...deepagents==0.6.0) (2026-05-12)
 
 
-### ⚠ BREAKING CHANGES
-
-* **sdk:** v0.6 ([#3193](https://github.com/langchain-ai/deepagents/issues/3193))
-
 ### Features
 
-* **[`CodeInterpreterMiddleware`](https://docs.langchain.com/oss/python/deepagents/interpreters)**: (experimental) `deepagents` now supports code execution and programmatic tool calling through a scoped QuickJS runtime. Install via the optional dependency: `deepagents[quickjs]`.
+* **[`CodeInterpreterMiddleware`](https://pypi.org/project/langchain-quickjs)**: (experimental) `deepagents` now supports code execution and programmatic tool calling through a scoped QuickJS runtime. Install via the optional dependency: `deepagents[quickjs]`.
 * Support for `version="v3"` in `stream_events` / `astream_events`. Refer to the [event streaming](https://docs.langchain.com/oss/python/deepagents/event-streaming) guide for details.
 
 ## [0.5.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.8...deepagents==0.5.9) (2026-05-10)

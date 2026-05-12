@@ -2000,8 +2000,8 @@ _OVERLAY_HTML = """<!doctype html>
     --pink-b: #d5c3f7;
     --blue-gradient: linear-gradient(180deg, var(--blue-a) 0%, var(--blue-b) 20%, var(--paper) 50%);
     --pink-gradient: linear-gradient(180deg, var(--pink-a) 0%, var(--pink-b) 20%, var(--paper) 50%);
-    --blue-name-gradient: linear-gradient(0deg, var(--blue-a) 0%, var(--blue-b) 50%, var(--paper) 100%);
-    --pink-name-gradient: linear-gradient(0deg, var(--pink-a) 0%, var(--pink-b) 50%, var(--paper) 100%);
+    --blue-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--blue-b) 58%, var(--paper) 100%);
+    --pink-name-gradient: linear-gradient(180deg, var(--paper) 0%, var(--pink-b) 58%, var(--paper) 100%);
     --soft-blue: #d8efff;
     --soft-pink: #f5d8ff;
     --line: max(2px, 0.11vw);
@@ -2196,31 +2196,29 @@ _OVERLAY_HTML = """<!doctype html>
       color: var(--paper);
     }
   }
-  .player-name {
+  .preview-name {
     position: absolute;
-    top: 12.3%;
-    height: 4.9%;
+    left: 0;
+    right: 0;
+    top: 0;
+    height: 11%;
     display: flex;
     align-items: center;
     padding: 0 1vw;
-    background: rgba(255, 255, 255, 0.94);
-    border: var(--line) solid var(--ink);
+    border-bottom: var(--line) solid var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: min(1.35vw, 2.4vh);
     font-weight: 500;
+    line-height: 1;
     text-transform: uppercase;
     z-index: 4;
   }
-  .player-name.left {
-    left: 2.2%;
-    width: 46.2%;
+  .preview-name.left {
     background-image: var(--blue-name-gradient);
   }
-  .player-name.right {
-    right: 2.2%;
-    width: 46.2%;
+  .preview-name.right {
     background-image: var(--pink-name-gradient);
   }
   .prompt-strip {
@@ -2267,6 +2265,7 @@ _OVERLAY_HTML = """<!doctype html>
     font-weight: 500;
     line-height: 1.18;
     text-transform: uppercase;
+    white-space: nowrap;
   }
   #coding-view[data-focus="1"] .pane-label {
     background: linear-gradient(180deg, var(--paper), var(--soft-blue));
@@ -2274,49 +2273,9 @@ _OVERLAY_HTML = """<!doctype html>
   #coding-view[data-focus="2"] .pane-label {
     background: linear-gradient(180deg, var(--paper), var(--soft-pink));
   }
-  .terminal-title {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    height: 16%;
-    display: flex;
-    align-items: center;
-    padding: 0 1vw;
-    background: var(--ink);
-    color: var(--paper);
-    font-size: min(1.05vw, 1.86vh);
-    font-weight: 500;
-    text-transform: uppercase;
-  }
-  .terminal-input {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: 16%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding-left: 1vw;
-    background: rgba(255, 255, 255, 0.92);
-    border-top: var(--line) solid var(--ink);
-    font-size: min(1.05vw, 1.86vh);
-    font-weight: 500;
-    text-transform: uppercase;
-  }
-  .terminal-arrow {
-    align-self: stretch;
-    width: 8%;
-    display: grid;
-    place-items: center;
-    background: var(--ink);
-    color: var(--paper);
-    font-size: min(2vw, 3.55vh);
-  }
   .split-player {
     position: absolute;
-    top: 17.2%;
+    top: 12.3%;
     bottom: 3%;
     width: 46.2%;
     z-index: 2;
@@ -2327,13 +2286,14 @@ _OVERLAY_HTML = """<!doctype html>
     left: 0;
     right: 0;
     top: 0;
-    height: 55%;
+    height: 57.6%;
+    overflow: hidden;
   }
   .split-player .terminal {
     left: 0;
     right: 0;
     bottom: 0;
-    height: 38%;
+    height: 35.8%;
   }
   .focus-top {
     position: absolute;
@@ -2518,7 +2478,7 @@ _OVERLAY_HTML = """<!doctype html>
     <div class="stage">
       <div class="full-backdrop"></div>
       <div class="idle-card">
-        <div class="idle-title">Vibe Coding Olympics</div>
+        <div class="idle-title">Deep Agents: PVP Speedrun</div>
         <div class="idle-subhead" id="idle-subhead">Waiting for players</div>
       </div>
     </div>
@@ -2545,21 +2505,17 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="split-gap-dot"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
-      <div class="player-name left" id="split-p1-name">Player: Player 1</div>
-      <div class="player-name right" id="split-p2-name">Player: Player 2</div>
       <div class="split-player left">
-        <div class="pane preview"></div>
-        <div class="pane terminal">
-          <div class="terminal-title">P1 Terminal</div>
-          <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
+        <div class="pane preview">
+          <div class="preview-name left" id="split-p1-name">Player: Player 1</div>
         </div>
+        <div class="pane terminal"></div>
       </div>
       <div class="split-player right">
-        <div class="pane preview"></div>
-        <div class="pane terminal">
-          <div class="terminal-title">P2 Terminal</div>
-          <div class="terminal-input"><span>Input</span><span class="terminal-arrow">&gt;</span></div>
+        <div class="pane preview">
+          <div class="preview-name right" id="split-p2-name">Player: Player 2</div>
         </div>
+        <div class="pane terminal"></div>
       </div>
     </div>
 
@@ -2579,7 +2535,7 @@ _OVERLAY_HTML = """<!doctype html>
         <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
       </div>
       <div class="pane focus-website">
-        <div class="pane-label" id="focus-preview-label">P1 Live<br>Preview</div>
+        <div class="pane-label" id="focus-preview-label">Live Preview</div>
       </div>
       <div class="pane focus-terminal"></div>
     </div>
@@ -2723,7 +2679,6 @@ function renderCoding() {
   const prompt = text(state.prompt, 'Waiting for prompt');
   const clock = formatClock(currentRemaining());
   const focused = focusIndex === 0 ? p1 : p2;
-  const focusedLabel = `P${focusIndex + 1}`;
 
   els.splitP1Name.textContent = playerName(p1, 'Player 1');
   els.splitP2Name.textContent = playerName(p2, 'Player 2');
@@ -2732,7 +2687,7 @@ function renderCoding() {
   els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);
   els.focusPrompt.textContent = prompt;
   els.focusClock.textContent = clock;
-  els.focusPreviewLabel.innerHTML = `${focusedLabel} Live<br>Preview`;
+  els.focusPreviewLabel.textContent = 'Live Preview';
 }
 
 function scoreEntries() {

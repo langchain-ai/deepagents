@@ -1991,7 +1991,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Args:
             messages: The message list (may be modified if write succeeded).
-            write_result: Result of the backend write, or ``None`` if no new
+            write_result: Result of the backend write, or `None` if no new
                 eviction was attempted.
             file_path: Path the content was written to.
 

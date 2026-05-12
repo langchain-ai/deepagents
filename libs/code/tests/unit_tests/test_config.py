@@ -1901,7 +1901,7 @@ class TestOpenRouterHeaders:
 
         _, call_kwargs = mock_init.call_args
         assert call_kwargs["app_url"] == "https://pypi.org/project/deepagents-code/"
-        assert call_kwargs["app_title"] == "Deep Agents CLI"
+        assert call_kwargs["app_title"] == "Deep Agents Code"
         assert call_kwargs["app_categories"] == ["cli-agent"]
 
     @patch("langchain.chat_models.init_chat_model")

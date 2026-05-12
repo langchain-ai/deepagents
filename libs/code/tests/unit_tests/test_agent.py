@@ -534,14 +534,14 @@ class TestGetSystemPromptModelIdentity:
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""
 
-    def test_interactive_prompt_mentions_interactive_cli(self) -> None:
+    def test_interactive_prompt_mentions_interactive_tui(self) -> None:
         mock_settings = Mock()
         mock_settings.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=True)
 
-        assert "interactive CLI" in prompt
+        assert "interactive TUI" in prompt
         assert "ask questions before acting" in prompt
 
     def test_non_interactive_prompt_mentions_headless(self) -> None:
@@ -590,7 +590,7 @@ class TestGetSystemPromptNonInteractive:
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
 
-        assert "interactive CLI" in prompt
+        assert "interactive TUI" in prompt
 
     def test_interactive_todo_section_asks_user_before_starting(self) -> None:
         """Interactive mode should require plan approval before first in_progress."""

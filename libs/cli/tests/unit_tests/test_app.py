@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import os
 import signal
 import time
@@ -4448,6 +4449,132 @@ class TestRemoteAgent:
         assert app._remote_agent() is None
 
 
+class TestTerminalBackgroundSync:
+    """Tests for syncing Textual theme background to terminal background."""
+
+    def test_initial_theme_sync_sets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        entry = theme.get_registry()[app.theme]
+
+        assert calls[-1] == entry.colors.background
+
+    def test_sync_terminal_background_uses_active_theme(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = "langchain-light"
+        app.sync_terminal_background()
+
+        assert calls == [theme.LIGHT_COLORS.background]
+
+    def test_sync_terminal_background_uses_custom_theme_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli import terminal_escape, theme
+
+        app = DeepAgentsApp()
+        calls: list[str] = []
+        entry = theme.ThemeEntry(
+            label="Custom Test",
+            dark=True,
+            colors=theme.DARK_COLORS,
+            custom=True,
+        )
+        c = entry.colors
+        app.register_theme(
+            TextualTheme(
+                name="custom-test",
+                primary=c.primary,
+                secondary=c.secondary,
+                accent=c.accent,
+                foreground=c.foreground,
+                background=c.background,
+                surface=c.surface,
+                panel=c.panel,
+                warning=c.warning,
+                error=c.error,
+                success=c.success,
+                dark=entry.dark,
+            )
+        )
+        monkeypatch.setattr(theme, "get_registry", lambda: {"custom-test": entry})
+        monkeypatch.setattr(
+            theme,
+            "get_theme_colors",
+            MagicMock(side_effect=AssertionError("custom themes use entry colors")),
+        )
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app.theme = "custom-test"
+        app.sync_terminal_background()
+
+        assert calls == [theme.DARK_COLORS.background]
+
+    def test_sync_terminal_background_swallows_terminal_errors(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        app = DeepAgentsApp()
+
+        def _raise(_color: str) -> bool:
+            msg = "terminal unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_background", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.app"):
+            app.sync_terminal_background()
+
+        assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_exit_resets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "reset_terminal_background",
+            lambda: calls.append(True) or True,
+        )
+        app = DeepAgentsApp()
+
+        with patch.object(App, "exit") as app_exit:
+            app.exit()
+
+        assert calls == [True]
+        app_exit.assert_called_once()
+
+
 class TestSlashCommandBypass:
     """Test that certain slash commands bypass the queue gate."""
 
@@ -7964,3 +8091,128 @@ class TestExternalBypassFieldHonored:
 
 # Local import for BypassTier in TestExternalBypassFieldHonored.
 from deepagents_cli.command_registry import BypassTier  # noqa: E402
+
+
+class TestSetSpinnerTerminalProgress:
+    """`_set_spinner` should drive the `OSC 9;4` terminal progress indicator."""
+
+    async def test_status_triggers_indeterminate_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-None spinner status should set indeterminate progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+        def _record_set(*args: object, **kwargs: object) -> bool:
+            calls.append(("set", args, dict(kwargs)))
+            return True
+
+        def _record_clear() -> bool:
+            calls.append(("clear", (), {}))
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+        assert any(
+            entry[0] == "set"
+            and entry[2].get("state")
+            is terminal_escape.TerminalProgressState.INDETERMINATE
+            for entry in calls
+        )
+
+    async def test_none_status_clears_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hiding the spinner should clear terminal progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert "clear" in calls
+
+    async def test_consecutive_set_spinner_calls_keep_emitting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-showing after a clear should re-emit indeterminate progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-rep")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await app._set_spinner("Thinking")
+            await app._set_spinner(None)
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+        assert calls.count("set") >= 3
+        assert "clear" in calls
+
+    async def test_set_spinner_swallows_terminal_escape_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unexpected exceptions from `terminal_escape` must not break the UI."""
+        from deepagents_cli import terminal_escape
+
+        def _boom_set(*_args: object, **_kwargs: object) -> bool:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        def _boom_clear() -> bool:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _boom_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _boom_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-boom")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Must not raise even though both calls explode.
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()

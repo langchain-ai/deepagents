@@ -1432,13 +1432,22 @@ async def _persist_context_tokens(
 ) -> None:
     """Best-effort persist of the context token count into graph state.
 
+    The `aupdate_state` call is wrapped in `tracing_context(enabled=False)` so
+    this purely-internal bookkeeping write does not surface as a separate
+    `UpdateState` run in LangSmith. `_context_tokens` is already marked
+    `PrivateStateAttr`, but `aupdate_state` itself creates its own traced run
+    that would otherwise clutter the project's traces.
+
     Args:
         agent: The LangGraph agent (must support `aupdate_state`).
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
+    from langsmith import tracing_context
+
     try:
-        await agent.aupdate_state(config, {"_context_tokens": tokens})
+        with tracing_context(enabled=False):
+            await agent.aupdate_state(config, {"_context_tokens": tokens})
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning(
             "Could not persist _context_tokens=%d (network): %s; "

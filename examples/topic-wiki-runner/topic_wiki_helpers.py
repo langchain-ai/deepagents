@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shutil
@@ -137,15 +138,36 @@ def _topic_dir_for(topic: str, explicit: str | None) -> Path:
 
 def _build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
-    parser = argparse.ArgumentParser(description="Topic wiki runner (DeepAgents + LangSmith Hub CLI)")
-    parser.add_argument("--mode", required=True, choices=["init", "ingest", "query", "lint"])
+    parser = argparse.ArgumentParser(
+        description="Topic wiki runner (DeepAgents + LangSmith Hub CLI)"
+    )
+    parser.add_argument(
+        "--mode", required=True, choices=["init", "ingest", "query", "lint"]
+    )
     parser.add_argument("--topic", required=True, help="Topic name")
-    parser.add_argument("--hub-id", default=None, help="Hub repo id [OWNER/]REPO (default: -/<topic-slug>)")
-    parser.add_argument("--topic-dir", default=None, help="Local topic directory for init mode")
-    parser.add_argument("--source", action="append", default=[], help="Source file for ingest mode (repeatable)")
-    parser.add_argument("--note", default=None, help="Optional note to include in ingest/lint prompt")
-    parser.add_argument("--question", default=None, help="Question to answer in query mode")
-    parser.add_argument("--model", default=None, help="Optional model override for create_deep_agent")
+    parser.add_argument(
+        "--hub-id",
+        default=None,
+        help="Hub repo id [OWNER/]REPO (default: -/<topic-slug>)",
+    )
+    parser.add_argument(
+        "--topic-dir", default=None, help="Local topic directory for init mode"
+    )
+    parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Source file for ingest mode (repeatable)",
+    )
+    parser.add_argument(
+        "--note", default=None, help="Optional note to include in ingest/lint prompt"
+    )
+    parser.add_argument(
+        "--question", default=None, help="Question to answer in query mode"
+    )
+    parser.add_argument(
+        "--model", default=None, help="Optional model override for create_deep_agent"
+    )
     return parser
 
 
@@ -227,7 +249,9 @@ def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     _ensure_hub_command_support(binary)
     cmd = Path(binary).name
 
-    result = subprocess.run([binary, *args], capture_output=True, text=True, check=False)  # noqa: S603
+    result = subprocess.run(
+        [binary, *args], capture_output=True, text=True, check=False
+    )  # noqa: S603
     if result.returncode == 0:
         return result
 
@@ -243,7 +267,9 @@ def _run_langsmith_cli(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     raise TopicWikiError(msg)
 
 
-def _parse_cli_json_output(result: subprocess.CompletedProcess[str]) -> dict[str, object] | None:
+def _parse_cli_json_output(
+    result: subprocess.CompletedProcess[str],
+) -> dict[str, object] | None:
     """Parse JSON stdout from a langsmith CLI response."""
     stdout = (result.stdout or "").strip()
     if not stdout:
@@ -268,7 +294,9 @@ def _app_base_url() -> str:
     return f"{scheme}://{host}"
 
 
-def _resolve_hub_url(hub_id: str, deps: CliDeps, push_result: subprocess.CompletedProcess[str]) -> str | None:
+def _resolve_hub_url(
+    hub_id: str, deps: CliDeps, push_result: subprocess.CompletedProcess[str]
+) -> str | None:
     """Resolve a browser URL for the hub repo after sync."""
     payload = _parse_cli_json_output(push_result) or {}
 
@@ -334,12 +362,73 @@ def _hub_cli_repo_arg(hub_id: str) -> str:
     return hub_id
 
 
+def _iter_tree_paths(root_dir: Path) -> Iterator[Path]:
+    """Yield all paths rooted under a workspace directory."""
+    yield root_dir
+    for current_root, dirnames, filenames in os.walk(
+        root_dir, topdown=True, followlinks=False
+    ):
+        parent = Path(current_root)
+        for dirname in dirnames:
+            yield parent / dirname
+        for filename in filenames:
+            yield parent / filename
+
+
+def _ensure_no_symlinks(root_dir: Path) -> None:
+    """Reject workspace trees that contain symlinks."""
+    for path in _iter_tree_paths(root_dir):
+        if not path.is_symlink():
+            continue
+        with suppress(ValueError):
+            relative = path.relative_to(root_dir)
+            msg = (
+                f"Symlinks are not supported in topic wiki workspaces for security reasons: "
+                f"{relative}"
+            )
+            raise TopicWikiError(msg)
+        msg = f"Symlinks are not supported in topic wiki workspaces for security reasons: {path}"
+        raise TopicWikiError(msg)
+
+
+def _safe_write_text(path: Path, content: str, *, append: bool = False) -> None:
+    """Write UTF-8 text while refusing symlink targets."""
+    if path.is_symlink():
+        msg = f"Refusing to write to symlink path: {path}"
+        raise TopicWikiError(msg)
+
+    flags = os.O_WRONLY | os.O_CREAT
+    if append:
+        flags |= os.O_APPEND
+    else:
+        flags |= os.O_TRUNC
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+
+    try:
+        descriptor = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            msg = f"Refusing to write to symlink path: {path}"
+            raise TopicWikiError(msg) from exc
+        raise
+
+    mode = "a" if append else "w"
+    with os.fdopen(descriptor, mode, encoding="utf-8") as handle:
+        handle.write(content)
+
+
 def _write_if_missing(path: Path, content: str) -> None:
     """Write file content only when the target does not already exist."""
+    if path.is_symlink():
+        msg = f"Refusing to write to symlink path: {path}"
+        raise TopicWikiError(msg)
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    _safe_write_text(path, content)
 
 
 def _agents_md(topic: str) -> str:
@@ -354,20 +443,26 @@ def _agents_md(topic: str) -> str:
     )
 
 
-def _ensure_scaffold(topic_dir: Path, topic: str, *, overwrite_agents: bool = False) -> None:
+def _ensure_scaffold(
+    topic_dir: Path, topic: str, *, overwrite_agents: bool = False
+) -> None:
     """Ensure required topic workspace files and directories exist."""
     (topic_dir / "raw").mkdir(parents=True, exist_ok=True)
     (topic_dir / "wiki").mkdir(parents=True, exist_ok=True)
-    _write_if_missing(topic_dir / "wiki" / "index.md", f"# {topic} Wiki\n\n## Pages\n\n- _No pages yet._\n")
+    _write_if_missing(
+        topic_dir / "wiki" / "index.md",
+        f"# {topic} Wiki\n\n## Pages\n\n- _No pages yet._\n",
+    )
     _write_if_missing(topic_dir / "wiki" / "log.md", "# Change Log\n")
 
     agents_path = topic_dir / "AGENTS.md"
     if overwrite_agents or not agents_path.exists():
-        agents_path.write_text(_agents_md(topic), encoding="utf-8")
+        _safe_write_text(agents_path, _agents_md(topic))
 
 
 def _validate_text_only_directory(root_dir: Path) -> None:
     """Validate that all files in a directory are UTF-8 text with allowed suffixes."""
+    _ensure_no_symlinks(root_dir)
     for file_path in root_dir.rglob("*"):
         if not file_path.is_file():
             continue
@@ -413,11 +508,11 @@ def _stage_sources(sources: Sequence[Path], workspace_dir: Path) -> list[Path]:
         suffix = source.suffix
         stem = source.stem
         counter = 2
-        while destination.exists():
+        while destination.exists() or destination.is_symlink():
             destination = raw_dir / f"{stem}-{counter}{suffix}"
             counter += 1
 
-        destination.write_text(text, encoding="utf-8")
+        _safe_write_text(destination, text)
         staged.append(destination)
 
     return staged
@@ -462,7 +557,11 @@ def _refresh_index(topic: str, workspace_dir: Path) -> None:
     wiki_dir = workspace_dir / "wiki"
     wiki_dir.mkdir(parents=True, exist_ok=True)
 
-    pages = [path for path in sorted(wiki_dir.glob("*.md")) if path.name not in {"index.md", "log.md"}]
+    pages = [
+        path
+        for path in sorted(wiki_dir.glob("*.md"))
+        if path.name not in {"index.md", "log.md"}
+    ]
 
     lines = [f"# {topic} Wiki", "", "## Pages", ""]
     if not pages:
@@ -472,7 +571,7 @@ def _refresh_index(topic: str, workspace_dir: Path) -> None:
             title = page.stem.replace("-", " ").replace("_", " ").strip().title()
             lines.append(f"- [{title}]({page.name})")
 
-    (wiki_dir / "index.md").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _safe_write_text((wiki_dir / "index.md"), "\n".join(lines).rstrip() + "\n")
 
 
 def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
@@ -480,8 +579,7 @@ def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
     log_path = workspace_dir / "wiki" / "log.md"
     _write_if_missing(log_path, "# Change Log\n")
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(f"- {timestamp} | {mode} | {detail}\n")
+    _safe_write_text(log_path, f"- {timestamp} | {mode} | {detail}\n", append=True)
     _normalize_log_chronology(log_path)
 
 
@@ -528,11 +626,18 @@ def _normalize_log_chronology(log_path: Path) -> None:
         sortable_entries.append((parsed, index, line))
 
     sortable_entries.sort(key=lambda item: (item[0], item[1]))
-    sorted_lines = header_lines + [line for _, _, line in sortable_entries] + unsortable_entries + passthrough_lines
-    log_path.write_text("\n".join(sorted_lines).rstrip() + "\n", encoding="utf-8")
+    sorted_lines = (
+        header_lines
+        + [line for _, _, line in sortable_entries]
+        + unsortable_entries
+        + passthrough_lines
+    )
+    _safe_write_text(log_path, "\n".join(sorted_lines).rstrip() + "\n")
 
 
-def _build_ingest_prompt(topic: str, staged_paths: Sequence[Path], note: str | None) -> str:
+def _build_ingest_prompt(
+    topic: str, staged_paths: Sequence[Path], note: str | None
+) -> str:
     """Build the ingest prompt for staged source material."""
     memory_paths = [f"/memories/raw/{path.name}" for path in staged_paths]
     source_block = "\n".join(f"- {path}" for path in memory_paths)
@@ -592,8 +697,12 @@ def _build_lint_prompt(topic: str, note: str | None) -> str:
 def _permissions() -> list[FilesystemPermission]:
     """Define filesystem write policy for topic wiki operations."""
     return [
-        FilesystemPermission(operations=["write"], paths=["/memories/raw/**"], mode="deny"),
-        FilesystemPermission(operations=["write"], paths=["/memories/wiki/**"], mode="allow"),
+        FilesystemPermission(
+            operations=["write"], paths=["/memories/raw/**"], mode="deny"
+        ),
+        FilesystemPermission(
+            operations=["write"], paths=["/memories/wiki/**"], mode="allow"
+        ),
     ]
 
 
@@ -613,7 +722,9 @@ def _create_langsmith_sandbox_backend() -> Iterator[SandboxBackendProtocol]:
 
     resolved_snapshot = os.getenv("TOPIC_WIKI_SANDBOX_SNAPSHOT", _DEFAULT_SNAPSHOT_NAME)
     docker_image = os.getenv("TOPIC_WIKI_SANDBOX_IMAGE", _DEFAULT_DOCKER_IMAGE)
-    fs_capacity_raw = os.getenv("TOPIC_WIKI_SANDBOX_FS_CAPACITY_BYTES", str(_DEFAULT_FS_CAPACITY))
+    fs_capacity_raw = os.getenv(
+        "TOPIC_WIKI_SANDBOX_FS_CAPACITY_BYTES", str(_DEFAULT_FS_CAPACITY)
+    )
     try:
         fs_capacity = int(fs_capacity_raw)
     except ValueError as exc:
@@ -622,9 +733,15 @@ def _create_langsmith_sandbox_backend() -> Iterator[SandboxBackendProtocol]:
 
     client = SandboxClient(api_key=env_key)
     snapshots = client.list_snapshots(name_contains=resolved_snapshot)
-    has_ready_snapshot = any(snap.name == resolved_snapshot and snap.status == "ready" for snap in snapshots)
+    has_ready_snapshot = any(
+        snap.name == resolved_snapshot and snap.status == "ready" for snap in snapshots
+    )
     if not has_ready_snapshot:
-        client.create_snapshot(name=resolved_snapshot, docker_image=docker_image, fs_capacity_bytes=fs_capacity)
+        client.create_snapshot(
+            name=resolved_snapshot,
+            docker_image=docker_image,
+            fs_capacity_bytes=fs_capacity,
+        )
 
     sandbox = client.create_sandbox(snapshot_name=resolved_snapshot)
     try:
@@ -634,11 +751,15 @@ def _create_langsmith_sandbox_backend() -> Iterator[SandboxBackendProtocol]:
             client.delete_sandbox(sandbox.name)
 
 
-def _run_agent_mode(workspace_dir: Path, topic: str, prompt: str, model: str | None) -> str:
+def _run_agent_mode(
+    workspace_dir: Path, topic: str, prompt: str, model: str | None
+) -> str:
     """Execute one agent operation against the pulled workspace."""
     with _create_langsmith_sandbox_backend() as sandbox_backend:
         memories_backend = FilesystemBackend(root_dir=workspace_dir, virtual_mode=True)
-        backend = CompositeBackend(default=sandbox_backend, routes={"/memories/": memories_backend})
+        backend = CompositeBackend(
+            default=sandbox_backend, routes={"/memories/": memories_backend}
+        )
         agent = create_deep_agent(
             model=model,
             backend=backend,
@@ -656,38 +777,45 @@ def _run_agent_mode(workspace_dir: Path, topic: str, prompt: str, model: str | N
 def _run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Initialize a local topic repo and push its first hub revision."""
     config.topic_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_no_symlinks(config.topic_dir)
     _ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
 
     repo_name = _repo_name_from_hub_id(config.hub_id)
-    deps.run_langsmith_cli([
-        "hub",
-        "init",
-        "--type",
-        "agent",
-        "--dir",
-        str(config.topic_dir),
-        "--name",
-        repo_name,
-        "--force",
-    ])
+    deps.run_langsmith_cli(
+        [
+            "hub",
+            "init",
+            "--type",
+            "agent",
+            "--dir",
+            str(config.topic_dir),
+            "--name",
+            repo_name,
+            "--force",
+        ]
+    )
 
     _ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
     _validate_text_only_directory(config.topic_dir)
 
-    push_result = deps.run_langsmith_cli([
-        "hub",
-        "push",
-        _hub_cli_repo_arg(config.hub_id),
-        "--type",
-        "agent",
-        "--dir",
-        str(config.topic_dir),
-    ])
+    push_result = deps.run_langsmith_cli(
+        [
+            "hub",
+            "push",
+            _hub_cli_repo_arg(config.hub_id),
+            "--type",
+            "agent",
+            "--dir",
+            str(config.topic_dir),
+        ]
+    )
     hub_url = _resolve_hub_url(config.hub_id, deps, push_result)
     return RunResult(answer=None, hub_url=hub_url)
 
 
-def _run_ingest_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDeps) -> None:
+def _run_ingest_workspace(
+    config: RunnerConfig, workspace_dir: Path, deps: CliDeps
+) -> None:
     """Run ingest mode against a pulled workspace directory."""
     staged = _stage_sources(config.sources, workspace_dir)
     prompt = _build_ingest_prompt(config.topic, staged, config.note)
@@ -700,7 +828,9 @@ def _run_ingest_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDe
     _append_log_entry(workspace_dir, "ingest", detail)
 
 
-def _run_query_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDeps) -> str:
+def _run_query_workspace(
+    config: RunnerConfig, workspace_dir: Path, deps: CliDeps
+) -> str:
     """Run query mode and return the model answer."""
     question = config.question or ""
     prompt = _build_query_prompt(config.topic, question)
@@ -709,7 +839,9 @@ def _run_query_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDep
     return answer
 
 
-def _run_lint_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDeps) -> None:
+def _run_lint_workspace(
+    config: RunnerConfig, workspace_dir: Path, deps: CliDeps
+) -> None:
     """Run lint mode to improve wiki consistency and links."""
     prompt = _build_lint_prompt(config.topic, config.note)
     deps.run_agent_mode(workspace_dir, config.topic, prompt, config.model)
@@ -722,15 +854,18 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
     with deps.tempdir_factory() as temp_dir:
         workspace_dir = Path(temp_dir)
 
-        deps.run_langsmith_cli([
-            "hub",
-            "pull",
-            _hub_cli_repo_arg(config.hub_id),
-            "--dir",
-            str(workspace_dir),
-            "--yes",
-        ])
+        deps.run_langsmith_cli(
+            [
+                "hub",
+                "pull",
+                _hub_cli_repo_arg(config.hub_id),
+                "--dir",
+                str(workspace_dir),
+                "--yes",
+            ]
+        )
 
+        _ensure_no_symlinks(workspace_dir)
         _ensure_scaffold(workspace_dir, config.topic)
 
         if config.mode == "ingest":
@@ -743,15 +878,17 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
             answer = None
 
         _validate_text_only_directory(workspace_dir)
-        push_result = deps.run_langsmith_cli([
-            "hub",
-            "push",
-            _hub_cli_repo_arg(config.hub_id),
-            "--type",
-            "agent",
-            "--dir",
-            str(workspace_dir),
-        ])
+        push_result = deps.run_langsmith_cli(
+            [
+                "hub",
+                "push",
+                _hub_cli_repo_arg(config.hub_id),
+                "--type",
+                "agent",
+                "--dir",
+                str(workspace_dir),
+            ]
+        )
         hub_url = _resolve_hub_url(config.hub_id, deps, push_result)
         return RunResult(answer=answer, hub_url=hub_url)
 

@@ -763,6 +763,109 @@ class TestToolCallMessageAwaitingApproval:
             assert msg.display is True
 
 
+class TestToolCallMessageRejectReason:
+    """Tests for surfacing a user-supplied HITL reject reason."""
+
+    async def test_set_rejected_with_reason_renders_line(self) -> None:
+        """`set_rejected(reason=...)` should display the reason beneath the status."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="please dry-run first")
+            await pilot.pause()
+            assert msg._reject_reason == "please dry-run first"
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+
+    async def test_set_rejected_without_reason_hides_line(self) -> None:
+        """`set_rejected()` with no reason keeps the reason line hidden."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected()
+            await pilot.pause()
+            assert msg._reject_reason is None
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is False
+
+    async def test_blank_reason_does_not_set_attribute(self) -> None:
+        """Whitespace-only reasons are treated as no reason."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="   ")
+            await pilot.pause()
+            assert msg._reject_reason is None
+
+    async def test_reason_with_markup_brackets_renders_safely(self) -> None:
+        """User-controlled reasons must round-trip through Rich markup unscathed.
+
+        `from_markup` with `$reason` substitution should escape any literal
+        bracket sequences so the reason line never throws a MarkupError.
+        """
+        from textual.app import App, ComposeResult
+
+        hostile = "[bold red]boom[/bold red] [/dim] $x"
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason=hostile)
+            await pilot.pause()
+            assert msg._reject_reason == hostile
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+            rendered = str(msg._reject_reason_widget.render())
+            assert "boom" in rendered
+            assert "$x" in rendered
+
+
 class TestUserMessageHighlighting:
     """Test UserMessage highlighting of `@mentions` and `/commands`."""
 

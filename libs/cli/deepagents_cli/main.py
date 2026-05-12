@@ -1432,6 +1432,13 @@ def _print_session_stats(stats: Any, console: Any) -> None:  # noqa: ANN401
     print_usage_table(stats, stats.wall_time_seconds, console)
 
 
+def _debug_mcp_project_trust_enabled() -> bool:
+    """Return whether the project MCP approval prompt debug path is enabled."""
+    from deepagents_cli._env_vars import DEBUG_MCP_PROJECT_TRUST, is_env_truthy
+
+    return is_env_truthy(DEBUG_MCP_PROJECT_TRUST)
+
+
 def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     """Check whether project-level MCP servers should be trusted.
 
@@ -1461,6 +1468,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     )
     from deepagents_cli.project_utils import ProjectContext
 
+    debug_prompt = _debug_mcp_project_trust_enabled()
+
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
         config_paths = discover_mcp_configs(project_context=project_context)
@@ -1468,7 +1477,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         return None
 
     _, project_configs = classify_discovered_configs(config_paths)
-    if not project_configs:
+    if not project_configs and not debug_prompt:
         return None
 
     # Merge configs by server name (last wins, matching the loader) so that
@@ -1482,6 +1491,15 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     ]
     merged_config = merge_mcp_configs(loaded_configs)
     all_servers = extract_project_server_summaries(merged_config)
+
+    if not all_servers and debug_prompt:
+        all_servers = [
+            (
+                "debug-project-mcp",
+                "stdio",
+                "uvx deepagents-debug-mcp --sample-project-server",
+            )
+        ]
 
     if not all_servers:
         return None
@@ -1501,12 +1519,16 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     )
     fingerprint = compute_config_fingerprint(project_configs)
 
-    if is_project_mcp_trusted(project_root, fingerprint):
+    if not debug_prompt and is_project_mcp_trusted(project_root, fingerprint):
         return True
 
     # Interactive prompt
     from rich.console import Console as _Console
 
+    docs_url = (
+        "https://docs.langchain.com/oss/python/deepagents/cli/"
+        "mcp-tools#project-level-trust"
+    )
     prompt_console = _Console(stderr=True)
     prompt_console.print()
     prompt_console.print(
@@ -1515,6 +1537,11 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     for name, kind, summary in all_servers:
         prompt_console.print(f'  [bold]"{name}"[/bold] ({kind}):  {summary}')
     prompt_console.print()
+    prompt_console.print(
+        f"[dim]Learn more: [link={docs_url}]{docs_url}[/link][/dim]",
+        highlight=False,
+    )
+    prompt_console.print()
 
     try:
         answer = input("Allow? [y/N]: ").strip().lower()
@@ -1522,7 +1549,8 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
         answer = ""
 
     if answer == "y":
-        trust_project_mcp(project_root, fingerprint)
+        if not debug_prompt:
+            trust_project_mcp(project_root, fingerprint)
         return True
     return False
 
@@ -2115,6 +2143,8 @@ def cli_main() -> None:
             mcp_trust_decision = _check_mcp_project_trust(
                 trust_flag=getattr(args, "trust_project_mcp", False),
             )
+            if _debug_mcp_project_trust_enabled():
+                sys.exit(0)
 
             # Run Textual CLI
             return_code = 0

@@ -21,9 +21,9 @@ jobs:
       working-directory: "libs/deepagents"
     secrets: inherit
 
-  benchmark-cli:
-    name: "⏱️ Benchmark cli"
+  benchmark-code:
+    name: "⏱️ Benchmark code"
     uses: ./.github/workflows/_benchmark.yml
     with:
-      working-directory: "libs/cli"
+      working-directory: "libs/code"
     secrets: inherit

@@ -1,5 +1,7 @@
 # Threat Model: deepagents-code
 
+> **Note:** `deepagents-code` was forked from `deepagents-cli` at v0.1.0. References to "the CLI" throughout this document describe the `deepagents-code` runtime.
+
 > Generated: 2026-03-28 | Commit: e859077f | Scope: libs/code only
 
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.

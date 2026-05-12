@@ -6,7 +6,7 @@
 [![Twitter](https://img.shields.io/twitter/url/https/twitter.com/langchain_oss.svg?style=social&label=Follow%20%40LangChain)](https://x.com/langchain_oss)
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/code/images/tui.png" alt="Deep Agents CLI" width="600"/>
+  <img src="https://raw.githubusercontent.com/langchain-ai/deepagents/main/libs/code/images/tui.png" alt="Deep Agents Code" width="600"/>
 </p>
 
 ## Quick Install
@@ -28,17 +28,17 @@ Or install directly with `uv`:
 uv tool install 'deepagents-code[nvidia,ollama]'
 ```
 
-Run the CLI:
+Run:
 
 ```bash
-deepagents
+dcode
 ```
 
 ## 🤔 What is this?
 
 The fastest way to start using Deep Agents. `deepagents-code` is a pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM that supports tool calling. One install command and you're up and running, no code required.
 
-**What the CLI adds on top of the SDK:**
+**What `deepagents-code` adds on top of the SDK:**
 
 - **Interactive TUI** — rich terminal interface with streaming responses
 - **Conversation resume** — pick up where you left off across sessions

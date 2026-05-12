@@ -22,7 +22,7 @@ classifiers = [
 version = "0.0.5"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "deepagents>=0.5.0,<0.7.0",
+    "deepagents>=0.6.0,<0.7.0",
     "daytona",
 ]
 

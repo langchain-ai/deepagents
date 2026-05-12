@@ -148,7 +148,6 @@ on:
         options:
           - ""
           - quickjs
-          - langchain
       notes:
         description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
           retry reason). Shown on the run summary; does not affect eval

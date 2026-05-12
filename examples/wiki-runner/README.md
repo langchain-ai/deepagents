@@ -2,6 +2,16 @@
 
 A script-first DeepAgents example that builds a persistent wiki and syncs it through `langsmith hub` commands.
 
+## How it works
+
+This example implements a workflow where an agent researches a topic and writes the result into a Context Hub entry.
+
+The agent is given source material and questions, then gathers information, organizes it, and incrementally builds a reusable wiki that future agents can reference. Over time, the wiki evolves through ingest, query, and lint passes instead of restarting from scratch on every run.
+
+Queries are powered by Deep Agents (`create_deep_agent`) running in the sandbox-backed workflow: the query pass reads the current wiki state, reasons over relevant pages, produces a grounded answer, and can file durable results back into `wiki/query/` when useful.
+
+Each run syncs updates to Context Hub so teammates can review changes, comment, and promote versions.
+
 ## Structure
 
 - `runner.py` - thin CLI entrypoint
@@ -29,71 +39,65 @@ A script-first DeepAgents example that builds a persistent wiki and syncs it thr
 ## Requirements
 
 - Python 3.11+
-- LangSmith CLI installed as `langsmith` with `hub` commands available
-- Access to `langsmith.sandbox` (via `langsmith[sandbox]`)
+- `langsmith` with `hub` commands available (installed in the example env by `uv sync`)
 - `LANGSMITH_API_KEY` set for `ingest`, `query`, and `lint` modes
 
 ## Setup
 
 ```bash
-cd examples/wiki-runner
-uv sync
+# From the deepagents repo root:
+uv sync --project examples/wiki-runner
 ```
 
 ## Preflight checks
 
 ```bash
-# Verify your CLI supports Hub commands.
-langsmith hub --help
-
-# Verify init exposes an internal source option.
-langsmith hub init --help
+# Verify Hub commands from the example environment.
+uv run --project examples/wiki-runner langsmith hub --help
 
 # Verify auth env var for sandbox-backed modes.
 echo "${LANGSMITH_API_KEY:+set}"
 ```
 
+`init` auto-detects available source flags from `hub init --help`. If your CLI
+omits source flags, the runner still proceeds. When Hub metadata exposes a
+source field, the runner enforces `source=internal`.
+
 ## Usage
 
 ```bash
-# Initialize workspace + first Hub push
-uv run python runner.py \
+# Initialize a wiki and publish first Context Hub revision
+uv run --project examples/wiki-runner \
+  python examples/wiki-runner/runner.py \
   --mode init \
-  --repo "ada-lovelace-wiki" \
-  --description "Persistent research wiki about Ada Lovelace"
+  --repo "ada-lovelace-wiki"
 
-# Initialize with explicit owner
-uv run python runner.py \
-  --mode init \
-  --repo "ada-lovelace-wiki" \
-  --description "Persistent research wiki about Ada Lovelace" \
-  --owner "acme"
-
-# Default ingest (no approval)
-uv run python runner.py \
+# Ingest source notes into canonical wiki pages (file + folder)
+uv run --project examples/wiki-runner \
+  python examples/wiki-runner/runner.py \
   --mode ingest \
   --repo "ada-lovelace-wiki" \
   --source ./notes/ada.md \
-  --source ./speeches/
+  --source ./notes/speeches/
 
-# Optional review + confirmation before apply
-uv run python runner.py \
-  --mode ingest \
-  --repo "ada-lovelace-wiki" \
-  --source ./notes/timeline.txt \
-  --source ./speeches/ \
-  --review
-
-# Query from wiki
-uv run python runner.py \
+# Ask grounded questions against the maintained wiki
+uv run --project examples/wiki-runner \
+  python examples/wiki-runner/runner.py \
   --mode query \
   --repo "ada-lovelace-wiki" \
   --question "What did Ada contribute to computing?"
 
-# Lint wiki consistency/linking
-uv run python runner.py \
+# Run a wiki maintenance pass and publish an updated Context Hub revision
+# (fix links, deduplicate pages, refresh index.md, append log.md entry)
+uv run --project examples/wiki-runner \
+  python examples/wiki-runner/runner.py \
   --mode lint \
   --repo "ada-lovelace-wiki"
+
+# Optional flags:
+#   --owner "acme"       # when repo is under an explicit owner
+#   --review             # ingest only: review before apply
+#   --description "..."  # init only: set Hub repo description
 ```
 
 ## Ingest workflow

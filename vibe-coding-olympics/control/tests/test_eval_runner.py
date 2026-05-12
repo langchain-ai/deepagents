@@ -122,7 +122,7 @@ class TestEvalRunner(unittest.TestCase):
 
     def test_run_eval_falls_back_on_subprocess_timeout(self) -> None:
         async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:
-            msg = "judge subprocess exceeded 180s"
+            msg = "judge subprocess exceeded 15s"
             raise TimeoutError(msg)
 
         with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
@@ -139,6 +139,30 @@ class TestEvalRunner(unittest.TestCase):
 
         self.assertTrue(result.fallback)
         self.assertIn("exceeded", result.fallback_reason or "")
+
+    def test_run_eval_falls_back_when_llm_axes_are_missing(self) -> None:
+        async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:
+            work_dir = kwargs["work_dir"]
+            round_num = kwargs["round_num"]
+            name = kwargs["name"]
+            path = Path(work_dir) / f"round-{round_num}-{name}.json"
+            path.write_text(json.dumps({"axes": {"accessibility": 1.0}}))
+            return 0, b"", b""
+
+        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+            with TemporaryDirectory() as tmp:
+                result = asyncio.run(
+                    eval_runner.run_eval(
+                        url="http://x/",
+                        site_name="Alice",
+                        prompt="p",
+                        round_num=1,
+                        work_dir=Path(tmp),
+                    )
+                )
+
+        self.assertTrue(result.fallback)
+        self.assertEqual(result.fallback_reason, "judge output missing LLM scores")
 
     def test_run_eval_falls_back_when_judge_output_json_missing(self) -> None:
         async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:

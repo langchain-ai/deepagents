@@ -110,6 +110,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("timer-warning", response.text)
         self.assertIn("function syncTimerWarning", response.text)
         self.assertIn("threshold_secs", response.text)
+        self.assertIn("setInterval(refreshState, 250)", response.text)
+        self.assertIn("if (activeView === view) return;", response.text)
+        self.assertIn("function updateText(element, value)", response.text)
         self.assertNotIn("http://127.0.0.1:8889", response.text)
         self.assertNotIn('class="ndi-feed', response.text)
         self.assertNotIn("__INLINE_", response.text)
@@ -160,7 +163,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("btn-smoke-layout-p1", response.text)
         self.assertNotIn("smoke-overlay-link", response.text)
         self.assertIn("function splitOverlayAndObs()", response.text)
-        self.assertIn("return switchObsScene('coding');", response.text)
+        self.assertIn("Promise.all([", response.text)
+        self.assertIn("switchObsScene('coding')", response.text)
         self.assertIn("function focusOverlayAndObs(player)", response.text)
         self.assertIn(
             "switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus')",

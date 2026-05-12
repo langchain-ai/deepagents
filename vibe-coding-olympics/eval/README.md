@@ -1,6 +1,6 @@
 # `eval/` — Vibe Coding Olympics Judge
 
-Single-site website scoring CLI + async library. LLM-as-judge across 6 axes plus one deterministic accessibility axis from axe-core. Caller parallelizes for multi-site rounds and owns aggregation.
+Single-site website scoring CLI + async library. A single LLM-as-judge call returns 6 axis scores, and axe-core provides one deterministic accessibility axis. Caller parallelizes for multi-site rounds and owns aggregation.
 
 ## Install
 
@@ -98,7 +98,7 @@ Library calls are pure — no files written, no LangSmith calls. Caller opts in.
 | `interpretation_quality` | LLM + both | Defensible reading of the (often vague) prompt |
 | `accessibility` | axe-core | WCAG 2.0 A/AA violations, serious-impact doubled |
 
-Judge model: `openai:gpt-5.5` (hard-coded in `evaluators.py`).
+Judge model: OpenAI `gpt-5.5` with low reasoning effort (hard-coded in `evaluators.py`).
 
 ## Aggregation
 
@@ -177,7 +177,7 @@ total = aggregate(score.axes, CREATIVITY_ROUND)
 
 ## Known limits
 
-- Judge model is hard-coded — change in `evaluators.py` and restart
+- Judge model and reasoning effort are hard-coded — change in `evaluators.py` and restart
 - Single viewport (1280×900) — no mobile scoring
 - axe-core loads from CDN — audit cleanly skips (axis = `None`) when offline
 - Axes are a fixed set — editing requires a code change; not runtime-configurable

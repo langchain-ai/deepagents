@@ -153,7 +153,7 @@ The control server is the only thing that runs the LLM judge. When the round tim
 4. Aggregates per-axis scores into a single `[0, 1]` overall, scales to `0..10`, and forwards them to the OBS runner's `end` transition.
 5. Stores per-axis results so the control website can render them and the OBS composite can pick them up.
 
-If the judge subprocess fails (timeout, non-zero exit, missing/malformed JSON) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.
+If the judge subprocess fails (15-second timeout, non-zero exit, missing/malformed JSON, or no usable LLM scores) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.
 
 The **Override scores** modal on the control website calls `/api/round/override-end` and is intended only for smoke tests; it skips the judge and writes the entered scores directly to OBS.
 

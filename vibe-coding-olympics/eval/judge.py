@@ -1,6 +1,6 @@
 """Single-site judge CLI for the Vibe Coding Olympics.
 
-Captures a website, runs the LLM-as-judge evaluators, scores accessibility
+Captures a website, runs the LLM-as-judge evaluator, scores accessibility
 from an axe-core audit, prints a per-axis table, writes JSON, and
 optionally logs to LangSmith. Callers that want to evaluate multiple sites
 should call `evaluate_site()` concurrently with `asyncio.gather`.
@@ -22,7 +22,7 @@ from typing import Any
 
 from aggregate import score_accessibility
 from capture import AccessibilityReport, Capture, capture_site
-from evaluators import EVALUATORS_BY_AXIS
+from evaluators import score_llm_axes
 from langsmith_log import log_to_langsmith
 
 
@@ -52,9 +52,7 @@ _AXIS_DISPLAY: dict[str, str] = {
 def _run_llm_evaluators(
     prompt: str, html: str, screenshot_b64: str
 ) -> dict[str, float | None]:
-    """Run every LLM evaluator against one captured site.
-
-    Each evaluator is isolated — a single failure never poisons the others.
+    """Run the LLM evaluator against one captured site.
 
     Args:
         prompt: The original prompt given to the contestant.
@@ -64,20 +62,23 @@ def _run_llm_evaluators(
     Returns:
         Mapping of axis name to score in [0.0, 1.0], or `None` on failure.
     """
-    scores: dict[str, float | None] = {}
-    for axis, evaluator in EVALUATORS_BY_AXIS.items():
-        try:
-            result = evaluator(
-                inputs=prompt,
-                outputs=html,
-                screenshot_b64=screenshot_b64,
-            )
-            scores[axis] = float(result["score"])
-        except Exception as exc:
-            msg = f"Evaluator '{axis}' failed: {exc}"
-            print(f"  WARNING: {msg}", file=sys.stderr)
-            scores[axis] = None
-    return scores
+    try:
+        return score_llm_axes(
+            prompt=prompt,
+            html=html,
+            screenshot_b64=screenshot_b64,
+        )
+    except Exception as exc:
+        msg = f"LLM evaluator failed: {exc}"
+        print(f"  WARNING: {msg}", file=sys.stderr)
+        return {
+            "color": None,
+            "typography": None,
+            "layout": None,
+            "content_completeness": None,
+            "creativity": None,
+            "interpretation_quality": None,
+        }
 
 
 def _build_metadata(report: AccessibilityReport | None) -> dict[str, Any]:

@@ -24,8 +24,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-EVAL_SUBPROCESS_TIMEOUT_SECS = 180.0
-"""Hard cap on a single-site eval. 6 vision-LLM calls + Playwright is normally well under this."""
+EVAL_SUBPROCESS_TIMEOUT_SECS = 15.0
+"""Hard cap on a single-site eval before live scoring falls back."""
 
 LLM_AXES: tuple[str, ...] = (
     "color",
@@ -153,13 +153,21 @@ def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
             out[axis] = None
             continue
         try:
-            out[axis] = float(value)
+            out[axis] = max(0.0, min(1.0, float(value)))
         except (TypeError, ValueError):
             logger.warning(
                 "Judge returned non-numeric value for axis %r: %r", axis, value
             )
             out[axis] = None
     return out
+
+
+def _has_llm_signal(axes: dict[str, float | None]) -> bool:
+    """Return whether at least one non-accessibility axis has a score."""
+    return any(
+        axis != "accessibility" and value is not None
+        for axis, value in axes.items()
+    )
 
 
 def aggregate(axes: dict[str, float | None]) -> float:
@@ -335,6 +343,11 @@ async def run_eval(
         )
 
     sanitized = _sanitize_axes(axes_raw)
+    if not _has_llm_signal(sanitized):
+        logger.warning("Judge JSON has no usable LLM axes in %s", result_path)
+        return EvalResult.fallback_for(
+            **fallback_kwargs, reason="judge output missing LLM scores"
+        )
     return EvalResult.success(**fallback_kwargs, axes=sanitized)
 
 

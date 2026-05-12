@@ -1846,22 +1846,26 @@ async function switchObsScene(scene) {
   return false;
 }
 async function focusOverlayAndObs(player) {
-  const ok = await setOverlaySmoke('coding', {
-    mode: 'focus',
-    focus_player: player,
-    remaining_secs: 300,
-  });
-  if (!ok) return false;
-  return switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus');
+  const [overlayOk, obsOk] = await Promise.all([
+    setOverlaySmoke('coding', {
+      mode: 'focus',
+      focus_player: player,
+      remaining_secs: 300,
+    }),
+    switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus'),
+  ]);
+  return overlayOk && obsOk;
 }
 async function splitOverlayAndObs() {
-  const ok = await setOverlaySmoke('coding', {
-    mode: 'split',
-    focus_player: 1,
-    remaining_secs: 300,
-  });
-  if (!ok) return false;
-  return switchObsScene('coding');
+  const [overlayOk, obsOk] = await Promise.all([
+    setOverlaySmoke('coding', {
+      mode: 'split',
+      focus_player: 1,
+      remaining_secs: 300,
+    }),
+    switchObsScene('coding'),
+  ]);
+  return overlayOk && obsOk;
 }
 async function runSmokeTour() {
   const button = document.getElementById('btn-smoke-tour');
@@ -2688,6 +2692,9 @@ const defaultOverlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
 const defaultFocusIndex = params.get('p') === '2' ? 1 : 0;
 let overlayMode = defaultOverlayMode;
 let focusIndex = defaultFocusIndex;
+let activeView = '';
+let renderedOverlayMode = '';
+let renderedFocusIndex = -1;
 
 const els = {
   idleView: document.getElementById('idle-view'),
@@ -2706,9 +2713,11 @@ const els = {
 };
 
 function active(view) {
+  if (activeView === view) return;
   els.idleView.classList.toggle('active', view === 'idle');
   els.codingView.classList.toggle('active', view === 'coding');
   els.scoreboardView.classList.toggle('active', view === 'scoreboard');
+  activeView = view;
 }
 
 function text(value, fallback) {
@@ -2801,9 +2810,15 @@ function renderIdle() {
 
 function renderCoding() {
   active('coding');
-  els.codingView.classList.toggle('focus', overlayMode === 'focus');
-  els.codingView.classList.toggle('split', overlayMode !== 'focus');
-  els.codingView.dataset.focus = String(focusIndex + 1);
+  if (renderedOverlayMode !== overlayMode) {
+    els.codingView.classList.toggle('focus', overlayMode === 'focus');
+    els.codingView.classList.toggle('split', overlayMode !== 'focus');
+    renderedOverlayMode = overlayMode;
+  }
+  if (renderedFocusIndex !== focusIndex) {
+    els.codingView.dataset.focus = String(focusIndex + 1);
+    renderedFocusIndex = focusIndex;
+  }
 
   const p1 = text(state.contestants[0], 'Player 1');
   const p2 = text(state.contestants[1], 'Player 2');
@@ -2811,14 +2826,18 @@ function renderCoding() {
   const clock = formatClock(currentRemaining());
   const focused = focusIndex === 0 ? p1 : p2;
 
-  els.splitP1Name.textContent = playerName(p1, 'Player 1');
-  els.splitP2Name.textContent = playerName(p2, 'Player 2');
-  els.splitClock.textContent = clock;
+  updateText(els.splitP1Name, playerName(p1, 'Player 1'));
+  updateText(els.splitP2Name, playerName(p2, 'Player 2'));
+  updateText(els.splitClock, clock);
 
-  els.focusName.textContent = playerName(focused, `Player ${focusIndex + 1}`);
-  els.focusPrompt.textContent = prompt;
-  els.focusClock.textContent = clock;
-  els.focusPreviewLabel.textContent = 'Live Preview';
+  updateText(els.focusName, playerName(focused, `Player ${focusIndex + 1}`));
+  updateText(els.focusPrompt, prompt);
+  updateText(els.focusClock, clock);
+  updateText(els.focusPreviewLabel, 'Live Preview');
+}
+
+function updateText(element, value) {
+  if (element.textContent !== value) element.textContent = value;
 }
 
 function scoreEntries() {
@@ -2905,7 +2924,7 @@ async function refreshState() {
 }
 
 refreshState();
-setInterval(refreshState, 1000);
+setInterval(refreshState, 250);
 setInterval(() => {
   if (state.phase === 'coding') renderCoding();
 }, 100);

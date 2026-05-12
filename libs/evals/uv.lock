@@ -14,9 +14,6 @@ required-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 overrides = [
     { name = "e2b", specifier = "==2.4.3" },
@@ -1662,7 +1659,7 @@ test = [
 
 [[package]]
 name = "langchain-repl"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "../repl" }
 dependencies = [
     { name = "deepagents", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <4.0"
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 constraints = [{ name = "urllib3", specifier = ">=2.6.3" }]
 
@@ -858,7 +855,7 @@ wheels = [
 
 [[package]]
 name = "langchain-repl"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },

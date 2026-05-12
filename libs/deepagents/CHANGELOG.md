@@ -9,9 +9,8 @@
 
 ### Features
 
-* **quickjs:** rename middleware ([#3334](https://github.com/langchain-ai/deepagents/issues/3334)) ([fc80075](https://github.com/langchain-ai/deepagents/commit/fc80075c65c3b4beb8f672b6bb27464fee6d79c2))
-* **sdk:** add `ContextHubBackend` backend type ([#3338](https://github.com/langchain-ai/deepagents/issues/3338)) ([6962826](https://github.com/langchain-ai/deepagents/commit/69628263cb2c1f6951b1b37bbc0edbb85983ad51))
-* **sdk:** v0.6 ([#3193](https://github.com/langchain-ai/deepagents/issues/3193)) ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+* **[`CodeInterpreterMiddleware`](https://docs.langchain.com/oss/python/deepagents/interpreters)**: (experimental) `deepagents` now supports code execution and programmatic tool calling through a scoped QuickJS runtime. Install via the optional dependency: `deepagents[quickjs]`.
+* Support for `version="v3"` in `stream_events` / `astream_events`. Refer to the [event streaming](https://docs.langchain.com/oss/python/deepagents/event-streaming) guide for details.
 
 ## [0.5.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.8...deepagents==0.5.9) (2026-05-10)
 

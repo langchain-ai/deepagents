@@ -21,7 +21,7 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 
-def _messages_delta_reducer(  # noqa: C901, PLR0912
+def _messages_delta_reducer(  # noqa: C901
     state: list[AnyMessage], writes: list[list[AnyMessage]]
 ) -> list[AnyMessage]:
     """Batch reducer for use with `DeltaChannel` on the messages key.
@@ -67,9 +67,7 @@ def _messages_delta_reducer(  # noqa: C901, PLR0912
         state_msgs = []
         msgs = msgs[remove_all_idx + 1 :]
 
-    index: dict[str, int] = {
-        m.id: i for i, m in enumerate(state_msgs) if m.id is not None
-    }
+    index: dict[str, int] = {m.id: i for i, m in enumerate(state_msgs) if m.id is not None}
     result: list[AnyMessage | None] = list(state_msgs)
     for msg in msgs:
         mid = msg.id

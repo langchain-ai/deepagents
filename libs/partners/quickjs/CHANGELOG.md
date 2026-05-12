@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.2...langchain-quickjs==0.2.0) (2026-05-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** v0.6 ([#3193](https://github.com/langchain-ai/deepagents/issues/3193))
+
+### Features
+
+* **sdk:** v0.6 ([#3193](https://github.com/langchain-ai/deepagents/issues/3193)) ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.1.1...langchain-quickjs==0.1.2) (2026-05-11)
 
 

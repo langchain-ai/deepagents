@@ -1151,6 +1151,7 @@ class DeepAgentsApp(App):
         Loaded from the user's saved preference (or the default) so the app
         boots with consistent colors before `/theme` runs.
         """
+        self.sync_terminal_background()
 
         # Injected session config
         self._agent = agent
@@ -1590,7 +1591,7 @@ class DeepAgentsApp(App):
         - The agent is a local `Pregel` graph (e.g. ACP mode, test harnesses).
 
         Used to gate features that require a server-backed agent (e.g. model
-        switching via `ConfigurableModelMiddleware`, checkpointer fallback).
+        switching via `ConfigurableModelMiddleware`, thread registration).
         Checks the agent type rather than server ownership so this works for
         both CLI-spawned servers and externally managed ones.
 
@@ -3289,6 +3290,27 @@ class DeepAgentsApp(App):
             )
 
         return children[-1] == self._loading_widget
+
+    def sync_terminal_background(self) -> None:
+        """Best-effort sync of terminal default background to the active theme.
+
+        Custom themes use their stored registry colors; built-in Textual themes
+        resolve colors from the active app theme. Terminal write failures are
+        logged and swallowed because the OSC background sync is cosmetic.
+        """
+        from deepagents_cli.terminal_escape import set_terminal_background
+
+        entry = theme.get_registry().get(self.theme)
+        colors = (
+            entry.colors
+            if entry is not None and entry.custom
+            else theme.get_theme_colors(self)
+        )
+        try:
+            set_terminal_background(colors.background)
+        except Exception:
+            # Cosmetic only: must never break app startup or theme changes.
+            logger.warning("set_terminal_background raised unexpectedly", exc_info=True)
 
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
@@ -5464,9 +5486,6 @@ class DeepAgentsApp(App):
             if result.offload_warning:
                 await self._mount_message(ErrorMessage(result.offload_warning))
 
-            if remote := self._remote_agent():
-                await remote.aensure_thread(config)  # ty: ignore[invalid-argument-type]
-
             await self._agent.aupdate_state(
                 config, {"_summarization_event": result.new_event}
             )
@@ -5813,12 +5832,14 @@ class DeepAgentsApp(App):
         return result
 
     async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
-        """Fetch thread state values, with remote checkpointer fallback.
+        """Fetch thread state values for a thread.
 
-        In server mode the LangGraph dev server can report an empty thread state
-        after a restart even when checkpoints exist on disk. When that happens,
-        read the latest checkpoint directly so resumed threads can still load
-        history and offload correctly.
+        In server mode the LangGraph dev server starts with an empty in-memory
+        thread store, so `aget_state` returns empty state for any thread that
+        was not registered in the current server session. Calling
+        `aensure_thread` first registers the thread idempotently so the
+        subsequent `aget_state` call can read from the checkpointer correctly,
+        including proper reconstruction of delta channels.
 
         Args:
             thread_id: Thread ID to fetch from checkpoint storage.
@@ -5831,45 +5852,19 @@ class DeepAgentsApp(App):
             return {}
 
         config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        remote_config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
+
+        if remote := self._remote_agent():
+            await remote.aensure_thread(remote_config)
+
         state = await self._agent.aget_state(config)
 
-        values: dict[str, Any] = {}
         if state and state.values:
-            values = dict(state.values)
-
-        messages = values.get("messages")
-        if isinstance(messages, list) and messages:
-            return values
-        if not self._remote_agent():
-            return values
-
-        logger.debug(
-            "Remote state empty for thread %s; falling back to local checkpointer",
-            thread_id,
-        )
-        fallback_values = await self._read_channel_values_from_checkpointer(thread_id)
-        fallback_messages = fallback_values.get("messages")
-        if isinstance(fallback_messages, list) and fallback_messages:
-            values["messages"] = fallback_messages
-        if (
-            values.get("_summarization_event") is None
-            and "_summarization_event" in fallback_values
-        ):
-            values["_summarization_event"] = fallback_values["_summarization_event"]
-        if (
-            values.get("_context_tokens") is None
-            and "_context_tokens" in fallback_values
-        ):
-            values["_context_tokens"] = fallback_values["_context_tokens"]
-        return values
+            return dict(state.values)
+        return {}
 
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
-
-        In server mode the LangGraph dev server starts with an empty thread
-        store, so `aget_state` via the HTTP API returns no messages even when
-        checkpoints exist on disk. We fall back to reading the SQLite
-        checkpointer directly to guarantee resumed threads load their history.
 
         Args:
             thread_id: Thread ID to fetch from checkpoint storage.
@@ -5888,10 +5883,8 @@ class DeepAgentsApp(App):
         if not messages:
             return _ThreadHistoryPayload([], context_tokens)
 
-        # Server mode / direct checkpointer may return dicts; convert to
+        # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
-        # `any(...)` guards against heterogeneous lists where only some
-        # elements are serialized.
         if any(isinstance(m, dict) for m in messages):
             from langchain_core.messages.utils import convert_to_messages
 
@@ -5900,44 +5893,6 @@ class DeepAgentsApp(App):
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
         return _ThreadHistoryPayload(data, context_tokens)
-
-    @staticmethod
-    async def _read_channel_values_from_checkpointer(thread_id: str) -> dict[str, Any]:
-        """Read checkpoint channel values directly from the SQLite checkpointer.
-
-        Args:
-            thread_id: Thread ID to look up.
-
-        Returns:
-            Channel values from the latest checkpoint, or an empty dict on
-                failure.
-        """
-        try:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-
-            from deepagents_cli.sessions import get_db_path
-
-            db_path = str(get_db_path())
-            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-            async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
-                tup = await saver.aget_tuple(config)
-                if tup and tup.checkpoint:
-                    channel_values = tup.checkpoint.get("channel_values", {})
-                    if isinstance(channel_values, dict):
-                        return dict(channel_values)
-        except (ImportError, OSError) as exc:
-            logger.warning(
-                "Failed to read checkpointer directly for %s: %s",
-                thread_id,
-                exc,
-            )
-        except Exception:
-            logger.warning(
-                "Unexpected error reading checkpointer for %s",
-                thread_id,
-                exc_info=True,
-            )
-        return {}
 
     async def _upgrade_thread_message_link(
         self,
@@ -6603,6 +6558,15 @@ class DeepAgentsApp(App):
             ).encode()
             _dispatch_hook_sync("session.end", payload, hooks)
 
+        from deepagents_cli.terminal_escape import reset_terminal_background
+
+        try:
+            reset_terminal_background()
+        except Exception:
+            # Cosmetic only: must never raise during shutdown.
+            logger.warning(
+                "reset_terminal_background raised unexpectedly", exc_info=True
+            )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
@@ -7007,6 +6971,7 @@ class DeepAgentsApp(App):
             """Handle the theme selector result."""
             if result is not None:
                 self.theme = result
+                self.sync_terminal_background()
                 self.refresh_css(animate=False)
 
                 async def _persist() -> None:

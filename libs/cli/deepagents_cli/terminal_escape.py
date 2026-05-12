@@ -140,8 +140,19 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
 
 
 _progress_active = False
+_terminal_background_active = False
 _atexit_registered = False
 _atexit_lock = threading.Lock()
+
+
+def _ensure_atexit_registered() -> None:
+    """Register terminal-state cleanup exactly once."""
+    global _atexit_registered  # noqa: PLW0603
+
+    with _atexit_lock:
+        if not _atexit_registered:
+            atexit.register(_atexit_clear)
+            _atexit_registered = True
 
 
 def _validate_progress(progress: int | None, state: TerminalProgressState) -> int:
@@ -199,16 +210,13 @@ def set_terminal_progress(
     Returns:
         `True` if the sequence was written.
     """
-    global _atexit_registered, _progress_active  # noqa: PLW0603
+    global _progress_active  # noqa: PLW0603
 
     value = _validate_progress(progress, state)
     payload = f"{state.value};{value}"
     written = write_osc("9;4", payload)
     if written and state is not TerminalProgressState.CLEAR:
-        with _atexit_lock:
-            if not _atexit_registered:
-                atexit.register(_atexit_clear)
-                _atexit_registered = True
+        _ensure_atexit_registered()
         _progress_active = True
     elif state is TerminalProgressState.CLEAR:
         _progress_active = False
@@ -226,7 +234,54 @@ def clear_terminal_progress() -> bool:
     return set_terminal_progress(state=TerminalProgressState.CLEAR)
 
 
+def set_terminal_background(color: str) -> bool:
+    """Set the terminal's dynamic default background color with `OSC 11`.
+
+    This is cosmetic and intentionally best-effort. Terminals that don't
+    support `OSC 11` ignore it; `OSC 111` is emitted from `atexit` to restore
+    the default background when this call succeeds.
+
+    Args:
+        color: Terminal color payload, usually a CSS-style hex color such as
+            `#11121D`.
+
+    Returns:
+        `True` if the sequence was written.
+    """
+    global _terminal_background_active  # noqa: PLW0603
+
+    if not color:
+        return False
+    written = write_osc("11", color, st=True)
+    if written:
+        _ensure_atexit_registered()
+        _terminal_background_active = True
+    return written
+
+
+def reset_terminal_background() -> bool:
+    """Reset the terminal's dynamic default background color with `OSC 111`.
+
+    Returns:
+        `True` if the sequence was written.
+    """
+    global _terminal_background_active  # noqa: PLW0603
+
+    written = write_osc("111", st=True)
+    if written:
+        _terminal_background_active = False
+    return written
+
+
 def _atexit_clear() -> None:
-    """`atexit` hook that clears any leftover progress indicator."""
+    """`atexit` hook that clears any leftover terminal state."""
     if _progress_active:
-        clear_terminal_progress()
+        try:
+            clear_terminal_progress()
+        except Exception:
+            logger.warning("Failed to clear terminal progress at exit", exc_info=True)
+    if _terminal_background_active:
+        try:
+            reset_terminal_background()
+        except Exception:
+            logger.warning("Failed to reset terminal background at exit", exc_info=True)

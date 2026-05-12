@@ -1,5 +1,15 @@
 # Deep Agents CLI Changelog
 
+## [0.0.57](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.56...deepagents-cli==0.0.57) (2026-05-12)
+
+### Features
+
+* OSC 9;4 progress & escape helper ([#3347](https://github.com/langchain-ai/deepagents/issues/3347)) ([75d60cd](https://github.com/langchain-ai/deepagents/commit/75d60cd82f559b2944b78a348d16b0a10a00d663))
+
+### Bug Fixes
+
+* Suppress LangSmith trace for `_context_tokens` state writes ([#3317](https://github.com/langchain-ai/deepagents/issues/3317)) ([63db13e](https://github.com/langchain-ai/deepagents/commit/63db13ee262d19a1a87fbe4df1271a2e958deed6))
+
 ## [0.0.56](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.55...deepagents-cli==0.0.56) (2026-05-11)
 
 ### Features

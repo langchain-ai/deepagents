@@ -830,6 +830,17 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--timeout",
+        dest="timeout",
+        type=positive_int,
+        metavar="SECONDS",
+        help="Hard wall-clock timeout in seconds. The agent is cancelled and "
+        "the process exits with code 124 if the timeout is reached. "
+        "Complements --max-turns (turn count) with a time-based limit. "
+        "Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
         "--stdin",
         action="store_true",
         help="Read input from stdin explicitly (instead of auto-detection)",
@@ -1744,6 +1755,17 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        timeout_set = getattr(args, "timeout", None) is not None
+        if timeout_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --timeout requires "
+                "--non-interactive (-n) or piped stdin\n"
+                "  deepagents -n 'run the test suite' --timeout 120"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -2066,26 +2088,38 @@ def cli_main() -> None:
             # Non-interactive mode - execute single task and exit
             from deepagents_code.non_interactive import run_non_interactive
 
-            exit_code = asyncio.run(
-                run_non_interactive(
-                    message=args.non_interactive_message,
-                    assistant_id=assistant_id,
-                    model_name=getattr(args, "model", None),
-                    model_params=model_params,
-                    profile_override=profile_override,
-                    sandbox_type=args.sandbox,
-                    sandbox_id=args.sandbox_id,
-                    sandbox_setup=getattr(args, "sandbox_setup", None),
-                    initial_skill=getattr(args, "initial_skill", None),
-                    startup_cmd=getattr(args, "startup_cmd", None),
-                    quiet=args.quiet,
-                    stream=not args.no_stream,
-                    mcp_config_path=getattr(args, "mcp_config", None),
-                    no_mcp=getattr(args, "no_mcp", False),
-                    trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                    max_turns=getattr(args, "max_turns", None),
+            timeout = getattr(args, "timeout", None)
+            try:
+                exit_code = asyncio.run(
+                    asyncio.wait_for(
+                        run_non_interactive(
+                            message=args.non_interactive_message,
+                            assistant_id=assistant_id,
+                            model_name=getattr(args, "model", None),
+                            model_params=model_params,
+                            profile_override=profile_override,
+                            sandbox_type=args.sandbox,
+                            sandbox_id=args.sandbox_id,
+                            sandbox_setup=getattr(args, "sandbox_setup", None),
+                            initial_skill=getattr(args, "initial_skill", None),
+                            startup_cmd=getattr(args, "startup_cmd", None),
+                            quiet=args.quiet,
+                            stream=not args.no_stream,
+                            mcp_config_path=getattr(args, "mcp_config", None),
+                            no_mcp=getattr(args, "no_mcp", False),
+                            trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                            max_turns=getattr(args, "max_turns", None),
+                        ),
+                        timeout=timeout,
+                    )
                 )
-            )
+            except TimeoutError:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    f"[bold red]Error:[/bold red] agent timed out after {timeout}s"
+                )
+                sys.exit(124)
             sys.exit(exit_code)
         else:
             # Resolve recent-agent fallback only for actual session launches.

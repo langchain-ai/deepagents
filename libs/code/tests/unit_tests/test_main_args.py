@@ -1,6 +1,7 @@
 """Tests for command-line argument parsing."""
 
 import argparse
+import asyncio
 import io
 import os
 import sys
@@ -360,6 +361,148 @@ class TestMaxTurnsArgument:
         """Argparse rejects 0, negatives, and non-integers with exit 2."""
         with (
             mock_argv("-n", "task", "--max-turns", bad_value),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+
+class TestTimeoutArgument:
+    """Tests for --timeout argument parsing, validation, and runtime behaviour."""
+
+    def test_parses_integer(self, mock_argv: MockArgvType) -> None:
+        """--timeout N stores an integer."""
+        with mock_argv("-n", "task", "--timeout", "60"):
+            parsed = parse_args()
+            assert parsed.timeout == 60
+
+    def test_not_specified_is_none(self, mock_argv: MockArgvType) -> None:
+        """Timeout is None when --timeout is not provided."""
+        with mock_argv():
+            parsed = parse_args()
+            assert parsed.timeout is None
+
+    def test_combined_with_non_interactive(self, mock_argv: MockArgvType) -> None:
+        """--timeout works alongside -n and --max-turns."""
+        with mock_argv("-n", "run tests", "--timeout", "120", "--max-turns", "10"):
+            parsed = parse_args()
+            assert parsed.non_interactive_message == "run tests"
+            assert parsed.timeout == 120
+            assert parsed.max_turns == 10
+
+    def test_requires_non_interactive_mode(self) -> None:
+        """--timeout without -n or piped stdin exits with code 2."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "--timeout", "30"]),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 2
+
+    def test_allowed_with_piped_stdin(self) -> None:
+        """--timeout without -n is allowed when stdin is piped."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "piped task"
+        with (
+            patch.object(sys, "argv", ["deepagents", "--timeout", "30"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 0
+        _ = mock_run  # called via asyncio.wait_for; exit code drives sys.exit
+
+    def test_forwarded_via_wait_for(self) -> None:
+        """--timeout value is used as the asyncio.wait_for timeout."""
+        import asyncio
+
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "do the thing", "--timeout", "45"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_wait_for.call_args.kwargs["timeout"] == 45
+
+    def test_timeout_exits_124(self) -> None:
+        """When asyncio.TimeoutError is raised the process exits with code 124."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "slow task", "--timeout", "1"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "asyncio.wait_for",
+                side_effect=asyncio.TimeoutError,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        assert exc_info.value.code == 124
+
+    def test_no_timeout_when_omitted(self) -> None:
+        """When --timeout is omitted, wait_for is called with timeout=None."""
+        import asyncio
+
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "do the thing"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            pytest.raises(SystemExit),
+        ):
+            cli_main()
+        assert mock_wait_for.call_args.kwargs["timeout"] is None
+
+    @pytest.mark.parametrize("bad_value", ["0", "-1", "-60", "abc"])
+    def test_rejects_non_positive_and_non_integer(
+        self, mock_argv: MockArgvType, bad_value: str
+    ) -> None:
+        """Argparse rejects 0, negatives, and non-integers with exit 2."""
+        with (
+            mock_argv("-n", "task", "--timeout", bad_value),
             pytest.raises(SystemExit) as exc_info,
         ):
             parse_args()

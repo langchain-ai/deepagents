@@ -44,6 +44,17 @@ brew install x264 pkg-config nasm yasm
 ./scripts/build_local_ffmpeg_ndi_macos.sh
 ```
 
+If your SDK is a tar archive, point the build at it:
+
+```bash
+make build-ffmpeg-ndi NDI_SDK_TARBALL=/path/to/ndi-sdk-macos.tar.gz
+```
+
+Default behavior:
+
+- If `vendor/ndi-sdk-macos.tar.gz` exists, `make build-ffmpeg-ndi` uses it automatically.
+- Otherwise it falls back to `NDI_SDK_ROOT` (default: `/Library/NDI SDK for Apple`).
+
 5. Discover source names:
 
 ```bash
@@ -61,6 +72,28 @@ Open in browser:
 
 - `http://127.0.0.1:8889/p1-screen`
 - `http://127.0.0.1:8889/p2-screen`
+
+## Make Targets
+
+You can run the entire flow with `make`:
+
+```bash
+make env
+make up
+make colorbars-p1 DURATION=20
+make discover
+make publish-p1
+make publish-p2
+```
+
+Useful targets:
+
+- `make up` / `make down`
+- `make logs`
+- `make colorbars` (override `STREAM`, `DURATION`, `FPS`, `SIZE`)
+- `make build-ffmpeg-ndi` (macOS only)
+- `make discover` (override `WAIT=10s`)
+- `make publish` (override `PLAYER=p1|p2`)
 
 ## browser-control
 

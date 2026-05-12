@@ -17,7 +17,6 @@ import pytest
 from langsmith import Client
 
 from deepagents.backends import ContextHubBackend
-from tests.integration_tests._backend_standard_suite import BackendIntegrationTests
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -48,11 +47,96 @@ def backend(identifier: str) -> Iterator[ContextHubBackend]:
         logger.warning("Failed to delete test repo %r", identifier, exc_info=True)
 
 
-class TestContextHubBackendStandard(BackendIntegrationTests):
-    """Run the standard backend integration contract against Context Hub."""
+def test_lazy_create_on_first_write(backend: ContextHubBackend) -> None:
+    """Missing paths should read as not found, and writes should round-trip."""
+    missing = backend.read("/notes.md")
+    assert missing.error is not None
+
+    write = backend.write("/notes.md", "# hi")
+    assert write.error is None
+    assert write.path == "/notes.md"
+
+    read = backend.read("/notes.md")
+    assert read.error is None
+    assert read.file_data is not None
+    assert read.file_data["content"] == "# hi"
 
 
-def test_persists_across_backend_instances(backend, identifier) -> None:
+def test_round_trip_with_ls_grep_glob_edit(backend: ContextHubBackend) -> None:
+    """CRUD + search operations should behave consistently."""
+    assert backend.write("/a.md", "hello\nworld").error is None
+    assert backend.write("/b.md", "hello again").error is None
+    assert backend.write("/notes/day1.md", "first note").error is None
+
+    ls_root = backend.ls("/")
+    assert ls_root.entries is not None
+    root_paths = {entry["path"] for entry in ls_root.entries}
+    assert "/a.md" in root_paths
+    assert "/b.md" in root_paths
+    assert any(path.rstrip("/") == "/notes" for path in root_paths)
+
+    ls_nested = backend.ls("/notes")
+    assert ls_nested.entries is not None
+    assert {entry["path"] for entry in ls_nested.entries} == {"/notes/day1.md"}
+
+    grep = backend.grep("hello")
+    assert grep.matches is not None
+    assert {match["path"] for match in grep.matches} == {"/a.md", "/b.md"}
+
+    glob = backend.glob("*.md")
+    assert glob.matches is not None
+    glob_paths = {match["path"] for match in glob.matches}
+    assert "/a.md" in glob_paths
+    assert "/b.md" in glob_paths
+
+    edit = backend.edit("/a.md", "world", "earth")
+    assert edit.error is None
+    assert edit.occurrences == 1
+
+    updated = backend.read("/a.md")
+    assert updated.error is None
+    assert updated.file_data is not None
+    assert "earth" in updated.file_data["content"]
+
+
+def test_download_files_round_trip(backend: ContextHubBackend) -> None:
+    """Download should return content for existing files and errors for missing paths."""
+    assert backend.write("/blob.txt", "payload").error is None
+
+    responses = backend.download_files(["/blob.txt", "/missing.txt"])
+    assert len(responses) == 2
+    assert responses[0].path == "/blob.txt"
+    assert responses[0].content == b"payload"
+    assert responses[0].error is None
+    assert responses[1].path == "/missing.txt"
+    assert responses[1].error is not None
+
+
+def test_upload_files_round_trip(backend: ContextHubBackend) -> None:
+    """Upload should support partial success and persist valid UTF-8 files."""
+    responses = backend.upload_files(
+        [
+            ("/u1.md", b"one"),
+            ("/u2.md", b"two"),
+            ("/bad.bin", b"\x80\xff"),
+        ]
+    )
+    assert responses[0].error is None
+    assert responses[1].error is None
+    assert responses[2].error == "invalid_path"
+
+    first = backend.read("/u1.md")
+    assert first.file_data is not None
+    assert first.file_data["content"] == "one"
+
+    second = backend.read("/u2.md")
+    assert second.file_data is not None
+    assert second.file_data["content"] == "two"
+
+
+def test_persists_across_backend_instances(
+    backend: ContextHubBackend, identifier: str
+) -> None:
     """A fresh ContextHubBackend on the same identifier sees prior writes."""
     assert backend.write("/persist.md", "original").error is None
 
@@ -63,7 +147,9 @@ def test_persists_across_backend_instances(backend, identifier) -> None:
     assert result.file_data["content"] == "original"
 
 
-def test_parent_commit_conflict_surfaces_error(backend, identifier) -> None:
+def test_parent_commit_conflict_surfaces_error(
+    backend: ContextHubBackend, identifier: str
+) -> None:
     """Concurrent writes against a stale parent_commit should be rejected."""
     assert backend.write("/shared.md", "v0").error is None
 
@@ -79,7 +165,7 @@ def test_parent_commit_conflict_surfaces_error(backend, identifier) -> None:
     assert "Hub unavailable" in result.error
 
 
-def test_upload_files_produces_single_commit(identifier) -> None:
+def test_upload_files_produces_single_commit(identifier: str) -> None:
     """Batch upload of N files should make exactly one ``push_agent`` call.
 
     Unit tests assert this with a fully-mocked client; this test wraps a

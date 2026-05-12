@@ -577,7 +577,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1069,7 +1069,7 @@ wheels = [
 
 [[package]]
 name = "langchain-modal"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },

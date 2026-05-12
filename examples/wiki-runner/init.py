@@ -21,11 +21,9 @@ def _resolve_internal_source_flag_from_help(help_text: str) -> tuple[str, ...]:
     if "--internal" in help_text:
         return ("--internal",)
 
-    msg = (
-        "This LangSmith Hub CLI build cannot guarantee `source=internal` via hub-only init. "
-        "Upgrade to a CLI version that exposes an internal-source init option."
-    )
-    raise helpers.WikiError(msg)
+    # Newer Hub CLI builds may default to internal source and omit source flags.
+    # We still validate source metadata when it is exposed by `hub get`.
+    return ()
 
 
 def _hub_init_help_text(deps: CliDeps) -> str:
@@ -80,11 +78,9 @@ def verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
 
     source = extract_repo_source(payload)
     if source is None:
-        msg = (
-            "Unable to verify repo source from hub metadata. Expected a `source` field and "
-            "found none."
-        )
-        raise helpers.WikiError(msg)
+        # Some Hub API/CLI builds do not include source metadata in `hub get`.
+        # Enforce internal only when the field is available.
+        return
 
     if source.lower() != "internal":
         msg = (

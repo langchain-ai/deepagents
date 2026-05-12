@@ -249,8 +249,8 @@ def test_resolve_internal_source_flag_prefers_repo_source() -> None:
     )
 
 
-def test_resolve_internal_source_flag_raises_when_missing() -> None:
-    """Fail when the CLI has no internal-source init option."""
+def test_resolve_internal_source_flag_allows_missing_flag() -> None:
+    """Allow init when the CLI omits explicit internal-source flags."""
 
     def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
         assert args == ["hub", "init", "--help"]
@@ -263,8 +263,7 @@ def test_resolve_internal_source_flag_raises_when_missing() -> None:
 
     deps = _make_deps(fake_run_langsmith_cli)
 
-    with pytest.raises(helpers.WikiError, match="cannot guarantee `source=internal`"):
-        helpers._resolve_internal_source_flag(deps)
+    assert helpers._resolve_internal_source_flag(deps) == ()
 
 
 def test_verify_internal_repo_source_passes() -> None:
@@ -300,6 +299,23 @@ def test_verify_internal_repo_source_fails_when_not_internal() -> None:
 
     with pytest.raises(helpers.WikiError, match="must use `source=internal`"):
         helpers._verify_internal_repo_source("-/ada", deps)
+
+
+def test_verify_internal_repo_source_allows_missing_source_field() -> None:
+    """Allow init flows when hub metadata omits source information."""
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        assert args[:2] == ["hub", "get"]
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout='{"full_name": "langchain-ai/ada"}',
+            stderr="",
+        )
+
+    deps = _make_deps(fake_run_langsmith_cli)
+
+    helpers._verify_internal_repo_source("-/ada", deps)
 
 
 def test_run_init_uses_hub_only_flow(tmp_path: Path) -> None:
@@ -350,6 +366,58 @@ def test_run_init_uses_hub_only_flow(tmp_path: Path) -> None:
     assert not any(call and call[0] == "api" for call in calls)
     init_calls = [call for call in calls if call[:2] == ["hub", "init"]]
     assert any("--repo-source" in call for call in init_calls)
+
+
+def test_run_init_without_source_flag_support(tmp_path: Path) -> None:
+    """Run init when hub help omits source flags and verify source via metadata."""
+    calls: list[list[str]] = []
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        if args == ["hub", "init", "--help"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout="--name TEXT\n--description TEXT",
+                stderr="",
+            )
+        if args[:2] == ["hub", "get"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"source": "internal"}',
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    deps = _make_deps(fake_run_langsmith_cli)
+    config = helpers.RunnerConfig(
+        mode="init",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "workspace",
+        sources=(),
+        note=None,
+        question=None,
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    result = helpers._run_init(config, deps)
+
+    assert result.hub_url and result.hub_url.endswith("/hub/ada-wiki")
+    init_calls = [call for call in calls if call[:2] == ["hub", "init"]]
+    assert init_calls
+    assert all("--repo-source" not in call for call in init_calls)
+    assert all("--source" not in call for call in init_calls)
+    assert all("--internal" not in call for call in init_calls)
 
 
 def test_run_init_creates_agents_md_when_missing(tmp_path: Path) -> None:

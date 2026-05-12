@@ -762,7 +762,6 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
                 _hub_cli_repo_arg(hub_identifier),
                 "--dir",
                 str(workspace_dir),
-                "--yes",
             ]
         )
 

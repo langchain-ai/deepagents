@@ -518,7 +518,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--repl",
-        choices=("quickjs", "langchain"),
+        choices=("quickjs",),
         default=None,
     )
     parser.add_argument(

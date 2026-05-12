@@ -40,7 +40,6 @@ jobs:
               "deepagents-code": "dcode",
               "evals": "evals",
               "harbor": "harbor",
-              "repl": "repl",
               "daytona": "daytona",
               "modal": "modal",
               "quickjs": "quickjs",

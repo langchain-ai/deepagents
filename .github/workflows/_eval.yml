@@ -62,7 +62,7 @@ on:
         default: ""
         type: string
       repl:
-        description: "REPL middleware to use for `@pytest.mark.repl` tests (`quickjs` | `langchain`). Empty = bind tools directly."
+        description: "REPL middleware to use for `@pytest.mark.repl` tests (`quickjs`). Empty = bind tools directly."
         required: false
         default: ""
         type: string
@@ -241,9 +241,9 @@ jobs:
         run: |
           repl=$(echo "$REPL" | xargs)
           case "$repl" in
-            quickjs|langchain) ;;
+            quickjs) ;;
             *)
-              echo "::error::Unsupported repl value: ${repl}. Allowed: quickjs, langchain."
+              echo "::error::Unsupported repl value: ${repl}. Allowed: quickjs."
               exit 1
               ;;
           esac

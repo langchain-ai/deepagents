@@ -2079,12 +2079,35 @@ def cli_main() -> None:
                     missing_tools = check_optional_tools()
                     if "ripgrep" in missing_tools:
                         from deepagents_cli.managed_tools import (
+                            ChecksumMismatchError,
                             ensure_ripgrep,
                             prepend_managed_bin_to_path,
                         )
 
                         warn_console.print("Installing ripgrep...")
-                        installed = asyncio.run(ensure_ripgrep())
+                        try:
+                            installed = asyncio.run(ensure_ripgrep())
+                        except ChecksumMismatchError:
+                            logger.exception(
+                                "ripgrep auto-install aborted: SHA-256 mismatch "
+                                "on downloaded archive"
+                            )
+                            warn_console.print(
+                                "[bold red]Error:[/bold red] ripgrep auto-install "
+                                "aborted: downloaded archive failed SHA-256 "
+                                "verification. Refusing to install."
+                            )
+                            installed = None
+                        except Exception:
+                            logger.warning(
+                                "ripgrep auto-install failed unexpectedly",
+                                exc_info=True,
+                            )
+                            warn_console.print(
+                                "[yellow]Warning:[/yellow] ripgrep auto-install "
+                                "failed unexpectedly — see logs."
+                            )
+                            installed = None
                         if installed is not None:
                             prepend_managed_bin_to_path()
                             missing_tools = [
@@ -2095,7 +2118,14 @@ def cli_main() -> None:
                             f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
                         )
                 except Exception:
-                    logger.debug("Failed to check for optional tools", exc_info=True)
+                    # The inner block already handles known failure modes
+                    # (ChecksumMismatchError / ensure_ripgrep exceptions /
+                    # OSError from check_optional_tools). Anything reaching
+                    # here is an unexpected programming error worth surfacing
+                    # at WARNING so it shows in logs, not silently at DEBUG.
+                    logger.warning(
+                        "Optional-tools check failed unexpectedly", exc_info=True
+                    )
             # Validate sandbox provider deps before spawning server subprocess
             if args.sandbox and args.sandbox not in {"none", "langsmith"}:
                 from deepagents_cli.integrations.sandbox_factory import (

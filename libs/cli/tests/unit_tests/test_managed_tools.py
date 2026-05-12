@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import subprocess
 import tarfile
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -13,6 +15,7 @@ import pytest
 
 from deepagents_cli import managed_tools
 from deepagents_cli._env_vars import OFFLINE
+from deepagents_cli.managed_tools import ChecksumMismatchError
 
 _EXPECTED_PLATFORM_ARCHS = {
     ("darwin", "arm64"),
@@ -26,6 +29,26 @@ _EXPECTED_PLATFORM_ARCHS = {
 
 def test_ripgrep_assets_has_all_expected_keys() -> None:
     assert set(managed_tools.RIPGREP_ASSETS.keys()) == _EXPECTED_PLATFORM_ARCHS
+
+
+def test_ripgrep_assets_filenames_match_platform_arch() -> None:
+    """Each asset filename must encode the platform/arch it serves.
+
+    Stronger than a tautology key-set check: catches mismatches like a
+    `darwin x86_64` entry pointing at an `aarch64` asset.
+    """
+    expected_triples = {
+        ("darwin", "arm64"): "aarch64-apple-darwin",
+        ("darwin", "x86_64"): "x86_64-apple-darwin",
+        ("linux", "arm64"): "aarch64-unknown-linux",
+        ("linux", "x86_64"): "x86_64-unknown-linux",
+        # Both Windows entries intentionally point at the x86_64 build.
+        ("win32", "arm64"): "x86_64-pc-windows",
+        ("win32", "x86_64"): "x86_64-pc-windows",
+    }
+    for key, expected_triple in expected_triples.items():
+        asset, _sha = managed_tools.RIPGREP_ASSETS[key]
+        assert expected_triple in asset, (key, asset, expected_triple)
 
 
 def test_ripgrep_assets_values_are_well_formed() -> None:
@@ -61,13 +84,21 @@ def test_prepend_managed_bin_to_path_dedupes_existing_entry(
 async def test_ensure_ripgrep_returns_managed_when_current(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A current managed `rg` is returned without re-install.
+
+    Probes the binary's reported version via a fake `subprocess.run`
+    rather than stubbing `_managed_binary_is_current` (the branch logic
+    under test).
+    """
     managed = tmp_path / "rg"
     managed.write_bytes(b"#!/bin/sh\necho rg\n")
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
-    monkeypatch.setattr(
-        managed_tools, "_managed_binary_is_current", lambda _binary: True
-    )
-    assert await managed_tools.ensure_ripgrep() == managed
+
+    fake = mock.Mock()
+    fake.returncode = 0
+    fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    with mock.patch.object(subprocess, "run", return_value=fake):
+        assert await managed_tools.ensure_ripgrep() == managed
 
 
 async def test_ensure_ripgrep_short_circuits_on_system_rg(
@@ -98,6 +129,69 @@ async def test_ensure_ripgrep_short_circuits_on_android(
         assert await managed_tools.ensure_ripgrep() is None
 
 
+async def test_ensure_ripgrep_short_circuits_on_unsupported_arch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unsupported arch (e.g. s390x) returns `None` before any download."""
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: None)
+
+    def _no_download(_url: str, _dest: Path) -> None:
+        msg = "_download_to must not be called on unsupported arch"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(managed_tools, "_download_to", _no_download)
+    with mock.patch("shutil.which", return_value=None):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+async def test_ensure_ripgrep_preserves_stale_when_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An offline user keeps their stale managed binary rather than losing it.
+
+    Regression for ordering: removal must not run before the offline gate.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.write_bytes(b"stale-but-working")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.setenv(OFFLINE, "1")
+
+    fake = mock.Mock()
+    fake.returncode = 0
+    fake.stdout = "ripgrep 1.0.0 (rev stale)\n"
+    with mock.patch.object(subprocess, "run", return_value=fake):
+        result = await managed_tools.ensure_ripgrep()
+
+    assert result is None
+    assert managed.exists(), "stale binary should not be removed when offline"
+
+
+async def test_ensure_ripgrep_preserves_stale_on_unsupported_arch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale managed binary survives when no asset matches platform/arch."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.write_bytes(b"stale-but-working")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: None)
+
+    fake = mock.Mock()
+    fake.returncode = 0
+    fake.stdout = "ripgrep 1.0.0 (rev stale)\n"
+    with mock.patch.object(subprocess, "run", return_value=fake):
+        assert await managed_tools.ensure_ripgrep() is None
+    assert managed.exists()
+
+
 def _make_fake_tarball(
     rg_bytes: bytes, *, member_name: str = "ripgrep-14.1.1-test-triple/rg"
 ) -> bytes:
@@ -108,6 +202,16 @@ def _make_fake_tarball(
         info.size = len(rg_bytes)
         info.mode = 0o755
         tf.addfile(info, io.BytesIO(rg_bytes))
+    return buf.getvalue()
+
+
+def _make_fake_zip(
+    rg_bytes: bytes, *, member_name: str = "ripgrep-14.1.1/rg.exe"
+) -> bytes:
+    """Build an in-memory zip containing a single `rg.exe` member."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(member_name, rg_bytes)
     return buf.getvalue()
 
 
@@ -157,29 +261,85 @@ def test_extract_rg_legacy_fallback_rejects_unsafe_member(
         managed_tools._extract_rg(archive, tmp_path / "unpacked")
 
 
-def test_install_ripgrep_sync_happy_path(
+def test_extract_rg_extracts_zip_archive(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Download + verify + extract + chmod with monkeypatched urlopen."""
+    """Zip extraction places `rg.exe` at the expected location."""
+    monkeypatch.setattr(managed_tools.sys, "platform", "win32")
+    payload = b"fake-windows-rg-exe"
+    archive = tmp_path / "ripgrep-test.zip"
+    archive.write_bytes(_make_fake_zip(payload))
+
+    extracted = managed_tools._extract_rg(archive, tmp_path / "unpacked")
+
+    assert extracted.read_bytes() == payload
+    assert extracted.name == "rg.exe"
+
+
+def test_extract_rg_rejects_zip_slip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A zip member with `..` in its path is refused even before extraction."""
+    monkeypatch.setattr(managed_tools.sys, "platform", "win32")
+    archive = tmp_path / "ripgrep-evil.zip"
+    archive.write_bytes(_make_fake_zip(b"bad", member_name="../rg.exe"))
+
+    with pytest.raises(zipfile.BadZipFile, match="unsafe zip member"):
+        managed_tools._extract_rg(archive, tmp_path / "unpacked")
+
+
+def test_extract_rg_missing_binary_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Archive missing the `rg` member surfaces a clear error."""
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    archive = tmp_path / "ripgrep-no-rg.tar.gz"
+    archive.write_bytes(
+        _make_fake_tarball(b"readme contents", member_name="ripgrep-14.1.1/README")
+    )
+
+    with pytest.raises(FileNotFoundError, match="Could not find rg"):
+        managed_tools._extract_rg(archive, tmp_path / "unpacked")
+
+
+@pytest.mark.parametrize("platform_name", ["linux", "darwin", "win32"])
+def test_install_ripgrep_sync_happy_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform_name: str
+) -> None:
+    """Download + verify + extract + install across platform variants."""
     rg_payload = b"#!/bin/sh\necho fake rg\n"
-    tar_bytes = _make_fake_tarball(rg_payload)
-    sha = hashlib.sha256(tar_bytes).hexdigest()
+    is_windows = platform_name == "win32"
+    archive_bytes = (
+        _make_fake_zip(rg_payload, member_name="ripgrep-14.1.1-test/rg.exe")
+        if is_windows
+        else _make_fake_tarball(rg_payload)
+    )
+    sha = hashlib.sha256(archive_bytes).hexdigest()
 
     bin_dir = tmp_path / "bin"
     monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
-    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
-    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(
+        managed_tools,
+        "managed_rg_path",
+        lambda: bin_dir / ("rg.exe" if is_windows else "rg"),
+    )
+    monkeypatch.setattr(managed_tools.sys, "platform", platform_name)
 
     def _fake_download(url: str, dest: Path) -> None:
         assert "ripgrep" in url
-        dest.write_bytes(tar_bytes)
+        dest.write_bytes(archive_bytes)
 
     monkeypatch.setattr(managed_tools, "_download_to", _fake_download)
 
-    installed = managed_tools._install_ripgrep_sync("ripgrep-14.1.1-test.tar.gz", sha)
-    assert installed == bin_dir / "rg"
+    asset_name = (
+        "ripgrep-14.1.1-test.zip" if is_windows else "ripgrep-14.1.1-test.tar.gz"
+    )
+    installed = managed_tools._install_ripgrep_sync(asset_name, sha)
+    expected = bin_dir / ("rg.exe" if is_windows else "rg")
+    assert installed == expected
     assert installed.read_bytes() == rg_payload
-    assert installed.stat().st_mode & 0o777 == 0o755
+    if not is_windows:
+        assert installed.stat().st_mode & 0o777 == 0o755
 
 
 def test_install_ripgrep_sync_rejects_checksum_mismatch(
@@ -195,10 +355,44 @@ def test_install_ripgrep_sync_rejects_checksum_mismatch(
         "_download_to",
         lambda _url, dest: dest.write_bytes(tar_bytes),
     )
-    with pytest.raises(ValueError, match="Checksum mismatch"):
+    with pytest.raises(ChecksumMismatchError, match="Checksum mismatch"):
         managed_tools._install_ripgrep_sync("ripgrep-14.1.1-test.tar.gz", "00" * 32)
-    # Bin dir may exist but no `rg` should be present.
     assert not (bin_dir / "rg").exists()
+
+
+async def test_ensure_ripgrep_propagates_checksum_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`ensure_ripgrep` must raise on checksum mismatch, not return `None`.
+
+    Callers rely on the distinct exception type to surface a loud,
+    user-visible notice — a silent fall-through would mask a
+    supply-chain anomaly.
+    """
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: bin_dir / "rg")
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    tar_bytes = _make_fake_tarball(b"hi")
+    monkeypatch.setitem(
+        managed_tools.RIPGREP_ASSETS,
+        ("linux", "x86_64"),
+        ("ripgrep-test.tar.gz", "00" * 32),
+    )
+    monkeypatch.setattr(
+        managed_tools,
+        "_download_to",
+        lambda _url, dest: dest.write_bytes(tar_bytes),
+    )
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        pytest.raises(ChecksumMismatchError),
+    ):
+        await managed_tools.ensure_ripgrep()
 
 
 async def test_ensure_ripgrep_downloads_when_missing(
@@ -233,6 +427,53 @@ async def test_ensure_ripgrep_downloads_when_missing(
     assert os.environ["PATH"].split(os.pathsep)[0] == str(bin_dir)
 
 
+async def test_ensure_ripgrep_redownloads_stale_managed_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale managed binary is replaced end-to-end, ignoring system `rg`.
+
+    Verifies the resolution-order guarantee: once the user has a managed
+    binary, the system `rg` is not silently substituted when the pin
+    bumps. The stale bytes are also replaced — a regression letting them
+    persist would silently ship outdated functionality.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.write_bytes(b"stale-bytes")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+
+    new_payload = b"new-binary"
+    tar_bytes = _make_fake_tarball(new_payload)
+    sha = hashlib.sha256(tar_bytes).hexdigest()
+    monkeypatch.setitem(
+        managed_tools.RIPGREP_ASSETS,
+        ("linux", "x86_64"),
+        ("ripgrep-test.tar.gz", sha),
+    )
+    monkeypatch.setattr(
+        managed_tools,
+        "_download_to",
+        lambda _url, dest: dest.write_bytes(tar_bytes),
+    )
+
+    fake_probe = mock.Mock()
+    fake_probe.returncode = 0
+    fake_probe.stdout = "ripgrep 1.0.0 (rev stale)\n"
+    with (
+        mock.patch.object(subprocess, "run", return_value=fake_probe),
+        mock.patch("shutil.which", return_value="/usr/bin/rg"),
+    ):
+        result = await managed_tools.ensure_ripgrep()
+
+    assert result == managed
+    assert managed.read_bytes() == new_payload
+
+
 async def test_ensure_ripgrep_returns_none_on_download_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -255,12 +496,61 @@ async def test_ensure_ripgrep_returns_none_on_download_failure(
         assert await managed_tools.ensure_ripgrep() is None
 
 
+async def test_ensure_ripgrep_preserves_stale_on_download_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed replacement install must not delete the existing stale binary.
+
+    Regression: a transient network failure during a pin bump would
+    otherwise strand the user with no `rg`. Atomic replace means the
+    stale copy stays in place until a verified replacement is ready.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    stale_bytes = b"stale-but-usable"
+    managed.write_bytes(stale_bytes)
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setattr(managed_tools.sys, "platform", "linux")
+    monkeypatch.setattr(managed_tools, "_normalized_arch", lambda: "x86_64")
+    monkeypatch.setitem(
+        managed_tools.RIPGREP_ASSETS,
+        ("linux", "x86_64"),
+        ("ripgrep-test.tar.gz", "00" * 32),
+    )
+
+    import urllib.error
+
+    err = urllib.error.URLError("connection refused")
+
+    def _boom(_url: str, _dest: Path) -> None:
+        raise err
+
+    monkeypatch.setattr(managed_tools, "_download_to", _boom)
+
+    fake_probe = mock.Mock()
+    fake_probe.returncode = 0
+    fake_probe.stdout = "ripgrep 1.0.0 (rev stale)\n"
+    with (
+        mock.patch.object(subprocess, "run", return_value=fake_probe),
+        mock.patch("shutil.which", return_value="/usr/bin/rg"),
+    ):
+        result = await managed_tools.ensure_ripgrep()
+
+    assert result is None
+    assert managed.exists()
+    assert managed.read_bytes() == stale_bytes
+
+
 def test_managed_binary_is_current_detects_match(tmp_path: Path) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
+    fake.returncode = 0
     fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
-    with mock.patch("subprocess.run", return_value=fake):
+    with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is True
 
 
@@ -268,6 +558,80 @@ def test_managed_binary_is_current_detects_stale(tmp_path: Path) -> None:
     binary = tmp_path / "rg"
     binary.write_text("")
     fake = mock.Mock()
+    fake.returncode = 0
     fake.stdout = "ripgrep 13.0.0 (rev abc)\n"
-    with mock.patch("subprocess.run", return_value=fake):
+    with mock.patch.object(subprocess, "run", return_value=fake):
         assert managed_tools._managed_binary_is_current(binary) is False
+
+
+def test_managed_binary_is_current_treats_oserror_as_stale(tmp_path: Path) -> None:
+    """A binary that won't even exec (corrupt, wrong-arch) is not trusted."""
+    binary = tmp_path / "rg"
+    binary.write_bytes(b"not-a-real-binary")
+    with mock.patch.object(subprocess, "run", side_effect=OSError("ENOEXEC")):
+        assert managed_tools._managed_binary_is_current(binary) is False
+
+
+def test_managed_binary_is_current_treats_nonzero_exit_as_stale(
+    tmp_path: Path,
+) -> None:
+    """A binary that prints the right version but exits non-zero is not trusted."""
+    binary = tmp_path / "rg"
+    binary.write_text("")
+    fake = mock.Mock()
+    fake.returncode = 1
+    fake.stdout = f"ripgrep {managed_tools.RIPGREP_VERSION} (rev abc)\n"
+    with mock.patch.object(subprocess, "run", return_value=fake):
+        assert managed_tools._managed_binary_is_current(binary) is False
+
+
+def test_managed_binary_is_current_treats_empty_stdout_as_stale(
+    tmp_path: Path,
+) -> None:
+    """A binary that exits 0 with no output is not trusted."""
+    binary = tmp_path / "rg"
+    binary.write_text("")
+    fake = mock.Mock()
+    fake.returncode = 0
+    fake.stdout = ""
+    with mock.patch.object(subprocess, "run", return_value=fake):
+        assert managed_tools._managed_binary_is_current(binary) is False
+
+
+def test_managed_binary_is_current_falls_open_on_timeout(tmp_path: Path) -> None:
+    """A timed-out probe (sandboxed subprocess) does not force a redownload."""
+    binary = tmp_path / "rg"
+    binary.write_text("")
+    timeout = subprocess.TimeoutExpired(cmd=[str(binary), "--version"], timeout=5)
+    with mock.patch.object(subprocess, "run", side_effect=timeout):
+        assert managed_tools._managed_binary_is_current(binary) is True
+
+
+def test_download_to_enforces_total_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A slow trickle exceeding the deadline raises `TimeoutError`."""
+    from typing import Self
+
+    class _SlowResponse:
+        def __init__(self) -> None:
+            self._calls = 0
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            self._calls += 1
+            return b"x" * 4
+
+    monkeypatch.setattr(managed_tools, "_DOWNLOAD_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(
+        "urllib.request.urlopen", lambda *_args, **_kwargs: _SlowResponse()
+    )
+
+    dest = tmp_path / "archive"
+    with pytest.raises(TimeoutError, match="deadline"):
+        managed_tools._download_to("https://example.invalid/x", dest)

@@ -1,14 +1,12 @@
 """Auto-install pinned upstream binaries for optional tools.
 
-Today this only manages `ripgrep`. The SDK's `subprocess.run(["rg", ...])`
-in `deepagents.backends.filesystem._ripgrep_search` resolves `rg` through
-`PATH`, so installing into `~/.deepagents/bin/` and prepending it to
-`os.environ["PATH"]` early enough is sufficient — no SDK change required.
+Today this only manages `ripgrep`. The SDK shells out to `rg` via `PATH`,
+so installing into `~/.deepagents/bin/` and prepending that directory to
+`os.environ["PATH"]` is sufficient — no SDK change required.
 
-Modeled on pi-mono's `tools-manager.ts`. The pinned `RIPGREP_VERSION` and
-`RIPGREP_ASSETS` table is the single source of truth for what gets
-downloaded and verified. Bumping the version is a quarterly chore: refresh
-both the version and the six SHA-256 entries together.
+The pinned `RIPGREP_VERSION` and `RIPGREP_ASSETS` table is the single
+source of truth for what gets downloaded and verified. When bumping the
+version, refresh both the version and the SHA-256 entries together.
 """
 
 from __future__ import annotations
@@ -23,6 +21,7 @@ from deepagents_cli._env_vars import OFFLINE, is_env_truthy
 
 if TYPE_CHECKING:
     import tarfile
+    import zipfile
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +68,7 @@ BIN_DIR: Path = Path.home() / ".deepagents" / "bin"
 
 _DOWNLOAD_TIMEOUT_SECONDS = 120
 _VERSION_CHECK_TIMEOUT_SECONDS = 5
+_DOWNLOAD_CHUNK_BYTES = 1 << 16
 _ARCH_ALIASES = {
     "aarch64": "arm64",
     "arm64": "arm64",
@@ -76,6 +76,16 @@ _ARCH_ALIASES = {
     "x86_64": "x86_64",
     "x64": "x86_64",
 }
+
+
+class ChecksumMismatchError(Exception):
+    """Raised when a downloaded archive fails SHA-256 verification.
+
+    Distinct from generic install failure so callers can surface a loud,
+    user-visible notice — a checksum mismatch is a supply-chain anomaly
+    (CDN poisoning, MITM, tampered mirror) and must not be silently
+    treated like "you're offline".
+    """
 
 
 def _normalized_arch() -> str | None:
@@ -119,11 +129,11 @@ def prepend_managed_bin_to_path() -> None:
 def _managed_binary_is_current(binary: Path) -> bool:
     """Return whether the on-disk managed `rg` matches `RIPGREP_VERSION`.
 
-    Spawning `rg --version` adds ~10 ms but lets users pick up a bumped
-    `RIPGREP_VERSION` without manually deleting `~/.deepagents/bin/rg`.
-    Falls open (treats the binary as current) on any failure so a flaky
-    fork or a sandboxed `subprocess` does not trigger an unwanted
-    re-download.
+    Returns `False` on any concrete failure (`OSError`, non-zero exit,
+    empty stdout, version mismatch) so a corrupted or wrong-arch
+    binary written by a previously crashed install gets re-fetched. Only
+    `TimeoutExpired` "falls open" — that case suggests a sandboxed
+    subprocess rather than a broken binary.
     """
     import subprocess  # noqa: S404  # fixed-argv probe of a managed binary
 
@@ -135,32 +145,66 @@ def _managed_binary_is_current(binary: Path) -> bool:
             text=True,
             timeout=_VERSION_CHECK_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.SubprocessError):
-        logger.debug("rg --version probe failed for %s", binary, exc_info=True)
+    except subprocess.TimeoutExpired:
+        logger.debug("rg --version probe timed out for %s; assuming current", binary)
         return True
+    except OSError:
+        logger.debug(
+            "rg --version probe failed for %s; treating as stale",
+            binary,
+            exc_info=True,
+        )
+        return False
+    if result.returncode != 0:
+        logger.debug(
+            "rg --version exited %d for %s; treating as stale",
+            result.returncode,
+            binary,
+        )
+        return False
     first_line = (result.stdout or "").splitlines()[:1]
     if not first_line:
-        return True
+        return False
     return RIPGREP_VERSION in first_line[0]
 
 
 def _download_to(url: str, dest: Path) -> None:
-    """Stream `url` to `dest` with a bounded timeout."""
-    import shutil
+    """Stream `url` to `dest` with a total wall-clock deadline.
+
+    `urlopen(timeout=...)` only bounds per-operation socket waits, so a
+    slow trickle of bytes from a flaky peer could otherwise stretch the
+    transfer well beyond the configured timeout. The chunked read here
+    enforces a single end-to-end deadline.
+
+    Raises:
+        TimeoutError: When total transfer time exceeds the deadline.
+    """
+    import time
     import urllib.request
 
+    deadline = time.monotonic() + _DOWNLOAD_TIMEOUT_SECONDS
     with (
         urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as resp,  # noqa: S310  # fixed https GitHub release URL
         dest.open("wb") as fh,
     ):
-        shutil.copyfileobj(resp, fh)
+        while True:
+            if time.monotonic() > deadline:
+                msg = (
+                    f"Download of {url} exceeded {_DOWNLOAD_TIMEOUT_SECONDS}s deadline"
+                )
+                raise TimeoutError(msg)
+            chunk = resp.read(_DOWNLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            fh.write(chunk)
 
 
 def _verify_sha256(path: Path, expected_hex: str) -> None:
     """Verify `path` matches `expected_hex`.
 
     Raises:
-        ValueError: When the SHA-256 of `path` differs from `expected_hex`.
+        ChecksumMismatchError: When the SHA-256 of `path` differs from
+            `expected_hex`.
     """
     import hashlib
 
@@ -173,7 +217,7 @@ def _verify_sha256(path: Path, expected_hex: str) -> None:
         msg = (
             f"Checksum mismatch for {path.name}: expected {expected_hex}, got {actual}"
         )
-        raise ValueError(msg)
+        raise ChecksumMismatchError(msg)
 
 
 def _validate_legacy_tar_member(member: tarfile.TarInfo, extract_root: Path) -> None:
@@ -205,7 +249,8 @@ def _extract_tar_data(tf: tarfile.TarFile, extract_root: Path) -> None:
     pinned release archive before using the legacy API.
 
     Raises:
-        TypeError: If `extractall` raises an unrelated `TypeError`.
+        TypeError: Re-raised when `extractall` rejects a non-`filter`
+            keyword (i.e. an unrelated `TypeError` we should not swallow).
     """
     try:
         tf.extractall(extract_root, filter="data")
@@ -223,7 +268,8 @@ def _extract_rg(archive: Path, extract_root: Path) -> Path:
 
     Handles both `.tar.gz` and `.zip` archives. Release archives nest the
     binary under `ripgrep-<ver>-<triple>/`, so we walk the tree to find it
-    rather than hard-coding the prefix.
+    rather than hard-coding the prefix. Malformed archives or unsafe
+    members propagate `tarfile.TarError` / `zipfile.BadZipFile`.
 
     Returns:
         Absolute path to the extracted `rg` (or `rg.exe`) binary.
@@ -235,9 +281,8 @@ def _extract_rg(archive: Path, extract_root: Path) -> Path:
     import zipfile
 
     if archive.suffix == ".zip":
-        # Archive SHA-256 is verified before extraction.
         with zipfile.ZipFile(archive) as zf:
-            zf.extractall(extract_root)  # noqa: S202  # verified above
+            _extract_zip_validated(zf, extract_root)
     else:
         with tarfile.open(archive, mode="r:*") as tf:
             _extract_tar_data(tf, extract_root)
@@ -250,41 +295,59 @@ def _extract_rg(archive: Path, extract_root: Path) -> Path:
     raise FileNotFoundError(msg)
 
 
-def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
-    """Download, verify, extract, and install ripgrep.
+def _extract_zip_validated(zf: zipfile.ZipFile, extract_root: Path) -> None:
+    """Extract a zip archive after validating each member's path.
 
-    Atomic-ish: extracts under a `TemporaryDirectory` and only moves the
-    binary into `BIN_DIR` on success. Concurrent CLI invocations are safe
-    — the loser overwrites identical bytes via `shutil.move`.
+    `ZipFile.extractall` does sanitize absolute paths and parent-relative
+    components on modern Python, but defense-in-depth here keeps the
+    SHA-256-verified archive from being the only line of defense against
+    a zip-slip variant in a future upstream archive.
+
+    Raises:
+        zipfile.BadZipFile: If a member would extract outside `extract_root`.
+    """
+    import zipfile
+
+    extract_root.mkdir(parents=True, exist_ok=True)
+    root = extract_root.resolve()
+    for member in zf.infolist():
+        target = (extract_root / member.filename).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            msg = f"Refusing to extract unsafe zip member {member.filename!r}"
+            raise zipfile.BadZipFile(msg) from exc
+    zf.extractall(extract_root)  # noqa: S202  # validated above
+
+
+def _install_ripgrep_sync(asset: str, sha256: str) -> Path:
+    """Download, verify, extract, and install ripgrep atomically.
+
+    Staging happens *inside* `BIN_DIR` so the final rename is on the same
+    filesystem and therefore atomic on POSIX. On Windows it is also atomic
+    when the destination is not in use; a process holding the existing
+    `rg.exe` open will see `PermissionError`, which the caller surfaces
+    rather than silently corrupts. `_verify_sha256` propagates
+    `ChecksumMismatchError` to abort install before any move.
 
     Returns:
         Absolute path to the installed `rg` binary.
     """
-    import shutil
     import tempfile
 
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     url = f"{_RELEASE_URL_PREFIX}/{asset}"
-    with tempfile.TemporaryDirectory(prefix="deepagents-rg-") as tmp_str:
+    with tempfile.TemporaryDirectory(prefix=".deepagents-rg-", dir=BIN_DIR) as tmp_str:
         tmp = Path(tmp_str)
         archive = tmp / asset
         _download_to(url, archive)
         _verify_sha256(archive, sha256)
         extracted = _extract_rg(archive, tmp / "unpacked")
-        dest = managed_rg_path()
-        # `shutil.move` replaces an existing file on POSIX and Windows.
-        shutil.move(str(extracted), str(dest))
         if sys.platform != "win32":
-            dest.chmod(0o755)
+            extracted.chmod(0o755)
+        dest = managed_rg_path()
+        extracted.replace(dest)
         return dest
-
-
-def _remove_stale_binary(binary: Path) -> None:
-    """Best-effort removal of a stale managed binary before re-install."""
-    import contextlib
-
-    with contextlib.suppress(OSError):
-        binary.unlink()
 
 
 async def ensure_ripgrep() -> Path | None:
@@ -293,15 +356,20 @@ async def ensure_ripgrep() -> Path | None:
     Resolution order:
 
     1. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
-    2. If a managed `rg` exists but is stale, remove it and fall through
-       to step 4 (the system `rg` is not re-checked because the user
-       previously opted into the managed binary).
-    3. If a system `rg` is on `PATH`, return its resolved path.
-    4. If offline, on Android, or no asset matches the platform/arch,
-       return `None` so callers fall back to the existing notification +
-       slow path.
-    5. Otherwise download → SHA-256 verify → extract → install → return
-       the installed path. On any failure, log and return `None`.
+    2. Otherwise, if a system `rg` is on `PATH` and no managed binary
+        exists, return its resolved path.
+    3. If offline, on an unsupported platform, or no asset matches the
+        platform/arch, return `None` so callers fall back to the existing
+        notification + slow path.
+    4. Otherwise download → SHA-256 verify → extract → install →
+        prepend `BIN_DIR` to `PATH` → return the installed path. On a
+        checksum mismatch, raises `ChecksumMismatchError` so callers can
+        surface a loud notice; other failures log and return `None`.
+
+    A stale managed binary is never proactively deleted. The atomic
+    replace in `_install_ripgrep_sync` overwrites it on success, and on
+    failure the user is strictly better off keeping the older copy than
+    being left with no `rg` at all.
 
     Returns:
         Path to a usable `rg` binary, or `None` when one could not be
@@ -315,16 +383,11 @@ async def ensure_ripgrep() -> Path | None:
     import zipfile
 
     managed = managed_rg_path()
-    if managed.exists():
-        if _managed_binary_is_current(managed):
-            return managed
-        logger.info(
-            "Managed ripgrep at %s is stale; replacing with %s",
-            managed,
-            RIPGREP_VERSION,
-        )
-        _remove_stale_binary(managed)
-    else:
+    managed_exists = managed.exists()
+    if managed_exists and _managed_binary_is_current(managed):
+        return managed
+
+    if not managed_exists:
         system_rg = shutil.which("rg")
         if system_rg is not None:
             return Path(system_rg)
@@ -351,19 +414,38 @@ async def ensure_ripgrep() -> Path | None:
         return None
     asset, sha256 = asset_entry
 
+    if managed_exists:
+        logger.info(
+            "Managed ripgrep at %s is stale; replacing with %s",
+            managed,
+            RIPGREP_VERSION,
+        )
+
     try:
+        # `_install_ripgrep_sync` atomically replaces the destination on
+        # success, so we deliberately leave any stale binary in place
+        # until the verified replacement is ready. A failed download must
+        # not strand the user with no `rg` at all.
         installed = await asyncio.to_thread(_install_ripgrep_sync, asset, sha256)
     except (urllib.error.URLError, TimeoutError):
         logger.warning(
             "Could not download ripgrep from %s", _RELEASE_URL_PREFIX, exc_info=True
         )
         return None
-    except ValueError:
-        # Checksum mismatch — already detailed in the exception message.
-        logger.exception("ripgrep install aborted: checksum mismatch")
+    except (tarfile.TarError, zipfile.BadZipFile, FileNotFoundError) as exc:
+        logger.exception(
+            "ripgrep install failed: archive error (%s)", type(exc).__name__
+        )
         return None
-    except (OSError, tarfile.TarError, zipfile.BadZipFile, FileNotFoundError):
-        logger.exception("ripgrep install failed")
+    except PermissionError:
+        logger.exception(
+            "ripgrep install failed: cannot write to %s — check permissions", BIN_DIR
+        )
+        return None
+    except OSError as exc:
+        logger.exception(
+            "ripgrep install failed: %s (errno=%s)", type(exc).__name__, exc.errno
+        )
         return None
     else:
         prepend_managed_bin_to_path()

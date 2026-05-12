@@ -2064,6 +2064,7 @@ class DeepAgentsApp(App):
                 check_optional_tools,
             )
             from deepagents_cli.managed_tools import (
+                ChecksumMismatchError,
                 ensure_ripgrep,
                 prepend_managed_bin_to_path,
             )
@@ -2094,7 +2095,35 @@ class DeepAgentsApp(App):
             return
 
         if "ripgrep" in missing:
-            installed = await ensure_ripgrep()
+            try:
+                installed = await ensure_ripgrep()
+            except ChecksumMismatchError:
+                # Supply-chain anomaly — must not be silent. Log at ERROR
+                # and surface a persistent, error-severity toast that is
+                # distinct from the generic "ripgrep missing" notice.
+                logger.exception(
+                    "ripgrep auto-install aborted: SHA-256 mismatch on downloaded "
+                    "archive (refusing to install)"
+                )
+                self.notify(
+                    "ripgrep auto-install aborted: downloaded archive failed "
+                    "SHA-256 verification. See logs.",
+                    severity="error",
+                    timeout=12,
+                    markup=False,
+                )
+                installed = None
+            except Exception:
+                logger.warning(
+                    "ripgrep auto-install failed unexpectedly", exc_info=True
+                )
+                self.notify(
+                    "ripgrep auto-install failed unexpectedly — see logs.",
+                    severity="warning",
+                    timeout=6,
+                    markup=False,
+                )
+                installed = None
             if installed is not None:
                 prepend_managed_bin_to_path()
                 missing = [tool for tool in missing if tool != "ripgrep"]

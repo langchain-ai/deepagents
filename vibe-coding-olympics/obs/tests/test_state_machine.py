@@ -42,6 +42,8 @@ def config() -> Config:
             Phase.CODING: "Coding",
             Phase.SCOREBOARD: "Scoreboard",
         },
+        text_prompt="PromptText",
+        contestant_name_template="Contestant{n}Name",
         contestant_score_template="Contestant{n}Score",
     )
 
@@ -212,6 +214,7 @@ def test_score_sources_are_optional() -> None:
             Phase.CODING: "coding",
             Phase.SCOREBOARD: "coding",
         },
+        contestant_name_template="Contestant{n}Name",
         contestant_score_template=None,
     )
     comp = FakeCompositor()
@@ -224,6 +227,28 @@ def test_score_sources_are_optional() -> None:
     assert comp.last_text("Contestant2Name") == "Bob"
     assert comp.last_text("Contestant1Score") is None
     assert comp.last_text("Contestant2Score") is None
+
+
+def test_text_sources_are_optional() -> None:
+    config = Config(
+        scenes={
+            Phase.IDLE: "coding",
+            Phase.CODING: "coding",
+            Phase.SCOREBOARD: "coding",
+        },
+        text_prompt=None,
+        contestant_name_template=None,
+        contestant_score_template=None,
+    )
+    comp = FakeCompositor()
+    machine = StateMachine(comp, config)
+
+    machine.prime()
+    machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["Alice", "Bob"]})
+    machine.dispatch(Event.END, {"scores": {"Alice": 8.2, "Bob": 7.5}})
+
+    assert comp.scenes == ["coding", "coding", "coding"]
+    assert comp.texts == []
 
 
 def test_end_rejects_missing_scores(config: Config) -> None:

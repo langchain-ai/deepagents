@@ -35,8 +35,10 @@ class Config:
         obs_port: obs-websocket port (OBS 28+ default is 4455).
         obs_password: obs-websocket password; empty string disables auth.
         scenes: Phase to OBS scene-name mapping.
-        text_prompt: Text input that receives the round prompt.
-        contestant_name_template: `{n}`-placeholder pattern for name sources.
+        text_prompt: Optional text input that receives the round prompt.
+            `None` disables OBS prompt text writes.
+        contestant_name_template: Optional `{n}`-placeholder pattern for name
+            sources. `None` disables OBS contestant-name text writes.
         contestant_score_template: Optional `{n}`-placeholder pattern for score
             sources. `None` disables OBS score text writes.
         api_host: Bind host for the FastAPI control server.
@@ -47,14 +49,16 @@ class Config:
     obs_port: int = 4455
     obs_password: str = ""
     scenes: dict[Phase, str] = field(default_factory=dict)
-    text_prompt: str = "PromptText"
-    contestant_name_template: str = "Contestant{n}Name"
+    text_prompt: str | None = None
+    contestant_name_template: str | None = None
     contestant_score_template: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8765
 
-    def name_source(self, slot: int) -> str:
-        """Return the OBS text-source name for slot `n` (1-indexed)."""
+    def name_source(self, slot: int) -> str | None:
+        """Return the OBS text-source name for slot `n`, if enabled."""
+        if self.contestant_name_template is None:
+            return None
         return self.contestant_name_template.format(n=slot)
 
     def score_source(self, slot: int) -> str | None:
@@ -72,10 +76,10 @@ def load_config() -> Config:
         `OBS_SCENE_IDLE`, `OBS_SCENE_CODING`, `OBS_SCENE_SCOREBOARD` — scene
             names for each phase. All default to `coding` because the browser
             overlay handles idle/coding/scoreboard visuals inside one OBS scene.
-        `OBS_TEXT_PROMPT` — singular text input name for the prompt.
+        `OBS_TEXT_PROMPT` — optional singular text input name for the prompt.
         `OBS_TEXT_CONTESTANT_NAME_FMT`, `OBS_TEXT_CONTESTANT_SCORE_FMT` —
-            `{n}`-placeholder patterns. Score-source writes are disabled unless
-            `OBS_TEXT_CONTESTANT_SCORE_FMT` is set.
+            optional `{n}`-placeholder patterns. OBS text-source writes are
+            disabled unless these env vars are set.
         `VIBE_OBS_API_HOST`, `VIBE_OBS_API_PORT` — FastAPI bind.
 
     Returns:
@@ -91,10 +95,8 @@ def load_config() -> Config:
         obs_port=int(_env("OBS_PORT", "4455")),
         obs_password=os.environ.get("OBS_PASSWORD", ""),
         scenes=scenes,
-        text_prompt=_env("OBS_TEXT_PROMPT", "PromptText"),
-        contestant_name_template=_env(
-            "OBS_TEXT_CONTESTANT_NAME_FMT", "Contestant{n}Name"
-        ),
+        text_prompt=_optional_env("OBS_TEXT_PROMPT"),
+        contestant_name_template=_optional_env("OBS_TEXT_CONTESTANT_NAME_FMT"),
         contestant_score_template=_optional_env("OBS_TEXT_CONTESTANT_SCORE_FMT"),
         api_host=_env("VIBE_OBS_API_HOST", "127.0.0.1"),
         api_port=int(_env("VIBE_OBS_API_PORT", "8765")),

@@ -13,10 +13,16 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
 ## 1. OBS one-time setup
 
 1. OBS → Tools → WebSocket Server Settings → enable, note port (`4455`). Leave authentication disabled for the default local setup.
-2. Create the main scene: `coding`.
-3. Add `Text (FreeType 2)` sources to `coding` with these exact names and some placeholder text:
-   - `PromptText`, `Contestant1Name`, `Contestant2Name`
-4. Select `coding` as the active scene.
+2. Create scenes: `coding`, `p1 focus`, and `p2 focus`.
+3. In `coding`, add:
+   - `Browser` — Browser Source at `http://localhost:8766/overlay`
+   - `P1 Browser` — NDI player 1 browser feed
+   - `P2 Browser` — NDI player 2 browser feed
+   - `P1 CLI` — NDI player 1 CLI feed
+   - `P2 CLI` — NDI player 2 CLI feed
+4. In `p1 focus` and `p2 focus`, reuse the same NDI sources where possible and
+   set crop/position per scene item for the focus layout.
+5. Select `coding` as the active scene.
 
 ## 2. Launch runner
 
@@ -35,7 +41,7 @@ Leave it running. Use a second terminal for everything below.
 curl -s localhost:8765/healthz
 ```
 
-Expect: `{"obs_connected":true,"phase":"idle"}`. OBS should be on `coding` with all text sources cleared (runner primes on startup).
+Expect: `{"obs_connected":true,"phase":"idle"}`. OBS should be on `coding`.
 
 ## 4. Start round → `coding`
 
@@ -45,11 +51,8 @@ curl -s -X POST localhost:8765/transition \
   -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'
 ```
 
-OBS switches to `coding`. Text sources show:
-
-- `PromptText` → `build a cat shrine`
-- `Contestant1Name` → `Alice`
-- `Contestant2Name` → `Bob`
+OBS switches to `coding`. The `/overlay` Browser Source renders prompt,
+contestant names, and timer from control-server state.
 
 ## 5. Illegal transition (negative)
 
@@ -82,7 +85,7 @@ OBS stays on `coding`; the browser overlay renders the scoreboard state. Scores 
 
 - `scores.Alice` → `8.2`
 - `scores.Bob` → `7.5`
-- `Contestant1Name` / `Contestant2Name` remain `Alice` / `Bob`
+- contestant order remains `Alice`, `Bob`
 
 ## 8. Reset → `idle` state
 
@@ -92,7 +95,7 @@ curl -s -X POST localhost:8765/transition \
   -d '{"event":"reset","payload":{}}'
 ```
 
-OBS stays on `coding`. `PromptText` + every `Contestant{n}Name` source are cleared, and the browser overlay renders the idle state.
+OBS stays on `coding`, and the browser overlay renders the idle state.
 
 ## 9. Auth-failure check (optional)
 
@@ -135,6 +138,6 @@ curl -s -X POST localhost:8765/transition -H 'content-type: application/json' \
 | --- | --- |
 | `obs_connected: false` on start | Wrong port/password, or WebSocket server not enabled |
 | `409` on first `start` | FSM not in `idle` — `POST /transition reset` (from `scoreboard`) or restart runner |
-| Scene switches but text stays stale | Source name mismatch (case-sensitive). Check OBS names equal `PromptText` / `Contestant{n}Name`, or set `OBS_TEXT_*` / `OBS_TEXT_CONTESTANT_*_FMT` env vars to match your layout |
-| Text source blanks but never fills | Source name mismatch, or the source is not present in the active `coding` scene |
+| Scene switch fails with code 600 | Scene name mismatch. Confirm scenes are named exactly `coding`, `p1 focus`, and `p2 focus`, or set the `OBS_SCENE_*` env vars |
+| Overlay content is stale | Confirm `Browser` points at `http://localhost:8766/overlay` and the control server can reach the OBS runner |
 | A slot you expected to fill is blank | Contestant order in the `start` payload does not match the slot you're eyeballing; only the first two contestants are rendered |

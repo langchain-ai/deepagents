@@ -21,6 +21,8 @@ def test_load_config_defaults_all_phases_to_coding_scene() -> None:
         Phase.CODING: "coding",
         Phase.SCOREBOARD: "coding",
     }
+    assert config.text_prompt is None
+    assert config.contestant_name_template is None
     assert config.contestant_score_template is None
 
 
@@ -29,6 +31,8 @@ def test_load_config_allows_phase_scene_overrides() -> None:
         "OBS_SCENE_IDLE": "Idle",
         "OBS_SCENE_CODING": "Coding",
         "OBS_SCENE_SCOREBOARD": "Scoreboard",
+        "OBS_TEXT_PROMPT": "PromptText",
+        "OBS_TEXT_CONTESTANT_NAME_FMT": "Contestant{n}Name",
         "OBS_TEXT_CONTESTANT_SCORE_FMT": "Contestant{n}Score",
     }
 
@@ -40,4 +44,6 @@ def test_load_config_allows_phase_scene_overrides() -> None:
         Phase.CODING: "Coding",
         Phase.SCOREBOARD: "Scoreboard",
     }
+    assert config.text_prompt == "PromptText"
+    assert config.contestant_name_template == "Contestant{n}Name"
     assert config.contestant_score_template == "Contestant{n}Score"

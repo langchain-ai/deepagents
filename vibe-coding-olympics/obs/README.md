@@ -22,14 +22,27 @@ uv sync
 
 1. OBS 28+ (obs-websocket is built-in).
 2. Tools → WebSocket Server Settings → enable, note port (default `4455`). Leave authentication disabled for the default local setup.
-3. Create one main scene named `coding`.
-4. Create text sources (any backend works — `text_gdiplus_v2` on Windows, `text_ft2_source_v2` elsewhere):
-   - Singular: `PromptText`
-   - Two contestant name slots: `Contestant1Name`, `Contestant2Name`.
-   - Score text sources are no longer required because `/overlay` renders scores
-     from state. If you still want OBS text scores, set
-     `OBS_TEXT_CONTESTANT_SCORE_FMT`.
-   - Slot count is hardcoded to 2. Source-name templates are env-overridable — see below.
+3. Create three scenes:
+   - `coding`
+   - `p1 focus`
+   - `p2 focus`
+4. In `coding`, add these sources:
+   - `Browser` — OBS Browser Source pointed at `http://localhost:8766/overlay`
+   - `P1 Browser` — NDI player 1 browser feed
+   - `P2 Browser` — NDI player 2 browser feed
+   - `P1 CLI` — NDI player 1 CLI feed
+   - `P2 CLI` — NDI player 2 CLI feed
+
+The browser overlay renders prompts, names, scores, and idle/coding/scoreboard
+state, so OBS text sources are not required by default.
+
+For `p1 focus` and `p2 focus`, reuse the same NDI sources where possible and set
+crop/position on the scene items in each scene. OBS scene-item transforms are
+per scene item, so the same NDI source can usually have different layouts in
+`coding` and focus scenes. Avoid source-level Crop/Pad filters for this layout
+unless you deliberately want that crop shared everywhere. If you need different
+NDI input settings for the same feed, create a second NDI source pointed at the
+same upstream source.
 
 ## Run
 
@@ -39,7 +52,7 @@ uv run vibe-obs              # starts FastAPI on 127.0.0.1:8765
 
 If you enable OBS WebSocket authentication, set `OBS_PASSWORD` before launching.
 
-On startup the runner connects to OBS, primes the configured `IDLE` phase scene (default `coding`), and clears the configured text sources. If OBS is unreachable, the server still starts and `/healthz` reports `obs_connected: false`.
+On startup the runner connects to OBS and primes the configured `IDLE` phase scene (default `coding`). If OBS is unreachable, the server still starts and `/healthz` reports `obs_connected: false`.
 
 ## API
 
@@ -102,8 +115,8 @@ All env-driven. Defaults shown.
 | `OBS_SCENE_IDLE` | `coding` | Scene for `IDLE` phase |
 | `OBS_SCENE_CODING` | `coding` | Scene for `CODING` phase |
 | `OBS_SCENE_SCOREBOARD` | `coding` | Scene for `SCOREBOARD` phase |
-| `OBS_TEXT_PROMPT` | `PromptText` | Text input for the round prompt |
-| `OBS_TEXT_CONTESTANT_NAME_FMT` | `Contestant{n}Name` | `{n}`-template for per-slot name sources |
+| `OBS_TEXT_PROMPT` | _(unset)_ | Optional text input for the round prompt |
+| `OBS_TEXT_CONTESTANT_NAME_FMT` | _(unset)_ | Optional `{n}`-template for per-slot name sources |
 | `OBS_TEXT_CONTESTANT_SCORE_FMT` | _(unset)_ | Optional `{n}`-template for per-slot score sources |
 | `VIBE_OBS_API_HOST` | `127.0.0.1` | FastAPI bind host |
 | `VIBE_OBS_API_PORT` | `8765` | FastAPI bind port |
@@ -111,16 +124,16 @@ All env-driven. Defaults shown.
 ## Transitions
 
 ```
-IDLE  ──ready──▶  IDLE        # writes: scene=coding, Contestant{n}Name per slot
-IDLE  ──start──▶  CODING      # writes: scene=coding, PromptText,
-                              #         Contestant{n}Name per slot, clears unused
+IDLE  ──ready──▶  IDLE        # writes: scene=coding
+IDLE  ──start──▶  CODING      # writes: scene=coding
 CODING ──end──▶  SCOREBOARD   # writes: scene=coding; scores stay in API state
-SCOREBOARD ──reset──▶  IDLE   # writes: scene=coding, clears configured text sources
+SCOREBOARD ──reset──▶  IDLE   # writes: scene=coding
 ```
 
 Any other `(phase, event)` pair is rejected. The FSM does not auto-advance; the 5-minute timer lives in `timer/index.html` and the producer (or a later pub/sub layer) decides when to fire `end`.
 
-Slot ordering is stable across a round: contestant `i` from the `start` payload stays in `Contestant{i+1}Name` through to the scoreboard. Only two slots exist; contestants beyond the second are dropped.
+Slot ordering is stable in API state across a round. The overlay reads that
+state directly from the control server.
 
 ## Out of scope for this MVP
 

@@ -158,7 +158,7 @@ class StateMachine:
     def _write_contestant_slots(
         self, contestants: list[str], scores: dict[str, float] | None
     ) -> None:
-        """Write names + scores into per-slot sources; clear the rest.
+        """Write names + scores into configured per-slot sources.
 
         Slots are 1-indexed. Contestants beyond `CONTESTANT_SLOTS` are
         silently dropped — the Olympics layout can only show N at a time.
@@ -173,7 +173,9 @@ class StateMachine:
         for slot in range(1, CONTESTANT_SLOTS + 1):
             index = slot - 1
             name = contestants[index] if index < len(contestants) else ""
-            self._compositor.set_text(cfg.name_source(slot), name)
+            name_source = cfg.name_source(slot)
+            if name_source is not None:
+                self._compositor.set_text(name_source, name)
 
             if scores is None or not name:
                 score_text = ""
@@ -189,7 +191,8 @@ class StateMachine:
         self._snapshot = Snapshot(phase=Phase.IDLE)
         cfg = self._config
         self._compositor.set_scene(cfg.scenes[Phase.IDLE])
-        self._compositor.set_text(cfg.text_prompt, "")
+        if cfg.text_prompt is not None:
+            self._compositor.set_text(cfg.text_prompt, "")
         self._write_contestant_slots([], None)
 
     def _enter_ready(self, payload: dict[str, Any]) -> None:
@@ -212,7 +215,8 @@ class StateMachine:
         )
         cfg = self._config
         self._compositor.set_scene(cfg.scenes[Phase.CODING])
-        self._compositor.set_text(cfg.text_prompt, prompt)
+        if cfg.text_prompt is not None:
+            self._compositor.set_text(cfg.text_prompt, prompt)
         self._write_contestant_slots(contestants, None)
 
     def _enter_scoreboard(self, payload: dict[str, Any]) -> None:

@@ -2048,20 +2048,6 @@ class TestDeepAgentStructure:
         assert "sample_input" in agent.stream_channels
 
 
-_EVICTION_XFAIL = pytest.mark.xfail(
-    reason=(
-        "HumanMessage eviction requires stable IDs on messages before they are "
-        "written to the DeltaChannel. The reducer no longer assigns IDs because "
-        "doing so breaks the batching invariant (checkpointers serialize pending "
-        "writes before update() runs, so reducer-assigned IDs never reach stored "
-        "writes and differ on replay). Fix: auto-assign IDs at message creation "
-        "in langchain-core so every message has a stable ID from birth."
-    ),
-    strict=True,
-)
-
-
-@_EVICTION_XFAIL
 class TestLargeHumanMessageEviction:
     """Test that oversized HumanMessages are evicted to the filesystem."""
 
@@ -2878,7 +2864,6 @@ class TestArtifactsRoot:
         system_content = str(capturing_middleware.captured_system_messages[0].content)
         assert "/large_tool_results/" in system_content
 
-    @_EVICTION_XFAIL
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""
         store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
@@ -2906,7 +2891,6 @@ class TestArtifactsRoot:
         default_ls = backend.ls("/conversation_history/")
         assert not default_ls.entries
 
-    @_EVICTION_XFAIL
     async def test_async_human_message_eviction_uses_artifacts_root(self) -> None:
         """Async: oversized HumanMessage is evicted under the custom artifacts_root."""
         store_backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))

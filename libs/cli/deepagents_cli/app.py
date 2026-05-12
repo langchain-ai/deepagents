@@ -3293,15 +3293,36 @@ class DeepAgentsApp(App):
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
 
+        Also drives the terminal's `OSC 9;4` progress indicator, when
+        supported, so taskbar / dock / tab badges reflect agent activity while
+        the user is in another window.
+
         Args:
             status: The spinner status to display, or `None` to hide.
         """
+        from deepagents_cli.terminal_escape import (
+            TerminalProgressState,
+            clear_terminal_progress,
+            set_terminal_progress,
+        )
+
         if status is None:
             # Hide
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
+            try:
+                clear_terminal_progress()
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("clear_terminal_progress raised unexpectedly")
             return
+
+        try:
+            set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+        except Exception:
+            # Cosmetic only — must never break spinner lifecycle.
+            logger.exception("set_terminal_progress raised unexpectedly")
 
         try:
             messages = self.query_one("#messages", Container)

@@ -7946,3 +7946,128 @@ class TestExternalBypassFieldHonored:
 
 # Local import for BypassTier in TestExternalBypassFieldHonored.
 from deepagents_cli.command_registry import BypassTier  # noqa: E402
+
+
+class TestSetSpinnerTerminalProgress:
+    """`_set_spinner` should drive the `OSC 9;4` terminal progress indicator."""
+
+    async def test_status_triggers_indeterminate_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-None spinner status should set indeterminate progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+        def _record_set(*args: object, **kwargs: object) -> bool:
+            calls.append(("set", args, dict(kwargs)))
+            return True
+
+        def _record_clear() -> bool:
+            calls.append(("clear", (), {}))
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+        assert any(
+            entry[0] == "set"
+            and entry[2].get("state")
+            is terminal_escape.TerminalProgressState.INDETERMINATE
+            for entry in calls
+        )
+
+    async def test_none_status_clears_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hiding the spinner should clear terminal progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner(None)
+            await pilot.pause()
+
+        assert "clear" in calls
+
+    async def test_consecutive_set_spinner_calls_keep_emitting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-showing after a clear should re-emit indeterminate progress."""
+        from deepagents_cli import terminal_escape
+
+        calls: list[str] = []
+
+        def _record_set(*_args: object, **_kwargs: object) -> bool:
+            calls.append("set")
+            return True
+
+        def _record_clear() -> bool:
+            calls.append("clear")
+            return True
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _record_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _record_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-rep")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            calls.clear()
+            await app._set_spinner("Thinking")
+            await app._set_spinner("Thinking")
+            await app._set_spinner(None)
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+
+        assert calls.count("set") >= 3
+        assert "clear" in calls
+
+    async def test_set_spinner_swallows_terminal_escape_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unexpected exceptions from `terminal_escape` must not break the UI."""
+        from deepagents_cli import terminal_escape
+
+        def _boom_set(*_args: object, **_kwargs: object) -> bool:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        def _boom_clear() -> bool:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_progress", _boom_set)
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _boom_clear)
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-osc-boom")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Must not raise even though both calls explode.
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            await app._set_spinner(None)
+            await pilot.pause()

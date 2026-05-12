@@ -98,15 +98,63 @@ async def test_ensure_ripgrep_short_circuits_on_android(
         assert await managed_tools.ensure_ripgrep() is None
 
 
-def _make_fake_tarball(rg_bytes: bytes) -> bytes:
+def _make_fake_tarball(
+    rg_bytes: bytes, *, member_name: str = "ripgrep-14.1.1-test-triple/rg"
+) -> bytes:
     """Build an in-memory tar.gz containing `ripgrep-x.y.z-triple/rg`."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        info = tarfile.TarInfo(name="ripgrep-14.1.1-test-triple/rg")
+        info = tarfile.TarInfo(name=member_name)
         info.size = len(rg_bytes)
         info.mode = 0o755
         tf.addfile(info, io.BytesIO(rg_bytes))
     return buf.getvalue()
+
+
+def _patch_legacy_tar_extractall(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate Python 3.11 patch versions without `extractall(filter=...)`."""
+    original = tarfile.TarFile.extractall
+
+    def _legacy_extractall(
+        self: tarfile.TarFile,
+        path: str | os.PathLike[str] = ".",
+        members: list[tarfile.TarInfo] | None = None,
+        *,
+        numeric_owner: bool = False,
+        **kwargs: object,
+    ) -> None:
+        if "filter" in kwargs:
+            msg = "TarFile.extractall() got an unexpected keyword argument 'filter'"
+            raise TypeError(msg)
+        original(self, path, members=members, numeric_owner=numeric_owner)
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", _legacy_extractall)
+
+
+def test_extract_rg_supports_legacy_tar_extractall(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Tar extraction falls back when Python 3.11 lacks `filter=` support."""
+    rg_payload = b"#!/bin/sh\necho fake rg\n"
+    archive = tmp_path / "ripgrep-test.tar.gz"
+    archive.write_bytes(_make_fake_tarball(rg_payload))
+    _patch_legacy_tar_extractall(monkeypatch)
+
+    extracted = managed_tools._extract_rg(archive, tmp_path / "unpacked")
+
+    assert extracted.read_bytes() == rg_payload
+
+
+def test_extract_rg_legacy_fallback_rejects_unsafe_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Legacy extraction still rejects path traversal members."""
+    archive = tmp_path / "ripgrep-test.tar.gz"
+    archive.write_bytes(_make_fake_tarball(b"bad", member_name="../rg"))
+    _patch_legacy_tar_extractall(monkeypatch)
+
+    with pytest.raises(tarfile.TarError, match="unsafe tar member"):
+        managed_tools._extract_rg(archive, tmp_path / "unpacked")
 
 
 def test_install_ripgrep_sync_happy_path(

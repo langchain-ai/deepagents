@@ -222,6 +222,19 @@ def _ripgrep_install_hint() -> str:
     return _RIPGREP_URL
 
 
+def _is_managed_ripgrep_path(path: str | None) -> bool:
+    """Return whether `path` points at the managed `rg` binary."""
+    if path is None:
+        return False
+
+    from deepagents_cli.managed_tools import managed_rg_path
+
+    managed = managed_rg_path()
+    return os.path.normcase(str(Path(path).resolve())) == os.path.normcase(
+        str(managed.resolve())
+    )
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -239,7 +252,10 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     from deepagents_cli.model_config import is_warning_suppressed
 
     missing: list[str] = []
-    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+    rg_path = shutil.which("rg")
+    if (
+        rg_path is None or _is_managed_ripgrep_path(rg_path)
+    ) and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
 
     from deepagents_cli.config import settings
@@ -485,14 +501,6 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    # Make a previously-installed managed `rg` discoverable *before* any
-    # agent code runs. Cheap (env-var mutation only — no urllib/tarfile
-    # imports) and works even when offline because the actual download
-    # path lives behind `ensure_ripgrep` in the background worker.
-    from deepagents_cli.managed_tools import prepend_managed_bin_to_path
-
-    prepend_managed_bin_to_path()
-
     from deepagents_cli._constants import DEFAULT_AGENT_NAME
     from deepagents_cli.deploy import setup_deploy_parsers
     from deepagents_cli.mcp_commands import setup_mcp_parsers

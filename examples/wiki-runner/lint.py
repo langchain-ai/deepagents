@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from models import CliDeps, RunnerConfig
-import wiki_helpers as helpers
+import helpers
 
 
 def build_lint_prompt(topic: str, note: str | None) -> str:

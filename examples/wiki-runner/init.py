@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from models import CliDeps, RunResult, RunnerConfig
-import wiki_helpers as helpers
+import helpers
 
 def resolve_internal_source_flag(deps: CliDeps) -> tuple[str, ...]:
     """Resolve an init flag set that enforces internal repo source."""

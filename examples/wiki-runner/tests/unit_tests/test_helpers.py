@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import lint as lint_helpers
-import wiki_helpers as helpers
+import helpers
 import query as query_helpers
 
 

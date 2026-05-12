@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from models import CliDeps, RunnerConfig
-import wiki_helpers as helpers
+import helpers
 
 @dataclass(frozen=True)
 class QueryResult:

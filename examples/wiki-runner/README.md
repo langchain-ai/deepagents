@@ -4,8 +4,8 @@ A script-first DeepAgents example that builds a persistent wiki and syncs it thr
 
 ## Structure
 
-- `wiki_runner.py` - thin CLI entrypoint
-- `wiki_helpers.py` - shared helpers, CLI parsing, and mode orchestration
+- `runner.py` - thin CLI entrypoint
+- `helpers.py` - shared helpers, CLI parsing, and mode orchestration
 - `index.py` - `wiki/index.md` catalog builder and categorization logic
 - `log.py` - `log.md` append-only timeline formatter and writer
 - `models.py` - shared config/dependency/result dataclasses
@@ -57,27 +57,27 @@ echo "${LANGSMITH_API_KEY:+set}"
 
 ```bash
 # Initialize workspace + first Hub push
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode init \
   --repo "ada-lovelace-wiki" \
   --description "Persistent research wiki about Ada Lovelace"
 
 # Initialize with explicit owner
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode init \
   --repo "ada-lovelace-wiki" \
   --description "Persistent research wiki about Ada Lovelace" \
   --owner "acme"
 
 # Default ingest (no approval)
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode ingest \
   --repo "ada-lovelace-wiki" \
   --source ./notes/ada.md \
   --source ./speeches/
 
 # Optional review + confirmation before apply
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode ingest \
   --repo "ada-lovelace-wiki" \
   --source ./notes/timeline.txt \
@@ -85,13 +85,13 @@ uv run python wiki_runner.py \
   --review
 
 # Query from wiki
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode query \
   --repo "ada-lovelace-wiki" \
   --question "What did Ada contribute to computing?"
 
 # Lint wiki consistency/linking
-uv run python wiki_runner.py \
+uv run python runner.py \
   --mode lint \
   --repo "ada-lovelace-wiki"
 ```

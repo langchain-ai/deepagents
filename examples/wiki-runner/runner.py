@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from wiki_helpers import WikiError, parse_config, run
+from helpers import WikiError, parse_config, run
 
 
 def main(argv: Sequence[str] | None = None) -> int:

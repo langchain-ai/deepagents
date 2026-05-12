@@ -7,7 +7,7 @@ from pathlib import Path
 from collections.abc import Callable, Sequence
 
 from models import CliDeps, RunnerConfig
-import wiki_helpers as helpers
+import helpers
 
 @dataclass(frozen=True)
 class IngestResult:

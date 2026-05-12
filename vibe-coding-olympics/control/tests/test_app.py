@@ -55,6 +55,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("fetch('/api/state'", response.text)
         self.assertIn("Player: Player 1", response.text)
         self.assertIn("function playerName", response.text)
+        self.assertIn("transform: translateX(-50%)", response.text)
+        self.assertIn(".player-name.right", response.text)
+        self.assertIn("left: 66.7%", response.text)
         self.assertIn("timer-warning", response.text)
         self.assertIn("function syncTimerWarning", response.text)
         self.assertIn("threshold_secs", response.text)
@@ -76,6 +79,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="btn-open-smoke"', response.text)
         self.assertIn("/api/overlay-smoke", response.text)
         self.assertIn("Run transition tour", response.text)
+        self.assertIn("#smoke-modal button", response.text)
+        self.assertIn("smoke-command-actions", response.text)
 
     def test_static_fonts_are_served(self) -> None:
         client = TestClient(app_mod.create_app())

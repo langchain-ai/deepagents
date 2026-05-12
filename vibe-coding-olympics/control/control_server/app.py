@@ -1040,12 +1040,33 @@ _INDEX_HTML = """<!doctype html>
   .smoke-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.45rem;
-    margin-top: 0.75rem;
+    gap: 0.4rem;
+    margin-top: 0.65rem;
+  }
+  #smoke-modal button {
+    min-height: 2.2rem;
+    margin: 0;
+    padding: 0.4rem 0.55rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    line-height: 1.15;
   }
   .smoke-actions button {
     width: 100%;
-    margin-right: 0;
+    white-space: nowrap;
+  }
+  .smoke-command-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 0.4rem;
+    align-items: center;
+    margin-top: 0.5rem;
+  }
+  .smoke-command-actions button {
+    white-space: nowrap;
+  }
+  #btn-smoke-cancel {
+    min-width: 4.8rem;
   }
   .smoke-links {
     display: flex;
@@ -1053,6 +1074,12 @@ _INDEX_HTML = """<!doctype html>
     flex-wrap: wrap;
     margin-top: 0.75rem;
     font-size: 0.85rem;
+  }
+  @media (max-width: 560px) {
+    .smoke-actions,
+    .smoke-command-actions {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
 </head>
@@ -1183,7 +1210,7 @@ _INDEX_HTML = """<!doctype html>
       <button type="button" id="btn-smoke-warning-60">1:00 flash</button>
       <button type="button" id="btn-smoke-warning-30">0:30 flash</button>
     </div>
-    <div class="action-line">
+    <div class="smoke-command-actions">
       <button type="button" class="secondary" id="btn-smoke-tour">Run transition tour</button>
       <button type="button" class="danger" id="btn-smoke-clear">Clear smoke mode</button>
       <button type="button" class="secondary" id="btn-smoke-cancel">Close</button>
@@ -2029,11 +2056,12 @@ _OVERLAY_HTML = """<!doctype html>
     white-space: nowrap;
   }
   .event-chip {
-    left: 35.7%;
+    left: 50%;
     top: 2.25%;
-    width: 34%;
+    width: 30%;
     height: 5.5%;
-    font-size: min(1.95vw, 3.45vh);
+    transform: translateX(-50%);
+    font-size: min(1.65vw, 2.92vh);
     letter-spacing: 0.02em;
   }
   .timer-chip {
@@ -2061,7 +2089,6 @@ _OVERLAY_HTML = """<!doctype html>
   .player-name {
     position: absolute;
     top: 2.85%;
-    max-width: 27%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2069,8 +2096,14 @@ _OVERLAY_HTML = """<!doctype html>
     font-weight: 500;
     text-transform: uppercase;
   }
-  .player-name.left { left: 2.2%; }
-  .player-name.right { left: 52.2%; }
+  .player-name.left {
+    left: 2.2%;
+    max-width: 31%;
+  }
+  .player-name.right {
+    left: 66.7%;
+    max-width: 21.5%;
+  }
   .prompt-strip {
     position: absolute;
     left: 2.2%;

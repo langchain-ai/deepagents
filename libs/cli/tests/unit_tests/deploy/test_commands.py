@@ -164,6 +164,7 @@ class TestAutoWireIssuesBoard:
         assert observed["session_id"] == "session-123"
         assert observed["api_key"] == "test-key"
         assert observed["context_hub_repo_handle"] == "my-agent"
+        assert observed["context_hub_repo_source"] == "internal"
 
     def test_hub_wires_board_with_explicit_identifier(
         self,
@@ -197,3 +198,4 @@ class TestAutoWireIssuesBoard:
         _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
 
         assert observed["context_hub_repo_handle"] == "custom-agent"
+        assert observed["context_hub_repo_source"] == "internal"

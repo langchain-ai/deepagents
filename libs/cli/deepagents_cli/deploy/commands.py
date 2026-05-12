@@ -599,6 +599,7 @@ def _upsert_issues_board_config(
     session_id: str,
     api_key: str,
     context_hub_repo_handle: str,
+    context_hub_repo_source: str,
 ) -> None:
     """Best-effort create or patch board config for a deployed agent."""
     import httpx
@@ -622,6 +623,7 @@ def _upsert_issues_board_config(
         "heavy_model": "anthropic:issues-agent-heavy",
         "light_model": "anthropic:issues-agent-light",
         "context_hub_repo_handle": context_hub_repo_handle,
+        "context_hub_repo_source": context_hub_repo_source,
     }
 
     try:
@@ -637,7 +639,10 @@ def _upsert_issues_board_config(
                 patch_resp = client.patch(
                     url,
                     headers=headers,
-                    json={"context_hub_repo_handle": context_hub_repo_handle},
+                    json={
+                        "context_hub_repo_handle": context_hub_repo_handle,
+                        "context_hub_repo_source": context_hub_repo_source,
+                    },
                 )
                 if patch_resp.status_code in success_codes:
                     print(
@@ -707,4 +712,5 @@ def _auto_wire_issues_board_if_hub(config: DeployConfig) -> None:
         session_id=session_id,
         api_key=api_key,
         context_hub_repo_handle=context_hub_repo_handle,
+        context_hub_repo_source="internal",
     )

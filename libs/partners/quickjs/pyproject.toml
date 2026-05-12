@@ -23,7 +23,7 @@ requires-python = ">=3.11,<4.0"
 keywords = ["deepagents", "langchain", "langgraph", "repl", "javascript", "quickjs", "middleware"]
 
 dependencies = [
-    "deepagents",
+    "deepagents>=0.6.0,<0.7.0",
     "quickjs-rs>=0.1.2,<0.2.0",
     "langchain>=1.2.15,<2.0.0",
     "langchain-core>=1.3.1,<2.0.0",

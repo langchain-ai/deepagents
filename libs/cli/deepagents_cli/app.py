@@ -3311,10 +3311,18 @@ class DeepAgentsApp(App):
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
-            clear_terminal_progress()
+            try:
+                clear_terminal_progress()
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("clear_terminal_progress raised unexpectedly")
             return
 
-        set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+        try:
+            set_terminal_progress(state=TerminalProgressState.INDETERMINATE)
+        except Exception:
+            # Cosmetic only — must never break spinner lifecycle.
+            logger.exception("set_terminal_progress raised unexpectedly")
 
         try:
             messages = self.query_one("#messages", Container)

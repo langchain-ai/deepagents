@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import logging
+import pathlib
 
 import pytest
 
@@ -96,6 +98,43 @@ class TestWriteTerminalEscape:
         monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: False)
         assert write_terminal_escape("\x1b]9;4;0;0\a") is False
 
+    def test_real_open_tty_oserror_falls_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exercise the real `_open_tty` body, not a stub."""
+
+        def _raising_open(*_args: object, **_kwargs: object) -> None:
+            msg = "no tty"
+            raise OSError(msg)
+
+        monkeypatch.setattr(pathlib.Path, "open", _raising_open)
+        monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: False)
+        assert write_terminal_escape("\x1b]9;4;0;0\a") is False
+
+    def test_stderr_fallback_write_failure_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When `/dev/tty` is missing and stderr write raises, return `False`."""
+
+        class _RaisingStderr:
+            def write(self, _data: str) -> int:
+                msg = "stderr closed"
+                raise OSError(msg)
+
+            def flush(self) -> None: ...
+
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: None)
+        monkeypatch.setattr(terminal_escape, "_is_stream_tty", lambda _stream: True)
+        monkeypatch.setattr("sys.__stderr__", _RaisingStderr())
+        assert write_terminal_escape("\x1b]9;4;0;0\a") is False
+
+    def test_unicode_payload_round_trips(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OSC payloads with non-ASCII bytes are written verbatim."""
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        assert write_osc("9;4", "テスト") is True
+        assert fake.getvalue() == "\x1b]9;4;テスト\a"
+
 
 class TestWriteOsc:
     """Tests for `write_osc`."""
@@ -141,6 +180,22 @@ class TestValidateProgress:
 
     def test_none_progress_for_determinate_becomes_zero(self) -> None:
         assert _validate_progress(None, TerminalProgressState.NORMAL) == 0
+
+    def test_non_numeric_progress_coerces_to_zero(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bad types are logged + treated as zero, never raised."""
+        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
+            assert _validate_progress("nope", TerminalProgressState.NORMAL) == 0  # type: ignore[arg-type]
+        assert any("non-numeric" in record.message for record in caplog.records)
+
+    def test_clear_with_nonzero_progress_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Supplying progress to CLEAR/INDETERMINATE is observable misuse."""
+        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
+            assert _validate_progress(42, TerminalProgressState.CLEAR) == 0
+        assert any("ignoring progress" in record.message for record in caplog.records)
 
 
 class TestSetTerminalProgress:

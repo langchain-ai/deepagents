@@ -17,6 +17,7 @@ import logging
 import os
 import pathlib
 import sys
+import threading
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -33,7 +34,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PROGRESS_MIN = 0
+"""Lower clamp bound for determinate `OSC 9;4` progress percentages."""
+
 _PROGRESS_MAX = 100
+"""Upper clamp bound for determinate `OSC 9;4` progress percentages."""
 
 
 class TerminalProgressState(StrEnum):
@@ -43,10 +47,19 @@ class TerminalProgressState(StrEnum):
     """
 
     CLEAR = "0"
+    """Remove any progress indicator. Percentage is ignored."""
+
     NORMAL = "1"
+    """Determinate progress shown with the default (success) color."""
+
     ERROR = "2"
+    """Determinate progress shown with the error/red color."""
+
     INDETERMINATE = "3"
+    """Activity in progress with no known percentage; renders as a pulse."""
+
     WARNING = "4"
+    """Determinate progress shown with the warning/yellow color."""
 
 
 def _is_disabled() -> bool:
@@ -114,7 +127,7 @@ def write_terminal_escape(sequence: str) -> bool:
             with tty:
                 tty.write(sequence)
                 tty.flush()
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.debug("terminal_escape /dev/tty write failed: %s", exc)
         else:
             return True
@@ -152,13 +165,17 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
 
 _progress_active = False
 _atexit_registered = False
+_atexit_lock = threading.Lock()
 
 
 def _validate_progress(progress: int | None, state: TerminalProgressState) -> int:
     """Clamp/normalize `progress` for a given `state`.
 
     Determinate states (`NORMAL`, `ERROR`, `WARNING`) clamp to `[0, 100]`;
-    `INDETERMINATE` and `CLEAR` always emit `0`.
+    `INDETERMINATE` and `CLEAR` always emit `0`. A non-`None` `progress`
+    supplied with `CLEAR`/`INDETERMINATE` is dropped with a debug log so
+    misuse stays observable without raising on a cosmetic write path. A
+    `progress` that can't be coerced to `int` is treated the same way.
 
     Args:
         progress: Raw percentage, or `None`.
@@ -168,10 +185,23 @@ def _validate_progress(progress: int | None, state: TerminalProgressState) -> in
         The normalized progress integer to emit.
     """
     if state in {TerminalProgressState.CLEAR, TerminalProgressState.INDETERMINATE}:
+        if progress is not None and progress != 0:
+            logger.debug(
+                "terminal_progress: ignoring progress=%r for state=%s",
+                progress,
+                state.name,
+            )
         return 0
     if progress is None:
         return 0
-    return max(_PROGRESS_MIN, min(_PROGRESS_MAX, int(progress)))
+    try:
+        coerced = int(progress)
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "terminal_progress: non-numeric progress=%r ignored (%s)", progress, exc
+        )
+        return 0
+    return max(_PROGRESS_MIN, min(_PROGRESS_MAX, coerced))
 
 
 def set_terminal_progress(
@@ -201,9 +231,10 @@ def set_terminal_progress(
     payload = f"{state.value};{value}"
     written = write_osc("9;4", payload)
     if written and state is not TerminalProgressState.CLEAR:
-        if not _atexit_registered:
-            atexit.register(_atexit_clear)
-            _atexit_registered = True
+        with _atexit_lock:
+            if not _atexit_registered:
+                atexit.register(_atexit_clear)
+                _atexit_registered = True
         _progress_active = True
     elif state is TerminalProgressState.CLEAR:
         _progress_active = False

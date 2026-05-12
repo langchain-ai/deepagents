@@ -17,6 +17,3 @@ dev = []
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
-
-[tool.uv]
-prerelease = "allow"

@@ -20,12 +20,18 @@ import sys
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from deepagents_cli._env_vars import (
+    FORCE_TERMINAL_PROGRESS,
+    NO_TERMINAL_ESCAPE,
+    is_env_truthy,
+)
+
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from typing import TextIO
 
 logger = logging.getLogger(__name__)
 
-_DISABLE_ENV_VAR = "DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE"
 _PROGRESS_MIN = 0
 _PROGRESS_MAX = 100
 
@@ -45,7 +51,25 @@ class TerminalProgressState(StrEnum):
 
 def _is_disabled() -> bool:
     """Return whether terminal-escape output is opt-out disabled."""
-    return os.environ.get(_DISABLE_ENV_VAR, "").strip().lower() in {"1", "true", "yes"}
+    return is_env_truthy(NO_TERMINAL_ESCAPE)
+
+
+def _terminal_identity_supports_progress(env: Mapping[str, str]) -> bool:
+    """Return whether `env` identifies a terminal with OSC 9;4 support."""
+    return bool(env.get("WT_SESSION", "").strip())
+
+
+def _terminal_progress_supported() -> bool:
+    """Return whether OSC 9;4 progress writes should be emitted.
+
+    OSC 9 is terminal-specific: Windows Terminal uses `9;4` for progress,
+    while iTerm2 interprets `OSC 9;...` as notifications. Keep detection
+    conservative and allow users to force-enable progress for terminals they
+    know are compatible.
+    """
+    return is_env_truthy(
+        FORCE_TERMINAL_PROGRESS
+    ) or _terminal_identity_supports_progress(os.environ)
 
 
 def _open_tty() -> TextIO | None:
@@ -71,7 +95,9 @@ def write_terminal_escape(sequence: str) -> bool:
 
     Prefers `/dev/tty` so the sequence reaches the terminal even when stdout
     or stderr are redirected. Falls back to `sys.__stderr__` only if it is a
-    TTY. Returns `False` (no-op) when output is disabled or no TTY is reachable.
+    TTY.
+
+    Returns `False` (no-op) when output is disabled or no TTY is reachable.
 
     Args:
         sequence: Raw escape sequence to write, including leading `\x1b`/`ESC`
@@ -111,8 +137,10 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
         command: The numeric OSC command (e.g. ``"9;4"`` for taskbar progress).
         payload: Optional semicolon-joined payload appended after the command.
         st: When `True`, terminate with String Terminator (`ESC \`) instead of
-            the default BEL (`\a`). BEL matches the Windows Terminal docs and
-            works on most terminals; VTE-derived terminals may prefer ST.
+            the default BEL (`\a`).
+
+            BEL matches the Windows Terminal docs and works on most terminals;
+            VTE-derived terminals may prefer ST.
 
     Returns:
         `True` if the sequence was written.
@@ -123,6 +151,7 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
 
 
 _progress_active = False
+_atexit_registered = False
 
 
 def _validate_progress(progress: int | None, state: TerminalProgressState) -> int:
@@ -152,8 +181,8 @@ def set_terminal_progress(
 ) -> bool:
     """Set the terminal's `OSC 9;4` progress indicator.
 
-    Unsupported terminals silently ignore the sequence, so callers can fire
-    this unconditionally without runtime probing.
+    Only emits on terminals known to support `OSC 9;4`, or when explicitly
+    force-enabled. Some terminals repurpose `OSC 9` for notifications.
 
     Args:
         progress: Percentage `0-100` for determinate states. Ignored for
@@ -163,13 +192,18 @@ def set_terminal_progress(
     Returns:
         `True` if the sequence was written.
     """
+    global _atexit_registered, _progress_active  # noqa: PLW0603
+
+    if not (_progress_active or _terminal_progress_supported()):
+        return False
+
     value = _validate_progress(progress, state)
     payload = f"{state.value};{value}"
     written = write_osc("9;4", payload)
-    global _progress_active  # noqa: PLW0603
     if written and state is not TerminalProgressState.CLEAR:
-        if not _progress_active:
+        if not _atexit_registered:
             atexit.register(_atexit_clear)
+            _atexit_registered = True
         _progress_active = True
     elif state is TerminalProgressState.CLEAR:
         _progress_active = False

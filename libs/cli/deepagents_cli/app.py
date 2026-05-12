@@ -3293,9 +3293,9 @@ class DeepAgentsApp(App):
     async def _set_spinner(self, status: SpinnerStatus) -> None:
         """Show, update, or hide the loading spinner.
 
-        Also drives the terminal's `OSC 9;4` progress indicator so taskbar /
-        dock / tab badges reflect agent activity while the user is in another
-        window. Unsupported terminals ignore the sequence silently.
+        Also drives the terminal's `OSC 9;4` progress indicator, when
+        supported, so taskbar / dock / tab badges reflect agent activity while
+        the user is in another window.
 
         Args:
             status: The spinner status to display, or `None` to hide.

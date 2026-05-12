@@ -26,13 +26,12 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
@@ -1974,24 +1973,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires the state command uses REMOVE_ALL_MESSAGES +
-        a full rewrite of the message list (with IDs assigned to any ID-less
-        messages) rather than a simple append of the tagged message.
+        When a new eviction fires the state command uses ``Overwrite`` to
+        replace the entire messages channel value with a fully-identified list
+        rather than appending the tagged message.
 
         This preserves correctness with DeltaChannel: the checkpointer
         serializes pending writes *before* the reducer runs, so any ID
         assigned inside the reducer never reaches stored writes. On replay a
         simple ``Command(messages=[tagged(id=X)])`` would not match the
         original ``HumanMessage(id=None)`` write (which gets a fresh UUID),
-        producing a duplicate. The REMOVE_ALL_MESSAGES sentinel in the rewrite
-        discards everything before it in the replay sequence, then restores
-        all messages with stable IDs — eliminating the duplicate.
+        producing a duplicate. ``Overwrite`` bypasses the reducer entirely —
+        it sets the channel's base value directly, so the replay path sees the
+        fully-identified list as the new snapshot and the ID-less write is
+        never replayed against it.
 
         Cost: O(N) writes only when a new eviction fires, not every turn.
 
         Args:
             messages: The message list (may be modified if write succeeded).
-            write_result: Result of the backend write, or `None` if no new
+            write_result: Result of the backend write, or ``None`` if no new
                 eviction was attempted.
             file_path: Path the content was written to.
 
@@ -2011,11 +2011,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            # Assign stable IDs to every ID-less message in the current list
-            # so that REMOVE_ALL_MESSAGES + rewrite produces a fully identified
-            # history that survives checkpoint replay without duplicates.
+            # Assign stable IDs to every ID-less message, then overwrite the
+            # channel so replay sees a clean snapshot rather than replaying the
+            # original id=None write alongside the eviction Command.
             stable: list[AnyMessage] = [(m.model_copy(update={"id": str(uuid.uuid4())}) if m.id is None else m) for m in messages[:-1]] + [tagged]
-            state_command = Command(update={"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *stable]})
+            state_command = Command(update={"messages": Overwrite(stable)})
             messages = stable
 
         processed: list[AnyMessage] = []

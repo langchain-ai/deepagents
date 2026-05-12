@@ -7,6 +7,7 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 - `wiki_runner.py` - thin CLI entrypoint
 - `wiki_helpers.py` - shared helpers, CLI parsing, and mode orchestration
 - `index.py` - `wiki/index.md` catalog builder and categorization logic
+- `log.py` - `log.md` append-only timeline formatter and writer
 - `models.py` - shared config/dependency/result dataclasses
 - `init.py` - `init` mode workflow and internal-source enforcement
 - `ingest.py` - `ingest` mode source expansion + review/apply flow
@@ -23,7 +24,7 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 - `raw/` - immutable source files dropped in for ingest (articles, notes, datasets).
 - `wiki/` - LLM-maintained knowledge pages (entities, concepts, summaries, syntheses).
 - `wiki/index.md` - content-oriented catalog for wiki navigation and retrieval: categorized page links with one-line summaries and optional metadata (for example date/source count). Query flows read this first.
-- `log.md` - append-only chronological operation log (`ingest`, `query`, `lint` runs).
+- `log.md` - append-only chronological interaction log. Every ingest/query/lint phase appends a parseable heading: `## [YYYY-MM-DD] mode.phase | outcome=...`.
 
 ## Requirements
 
@@ -101,10 +102,10 @@ uv run python wiki_runner.py \
 
 If you pass `--review`, ingest becomes a two-phase, operator-in-the-loop flow:
 
-1. Review phase (read-only): the model reads staged source files and returns key takeaways, proposed wiki updates, contradictions, and index/log changes.
-2. Apply phase (write): after your confirmation, the model writes source summary updates, concept/entity updates, and a log entry.
-3. The runner refreshes `wiki/index.md` as a categorized content catalog on every ingest.
-4. In `--review` mode, if you decline the confirmation prompt (anything except `y`/`yes`), ingest exits with no wiki edits, no `log.md` append, and no hub push.
+1. Review phase (read-only): the model reads staged source files and returns key takeaways, proposed wiki updates, contradictions, and index updates.
+2. Apply phase (write): after your confirmation, the model writes source summary updates and concept/entity updates.
+3. The runner refreshes `wiki/index.md` and appends structured `ingest.review` / `ingest.apply` timeline entries in `log.md`.
+4. In `--review` mode, declining confirmation skips wiki edits, but still appends an `ingest.apply | outcome=canceled` entry so the timeline is complete.
 
 Batch ingest is the default. A single run can process multiple files and directories.
 
@@ -112,8 +113,9 @@ Batch ingest is the default. A single run can process multiple files and directo
 
 `query` runs in two phases automatically:
 
-1. Analysis phase (read-only): the model reads `wiki/index.md` first (categorized links, summaries, and metadata), then (when helpful) checks prior `wiki/query/*.md` pages for discovery/routing, expands into canonical wiki pages for grounding, answers with citations, and decides whether the result should be filed for future reuse. Query pages are treated as routing hints rather than primary evidence.
-2. Filing phase (write, conditional): if the answer is durable, the runner files it into `wiki/query/<question-slug>.md`, refreshes `wiki/index.md`, appends a query entry to `log.md`, and pushes.
+1. Analysis phase (read-only): the model reads `wiki/index.md`, then recent `log.md` entries for recency context, then (when helpful) checks prior `wiki/query/*.md` pages for discovery/routing, expands into canonical wiki pages for grounding, answers with citations, and decides whether the result should be filed for future reuse. Query pages are treated as routing hints rather than primary evidence.
+2. Filing phase (write, conditional): if the answer is durable, the runner files it into `wiki/query/<question-slug>.md` and refreshes `wiki/index.md`.
+3. The runner always appends structured query timeline entries (`query.review` and optionally `query.apply`) to `log.md` and pushes so query history is complete, even on `skip`.
 
 ## Lint workflow
 
@@ -121,4 +123,16 @@ Batch ingest is the default. A single run can process multiple files and directo
 
 1. Health-check phase (apply): the model reconciles contradictions, stale/superseded claims, orphan pages, missing cross-references, and key concept coverage directly in `/wiki/` (creating new canonical pages when needed).
 2. Gap reporting phase (in response): the model returns a concise summary with reconciled changes, remaining gaps, and suggested next questions/sources.
-3. The runner refreshes `wiki/index.md`, appends a lint entry to `log.md`, and pushes.
+3. The runner refreshes `wiki/index.md`, appends a structured `lint.apply` entry to `log.md`, and pushes.
+
+## Log timeline
+
+`log.md` is append-only and designed to be parseable with simple shell tools.
+
+```bash
+# Show the latest 5 timeline entries.
+grep "^## \\[" log.md | tail -5
+
+# Show the latest query review outcomes.
+grep "^## \\[.*\\] query.review \\|" log.md | tail -10
+```

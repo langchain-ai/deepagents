@@ -55,12 +55,15 @@ def build_query_prompt(topic: str, question: str) -> str:
         "Required workflow:\n"
         "1) Read `/wiki/index.md` first and use its categorized summaries/metadata to "
         "choose candidate pages.\n"
-        "2) Prefer checking relevant prior `/wiki/query/*.md` pages first as a discovery step.\n"
-        "3) Use those query pages to identify likely canonical `/wiki/*.md` pages and topics.\n"
-        "4) Read the canonical wiki pages before final synthesis.\n"
-        "5) Provide a grounded answer with wiki file path citations.\n"
-        "6) Decide whether this answer should be filed as a durable wiki page.\n\n"
+        "2) Read recent `/log.md` entries (latest ~10 `## [` headings) to understand what "
+        "was ingested, queried, or linted recently.\n"
+        "3) Prefer checking relevant prior `/wiki/query/*.md` pages first as a discovery step.\n"
+        "4) Use those query pages to identify likely canonical `/wiki/*.md` pages and topics.\n"
+        "5) Read the canonical wiki pages before final synthesis.\n"
+        "6) Provide a grounded answer with wiki file path citations.\n"
+        "7) Decide whether this answer should be filed as a durable wiki page.\n\n"
         "Evidence policy:\n"
+        "- Treat `/log.md` as operational recency context, not primary factual evidence.\n"
         "- Treat `/wiki/query/*.md` pages as routing hints, not primary evidence.\n"
         "- Cite canonical wiki pages for final claims whenever possible.\n"
         "- If a claim is only supported by query pages, explicitly note uncertainty and missing canonical grounding.\n\n"
@@ -135,9 +138,20 @@ def run_query_workspace(
         workspace_dir, config.topic, review_prompt, config.model
     )
     decision = parse_query_decision(review_response)
+    review_outcome = "file" if decision.should_file else "skip"
+    helpers._append_log_entry(
+        workspace_dir,
+        "query.review",
+        review_outcome,
+        metadata={
+            "question": question,
+            "decision": review_outcome,
+        },
+        summary=decision.answer,
+    )
 
     if not decision.should_file:
-        return QueryResult(answer=decision.answer, should_push=False, filed_path=None)
+        return QueryResult(answer=decision.answer, should_push=True, filed_path=None)
 
     target_path = query_target_path(question)
     apply_prompt = build_query_apply_prompt(
@@ -152,7 +166,9 @@ def run_query_workspace(
     helpers._refresh_index(config.topic, workspace_dir)
     helpers._append_log_entry(
         workspace_dir,
-        "query",
-        f"question={question} decision=file path={target_path}",
+        "query.apply",
+        "filed",
+        metadata={"question": question, "path": target_path},
+        summary=decision.answer,
     )
     return QueryResult(answer=decision.answer, should_push=True, filed_path=target_path)

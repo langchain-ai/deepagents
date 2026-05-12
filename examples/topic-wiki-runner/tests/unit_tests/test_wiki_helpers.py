@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,11 @@ def _make_deps(
         ask_user=ask_user or (lambda _prompt: "y"),
         tempdir_factory=lambda: tempfile.TemporaryDirectory(),
     )
+
+
+def _log_headings(log_text: str) -> list[str]:
+    """Return parseable timeline heading lines from log markdown."""
+    return [line for line in log_text.splitlines() if line.startswith("## [")]
 
 
 def test_resolve_langsmith_binary_prefers_langsmith(
@@ -610,6 +616,37 @@ def test_refresh_index_writes_empty_catalog_when_no_pages(tmp_path: Path) -> Non
     assert "_No pages yet._" in index_text
 
 
+def test_append_log_entry_normalizes_and_truncates_fields(tmp_path: Path) -> None:
+    """Keep structured log headers one-line and grep-friendly."""
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True)
+
+    noisy_summary = " ".join(["summary"] * 100)
+    helpers._append_log_entry(
+        workspace_dir,
+        "query.review",
+        "skip",
+        metadata={
+            "question": "What changed\nthis week?",
+            "note": "alpha   beta\tgamma",
+        },
+        summary=noisy_summary,
+    )
+
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    headings = _log_headings(log_text)
+
+    assert headings
+    assert re.match(r"^## \[\d{4}-\d{2}-\d{2}\] query\.review \| ", headings[0])
+    assert "outcome=skip" in headings[0]
+    assert 'question="What changed this week?"' in headings[0]
+    assert "note=alpha_beta_gamma" not in headings[0]
+    assert 'note="alpha beta gamma"' in headings[0]
+    assert "\n" not in headings[0]
+    assert "- summary:" in log_text
+    assert "..." in log_text
+
+
 def test_run_ingest_workspace_runs_review_then_apply(tmp_path: Path) -> None:
     """Apply ingest only after review approval."""
     source = tmp_path / "source.md"
@@ -659,6 +696,9 @@ def test_run_ingest_workspace_runs_review_then_apply(tmp_path: Path) -> None:
     assert result.should_push is True
     assert result.answer == "apply summary"
     assert calls == ["review", "apply"]
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest.review | outcome=completed" in log_text
+    assert "ingest.apply | outcome=applied" in log_text
 
 
 def test_run_ingest_workspace_cancelled_skips_apply(tmp_path: Path) -> None:
@@ -707,9 +747,12 @@ def test_run_ingest_workspace_cancelled_skips_apply(tmp_path: Path) -> None:
 
     result = helpers._run_ingest_workspace(config, workspace_dir, deps)
 
-    assert result.should_push is False
+    assert result.should_push is True
     assert result.answer and "canceled" in result.answer.lower()
     assert calls == ["review"]
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest.review | outcome=completed" in log_text
+    assert "ingest.apply | outcome=canceled" in log_text
 
 
 def test_run_ingest_workspace_default_skips_review(tmp_path: Path) -> None:
@@ -761,10 +804,13 @@ def test_run_ingest_workspace_default_skips_review(tmp_path: Path) -> None:
     assert result.should_push is True
     assert result.answer == "apply summary"
     assert calls == ["apply"]
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    assert "ingest.apply | outcome=applied" in log_text
+    assert "ingest.review |" not in log_text
 
 
-def test_run_pull_mode_skips_push_when_ingest_cancelled(tmp_path: Path) -> None:
-    """Avoid hub push when ingest review is declined."""
+def test_run_pull_mode_pushes_when_ingest_cancelled(tmp_path: Path) -> None:
+    """Still push when ingest review is declined so timeline logs persist."""
     source = tmp_path / "source.md"
     source.write_text("hello\n", encoding="utf-8")
 
@@ -810,7 +856,7 @@ def test_run_pull_mode_skips_push_when_ingest_cancelled(tmp_path: Path) -> None:
     result = helpers._run_pull_mode(config, deps)
 
     assert result.answer and "canceled" in result.answer.lower()
-    assert not any(call[:2] == ("hub", "push") for call in calls)
+    assert any(call[:2] == ("hub", "push") for call in calls)
 
 
 def test_build_lint_prompt_covers_health_checks_and_web_policy() -> None:
@@ -823,8 +869,10 @@ def test_build_lint_prompt_covers_health_checks_and_web_policy() -> None:
     assert "orphan pages with no inbound links" in prompt
     assert "missing cross-references" in prompt
     assert "important concept lacks a dedicated page" in prompt
+    assert "Read recent `/log.md` entries first" in prompt
     assert "Use model-native web browsing/search only if available" in prompt
     assert "If web access is unavailable" in prompt
+    assert "Do not edit `/log.md`" in prompt
     assert "do not create a separate lint report directory" in prompt
     assert "## Reconciled Changes" in prompt
     assert "## Remaining Gaps" in prompt
@@ -881,7 +929,7 @@ def test_run_lint_workspace_returns_summary_and_updates_index_log(tmp_path: Path
     assert "(history.md)" in index_text
 
     log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
-    assert "lint | summary=" in log_text
+    assert "lint.apply | outcome=applied" in log_text
     assert "Fixed contradiction between timeline pages." in log_text
 
     assert not (wiki_dir / "lint").exists()
@@ -942,6 +990,7 @@ def test_build_query_prompt_prefers_query_pages_for_discovery() -> None:
         "Read `/wiki/index.md` first and use its categorized summaries/metadata to choose "
         "candidate pages." in prompt
     )
+    assert "Read recent `/log.md` entries (latest ~10 `## [` headings)" in prompt
     assert (
         "Prefer checking relevant prior `/wiki/query/*.md` pages first as a discovery step."
         in prompt
@@ -957,6 +1006,7 @@ def test_build_query_prompt_sets_query_pages_as_routing_hints() -> None:
     """Require canonical evidence and uncertainty when only query pages support claims."""
     prompt = query_helpers.build_query_prompt("Ada", "What did Ada do?")
 
+    assert "Treat `/log.md` as operational recency context" in prompt
     assert (
         "Treat `/wiki/query/*.md` pages as routing hints, not primary evidence."
         in prompt
@@ -995,7 +1045,7 @@ def test_parse_query_decision_defaults_to_skip_when_marker_missing() -> None:
 
 
 def test_run_query_workspace_skip_keeps_query_read_only(tmp_path: Path) -> None:
-    """Skip filing when analysis says the answer is not durable."""
+    """Skip filing writes no wiki pages but still records the query interaction."""
     workspace_dir = tmp_path / "workspace"
     (workspace_dir / "wiki").mkdir(parents=True)
     (workspace_dir / "wiki" / "index.md").write_text("# Ada Wiki\n", encoding="utf-8")
@@ -1038,14 +1088,15 @@ def test_run_query_workspace_skip_keeps_query_read_only(tmp_path: Path) -> None:
         review=False,
     )
 
-    before_log = log_path.read_text(encoding="utf-8")
     result = query_helpers.run_query_workspace(config, workspace_dir, deps)
 
-    assert result.should_push is False
+    assert result.should_push is True
     assert result.filed_path is None
     assert "ad-hoc" in result.answer
     assert calls == ["review"]
-    assert log_path.read_text(encoding="utf-8") == before_log
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "query.review | outcome=skip" in log_text
+    assert "query.apply |" not in log_text
 
 
 def test_run_query_workspace_files_durable_answer(tmp_path: Path) -> None:
@@ -1111,12 +1162,13 @@ def test_run_query_workspace_files_durable_answer(tmp_path: Path) -> None:
     assert "(query/what-did-ada-do.md)" in index_text
 
     log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
-    assert "decision=file" in log_text
-    assert "/wiki/query/what-did-ada-do.md" in log_text
+    assert "query.review | outcome=file" in log_text
+    assert "query.apply | outcome=filed" in log_text
+    assert 'path=/wiki/query/what-did-ada-do.md' in log_text
 
 
-def test_run_pull_mode_skips_push_when_query_is_not_filed(tmp_path: Path) -> None:
-    """Avoid hub push when query analysis decides to skip filing."""
+def test_run_pull_mode_pushes_when_query_is_not_filed(tmp_path: Path) -> None:
+    """Push even when query is skipped so timeline entries persist."""
     calls: list[tuple[str, ...]] = []
 
     def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -1164,4 +1216,4 @@ def test_run_pull_mode_skips_push_when_query_is_not_filed(tmp_path: Path) -> Non
     result = helpers._run_pull_mode(config, deps)
 
     assert "Ad-hoc answer" in (result.answer or "")
-    assert not any(call[:2] == ("hub", "push") for call in calls)
+    assert any(call[:2] == ("hub", "push") for call in calls)

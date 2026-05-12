@@ -17,6 +17,16 @@ class IngestResult:
     should_push: bool
 
 
+def _ingest_source_hint(staged_paths: Sequence[Path]) -> str:
+    """Create a compact source hint for structured log metadata."""
+    names = [path.name for path in staged_paths]
+    if not names:
+        return "none"
+    if len(names) <= 2:
+        return ", ".join(names)
+    return f"{', '.join(names[:2])}, +{len(names) - 2} more"
+
+
 def collect_directory_sources(directory: Path) -> list[Path]:
     """Collect allowed file paths from a source directory recursively."""
     collected: list[Path] = []
@@ -94,8 +104,9 @@ def build_ingest_review_prompt(
         "- Mention candidate canonical pages if current structure is fragmented.\n\n"
         "## 4) Contradictions and unresolved claims\n"
         "- Conflicts between sources, what is unresolved, and how pages should reflect this.\n\n"
-        "## 5) Index and log updates\n"
-        "- Exact updates needed for `/wiki/index.md` and `/log.md`.\n\n"
+        "## 5) Index updates and recency notes\n"
+        "- Exact updates needed for `/wiki/index.md`.\n"
+        "- Optional recency note candidates for runner-managed `/log.md` timeline summaries.\n\n"
         "## 6) Gaps and follow-up questions\n"
         "- Missing evidence, suggested next sources, and optional future page candidates.\n\n"
         "Expect broad wiki impact where warranted; one source can update many pages.\n"
@@ -123,8 +134,9 @@ def build_ingest_apply_prompt(
         "3) Update canonical concept/entity/theme pages and add backlinks where needed.\n"
         "4) Integrate cross-source synthesis, not just per-source summaries.\n"
         "5) Mark contradictions explicitly and preserve unresolved uncertainty.\n"
-        "6) Update `/wiki/index.md` and append one ingest entry to `/log.md`.\n"
-        "7) Never write to `/raw/`.\n\n"
+        "6) Update `/wiki/index.md`.\n"
+        "7) Do not edit `/log.md`; the runner appends structured timeline entries.\n"
+        "8) Never write to `/raw/`.\n\n"
         "Writing standards:\n"
         "- Keep pages scannable with clear headings and concise prose.\n"
         "- Use source filename citations for non-trivial claims.\n"
@@ -163,17 +175,34 @@ def run_ingest_workspace(
     """Run ingest mode against a pulled workspace directory."""
     expanded_sources = expand_sources(config.sources)
     staged = helpers._stage_sources(expanded_sources, workspace_dir)
+    source_count = len(staged)
+    source_hint = _ingest_source_hint(staged)
     if config.review:
         review_prompt = build_ingest_review_prompt(config.topic, staged, config.note)
         review_summary = deps.run_agent_review_mode(
             workspace_dir, config.topic, review_prompt, config.model
         )
+        helpers._append_log_entry(
+            workspace_dir,
+            "ingest.review",
+            "completed",
+            metadata={"source_count": source_count, "source_hint": source_hint},
+            summary=review_summary,
+        )
 
         approved = confirm_ingest_apply(review_summary, deps.ask_user)
         if not approved:
+            cancel_summary = "Operator declined apply after ingest review."
+            helpers._append_log_entry(
+                workspace_dir,
+                "ingest.apply",
+                "canceled",
+                metadata={"source_count": source_count, "source_hint": source_hint},
+                summary=cancel_summary,
+            )
             return IngestResult(
                 answer="Ingest canceled after review. No wiki changes were applied.",
-                should_push=False,
+                should_push=True,
             )
 
         apply_prompt = build_ingest_apply_prompt(
@@ -199,10 +228,18 @@ def run_ingest_workspace(
     )
 
     helpers._refresh_index(config.topic, workspace_dir)
-    sources_text = ", ".join(path.name for path in staged)
-    detail = f"sources=[{sources_text}]"
+    apply_metadata: dict[str, object] = {
+        "source_count": source_count,
+        "source_hint": source_hint,
+    }
     if config.note:
-        detail += f" note={config.note}"
-    helpers._append_log_entry(workspace_dir, "ingest", detail)
+        apply_metadata["note"] = config.note
+    helpers._append_log_entry(
+        workspace_dir,
+        "ingest.apply",
+        "applied",
+        metadata=apply_metadata,
+        summary=apply_answer or "Ingest applied.",
+    )
 
     return IngestResult(answer=apply_answer or "Ingest applied.", should_push=True)

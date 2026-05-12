@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from models import CliDeps, RunnerConfig
@@ -15,9 +14,11 @@ def build_lint_prompt(topic: str, note: str | None) -> str:
     return (
         f"Run a single-pass lint reconciliation for the '{topic}' wiki under `/wiki/`.\n\n"
         "Execution mode:\n"
+        "- Read recent `/log.md` entries first (latest ~10 `## [` headings) to account for recent work.\n"
         "- Apply updates immediately in this run (no review/confirm phase).\n"
         "- Update wiki pages in place; do not create a separate lint report directory.\n"
         "- You may create new canonical wiki pages when required for reconciliation.\n"
+        "- Do not edit `/log.md`; the runner appends structured lint timeline entries.\n"
         "- Never write to `/raw/`.\n\n"
         "Required health checks and fixes:\n"
         "- Reconcile contradictions across wiki pages and preserve explicit uncertainty when unresolved.\n"
@@ -38,23 +39,22 @@ def build_lint_prompt(topic: str, note: str | None) -> str:
     )
 
 
-def _lint_log_detail(summary: str) -> str:
-    """Build a concise lint log detail line from the model summary."""
-    collapsed = re.sub(r"\s+", " ", summary.strip()).strip()
-    if not collapsed:
-        return "summary=lint applied without model summary"
-    if len(collapsed) > 180:
-        collapsed = f"{collapsed[:177].rstrip()}..."
-    return f"summary={collapsed}"
-
-
 def run_lint_workspace(config: RunnerConfig, workspace_dir: Path, deps: CliDeps) -> str:
     """Run lint mode as a single-pass apply and return the lint summary."""
     prompt = build_lint_prompt(config.topic, config.note)
     lint_summary = deps.run_agent_mode(workspace_dir, config.topic, prompt, config.model)
 
     helpers._refresh_index(config.topic, workspace_dir)
-    helpers._append_log_entry(workspace_dir, "lint", _lint_log_detail(lint_summary))
+    lint_metadata: dict[str, object] = {}
+    if config.note:
+        lint_metadata["note"] = config.note
+    helpers._append_log_entry(
+        workspace_dir,
+        "lint.apply",
+        "applied",
+        metadata=lint_metadata,
+        summary=lint_summary or "Lint applied without model summary.",
+    )
 
     summary = lint_summary.strip()
     if summary:

@@ -10,7 +10,6 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager, suppress
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -19,6 +18,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LangSmithSandbox
 from deepagents.middleware.filesystem import FilesystemPermission
 import index as index_helpers
+import log as log_helpers
 from models import CliDeps, Mode, RunResult, RunnerConfig
 
 if TYPE_CHECKING:
@@ -51,8 +51,9 @@ Reasoning style:
 Writing and organization rules:
 - Maintain canonical pages per concept/entity/theme rather than many overlapping fragments.
 - Keep pages scannable with clear headings.
-- Include concise "What changed" updates in the log.
+- Include concise "What changed" summaries in your responses for runner-managed logging.
 - Keep `/wiki/index.md` authoritative for navigation.
+- Use recent `/log.md` entries as operational recency context before major synthesis.
 
 Evidence rules:
 - Every non-trivial claim should be traceable to the ingested source set.
@@ -61,7 +62,8 @@ Evidence rules:
 
 Filesystem policy:
 - Never write to `/raw/`.
-- Write only under `/wiki/`, plus `/log.md`.
+- Never edit `/log.md`; the runner maintains append-only interaction entries.
+- Write only under `/wiki/`.
 """
 
 
@@ -405,7 +407,9 @@ def _agents_md(topic: str) -> str:
         "- Treat `/raw/` as read-only source material.\n"
         "- Ingest flow should be supervised: review takeaways first, then apply updates.\n"
         "- Ingest updates should include source summaries and relevant concept/entity pages.\n"
-        "- Keep `/wiki/index.md` current as a content catalog and append changes to `/log.md`.\n"
+        "- Use `/log.md` as recency context and keep it append-only.\n"
+        "- Do not edit `/log.md` directly; the runner appends structured timeline entries.\n"
+        "- Keep `/wiki/index.md` current as a content catalog.\n"
     )
 
 def _ensure_scaffold(
@@ -524,15 +528,24 @@ def _refresh_index(topic: str, workspace_dir: Path) -> None:
     index_helpers.refresh_index(topic, workspace_dir, write_text=_safe_write_text)
 
 
-def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
-    """Append a timestamped operation entry to the wiki log."""
-    log_path = workspace_dir / "log.md"
-    _write_if_missing(log_path, "# Change Log\n")
-
-    date_text = datetime.now(UTC).strftime("%Y-%m-%d")
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    entry = f"\n## [{date_text}] {mode} | {detail}\n- timestamp: {timestamp}\n"
-    _safe_write_text(log_path, entry, append=True)
+def _append_log_entry(
+    workspace_dir: Path,
+    phase: str,
+    outcome: str,
+    *,
+    metadata: dict[str, object] | None = None,
+    summary: str | None = None,
+) -> None:
+    """Append one structured, parseable interaction entry to the wiki log."""
+    log_helpers.append_log_entry(
+        workspace_dir,
+        phase,
+        outcome,
+        metadata=metadata,
+        summary=summary,
+        ensure_file=_write_if_missing,
+        append_text=lambda path, content: _safe_write_text(path, content, append=True),
+    )
 
 
 def _permissions() -> list[FilesystemPermission]:
@@ -541,7 +554,7 @@ def _permissions() -> list[FilesystemPermission]:
         FilesystemPermission(operations=["write"], paths=["/raw/**"], mode="deny"),
         FilesystemPermission(operations=["write"], paths=["/AGENTS.md"], mode="deny"),
         FilesystemPermission(operations=["write"], paths=["/wiki/**"], mode="allow"),
-        FilesystemPermission(operations=["write"], paths=["/log.md"], mode="allow"),
+        FilesystemPermission(operations=["write"], paths=["/log.md"], mode="deny"),
     ]
 
 

@@ -1,4 +1,4 @@
-# Deep Agents CLI Changelog
+# Deep Agents Code Changelog
 
 ## [0.0.57](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.0.56...deepagents-code==0.0.57) (2026-05-12)
 

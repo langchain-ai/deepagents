@@ -34,6 +34,8 @@ _LOG_TAIL_CHARS = 3000
 """Max chars of subprocess log appended to the early-exit `RuntimeError`
 message. Enough to carry a Python traceback without flooding the TUI banner
 when it surfaces via `ServerStartFailed`."""
+_STARTUP_ERROR_MARKER = "DEEPAGENTS_STARTUP_ERROR:"
+"""Machine-readable prefix emitted by the server subprocess for known startup errors."""
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -84,6 +86,22 @@ def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
         Base URL string.
     """
     return f"http://{host}:{port}"
+
+
+def _extract_startup_error_marker(output: str) -> str | None:
+    """Extract a marked startup error from subprocess output.
+
+    Args:
+        output: Combined stdout/stderr captured from the server subprocess.
+
+    Returns:
+        The marked startup error message, or `None` if no marker was emitted.
+    """
+    for line in reversed(output.splitlines()):
+        if _STARTUP_ERROR_MARKER in line:
+            _, summary = line.rsplit(_STARTUP_ERROR_MARKER, 1)
+            return summary.strip() or None
+    return None
 
 
 def generate_langgraph_json(
@@ -204,6 +222,9 @@ async def wait_for_server_healthy(
                 output = read_log() if read_log else ""
                 msg = f"Server process exited with code {process.returncode}"
                 if output:
+                    summary = _extract_startup_error_marker(output)
+                    if summary:
+                        msg += f": {summary}"
                     msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
                 raise RuntimeError(msg)
 

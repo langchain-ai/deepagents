@@ -1,6 +1,6 @@
 """Unit tests for message widgets markup safety."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.style import Style
@@ -208,16 +208,10 @@ class TestMutedRichMarkdown:
 
     def test_strips_heading_and_table_colors(self) -> None:
         """Muted wrapper should drop magenta/cyan from headings and tables."""
-        from rich.markdown import Markdown as RichMarkdown
-
-        baseline = self._render(RichMarkdown(self._DOC))
         muted = self._render(_MutedRichMarkdown(self._DOC))
 
-        # Default Rich theme paints `markdown.h3` magenta (ANSI code 35)
-        # and `markdown.table.*` cyan (ANSI code 36).
-        assert "\x1b[1;35m" in baseline
-        assert "\x1b[36m" in baseline
-
+        # Some Rich versions paint headings/tables magenta/cyan by default.
+        # The wrapper should not emit those hues regardless of Rich's baseline.
         assert "\x1b[35m" not in muted
         assert ";35m" not in muted
         assert "\x1b[36m" not in muted
@@ -246,6 +240,59 @@ class TestMutedRichMarkdown:
 
         rendered = self._render(wrapped)
         assert "body" in rendered
+
+
+class TestAssistantMessageMarkdownRendering:
+    """Tests for assistant markdown render lifecycle."""
+
+    async def test_write_initial_content_uses_full_markdown_update(self) -> None:
+        """Preloaded assistant messages should not keep stream state alive."""
+        msg = AssistantMessage("```python\nprint('hello')\n```")
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        msg._markdown = markdown
+
+        await msg.write_initial_content()
+
+        markdown.update.assert_awaited_once_with("```python\nprint('hello')\n```")
+        assert msg._stream is None
+
+    async def test_stop_stream_rerenders_complete_markdown(self) -> None:
+        """Completed streams should get a full parse after incremental updates."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "```python\nprint('wrapped text')\n```"
+
+        await msg.stop_stream()
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with(
+            "```python\nprint('wrapped text')\n```"
+        )
+        assert msg._stream is None
+
+    async def test_set_content_replaces_stream_with_single_update(self) -> None:
+        """Replacing content should cancel the stream and update exactly once."""
+        msg = AssistantMessage()
+        markdown = MagicMock()
+        markdown.update = AsyncMock()
+        stream = MagicMock()
+        stream.stop = AsyncMock()
+        msg._markdown = markdown
+        msg._stream = stream
+        msg._content = "old streamed content"
+
+        await msg.set_content("```python\nnew content\n```")
+
+        stream.stop.assert_awaited_once_with()
+        markdown.update.assert_awaited_once_with("```python\nnew content\n```")
+        assert msg._stream is None
+        assert msg._content == "```python\nnew content\n```"
 
 
 class TestSummarizationMessage:
@@ -345,6 +392,122 @@ class TestToolCallMessageMarkupSafety:
         assert "ask_user(4 questions)" in visible_plain
         assert "Your prompt is just" not in visible_plain
         assert msg.has_expandable_args is True
+
+
+class TestToolCallMessageTodos:
+    """Tests for `write_todos` output formatting."""
+
+    def test_todo_preview_truncates_long_content(self) -> None:
+        """Collapsed todo preview should keep the compact character limit."""
+        long = "Implement " + "very detailed authentication flow " * 4
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "in_progress"}]),
+            is_preview=True,
+        )
+
+        assert result.content.plain.endswith("...")
+        assert long not in result.content.plain
+        assert result.truncation == "full todo text"
+
+    async def test_todo_collapsed_short_output_uses_preview_formatting(self) -> None:
+        """Collapsed todos should truncate even when raw output fits generically."""
+        from textual.app import App, ComposeResult
+
+        long = "Implement " + "very detailed authentication flow " * 3
+        assert len(long) > 70
+        output = repr([{"content": long, "status": "pending"}])
+        assert len(output) < ToolCallMessage._PREVIEW_CHARS
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_todos")
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._hint_widget is not None
+            content = app.msg._preview_widget._Static__content  # type: ignore[attr-defined]
+            assert isinstance(content, Content)
+            assert "..." in content.plain
+            assert long not in content.plain
+            assert app.msg._hint_widget.display is True
+
+    async def test_todo_short_fully_visible_output_does_not_expand(self) -> None:
+        """Clicking fully visible todo output should not show a collapse hint."""
+        from textual.app import App, ComposeResult
+
+        output = repr([{"content": "Write tests", "status": "pending"}])
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("write_todos")
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._hint_widget.display is False
+
+    def test_todo_expanded_shows_full_wrapped_content(self) -> None:
+        """Expanded todo output should wrap long content without truncating."""
+        long = (
+            "Implement the new authentication flow using OAuth2 with PKCE for "
+            "the CLI login command and preserve readable todo output"
+        )
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "in_progress"}]),
+            is_preview=False,
+        )
+        plain = result.content.plain
+
+        assert "..." not in plain
+        assert long.replace(" ", "") == plain.split("active ", 1)[1].replace(
+            "\n             ",
+            "",
+        ).replace(" ", "")
+        assert "\n             " in plain
+
+    def test_todo_expanded_continuation_aligns_content_column(self) -> None:
+        """Wrapped continuation lines should align under the todo text."""
+        long = "Write integration tests for " + "token refresh revocation " * 4
+        msg = ToolCallMessage("write_todos")
+
+        result = msg._format_todos_output(
+            repr([{"content": long, "status": "pending"}]),
+            is_preview=False,
+        )
+        lines = result.content.plain.splitlines()
+        todo_start = next(
+            index for index, line in enumerate(lines) if "todo   " in line
+        )
+
+        assert len(lines) > todo_start + 1
+        assert lines[todo_start + 1].startswith("             ")
 
 
 class TestToolCallMessageExpandableArgs:
@@ -474,7 +637,7 @@ class TestToolCallMessageShellCommand:
         long_cmd = "pip install " + " ".join(f"package{i}" for i in range(50))
         assert len(long_cmd) > 120  # Exceeds truncation limit
 
-        msg = ToolCallMessage("shell", {"command": long_cmd})
+        msg = ToolCallMessage("execute", {"command": long_cmd})
         msg.set_error("Command not found: pip")
 
         # The error output should include the full command
@@ -483,28 +646,10 @@ class TestToolCallMessageShellCommand:
     def test_shell_error_command_prefix(self) -> None:
         """Error output should have shell prompt prefix."""
         cmd = "echo hello"
-        msg = ToolCallMessage("shell", {"command": cmd})
+        msg = ToolCallMessage("execute", {"command": cmd})
         msg.set_error("Permission denied")
 
         # Output should have shell prompt prefix
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_bash_error_includes_full_command(self) -> None:
-        """Error output should include full command for bash tool too."""
-        cmd = "make build"
-        msg = ToolCallMessage("bash", {"command": cmd})
-        msg.set_error("make: *** No rule to make target")
-
-        assert msg._output.startswith("$ ")
-        assert cmd in msg._output
-
-    def test_execute_error_includes_full_command(self) -> None:
-        """Error output should include full command for execute tool too."""
-        cmd = "docker build ."
-        msg = ToolCallMessage("execute", {"command": cmd})
-        msg.set_error("Cannot connect to Docker daemon")
-
         assert msg._output.startswith("$ ")
         assert cmd in msg._output
 
@@ -519,7 +664,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_none_command(self) -> None:
         """Shell tool with None command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": None})
+        msg = ToolCallMessage("execute", {"command": None})
         error = "Some error"
         msg.set_error(error)
 
@@ -528,7 +673,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_empty_command(self) -> None:
         """Shell tool with empty command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": ""})
+        msg = ToolCallMessage("execute", {"command": ""})
         error = "Some error"
         msg.set_error(error)
 
@@ -537,7 +682,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_whitespace_command(self) -> None:
         """Shell tool with whitespace command should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"command": "   "})
+        msg = ToolCallMessage("execute", {"command": "   "})
         error = "Some error"
         msg.set_error(error)
 
@@ -545,7 +690,7 @@ class TestToolCallMessageShellCommand:
 
     def test_shell_error_with_no_command_key(self) -> None:
         """Shell tool with no command key should fall back to error-only output."""
-        msg = ToolCallMessage("shell", {"other_arg": "value"})
+        msg = ToolCallMessage("execute", {"other_arg": "value"})
         error = "Some error"
         msg.set_error(error)
 
@@ -554,7 +699,7 @@ class TestToolCallMessageShellCommand:
 
     def test_format_shell_output_styles_only_first_line_dim(self) -> None:
         """Shell output formatting should only style the first command line in dim."""
-        msg = ToolCallMessage("shell", {"command": "echo test"})
+        msg = ToolCallMessage("execute", {"command": "echo test"})
         output = "$ echo test\ntest output\n$ not a command"
         result = msg._format_shell_output(output, is_preview=False)
 
@@ -566,6 +711,159 @@ class TestToolCallMessageShellCommand:
         # Subsequent lines should NOT be dim
         assert lines[2].plain == "$ not a command"
         assert "dim" not in lines[2].markup
+
+
+class TestToolCallMessageAwaitingApproval:
+    """Tests for `set_awaiting_approval` / `clear_awaiting_approval`."""
+
+    def test_set_awaiting_approval_hides_widget(self) -> None:
+        """`set_awaiting_approval` should mark the widget as hidden."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        assert msg._awaiting_approval is False
+        msg.set_awaiting_approval()
+        assert msg._awaiting_approval is True
+        assert msg.display is False
+
+    def test_clear_awaiting_approval_restores_widget(self) -> None:
+        """`clear_awaiting_approval` should restore visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.set_awaiting_approval()
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+        assert msg.display is True
+
+    def test_clear_awaiting_approval_no_op_when_not_set(self) -> None:
+        """Clearing before setting should not touch widget visibility."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        msg.clear_awaiting_approval()
+        assert msg._awaiting_approval is False
+
+    async def test_awaiting_approval_round_trip_in_mounted_widget(self) -> None:
+        """Mounted widget should hide on set, reappear on clear."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg.display is True
+            msg.set_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is False
+            msg.clear_awaiting_approval()
+            await pilot.pause()
+            assert msg.display is True
+
+
+class TestToolCallMessageRejectReason:
+    """Tests for surfacing a user-supplied HITL reject reason."""
+
+    async def test_set_rejected_with_reason_renders_line(self) -> None:
+        """`set_rejected(reason=...)` should display the reason beneath the status."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="please dry-run first")
+            await pilot.pause()
+            assert msg._reject_reason == "please dry-run first"
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+
+    async def test_set_rejected_without_reason_hides_line(self) -> None:
+        """`set_rejected()` with no reason keeps the reason line hidden."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected()
+            await pilot.pause()
+            assert msg._reject_reason is None
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is False
+
+    async def test_blank_reason_does_not_set_attribute(self) -> None:
+        """Whitespace-only reasons are treated as no reason."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason="   ")
+            await pilot.pause()
+            assert msg._reject_reason is None
+
+    async def test_reason_with_markup_brackets_renders_safely(self) -> None:
+        """User-controlled reasons must round-trip through Rich markup unscathed.
+
+        `from_markup` with `$reason` substitution should escape any literal
+        bracket sequences so the reason line never throws a MarkupError.
+        """
+        from textual.app import App, ComposeResult
+
+        hostile = "[bold red]boom[/bold red] [/dim] $x"
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "echo hi"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        async with _Harness().run_test() as pilot:
+            await pilot.pause()
+            app = pilot.app
+            assert isinstance(app, _Harness)
+            msg = app.msg
+            msg.set_rejected(reason=hostile)
+            await pilot.pause()
+            assert msg._reject_reason == hostile
+            assert msg._reject_reason_widget is not None
+            assert msg._reject_reason_widget.display is True
+            rendered = str(msg._reject_reason_widget.render())
+            assert "boom" in rendered
+            assert "$x" in rendered
 
 
 class TestUserMessageHighlighting:
@@ -636,6 +934,13 @@ class TestUserMessageModeRendering:
         first_span = content._spans[0]
         assert theme.DARK_COLORS.mode_bash in str(first_span.style)
 
+    def test_incognito_shell_prefix_renders_dollar_indicator(self) -> None:
+        """`UserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(UserMessage("!!ls"))
+        assert content.plain == "$ ls"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.mode_incognito in str(first_span.style)
+
     def test_command_prefix_renders_slash_indicator(self) -> None:
         """`UserMessage('/help')` should render with `'/ '` prefix and body."""
         content = _render_content(UserMessage("/help"))
@@ -677,6 +982,11 @@ class TestQueuedUserMessageModeRendering:
     def test_shell_prefix_renders_dimmed_dollar(self) -> None:
         """`QueuedUserMessage('!ls')` should render dimmed `'$ '` prefix."""
         content = _render_content(QueuedUserMessage("!ls"))
+        assert content.plain == "$ ls"
+
+    def test_incognito_shell_prefix_renders_dimmed_dollar(self) -> None:
+        """`QueuedUserMessage('!!ls')` should strip the full incognito prefix."""
+        content = _render_content(QueuedUserMessage("!!ls"))
         assert content.plain == "$ ls"
 
     def test_command_prefix_renders_dimmed_slash(self) -> None:

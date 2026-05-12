@@ -743,16 +743,72 @@ class TestBuildMissingToolNotification:
 
 
 class TestRunTextualCliAsyncModelConfigError:
-    """Verify ModelConfigError is caught cleanly before launching the TUI."""
+    """Verify default model config errors are handled before launching the TUI."""
 
-    async def test_returns_error_code_on_no_credentials(self) -> None:
-        """ModelConfigError from _get_default_model_spec gives return code 1."""
+    async def test_launches_tui_on_no_credentials(self) -> None:
+        """Missing default credentials should be recoverable inside the TUI."""
+        from deepagents_cli.model_config import NoCredentialsConfiguredError
+
+        app_result = AppResult(return_code=0, thread_id="t-1")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=NoCredentialsConfiguredError("No credentials configured"),
+            ),
+            patch("deepagents_cli.app.run_textual_app", new=_stub),
+        ):
+            result = await run_textual_cli_async("agent")
+
+        assert result == app_result
+        assert captured_kwargs["defer_server_start"] is True
+        assert captured_kwargs["model_kwargs"] is None
+        assert captured_kwargs["server_kwargs"]["model_name"] is None
+
+    async def test_recovery_does_not_rely_on_message_text(self) -> None:
+        """`NoCredentialsConfiguredError` triggers deferred start.
+
+        Regardless of the exception message text.
+        """
+        from deepagents_cli.model_config import NoCredentialsConfiguredError
+
+        app_result = AppResult(return_code=0, thread_id="t-2")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        # Reword the message to prove we no longer string-match on prefix.
+        with (
+            patch(
+                "deepagents_cli.config._get_default_model_spec",
+                side_effect=NoCredentialsConfiguredError(
+                    "Setup required: please run /model"
+                ),
+            ),
+            patch("deepagents_cli.app.run_textual_app", new=_stub),
+        ):
+            result = await run_textual_cli_async("agent")
+
+        assert result == app_result
+        assert captured_kwargs["defer_server_start"] is True
+
+    async def test_returns_error_code_on_other_model_config_error(self) -> None:
+        """Non-recoverable default model errors should still block startup."""
         from deepagents_cli.model_config import ModelConfigError
 
         with (
             patch(
                 "deepagents_cli.config._get_default_model_spec",
-                side_effect=ModelConfigError("No credentials configured"),
+                side_effect=ModelConfigError("Invalid model config"),
             ),
             patch("deepagents_cli.config._get_console") as mock_console_fn,
         ):
@@ -775,3 +831,382 @@ class TestRunTextualCliAsyncModelConfigError:
             result = await run_textual_cli_async("agent", model_name="openai:gpt-4o")
 
         assert result.return_code == 0
+
+
+class TestNormalizeCwdFilter:
+    """Tests for `_normalize_cwd_filter`."""
+
+    def test_none_returns_none(self) -> None:
+        """No flag → no filter."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        assert _normalize_cwd_filter(None) is None
+
+    def test_empty_string_uses_current_cwd(self) -> None:
+        """Bare `--cwd` (empty-string sentinel) resolves to current working dir."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        assert _normalize_cwd_filter("") == str(Path.cwd())
+
+    def test_explicit_path_is_made_absolute(self) -> None:
+        """A user-supplied path is expanduser'd and made absolute."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        result = _normalize_cwd_filter("~/foo/bar")
+        assert result is not None
+        assert result == str(Path("~/foo/bar").expanduser().absolute())
+        assert Path(result).is_absolute()
+
+    def test_explicit_relative_parent_path_is_normalized(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit relative paths collapse `..` without resolving symlinks."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        project = tmp_path / "project"
+        subdir = project / "subdir"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+
+        assert _normalize_cwd_filter("..") == str(project)
+
+    def test_explicit_path_does_not_resolve_symlinks(self, tmp_path: Path) -> None:
+        """Lexical normalization (not `.resolve()`) matches storage convention."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "via_link"
+        try:
+            link.symlink_to(real)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unsupported on this platform")
+
+        result = _normalize_cwd_filter(str(link))
+        assert result == str(link.absolute())
+        # Sanity: resolve() would have collapsed the symlink to `real`.
+        assert result != str(link.resolve())
+
+    def test_cwd_unreadable_returns_none(self) -> None:
+        """A deleted/unreadable cwd degrades to no filter rather than crashing."""
+        from deepagents_cli.main import _normalize_cwd_filter
+
+        with patch(
+            "deepagents_cli.main.Path.cwd",
+            side_effect=FileNotFoundError("gone"),
+        ):
+            assert _normalize_cwd_filter("") is None
+
+
+class TestThreadsListCwdArgparse:
+    """Tests for `--cwd` argparse semantics on `deepagents threads list`."""
+
+    def _parse(self, argv: list[str]) -> Any:  # noqa: ANN401
+        from deepagents_cli.main import parse_args
+
+        with patch("sys.argv", ["deepagents", *argv]):
+            return parse_args()
+
+    def test_cwd_omitted_yields_none(self) -> None:
+        """Omitting --cwd leaves the namespace value at `None`."""
+        ns = self._parse(["threads", "list"])
+        assert getattr(ns, "cwd", "MISSING") is None
+
+    def test_cwd_alone_yields_empty_string_const(self) -> None:
+        """Bare `--cwd` stores the `const=""` sentinel for downstream resolution."""
+        ns = self._parse(["threads", "list", "--cwd"])
+        assert ns.cwd == ""
+
+    def test_cwd_with_value_stores_value(self) -> None:
+        """`--cwd /some/path` stores the literal value as-is."""
+        ns = self._parse(["threads", "list", "--cwd", "/some/path"])
+        assert ns.cwd == "/some/path"
+
+
+class TestCheckMcpProjectTrustPrompt:
+    """The project MCP approval prompt should surface a docs link."""
+
+    def test_debug_env_helper_uses_truthy_parsing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The debug helper treats common falsy strings as disabled."""
+        from deepagents_cli._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_cli.main import _debug_mcp_project_trust_enabled
+
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "0")
+
+        assert _debug_mcp_project_trust_enabled() is False
+
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        assert _debug_mcp_project_trust_enabled() is True
+
+    def test_debug_env_forces_prompt_without_project_config(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The debug env var shows a sample prompt without requiring config files."""
+        from deepagents_cli._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_cli.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+                return_value=True,
+            ),
+            patch("deepagents_cli.mcp_trust.trust_project_mcp") as trust_project_mcp,
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        trust_project_mcp.assert_not_called()
+        captured = capsys.readouterr()
+        assert "debug-project-mcp" in captured.err
+        assert "Learn more:" in captured.err
+
+    def test_prompt_includes_docs_link(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """When the prompt fires, it should print the project-level-trust docs URL."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_cli.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.load_mcp_config_lenient",
+                return_value={
+                    "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
+                },
+            ),
+            patch(
+                "deepagents_cli.mcp_tools.extract_project_server_summaries",
+                return_value=[("fs", "stdio", "node server.js")],
+            ),
+            patch(
+                "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        captured = capsys.readouterr()
+        flattened = captured.err.replace("\n", "")
+        assert (
+            "https://docs.langchain.com/oss/python/deepagents/cli/"
+            "mcp-tools#project-level-trust" in flattened
+        )
+        assert "Learn more:" in captured.err
+
+
+class TestCheckMcpProjectTrustDedupe:
+    """Regression tests for the project MCP approval prompt deduplication.
+
+    When the same server name appears in multiple project-level configs
+    (e.g. both `.mcp.json` and `.deepagents/.mcp.json`), the approval
+    prompt must list it once — not once per file.
+    """
+
+    def _write_config(self, path: Path, servers: dict[str, Any]) -> None:
+        import json
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+    def _deny_project_mcp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "deepagents_cli.mcp_trust.is_project_mcp_trusted",
+            lambda *_a, **_k: False,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    def _captured_prompt(self, capsys: pytest.CaptureFixture[str]) -> str:
+        captured = capsys.readouterr()
+        return captured.out + captured.err
+
+    def test_duplicate_server_across_configs_listed_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A server defined in both project configs appears once in the prompt."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        server = {
+            "fs": {
+                "command": "uvx",
+                "args": ["mcp-server-filesystem", "/tmp"],
+            }
+        }
+        self._write_config(tmp_path / ".mcp.json", server)
+        self._write_config(tmp_path / ".deepagents" / ".mcp.json", server)
+
+        self._deny_project_mcp(tmp_path, monkeypatch)
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = self._captured_prompt(capsys)
+        assert combined.count('  "fs" (stdio):') == 1, combined
+
+    def test_duplicate_server_across_configs_uses_project_root_definition(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The higher-precedence project-root config wins for duplicate names."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        self._write_config(
+            tmp_path / ".deepagents" / ".mcp.json",
+            {"fs": {"command": "npx", "args": ["subdir-server", "/subdir"]}},
+        )
+        self._write_config(
+            tmp_path / ".mcp.json",
+            {"fs": {"command": "uvx", "args": ["root-server", "/root"]}},
+        )
+
+        self._deny_project_mcp(tmp_path, monkeypatch)
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = self._captured_prompt(capsys)
+        assert combined.count('  "fs" (stdio):') == 1, combined
+        assert '  "fs" (stdio):  uvx root-server /root' in combined
+        assert "subdir-server" not in combined
+
+    def test_duplicate_remote_server_across_configs_listed_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Duplicate remote servers are deduped the same way as stdio servers."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        self._write_config(
+            tmp_path / ".deepagents" / ".mcp.json",
+            {
+                "remote": {
+                    "type": "http",
+                    "url": "https://subdir.example.com/mcp",
+                }
+            },
+        )
+        self._write_config(
+            tmp_path / ".mcp.json",
+            {
+                "remote": {
+                    "type": "http",
+                    "url": "https://root.example.com/mcp",
+                }
+            },
+        )
+
+        self._deny_project_mcp(tmp_path, monkeypatch)
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = self._captured_prompt(capsys)
+        assert combined.count('  "remote" (http):') == 1, combined
+        assert '  "remote" (http):  https://root.example.com/mcp' in combined
+        assert "subdir.example.com" not in combined
+
+    def test_invalid_project_config_does_not_block_valid_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Malformed project configs are skipped while valid configs still prompt."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        invalid = tmp_path / ".deepagents" / ".mcp.json"
+        invalid.parent.mkdir(parents=True, exist_ok=True)
+        invalid.write_text("{not json", encoding="utf-8")
+        self._write_config(
+            tmp_path / ".mcp.json",
+            {"fs": {"command": "uvx", "args": ["root-server", "/root"]}},
+        )
+
+        self._deny_project_mcp(tmp_path, monkeypatch)
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = self._captured_prompt(capsys)
+        assert combined.count('  "fs" (stdio):') == 1, combined
+        assert '  "fs" (stdio):  uvx root-server /root' in combined
+
+    def test_distinct_servers_across_configs_all_listed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Different servers from different project configs are all shown."""
+        from deepagents_cli.main import _check_mcp_project_trust
+
+        self._write_config(
+            tmp_path / ".mcp.json",
+            {"alpha": {"command": "uvx", "args": ["alpha"]}},
+        )
+        self._write_config(
+            tmp_path / ".deepagents" / ".mcp.json",
+            {"beta": {"command": "uvx", "args": ["beta"]}},
+        )
+
+        self._deny_project_mcp(tmp_path, monkeypatch)
+
+        result = _check_mcp_project_trust(trust_flag=False)
+
+        assert result is False
+        combined = self._captured_prompt(capsys)
+        assert combined.count('  "alpha" (stdio):') == 1, combined
+        assert combined.count('  "beta" (stdio):') == 1, combined

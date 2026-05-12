@@ -21,7 +21,7 @@ lock: ## Update all lockfiles
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "🔒 Locking $(pkg)"; \
-		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))' --prerelease=allow; \
 	)
 	@echo "✅ All lockfiles updated!"
 
@@ -33,7 +33,7 @@ lock-bump: ## Bump a dependency across all lockfiles (usage: make lock-bump DEP=
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "⬆️  Bumping $(DEP) in $(pkg)"; \
-		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))' -P '$(DEP)'; \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))' --prerelease=allow -P '$(DEP)'; \
 	)
 	@echo "✅ Bumped $(DEP) across all lockfiles!"
 
@@ -41,7 +41,7 @@ lock-check: ## Check all lockfiles are up-to-date
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "🔍 Checking $(pkg)"; \
-		uv lock --check --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
+		uv lock --check --directory '$(pkg)' --python '$(call python_version,$(pkg))' --prerelease=allow; \
 	)
 	@echo "✅ All lockfiles are up-to-date!"
 

@@ -245,12 +245,14 @@ if TYPE_CHECKING:
     console: Console
 
 MODE_PREFIXES: dict[str, str] = {
+    "shell_incognito": "!!",
     "shell": "!",
     "command": "/",
 }
 """Maps each non-normal mode to its trigger character."""
 
 MODE_DISPLAY_GLYPHS: dict[str, str] = {
+    "shell_incognito": "$",
     "shell": "$",
     "command": "/",
 }
@@ -265,8 +267,33 @@ if MODE_PREFIXES.keys() != MODE_DISPLAY_GLYPHS.keys():
     )
     raise ValueError(msg)
 
-PREFIX_TO_MODE: dict[str, str] = {v: k for k, v in MODE_PREFIXES.items()}
-"""Reverse lookup: trigger character -> mode name."""
+_MODE_PREFIXES_BY_LENGTH: tuple[tuple[str, str], ...] = tuple(
+    sorted(MODE_PREFIXES.items(), key=lambda item: len(item[1]), reverse=True)
+)
+"""Mode entries ordered longest-prefix-first.
+
+Pre-sorted at import so `detect_mode_prefix` runs in constant time per
+keystroke without re-sorting.
+"""
+
+
+def detect_mode_prefix(text: str) -> tuple[str, str] | None:
+    """Return the longest mode prefix and mode for `text`, if any.
+
+    Longer prefixes win so multi-character triggers like `!!` are matched
+    before their single-character prefixes (`!`).
+
+    Args:
+        text: Input text that may start with a mode trigger.
+
+    Returns:
+        Tuple of `(prefix, mode)` for the longest matching trigger, otherwise
+        `None`.
+    """
+    for mode, prefix in _MODE_PREFIXES_BY_LENGTH:
+        if text.startswith(prefix):
+            return prefix, mode
+    return None
 
 
 class CharsetMode(StrEnum):
@@ -1437,14 +1464,6 @@ class SessionState:
         return self.auto_approve
 
 
-SHELL_TOOL_NAMES: frozenset[str] = frozenset({"bash", "shell", "execute"})
-"""Tool names recognized as shell/command-execution tools.
-
-Only `'execute'` is registered by the SDK and CLI backends in practice.
-`'bash'` and `'shell'` are legacy names carried over and kept as
-backwards-compatible aliases.
-"""
-
 DANGEROUS_SHELL_PATTERNS = (
     "$(",  # Command substitution
     "`",  # Backtick command substitution
@@ -1820,12 +1839,18 @@ def _get_default_model_spec() -> str:
     3. Auto-detection based on available API credentials.
 
     Returns:
-        Model specification in provider:model format.
+        Model specification in `provider:model` format.
 
     Raises:
-        ModelConfigError: If no credentials are configured.
+        NoCredentialsConfiguredError: If no credentials are configured for any
+            of the auto-detectable providers. Callers may catch this to defer
+            startup and prompt for credentials interactively.
     """
-    from deepagents_cli.model_config import ModelConfig, ModelConfigError
+    from deepagents_cli.model_config import (
+        ModelConfig,
+        NoCredentialsConfiguredError,
+        get_provider_auth_status,
+    )
 
     config = ModelConfig.load()
     if config.default_model:
@@ -1834,19 +1859,25 @@ def _get_default_model_spec() -> str:
     if config.recent_model:
         return config.recent_model
 
-    s = _get_settings()
-    if s.has_openai:
+    # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
+    # to `as_legacy_bool() -> None`). For the three explicit-credential
+    # providers below, an UNKNOWN result means we cannot prove auth works, so
+    # we fall through rather than pick an unverifiable default. If an
+    # implicit-auth provider (e.g., Vertex ADC) is added to this fallback
+    # list, switch to checking `state` against the relevant
+    # `ProviderAuthState` members directly.
+    if get_provider_auth_status("openai").as_legacy_bool() is True:
         return "openai:gpt-5.5"
-    if s.has_anthropic:
+    if get_provider_auth_status("anthropic").as_legacy_bool() is True:
         return "anthropic:claude-opus-4-7"
-    if s.has_google:
+    if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 
     msg = (
         "No credentials configured. Please set one of: "
         "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
     )
-    raise ModelConfigError(msg)
+    raise NoCredentialsConfiguredError(msg)
 
 
 _OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-cli/"

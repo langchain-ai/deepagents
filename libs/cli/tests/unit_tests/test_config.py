@@ -20,6 +20,7 @@ from deepagents_cli.config import (
     _get_provider_kwargs,
     build_langsmith_thread_url,
     create_model,
+    detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
     get_langsmith_project_name,
@@ -2965,3 +2966,39 @@ class TestFindDotenvFromStartPath:
 
         # Should continue past the OSError and find .env in parent
         assert result == env_file
+
+
+class TestDetectModePrefix:
+    """Tests for `detect_mode_prefix`.
+
+    This helper is the linchpin for routing typed prefixes to the correct
+    mode. The longest-prefix-first invariant is critical: if `!!` ever loses
+    to `!`, every `!!` command would silently route as a single-bang shell
+    command and leak content to the model.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("!!ls", ("!!", "shell_incognito")),
+            ("!!", ("!!", "shell_incognito")),
+            ("!!!ls", ("!!", "shell_incognito")),
+            ("!ls", ("!", "shell")),
+            ("!", ("!", "shell")),
+            ("/help", ("/", "command")),
+            ("/", ("/", "command")),
+        ],
+    )
+    def test_matches_known_prefixes(self, text: str, expected: tuple[str, str]) -> None:
+        assert detect_mode_prefix(text) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        ["", "ls", "echo hi", " !!ls", "\t!ls", "hello !!", "x!"],
+    )
+    def test_no_match_for_non_prefixed(self, text: str) -> None:
+        assert detect_mode_prefix(text) is None
+
+    def test_double_bang_wins_over_single_bang(self) -> None:
+        """Regression guard: `!!` must beat `!` even if iteration order changes."""
+        assert detect_mode_prefix("!!whoami") == ("!!", "shell_incognito")

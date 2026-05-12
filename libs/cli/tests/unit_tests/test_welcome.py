@@ -106,6 +106,7 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner(project_url=None)
 
         assert "Thread: 12345" in banner.plain
+        assert "\n  Thread: 12345\n" in banner.plain
 
         # Verify no link style on the thread portion
         thread_start = banner.plain.index("Thread: 12345")
@@ -120,6 +121,7 @@ class TestBuildBannerThreadLink:
         banner = widget._build_banner(project_url=project_url)
 
         assert "Thread: 99999" in banner.plain
+        assert "\n  Thread: 99999\n" in banner.plain
 
         # Find a span with a link on the thread ID text
         thread_id_start = banner.plain.index("99999")
@@ -164,6 +166,7 @@ class TestBuildBannerThreadLink:
 
         assert "my-project" in banner.plain
         assert "Thread: 77777" in banner.plain
+        assert "\n  Thread: 77777\n" in banner.plain
 
         thread_id_start = banner.plain.index("77777")
         thread_id_end = thread_id_start + len("77777")
@@ -425,6 +428,14 @@ class TestBuildWelcomeFooter:
     def test_startup_cmd_tip_registered(self) -> None:
         """New `--startup-cmd` flag must have a discoverability tip."""
         assert any("--startup-cmd" in tip for tip in _TIPS)
+
+    def test_incognito_shell_tip_registered(self) -> None:
+        """New `!!` shell mode must have a discoverability tip."""
+        assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)
+
+    def test_copy_command_tip_registered(self) -> None:
+        """The `/copy` command must have a discoverability tip."""
+        assert "Use /copy to copy the latest assistant message" in _TIPS
 
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""

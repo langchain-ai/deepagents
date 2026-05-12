@@ -135,6 +135,7 @@ from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
 
+
 # Security: Maximum size for SKILL.md files to prevent DoS attacks (10MB)
 MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 MAX_SKILLS_LOAD_WARNINGS = 20
@@ -293,7 +294,7 @@ class SkillMetadata(TypedDict):
     Warning: this is experimental.
 
     When present, consumers of this metadata (notably `langchain-quickjs`'s
-    `REPLMiddleware`) may install the skill as a dynamic-importable ES
+    `CodeInterpreterMiddleware`) may install the skill as a dynamic-importable ES
     module. The string is a POSIX path like `./index.ts` pointing at a
     file inside the skill dir. This middleware only parses and validates
     the field — it does not load or execute any JavaScript.

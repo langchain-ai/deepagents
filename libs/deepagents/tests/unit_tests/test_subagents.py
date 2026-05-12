@@ -2645,7 +2645,6 @@ class TestSubAgents:
                     description="A test worker subagent.",
                     system_prompt="You are a test worker.",
                     model=subagent_model,
-                    tools=[],
                 )
             ],
         )
@@ -2749,7 +2748,6 @@ class TestSubAgents:
                     description="A test worker subagent.",
                     system_prompt="You are a test worker.",
                     model=subagent_model,
-                    tools=[],
                 )
             ],
         )

@@ -10,6 +10,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from pathlib import Path
@@ -74,6 +76,9 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+_TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
+"""Tool calls whose argument/approval phase can be long enough to need feedback."""
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -278,8 +283,8 @@ class TextualUIAdapter:
         self._on_tokens_update: _TokensUpdateCallback | None = None
         """Called with total context tokens after each LLM response."""
 
-        self._on_tokens_hide: Callable[[], None] | None = None
-        """Called to hide the token display during streaming."""
+        self._on_tokens_pending: Callable[[], None] | None = None
+        """Called to show an unknown token count during streaming."""
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
@@ -476,21 +481,21 @@ async def execute_task_textual(
     # should be set together to avoid inconsistent status-bar behavior.
     token_cbs = (
         adapter._on_tokens_update,
-        adapter._on_tokens_hide,
+        adapter._on_tokens_pending,
         adapter._on_tokens_show,
     )
     if any(token_cbs) and not all(token_cbs):
         logger.warning(
-            "Token callbacks partially wired (update=%s, hide=%s, show=%s); "
+            "Token callbacks partially wired (update=%s, pending=%s, show=%s); "
             "token display may behave inconsistently",
             adapter._on_tokens_update is not None,
-            adapter._on_tokens_hide is not None,
+            adapter._on_tokens_pending is not None,
             adapter._on_tokens_show is not None,
         )
 
-    # Hide token display during streaming (will be shown with accurate count at end)
-    if adapter._on_tokens_hide:
-        adapter._on_tokens_hide()
+    # Show unknown token count during streaming; the accurate count arrives at turn end.
+    if adapter._on_tokens_pending:
+        adapter._on_tokens_pending()
 
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
@@ -927,8 +932,16 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                # Hide spinner before showing tool call
-                                if adapter._set_spinner:
+                                keep_thinking_spinner = (
+                                    buffer_name in _TOOL_CALLS_KEEP_THINKING_SPINNER
+                                )
+
+                                # Hide spinner before showing most tool calls.
+                                # `edit_file` can spend noticeable time between
+                                # argument streaming, HITL interrupt delivery, and
+                                # approval handling, so re-anchor Thinking below
+                                # the row instead of leaving the UI visually idle.
+                                if adapter._set_spinner and not keep_thinking_spinner:
                                     await adapter._set_spinner(None)
 
                                 # Mount tool call message
@@ -940,6 +953,8 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
+                                if adapter._set_spinner and keep_thinking_spinner:
+                                    await adapter._set_spinner("Thinking")
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -981,6 +996,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
+                ask_user_cancelled = False
                 resume_payload: dict[str, Any] = {}
 
                 for interrupt_id, ask_req in list(pending_ask_user.items()):
@@ -1074,6 +1090,9 @@ async def execute_task_textual(
                                 "answers": ["" for _ in questions],
                             }
                             any_rejected = True
+                            # Halt the turn on cancel; error branches still
+                            # resume so the agent can react to the failure.
+                            ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             if tool_msg is not None:
                                 tool_msg.set_rejected()
@@ -1131,10 +1150,32 @@ async def execute_task_textual(
                                 ]
                             },
                         )
-                        future = await adapter._request_approval(
-                            action_requests, assistant_id
-                        )
-                        decision = await future
+                        # Hide shell tool widgets while the approval renders the
+                        # same command; restore before processing the decision
+                        # so subsequent status updates render on the visible
+                        # widget.
+                        suppressed_tool_msgs = [
+                            tool_msg
+                            for tool_msg in adapter._current_tool_messages.values()
+                            if tool_msg.tool_name == "execute"
+                        ]
+                        for tool_msg in suppressed_tool_msgs:
+                            tool_msg.set_awaiting_approval()
+                        try:
+                            future = await adapter._request_approval(
+                                action_requests, assistant_id
+                            )
+                            decision = await future
+                        finally:
+                            for tool_msg in suppressed_tool_msgs:
+                                try:
+                                    tool_msg.clear_awaiting_approval()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to clear awaiting-approval "
+                                        "state on tool widget %s",
+                                        tool_msg.tool_name,
+                                    )
 
                         if isinstance(decision, dict):
                             decision_type = decision.get("type")
@@ -1187,17 +1228,35 @@ async def execute_task_textual(
                                             )
 
                             elif decision_type == "reject":
-                                decisions = [
-                                    RejectDecision(type="reject")
-                                    for _ in action_requests
-                                ]
+                                reject_message = decision.get("message")
+                                reject_message = (
+                                    reject_message
+                                    if isinstance(reject_message, str)
+                                    and reject_message.strip()
+                                    else None
+                                )
+                                reject_decision: RejectDecision = (
+                                    RejectDecision(
+                                        type="reject", message=reject_message
+                                    )
+                                    if reject_message
+                                    else RejectDecision(type="reject")
+                                )
+                                decisions = [reject_decision for _ in action_requests]
                                 tool_msgs = list(
                                     adapter._current_tool_messages.values()
                                 )
                                 for tool_msg in tool_msgs:
-                                    tool_msg.set_rejected()
+                                    tool_msg.set_rejected(reason=reject_message)
                                 adapter._current_tool_messages.clear()
-                                any_rejected = True
+                                # Bare reject aborts the turn and shows the
+                                # canned "Command rejected" banner so the user
+                                # can redirect. When a reason is supplied, the
+                                # reason itself serves as feedback for the
+                                # agent: keep `any_rejected=False` so the
+                                # stream resumes and the banner is suppressed.
+                                if reject_message is None:
+                                    any_rejected = True
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1236,13 +1295,24 @@ async def execute_task_textual(
                 suppress_resumed_output = any_rejected
 
             if interrupt_occurred and resume_payload:
-                if suppress_resumed_output and not pending_ask_user:
-                    await adapter._mount_message(
-                        AppMessage(
-                            "Command rejected. Tell the agent what you'd like instead."
-                        )
+                if suppress_resumed_output and (
+                    ask_user_cancelled or not pending_ask_user
+                ):
+                    message = (
+                        "Question cancelled. Tell the agent what you'd like instead."
+                        if ask_user_cancelled
+                        else "Command rejected. Tell the agent what you'd like instead."
                     )
+                    await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    await _report_and_persist_tokens(
+                        adapter,
+                        agent,
+                        config,
+                        captured_input_tokens,
+                        captured_output_tokens,
+                        shield=True,
+                    )
                     return turn_stats
 
                 stream_input = Command(resume=resume_payload)
@@ -1329,6 +1399,8 @@ async def _handle_interrupt_cleanup(
             "Previous operation was cancelled."
         )
         await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning("Could not save interrupted state (network): %s", e)
     except Exception:
         logger.warning("Failed to save interrupted state", exc_info=True)
 
@@ -1360,13 +1432,29 @@ async def _persist_context_tokens(
 ) -> None:
     """Best-effort persist of the context token count into graph state.
 
+    The `aupdate_state` call is wrapped in `tracing_context(enabled=False)` so
+    this purely-internal bookkeeping write does not surface as a separate
+    `UpdateState` run in LangSmith. `_context_tokens` is already marked
+    `PrivateStateAttr`, but `aupdate_state` itself creates its own traced run
+    that would otherwise clutter the project's traces.
+
     Args:
         agent: The LangGraph agent (must support `aupdate_state`).
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
+    from langsmith import tracing_context
+
     try:
-        await agent.aupdate_state(config, {"_context_tokens": tokens})
+        with tracing_context(enabled=False):
+            await agent.aupdate_state(config, {"_context_tokens": tokens})
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning(
+            "Could not persist _context_tokens=%d (network): %s; "
+            "token count may be stale on resume",
+            tokens,
+            e,
+        )
     except Exception:  # non-critical; stale count on resume is acceptable
         logger.warning(
             "Failed to persist _context_tokens=%d; token count may be stale on resume",

@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Any, cast
+from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
@@ -16,9 +16,10 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
+from langgraph.channels.delta import DeltaChannel
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
@@ -30,7 +31,9 @@ from deepagents._excluded_middleware import (
     _validate_excluded_middleware_config,
     _verify_excluded_middleware_coverage,
 )
+from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
+from deepagents._subagent_transformer import SubagentTransformer
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -48,10 +51,20 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
-from deepagents.profiles import GeneralPurposeSubagentProfile
-from deepagents.profiles.harness.harness_profiles import _apply_profile_prompt, _harness_profile_for_model
+from deepagents.profiles.harness.harness_profiles import (
+    GeneralPurposeSubagentProfile,
+    _apply_profile_prompt,
+    _harness_profile_for_model,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _DeepAgentState(AgentState):
+    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+
+    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
 
 BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -269,6 +282,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             These are merged with the built-in tool suite listed above
             (`write_todos`, filesystem tools, `execute`, and `task`).
+
+            Passing tools here is additive — it never removes a built-in.
+            To drop a built-in tool, register a
+            [`HarnessProfile`][deepagents.HarnessProfile] with
+            `excluded_tools`.
         system_prompt: Custom system instructions placed at the front of
             the system prompt sent to the model.
 
@@ -299,9 +317,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 [`SubAgent`][deepagents.middleware.subagents.SubAgent] or
                 [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
                 — are available)
+            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
-            - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
 
             *User middleware is inserted here.*
 
@@ -667,14 +685,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _permissions=permissions,
         )
     )
+    sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
-        deepagent_middleware.append(
-            SubAgentMiddleware(
-                backend=backend,
-                subagents=inline_subagents,
-                task_description=_profile.tool_description_overrides.get("task"),
-            )
+        sub_agent_middleware = SubAgentMiddleware(
+            backend=backend,
+            subagents=inline_subagents,
+            # Overrides the task tool description. Value should include
+            # {available_agents} — a format placeholder replaced with the
+            # subagent name/description list. Without it the model can't
+            # see which subagents exist. None (default) uses the built-in
+            # template. Stale keys silently no-op if the tool is renamed.
+            task_description=_profile.tool_description_overrides.get("task"),
         )
+        deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -735,6 +758,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         final_system_prompt = system_prompt + "\n\n" + base_prompt
 
+    # Bake declared subagent names into a scope-aware factory so each
+    # subgraph mini-mux spawns a fresh `SubagentTransformer` that knows
+    # which nested runs belong to declared subagents.
+    subagent_names = frozenset(sub_agent_middleware.subagent_names if sub_agent_middleware is not None else ())
+
+    def _subagent_factory(scope: tuple[str, ...] = ()) -> SubagentTransformer:
+        return SubagentTransformer(scope, subagent_names=subagent_names)
+
     return create_agent(
         model,
         system_prompt=final_system_prompt,
@@ -747,6 +778,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         debug=debug,
         name=name,
         cache=cache,
+        state_schema=_DeepAgentState,
+        transformers=[_subagent_factory],
     ).with_config(
         {
             "recursion_limit": 9_999,

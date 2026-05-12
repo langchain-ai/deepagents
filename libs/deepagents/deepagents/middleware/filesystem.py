@@ -29,8 +29,9 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.channels.delta import DeltaChannel
 from langgraph.runtime import Runtime
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
@@ -231,11 +232,30 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     return result
 
 
+def _file_data_delta_reducer(
+    left: dict[str, FileData] | None,
+    values: list[dict[str, FileData | None]],
+) -> dict[str, FileData]:
+    """Batch reducer for use with DeltaChannel.
+
+    DeltaChannel calls reducer(base, list(values)) where values is a list of
+    all writes in the current step. Single dict copy + one pass over all writes.
+    """
+    result: dict[str, FileData] = dict(left) if left else {}
+    for writes in values:
+        for key, value in writes.items():
+            if value is None:
+                result.pop(key, None)
+            else:
+                result[key] = value
+    return result
+
+
 class FilesystemState(AgentState):
     """State for the filesystem middleware."""
 
-    files: Annotated[NotRequired[dict[str, FileData]], _file_data_reducer]
-    """Files in the filesystem."""
+    files: Annotated[NotRequired[dict[str, FileData]], DeltaChannel(_file_data_delta_reducer, snapshot_frequency=50)]  # ty: ignore[invalid-argument-type]
+    """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
 class LsSchema(BaseModel):
@@ -1953,6 +1973,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
+        When a new eviction fires, uses `Overwrite` to atomically replace
+        the messages channel with a fully-identified list. A plain append of
+        the tagged message would not survive DeltaChannel replay: the original
+        `HumanMessage(id=None)` write gets a fresh UUID on replay that
+        doesn't match the eviction Command's ID, producing a duplicate.
+
         Args:
             messages: The message list (may be modified if write succeeded).
             write_result: Result of the backend write, or `None` if no new
@@ -1968,13 +1994,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             last = messages[-1]
             tagged = last.model_copy(
                 update={
+                    "id": last.id if last.id is not None else str(uuid.uuid4()),
                     "additional_kwargs": {
                         **last.additional_kwargs,
                         "lc_evicted_to": file_path,
-                    }
+                    },
                 }
             )
-            state_command = Command(update={"messages": [tagged]})
+            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []

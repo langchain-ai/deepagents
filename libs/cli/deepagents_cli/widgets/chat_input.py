@@ -26,7 +26,7 @@ from deepagents_cli.command_registry import SLASH_COMMANDS, CommandEntry
 from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
-    PREFIX_TO_MODE,
+    detect_mode_prefix,
     is_ascii_mode,
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
@@ -1003,6 +1003,12 @@ class ChatInput(Vertical):
         border: solid $mode-command;
     }
 
+    ChatInput.mode-shell-incognito {
+        border: solid $mode-incognito;
+        border-title-color: $mode-incognito;
+        border-title-style: bold;
+    }
+
     ChatInput .input-row {
         height: auto;
         width: 100%;
@@ -1022,6 +1028,10 @@ class ChatInput(Vertical):
 
     ChatInput.mode-command .input-prompt {
         color: $mode-command;
+    }
+
+    ChatInput.mode-shell-incognito .input-prompt {
+        color: $mode-incognito;
     }
 
     ChatInput ChatTextArea {
@@ -1113,6 +1123,11 @@ class ChatInput(Vertical):
         # inline image placeholder so the resulting change event doesn't
         # immediately recurse into the same replacement path.
         self._applying_inline_path_replacement = False
+
+        # Text area content from the previous Changed event. Used to skip
+        # blocking filesystem path-detection on single-keystroke edits while
+        # still detecting replacement edits that insert a full path payload.
+        self._prev_text = ""
 
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
@@ -1226,6 +1241,13 @@ class ChatInput(Vertical):
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+        # Drag-drop / bracketed paste arrive as one Changed event with a
+        # multi-character inserted span. Normal typing arrives one character at
+        # a time. Checking the changed span (rather than net length delta)
+        # preserves replacement edits where selected text is replaced by a path
+        # of similar length.
+        should_check_path_payload = self._should_check_path_payload(text)
+        self._prev_text = text
         self._sync_media_tracker_to_text(text)
 
         # History handlers explicitly decide mode and stripped display text.
@@ -1245,20 +1267,37 @@ class ChatInput(Vertical):
 
         if self._applying_inline_path_replacement:
             self._applying_inline_path_replacement = False
-        elif self._apply_inline_dropped_path_replacement(text):
+        elif should_check_path_payload and self._apply_inline_dropped_path_replacement(
+            text
+        ):
             return
 
         # Checked after the guards above so we skip the (potentially slow)
         # filesystem lookup when the text change came from history navigation
         # or prefix stripping, which never need path detection.
-        is_path_payload = self._is_dropped_path_payload(text)
+        is_path_payload = should_check_path_payload and self._is_dropped_path_payload(
+            text
+        )
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
         if self._stripping_prefix:
             self._stripping_prefix = False
-        elif text and text[0] in PREFIX_TO_MODE:
-            if text[0] == "/" and is_path_payload:
+        elif detected_prefix := detect_mode_prefix(text):
+            prefix, detected = detected_prefix
+            strip_length = len(prefix)
+            if self.mode == "shell" and detected == "shell":
+                # First `!` was stripped on entry to shell mode, so the
+                # currently-visible `!` is the second bang of `!!`. Promote to
+                # incognito and consume it.
+                detected = "shell_incognito"
+            elif self.mode == "shell_incognito" and detected == "shell":
+                # Already in incognito; an extra `!` is part of the command
+                # body. Skip the strip-and-demote path that would otherwise
+                # drop us back to plain shell mode.
+                detected = "shell_incognito"
+                strip_length = 0
+            if prefix == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
                     self.mode = "normal"
@@ -1269,10 +1308,10 @@ class ChatInput(Vertical):
                 # text that re-includes the trigger character.  The
                 # _stripping_prefix guard prevents the resulting change event
                 # from looping back here.
-                detected = PREFIX_TO_MODE[text[0]]
                 if self.mode != detected:
                     self.mode = detected
-                self._strip_mode_prefix()
+                if strip_length:
+                    self._strip_mode_prefix(strip_length)
                 # Fall through to update completion suggestions in the same
                 # refresh cycle as the mode/glyph change rather than waiting
                 # for the next text-change event caused by the prefix strip.
@@ -1293,6 +1332,30 @@ class ChatInput(Vertical):
 
         # Scroll input into view when content changes (handles text wrap)
         self.scroll_visible()
+
+    def _should_check_path_payload(self, text: str) -> bool:
+        """Return whether a text change may contain a pasted path payload."""
+        old = self._prev_text
+        if text == old:
+            return False
+
+        prefix_len = 0
+        max_prefix_len = min(len(old), len(text))
+        while prefix_len < max_prefix_len and old[prefix_len] == text[prefix_len]:
+            prefix_len += 1
+
+        old_suffix = len(old)
+        text_suffix = len(text)
+        while (
+            old_suffix > prefix_len
+            and text_suffix > prefix_len
+            and old[old_suffix - 1] == text[text_suffix - 1]
+        ):
+            old_suffix -= 1
+            text_suffix -= 1
+
+        inserted_len = text_suffix - prefix_len
+        return inserted_len > 1
 
     @staticmethod
     def _parse_dropped_path_payload(
@@ -1397,11 +1460,15 @@ class ChatInput(Vertical):
             return self._is_existing_path_payload(candidate)
         return False
 
-    def _strip_mode_prefix(self) -> None:
-        """Remove the first character (mode trigger) from the text area.
+    def _strip_mode_prefix(self, length: int = 1) -> None:
+        """Remove the mode trigger from the text area.
 
         Sets the `_stripping_prefix` guard so the resulting text-change event is
         not misinterpreted as new input.
+
+        Args:
+            length: Number of leading characters to strip (matches the trigger
+                length detected by `detect_mode_prefix`).
         """
         if not self._text_area:
             return
@@ -1415,9 +1482,9 @@ class ChatInput(Vertical):
             return
         row, col = self._text_area.cursor_location
         self._stripping_prefix = True
-        self._text_area.text = text[1:]
+        self._text_area.text = text[length:]
         if row == 0 and col > 0:
-            col -= 1
+            col = max(0, col - length)
         self._text_area.move_cursor((row, col))
 
     def _completion_text_and_cursor(self) -> tuple[str, int]:
@@ -1783,10 +1850,9 @@ class ChatInput(Vertical):
             Tuple of `(mode, display_text)` where mode-trigger prefixes are
                 removed from `display_text`.
         """
-        for prefix, mode in PREFIX_TO_MODE.items():
-            # Small dict; loop is fine. No need to over-engineer right now
-            if entry.startswith(prefix):
-                return mode, entry[len(prefix) :]
+        if mode_match := detect_mode_prefix(entry):
+            prefix, mode = mode_match
+            return mode, entry[len(prefix) :]
         return "normal", entry
 
     async def on_key(self, event: events.Key) -> None:
@@ -1881,15 +1947,38 @@ class ChatInput(Vertical):
             )
 
         def _apply() -> None:
-            self.remove_class("mode-shell", "mode-command")
+            self.remove_class("mode-shell", "mode-command", "mode-shell-incognito")
             if glyph:
-                self.add_class(f"mode-{mode}")
+                class_name = (
+                    "mode-shell-incognito"
+                    if mode == "shell_incognito"
+                    else f"mode-{mode}"
+                )
+                self.add_class(class_name)
             try:
                 prompt = self.query_one("#prompt", Static)
             except NoMatches:
-                logger.warning("watch_mode._apply: #prompt widget not found")
+                logger.warning("watch_mode._apply: prompt widget not found")
+                if mode == "shell_incognito":
+                    # Privacy-sensitive: surface a visible warning so the user
+                    # never types an incognito command without confirmation
+                    # that the mode is active.
+                    app = getattr(self, "app", None)
+                    if app is not None:
+                        with contextlib.suppress(Exception):
+                            app.notify(
+                                "Incognito mode UI failed to render; "
+                                "switching back to normal input.",
+                                severity="warning",
+                                markup=False,
+                            )
+                    self.mode = "normal"
                 return
             prompt.update(glyph or ">")
+            if mode == "shell_incognito":
+                self.border_title = "incognito"
+            else:
+                self.border_title = None
 
         self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))
@@ -1942,6 +2031,15 @@ class ChatInput(Vertical):
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)
+
+    def set_cursor_blink(self, *, blink: bool) -> None:
+        """Toggle the input's cursor blink without changing focus.
+
+        Args:
+            blink: Whether the cursor should blink.
+        """
+        if self._text_area is not None:
+            self._text_area.cursor_blink = blink
 
     def exit_mode(self) -> bool:
         """Exit the current input mode (command/shell) back to normal.

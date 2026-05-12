@@ -1,4 +1,4 @@
-"""``REPLMiddleware``: exposes a persistent JavaScript REPL as an agent tool.
+"""``CodeInterpreterMiddleware``: exposes a persistent JavaScript REPL as an agent tool.
 
 State persists across tool calls within a LangGraph thread (each thread
 gets its own QuickJS context).
@@ -22,6 +22,7 @@ from langchain.agents.middleware.types import (
     ResponseT,
 )
 from langchain.tools import BaseTool, ToolRuntime
+from langchain_core._api import beta
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
@@ -51,7 +52,7 @@ _DEFAULT_TOOL_NAME = "eval"
 
 
 class REPLState(AgentState):
-    """State schema for ``REPLMiddleware``."""
+    """State schema for ``CodeInterpreterMiddleware``."""
 
     _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
 
@@ -73,7 +74,7 @@ def _resolve_thread_id(fallback: str) -> str:
     The fallback is a middleware-instance-scoped id: when the caller
     didn't configure a ``thread_id`` (common for ad-hoc
     ``agent.invoke(...)`` in tests or single-shot scripts), we still need
-    all resolver calls within one REPLMiddleware lifetime to return the
+    all resolver calls within one CodeInterpreterMiddleware lifetime to return the
     same id — otherwise ``wrap_model_call`` installs tools on one REPL
     and the eval tool looks up a different one, and the model sees
     ``ReferenceError: tools is not defined``.
@@ -89,7 +90,8 @@ def _resolve_thread_id(fallback: str) -> str:
     return fallback
 
 
-class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
+@beta()
+class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a persistent JS REPL to the agent.
 
     Each LangGraph thread gets its own QuickJS slot (worker + runtime +
@@ -163,11 +165,11 @@ class REPLMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     Example:
         ```python
         from deepagents import create_deep_agent
-        from langchain_quickjs import REPLMiddleware
+        from langchain_quickjs import CodeInterpreterMiddleware
 
         agent = create_deep_agent(
             model="claude-sonnet-4-6",
-            middleware=[REPLMiddleware()],
+            middleware=[CodeInterpreterMiddleware()],
         )
         ```
     """

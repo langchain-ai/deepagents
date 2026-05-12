@@ -1973,15 +1973,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires, uses ``Overwrite`` to atomically replace
+        When a new eviction fires, uses `Overwrite` to atomically replace
         the messages channel with a fully-identified list. A plain append of
         the tagged message would not survive DeltaChannel replay: the original
-        ``HumanMessage(id=None)`` write gets a fresh UUID on replay that
+        `HumanMessage(id=None)` write gets a fresh UUID on replay that
         doesn't match the eviction Command's ID, producing a duplicate.
 
         Args:
             messages: The message list (may be modified if write succeeded).
-            write_result: Result of the backend write, or ``None`` if no new
+            write_result: Result of the backend write, or `None` if no new
                 eviction was attempted.
             file_path: Path the content was written to.
 

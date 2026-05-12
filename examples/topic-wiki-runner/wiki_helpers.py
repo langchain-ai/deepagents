@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LangSmithSandbox
 from deepagents.middleware.filesystem import FilesystemPermission
+import index as index_helpers
 from models import CliDeps, Mode, RunResult, RunnerConfig
 
 if TYPE_CHECKING:
@@ -404,9 +405,8 @@ def _agents_md(topic: str) -> str:
         "- Treat `/raw/` as read-only source material.\n"
         "- Ingest flow should be supervised: review takeaways first, then apply updates.\n"
         "- Ingest updates should include source summaries and relevant concept/entity pages.\n"
-        "- Keep `/wiki/index.md` current and append changes to `/log.md`.\n"
+        "- Keep `/wiki/index.md` current as a content catalog and append changes to `/log.md`.\n"
     )
-
 
 def _ensure_scaffold(
     topic_dir: Path, topic: str, *, overwrite_agents: bool = False
@@ -416,7 +416,7 @@ def _ensure_scaffold(
     (topic_dir / "wiki").mkdir(parents=True, exist_ok=True)
     _write_if_missing(
         topic_dir / "wiki" / "index.md",
-        f"# {topic} Wiki\n\n## Pages\n\n- _No pages yet._\n",
+        index_helpers.empty_index_text(topic),
     )
     _write_if_missing(topic_dir / "log.md", "# Change Log\n")
 
@@ -521,25 +521,7 @@ def _extract_final_ai_message(result: dict[str, object]) -> str:
 
 def _refresh_index(topic: str, workspace_dir: Path) -> None:
     """Rebuild the wiki index page from current markdown pages."""
-    wiki_dir = workspace_dir / "wiki"
-    wiki_dir.mkdir(parents=True, exist_ok=True)
-
-    pages = [
-        path
-        for path in sorted(wiki_dir.rglob("*.md"))
-        if path.name != "index.md"
-    ]
-
-    lines = [f"# {topic} Wiki", "", "## Pages", ""]
-    if not pages:
-        lines.append("- _No pages yet._")
-    else:
-        for page in pages:
-            relative = page.relative_to(wiki_dir).as_posix()
-            title = page.stem.replace("-", " ").replace("_", " ").strip().title()
-            lines.append(f"- [{title}]({relative})")
-
-    _safe_write_text((wiki_dir / "index.md"), "\n".join(lines).rstrip() + "\n")
+    index_helpers.refresh_index(topic, workspace_dir, write_text=_safe_write_text)
 
 
 def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:

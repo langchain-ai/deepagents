@@ -527,6 +527,89 @@ def test_stage_sources_avoids_symlink_destination(tmp_path: Path) -> None:
     assert external_target.read_text(encoding="utf-8") == "keep\n"
 
 
+def test_refresh_index_builds_categorized_content_catalog(tmp_path: Path) -> None:
+    """Build a content-oriented index with sections, summaries, and metadata."""
+    workspace_dir = tmp_path / "workspace"
+    wiki_dir = workspace_dir / "wiki"
+    (wiki_dir / "entities").mkdir(parents=True)
+    (wiki_dir / "concepts").mkdir(parents=True)
+    (wiki_dir / "sources").mkdir(parents=True)
+    (wiki_dir / "timeline").mkdir(parents=True)
+    (wiki_dir / "query").mkdir(parents=True)
+
+    (wiki_dir / "entities" / "ada-lovelace.md").write_text(
+        (
+            "# Ada Lovelace\n\n"
+            "Pioneering analyst of the Analytical Engine.\n\n"
+            "- Evidence from `/raw/letters.md`.\n"
+            "- Last major revision: 1843-07-01.\n"
+        ),
+        encoding="utf-8",
+    )
+    (wiki_dir / "concepts" / "analytical-engine.md").write_text(
+        (
+            "# Analytical Engine\n\n"
+            "A [mechanical](https://example.com/mechanical) design for general-purpose computation.\n"
+        ),
+        encoding="utf-8",
+    )
+    (wiki_dir / "sources" / "letters.md").write_text(
+        (
+            "# Letters Source Notes\n\n"
+            "Primary-source extracts from Ada correspondence.\n\n"
+            "Referenced files: `/raw/letters.md`, `/raw/notes.txt`.\n"
+        ),
+        encoding="utf-8",
+    )
+    (wiki_dir / "query" / "what-did-ada-do.md").write_text(
+        "# What Did Ada Do?\n\nDurable query answer with canonical citations.\n",
+        encoding="utf-8",
+    )
+    (wiki_dir / "timeline" / "milestones.md").write_text(
+        "# Milestones\n\n1835-01-01: early collaboration notes.\n",
+        encoding="utf-8",
+    )
+    (wiki_dir / "history.md").write_text(
+        "# History\n\nChronological milestones page.\n",
+        encoding="utf-8",
+    )
+
+    helpers._refresh_index("Ada", workspace_dir)
+    index_text = (wiki_dir / "index.md").read_text(encoding="utf-8")
+
+    assert "Content catalog for wiki navigation and retrieval." in index_text
+    assert "Read this page first during query workflows." in index_text
+    assert "## Entities" in index_text
+    assert "## Concepts" in index_text
+    assert "## Sources" in index_text
+    assert "## Queries" in index_text
+    assert "## Timelines" in index_text
+    assert "## Other Pages" in index_text
+    assert "(entities/ada-lovelace.md)" in index_text
+    assert "Pioneering analyst of the Analytical Engine." in index_text
+    assert "date: 1843-07-01" in index_text
+    assert "(sources/letters.md)" in index_text
+    assert "sources: 2" in index_text
+    assert "A mechanical design for general-purpose computation." in index_text
+    assert "(query/what-did-ada-do.md)" in index_text
+    assert "(history.md)" in index_text
+
+
+def test_refresh_index_writes_empty_catalog_when_no_pages(tmp_path: Path) -> None:
+    """Write the default content-catalog scaffold when no wiki pages exist."""
+    workspace_dir = tmp_path / "workspace"
+    wiki_dir = workspace_dir / "wiki"
+    wiki_dir.mkdir(parents=True)
+
+    helpers._refresh_index("Ada", workspace_dir)
+    index_text = (wiki_dir / "index.md").read_text(encoding="utf-8")
+
+    assert "# Ada Wiki" in index_text
+    assert "Content catalog for wiki navigation and retrieval." in index_text
+    assert "## Other Pages" in index_text
+    assert "_No pages yet._" in index_text
+
+
 def test_run_ingest_workspace_runs_review_then_apply(tmp_path: Path) -> None:
     """Apply ingest only after review approval."""
     source = tmp_path / "source.md"
@@ -855,6 +938,10 @@ def test_build_query_prompt_prefers_query_pages_for_discovery() -> None:
     """Guide query analysis to use prior query pages as a discovery pre-pass."""
     prompt = query_helpers.build_query_prompt("Ada", "What did Ada do?")
 
+    assert (
+        "Read `/wiki/index.md` first and use its categorized summaries/metadata to choose "
+        "candidate pages." in prompt
+    )
     assert (
         "Prefer checking relevant prior `/wiki/query/*.md` pages first as a discovery step."
         in prompt

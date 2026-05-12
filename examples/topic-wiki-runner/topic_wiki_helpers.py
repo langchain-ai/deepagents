@@ -31,6 +31,7 @@ _ALLOWED_TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".csv"}
 _DEFAULT_SNAPSHOT_NAME = "deepagents-topic-wiki"
 _DEFAULT_DOCKER_IMAGE = "python:3"
 _DEFAULT_FS_CAPACITY = 16 * 1024**3
+_DEFAULT_REPO_SOURCE = "internal"
 _LANGSMITH_BINARY_CANDIDATES = ("langsmith", "langsmith-cli")
 _HUB_COMPATIBLE_BINARIES: set[str] = set()
 _BASE_SYSTEM_PROMPT = """You are an expert research synthesizer building a long-lived topic knowledge base.
@@ -127,6 +128,15 @@ def _repo_name_from_hub_id(hub_id: str) -> str:
         msg = f"Invalid --hub-id {hub_id!r}; expected [OWNER/]REPO"
         raise TopicWikiError(msg)
     return repo
+
+
+def _owner_name_from_hub_id(hub_id: str) -> str:
+    """Extract the owner component from a hub id."""
+    owner, sep, _repo = hub_id.partition("/")
+    if sep == "" or not owner:
+        msg = f"Invalid --hub-id {hub_id!r}; expected [OWNER/]REPO"
+        raise TopicWikiError(msg)
+    return owner
 
 
 def _topic_dir_for(topic: str, explicit: str | None) -> Path:
@@ -774,10 +784,46 @@ def _run_agent_mode(
     return f"Completed {topic} wiki operation."
 
 
+def _ensure_internal_repo_source(hub_id: str, deps: CliDeps) -> None:
+    """Create the target repo with `source=internal` when possible."""
+    owner = _owner_name_from_hub_id(hub_id)
+    if owner not in {"-", ""}:
+        return
+
+    repo_name = _repo_name_from_hub_id(hub_id)
+    try:
+        deps.run_langsmith_cli(
+            [
+                "api",
+                "repos",
+                "-X",
+                "POST",
+                "-F",
+                f"repo_handle={repo_name}",
+                "-F",
+                "repo_type=agent",
+                "-F",
+                "is_public=false",
+                "-F",
+                f"source={_DEFAULT_REPO_SOURCE}",
+            ]
+        )
+    except TopicWikiError as exc:
+        output = str(exc).lower()
+        if "409" in output or "conflict" in output or "already exists" in output:
+            return
+        msg = (
+            "Failed to ensure repo `source=internal` before first push. "
+            "Use a LangSmith CLI build that supports `api` and retry."
+        )
+        raise TopicWikiError(msg) from exc
+
+
 def _run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Initialize a local topic repo and push its first hub revision."""
     config.topic_dir.mkdir(parents=True, exist_ok=True)
     _ensure_no_symlinks(config.topic_dir)
+    _ensure_internal_repo_source(config.hub_id, deps)
     _ensure_scaffold(config.topic_dir, config.topic, overwrite_agents=True)
 
     repo_name = _repo_name_from_hub_id(config.hub_id)

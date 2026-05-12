@@ -13,7 +13,7 @@ A script-first DeepAgents example that builds a per-topic wiki and syncs via `la
 
 - Python 3.11+
 - LangSmith CLI installed (`langsmith` or `langsmith-cli`) with `hub` commands available
-- A recent LangSmith CLI build (recommended for consistent Context Hub behavior)
+- A recent LangSmith CLI build with both `hub` and `api` commands
 - Access to `langsmith.sandbox` (via `langsmith[sandbox]`)
 - `LANGSMITH_API_KEY` set for `ingest`, `query`, and `lint` modes
 
@@ -31,6 +31,9 @@ uv sync
 langsmith hub --help
 # If your binary name is `langsmith-cli`, run:
 langsmith-cli hub --help
+
+# Verify your CLI supports the API helper used to enforce source=internal.
+langsmith api info POST repos
 
 # If you have multiple binaries, confirm which one is first on PATH.
 which -a langsmith
@@ -72,6 +75,7 @@ uv run python topic_wiki_runner.py \
 ## Notes
 
 - Sync flow is always CLI-driven: `hub init/pull/push`.
+- `init` pre-creates the repo via `langsmith api` with `source=internal` before the first push.
 - v1 is text-only (`md/txt/json/yaml/yml/csv`); binary files are rejected.
 - Runtime backend routes `/memories/` to local workspace and uses LangSmith sandbox for `execute`.
 - `ingest`, `query`, and `lint` require `LANGSMITH_API_KEY` because they create a sandbox backend.

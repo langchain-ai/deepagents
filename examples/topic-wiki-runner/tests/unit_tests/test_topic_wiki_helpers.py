@@ -145,6 +145,77 @@ def test_run_langsmith_cli_uses_binary_name_in_auth_error(
         helpers._run_langsmith_cli(["hub", "push", "repo"])
 
 
+def test_ensure_internal_repo_source_creates_internal_repo() -> None:
+    """Create repos with `source=internal` before first push."""
+    calls: list[list[str]] = []
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    deps = helpers.CliDeps(
+        run_langsmith_cli=fake_run_langsmith_cli,
+        run_agent_mode=lambda *_args: "ok",
+        tempdir_factory=lambda: tempfile.TemporaryDirectory(),
+    )
+    helpers._ensure_internal_repo_source("-/go-programming-language-demo", deps)
+
+    assert calls == [
+        [
+            "api",
+            "repos",
+            "-X",
+            "POST",
+            "-F",
+            "repo_handle=go-programming-language-demo",
+            "-F",
+            "repo_type=agent",
+            "-F",
+            "is_public=false",
+            "-F",
+            "source=internal",
+        ]
+    ]
+
+
+def test_ensure_internal_repo_source_ignores_conflict() -> None:
+    """Treat create conflicts as success because the repo already exists."""
+
+    def fake_run_langsmith_cli(_args: list[str]) -> subprocess.CompletedProcess[str]:
+        msg = "langsmith api repos failed with exit code 1: 409 conflict"
+        raise helpers.TopicWikiError(msg)
+
+    deps = helpers.CliDeps(
+        run_langsmith_cli=fake_run_langsmith_cli,
+        run_agent_mode=lambda *_args: "ok",
+        tempdir_factory=lambda: tempfile.TemporaryDirectory(),
+    )
+
+    helpers._ensure_internal_repo_source("-/go-programming-language-demo", deps)
+
+
+def test_ensure_internal_repo_source_skips_explicit_owner() -> None:
+    """Skip pre-create when hub ids include explicit owners."""
+    calls: list[list[str]] = []
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    deps = helpers.CliDeps(
+        run_langsmith_cli=fake_run_langsmith_cli,
+        run_agent_mode=lambda *_args: "ok",
+        tempdir_factory=lambda: tempfile.TemporaryDirectory(),
+    )
+    helpers._ensure_internal_repo_source("acme/go-programming-language-demo", deps)
+
+    assert calls == []
+
+
 def _make_symlink_or_skip(link_path: Path, target_path: Path) -> None:
     """Create a symlink or skip test when unsupported by the platform."""
     try:

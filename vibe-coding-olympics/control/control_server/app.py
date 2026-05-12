@@ -2394,6 +2394,12 @@ _OVERLAY_HTML = """<!doctype html>
     right: 2.2%;
     top: 12.1%;
   }
+  #coding-view[data-focus="1"] .focus-prompt {
+    background-image: var(--blue-name-gradient);
+  }
+  #coding-view[data-focus="2"] .focus-prompt {
+    background-image: var(--pink-name-gradient);
+  }
   .status {
     position: absolute;
     right: 2.2%;

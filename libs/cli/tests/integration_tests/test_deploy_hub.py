@@ -166,7 +166,10 @@ def test_store_bundle_omits_vendored_hub(tmp_path: Path) -> None:
     _scaffold_project(project)
     build = tmp_path / "build"
     bundle(
-        DeployConfig(agent=AgentConfig(name="store-only")),
+        DeployConfig(
+            agent=AgentConfig(name="store-only"),
+            memories=MemoriesConfig(backend="store"),
+        ),
         project,
         build,
     )

@@ -42,6 +42,7 @@ def config() -> Config:
             Phase.CODING: "Coding",
             Phase.SCOREBOARD: "Scoreboard",
         },
+        contestant_score_template="Contestant{n}Score",
     )
 
 
@@ -202,6 +203,27 @@ def test_missing_score_leaves_slot_blank(config: Config) -> None:
 
     assert comp.last_text("Contestant1Score") == "8.00"
     assert comp.last_text("Contestant2Score") == ""
+
+
+def test_score_sources_are_optional() -> None:
+    config = Config(
+        scenes={
+            Phase.IDLE: "coding",
+            Phase.CODING: "coding",
+            Phase.SCOREBOARD: "coding",
+        },
+        contestant_score_template=None,
+    )
+    comp = FakeCompositor()
+    machine = StateMachine(comp, config)
+
+    machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["Alice", "Bob"]})
+    machine.dispatch(Event.END, {"scores": {"Alice": 8.2, "Bob": 7.5}})
+
+    assert comp.last_text("Contestant1Name") == "Alice"
+    assert comp.last_text("Contestant2Name") == "Bob"
+    assert comp.last_text("Contestant1Score") is None
+    assert comp.last_text("Contestant2Score") is None
 
 
 def test_end_rejects_missing_scores(config: Config) -> None:

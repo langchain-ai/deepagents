@@ -1854,6 +1854,15 @@ async function focusOverlayAndObs(player) {
   if (!ok) return false;
   return switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus');
 }
+async function splitOverlayAndObs() {
+  const ok = await setOverlaySmoke('coding', {
+    mode: 'split',
+    focus_player: 1,
+    remaining_secs: 300,
+  });
+  if (!ok) return false;
+  return switchObsScene('coding');
+}
 async function runSmokeTour() {
   const button = document.getElementById('btn-smoke-tour');
   button.disabled = true;
@@ -1892,7 +1901,7 @@ document.getElementById('btn-smoke-warning-30').onclick = () => (
   setOverlaySmoke('coding', { remaining_secs: 30 })
 );
 document.getElementById('btn-smoke-layout-split').onclick = () => (
-  setOverlaySmoke('coding', { mode: 'split', focus_player: 1, remaining_secs: 300 })
+  splitOverlayAndObs()
 );
 document.getElementById('btn-smoke-layout-p1').onclick = () => (
   focusOverlayAndObs(1)

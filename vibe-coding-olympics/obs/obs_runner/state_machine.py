@@ -166,8 +166,8 @@ class StateMachine:
         Args:
             contestants: Ordered contestant names. Slot `i` receives
                 `contestants[i-1]`.
-            scores: Optional per-name score map. When provided, each
-                slot's score source gets `"X.XX"`; otherwise cleared.
+            scores: Optional per-name score map. When score sources are
+                configured, each slot gets `"X.XX"` or is cleared.
         """
         cfg = self._config
         for slot in range(1, CONTESTANT_SLOTS + 1):
@@ -180,10 +180,12 @@ class StateMachine:
             else:
                 value = scores.get(name)
                 score_text = f"{value:.2f}" if value is not None else ""
-            self._compositor.set_text(cfg.score_source(slot), score_text)
+            score_source = cfg.score_source(slot)
+            if score_source is not None:
+                self._compositor.set_text(score_source, score_text)
 
     def _enter_idle(self) -> None:
-        """Clear round state and switch OBS to the idle scene."""
+        """Clear round state and switch OBS to the configured idle scene."""
         self._snapshot = Snapshot(phase=Phase.IDLE)
         cfg = self._config
         self._compositor.set_scene(cfg.scenes[Phase.IDLE])
@@ -191,7 +193,7 @@ class StateMachine:
         self._write_contestant_slots([], None)
 
     def _enter_ready(self, payload: dict[str, Any]) -> None:
-        """Render ready player names while waiting in the idle scene."""
+        """Render ready player names while waiting in the idle phase."""
         contestants = self._contestants_from_payload(payload)
         self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
         cfg = self._config
@@ -214,7 +216,7 @@ class StateMachine:
         self._write_contestant_slots(contestants, None)
 
     def _enter_scoreboard(self, payload: dict[str, Any]) -> None:
-        """Switch to the scoreboard scene and render per-slot scores.
+        """Switch to the configured scoreboard scene and render per-slot scores.
 
         Scores are mapped to the same slot their contestant occupied in
         `CODING`, preserving visual position across the round.

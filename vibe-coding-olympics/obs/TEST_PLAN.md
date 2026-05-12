@@ -13,12 +13,10 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
 ## 1. OBS one-time setup
 
 1. OBS → Tools → WebSocket Server Settings → enable, note port (`4455`). Leave authentication disabled for the default local setup.
-2. Create scenes: `Idle`, `Coding`, `Scoreboard`.
-3. Add `Text (FreeType 2)` sources with these exact names and some placeholder text:
-   - `Coding` scene: `PromptText`, `Contestant1Name`, `Contestant2Name`
-   - `Scoreboard` scene: `Contestant1Name`, `Contestant1Score`, `Contestant2Name`, `Contestant2Score`
-   - Tip: add the `Contestant{n}Name` sources in `Coding` first, then in `Scoreboard` right-click → *Add Existing* → pick the source so both scenes share a single instance (the runner writes once, both scenes reflect it).
-4. Select `Idle` as the active scene.
+2. Create the main scene: `coding`.
+3. Add `Text (FreeType 2)` sources to `coding` with these exact names and some placeholder text:
+   - `PromptText`, `Contestant1Name`, `Contestant2Name`
+4. Select `coding` as the active scene.
 
 ## 2. Launch runner
 
@@ -37,9 +35,9 @@ Leave it running. Use a second terminal for everything below.
 curl -s localhost:8765/healthz
 ```
 
-Expect: `{"obs_connected":true,"phase":"idle"}`. OBS should be on `Idle` with all text sources cleared (runner primes on startup).
+Expect: `{"obs_connected":true,"phase":"idle"}`. OBS should be on `coding` with all text sources cleared (runner primes on startup).
 
-## 4. Start round → `Coding`
+## 4. Start round → `coding`
 
 ```bash
 curl -s -X POST localhost:8765/transition \
@@ -47,12 +45,11 @@ curl -s -X POST localhost:8765/transition \
   -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'
 ```
 
-OBS switches to `Coding`. Text sources show:
+OBS switches to `coding`. Text sources show:
 
 - `PromptText` → `build a cat shrine`
 - `Contestant1Name` → `Alice`
 - `Contestant2Name` → `Bob`
-- `Contestant1Score`, `Contestant2Score` → blank
 
 ## 5. Illegal transition (negative)
 
@@ -73,7 +70,7 @@ curl -s localhost:8765/state
 
 Expect phase `coding`, round `1`, prompt, contestants.
 
-## 7. End round → `Scoreboard`
+## 7. End round → `scoreboard` state
 
 ```bash
 curl -s -X POST localhost:8765/transition \
@@ -81,13 +78,13 @@ curl -s -X POST localhost:8765/transition \
   -d '{"event":"end","payload":{"scores":{"Alice":8.2,"Bob":7.5}}}'
 ```
 
-OBS switches to `Scoreboard`. Each score lands in the same slot its contestant held in `Coding`:
+OBS stays on `coding`; the browser overlay renders the scoreboard state. Scores are available in `/state` for the overlay:
 
-- `Contestant1Score` → `8.20` (Alice's slot)
-- `Contestant2Score` → `7.50` (Bob's slot)
+- `scores.Alice` → `8.2`
+- `scores.Bob` → `7.5`
 - `Contestant1Name` / `Contestant2Name` remain `Alice` / `Bob`
 
-## 8. Reset → `Idle`
+## 8. Reset → `idle` state
 
 ```bash
 curl -s -X POST localhost:8765/transition \
@@ -95,7 +92,7 @@ curl -s -X POST localhost:8765/transition \
   -d '{"event":"reset","payload":{}}'
 ```
 
-OBS switches to `Idle`. `PromptText` + every `Contestant{n}Name` / `Contestant{n}Score` are cleared.
+OBS stays on `coding`. `PromptText` + every `Contestant{n}Name` source are cleared, and the browser overlay renders the idle state.
 
 ## 9. Auth-failure check (optional)
 
@@ -138,6 +135,6 @@ curl -s -X POST localhost:8765/transition -H 'content-type: application/json' \
 | --- | --- |
 | `obs_connected: false` on start | Wrong port/password, or WebSocket server not enabled |
 | `409` on first `start` | FSM not in `idle` — `POST /transition reset` (from `scoreboard`) or restart runner |
-| Scene switches but text stays stale | Source name mismatch (case-sensitive). Check OBS names equal `PromptText` / `Contestant{n}Name` / `Contestant{n}Score`, or set `OBS_TEXT_*` / `OBS_TEXT_CONTESTANT_*_FMT` env vars to match your layout |
-| Text source blanks but never fills | Source exists in one scene only; confirm by viewing the target scene. Shared across scenes requires OBS *Add Existing* (single instance), not a duplicate |
+| Scene switches but text stays stale | Source name mismatch (case-sensitive). Check OBS names equal `PromptText` / `Contestant{n}Name`, or set `OBS_TEXT_*` / `OBS_TEXT_CONTESTANT_*_FMT` env vars to match your layout |
+| Text source blanks but never fills | Source name mismatch, or the source is not present in the active `coding` scene |
 | A slot you expected to fill is blank | Contestant order in the `start` payload does not match the slot you're eyeballing; only the first two contestants are rendered |

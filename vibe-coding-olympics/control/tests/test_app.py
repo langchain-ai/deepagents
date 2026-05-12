@@ -159,6 +159,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("btn-smoke-layout-split", response.text)
         self.assertIn("btn-smoke-layout-p1", response.text)
         self.assertNotIn("smoke-overlay-link", response.text)
+        self.assertIn("function splitOverlayAndObs()", response.text)
+        self.assertIn("return switchObsScene('coding');", response.text)
         self.assertIn("function focusOverlayAndObs(player)", response.text)
         self.assertIn(
             "switchObsScene(player === 1 ? 'p1 focus' : 'p2 focus')",

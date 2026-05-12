@@ -20,6 +20,12 @@ def _env(name: str, default: str) -> str:
     return value or default
 
 
+def _optional_env(name: str) -> str | None:
+    """Return a stripped env var, or `None` when unset or blank."""
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
 @dataclass(frozen=True)
 class Config:
     """Runtime configuration resolved from the process environment.
@@ -31,7 +37,8 @@ class Config:
         scenes: Phase to OBS scene-name mapping.
         text_prompt: Text input that receives the round prompt.
         contestant_name_template: `{n}`-placeholder pattern for name sources.
-        contestant_score_template: `{n}`-placeholder pattern for score sources.
+        contestant_score_template: Optional `{n}`-placeholder pattern for score
+            sources. `None` disables OBS score text writes.
         api_host: Bind host for the FastAPI control server.
         api_port: Bind port for the FastAPI control server.
     """
@@ -42,7 +49,7 @@ class Config:
     scenes: dict[Phase, str] = field(default_factory=dict)
     text_prompt: str = "PromptText"
     contestant_name_template: str = "Contestant{n}Name"
-    contestant_score_template: str = "Contestant{n}Score"
+    contestant_score_template: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8765
 
@@ -50,8 +57,10 @@ class Config:
         """Return the OBS text-source name for slot `n` (1-indexed)."""
         return self.contestant_name_template.format(n=slot)
 
-    def score_source(self, slot: int) -> str:
-        """Return the OBS text-source name for slot `n`'s score."""
+    def score_source(self, slot: int) -> str | None:
+        """Return the OBS text-source name for slot `n`'s score, if enabled."""
+        if self.contestant_score_template is None:
+            return None
         return self.contestant_score_template.format(n=slot)
 
 
@@ -61,20 +70,21 @@ def load_config() -> Config:
     Env vars:
         `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD` — connection to obs-websocket.
         `OBS_SCENE_IDLE`, `OBS_SCENE_CODING`, `OBS_SCENE_SCOREBOARD` — scene
-            names for each phase.
+            names for each phase. All default to `coding` because the browser
+            overlay handles idle/coding/scoreboard visuals inside one OBS scene.
         `OBS_TEXT_PROMPT` — singular text input name for the prompt.
         `OBS_TEXT_CONTESTANT_NAME_FMT`, `OBS_TEXT_CONTESTANT_SCORE_FMT` —
-            `{n}`-placeholder patterns (default `Contestant{n}Name` /
-            `Contestant{n}Score`).
+            `{n}`-placeholder patterns. Score-source writes are disabled unless
+            `OBS_TEXT_CONTESTANT_SCORE_FMT` is set.
         `VIBE_OBS_API_HOST`, `VIBE_OBS_API_PORT` — FastAPI bind.
 
     Returns:
         Config populated from the environment with defaults applied.
     """
     scenes = {
-        Phase.IDLE: _env("OBS_SCENE_IDLE", "Idle"),
-        Phase.CODING: _env("OBS_SCENE_CODING", "Coding"),
-        Phase.SCOREBOARD: _env("OBS_SCENE_SCOREBOARD", "Scoreboard"),
+        Phase.IDLE: _env("OBS_SCENE_IDLE", "coding"),
+        Phase.CODING: _env("OBS_SCENE_CODING", "coding"),
+        Phase.SCOREBOARD: _env("OBS_SCENE_SCOREBOARD", "coding"),
     }
     return Config(
         obs_host=_env("OBS_HOST", "localhost"),
@@ -85,9 +95,7 @@ def load_config() -> Config:
         contestant_name_template=_env(
             "OBS_TEXT_CONTESTANT_NAME_FMT", "Contestant{n}Name"
         ),
-        contestant_score_template=_env(
-            "OBS_TEXT_CONTESTANT_SCORE_FMT", "Contestant{n}Score"
-        ),
+        contestant_score_template=_optional_env("OBS_TEXT_CONTESTANT_SCORE_FMT"),
         api_host=_env("VIBE_OBS_API_HOST", "127.0.0.1"),
         api_port=int(_env("VIBE_OBS_API_PORT", "8765")),
     )

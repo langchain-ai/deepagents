@@ -10,23 +10,23 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LangSmithSandbox
 from deepagents.middleware.filesystem import FilesystemPermission
+from models import CliDeps, Mode, RunResult, RunnerConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
     from deepagents.backends.protocol import SandboxBackendProtocol
+    from ingest import IngestResult
 
 
-Mode = Literal["init", "ingest", "query", "lint"]
 _ALLOWED_TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".csv"}
 _DEFAULT_SNAPSHOT_NAME = "deepagents-wiki"
 _DEFAULT_DOCKER_IMAGE = "python:3"
@@ -66,51 +66,6 @@ Filesystem policy:
 
 class WikiError(RuntimeError):
     """Raised when the wiki runner cannot complete a requested operation."""
-
-
-@dataclass(frozen=True)
-class RunnerConfig:
-    """Parsed runner configuration."""
-
-    mode: Mode
-    topic: str
-    repo: str
-    owner: str | None
-    topic_dir: Path
-    sources: tuple[Path, ...]
-    note: str | None
-    question: str | None
-    model: str | None
-    description: str | None
-    review: bool
-
-
-@dataclass(frozen=True)
-class CliDeps:
-    """Injectable dependencies for tests."""
-
-    run_langsmith_cli: Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
-    run_agent_mode: Callable[[Path, str, str, str | None], str]
-    run_agent_review_mode: Callable[[Path, str, str, str | None], str]
-    ask_user: Callable[[str], str]
-    tempdir_factory: Callable[[], tempfile.TemporaryDirectory[str]]
-
-
-@dataclass(frozen=True)
-class RunResult:
-    """Output from a runner invocation."""
-
-    answer: str | None
-    hub_url: str | None
-
-
-@dataclass(frozen=True)
-class IngestResult:
-    """Result from one ingest workspace pass."""
-
-    answer: str | None
-    should_push: bool
-
 
 def _slugify_topic(topic: str) -> str:
     """Convert a topic label into a stable slug."""
@@ -598,23 +553,6 @@ def _append_log_entry(workspace_dir: Path, mode: Mode, detail: str) -> None:
     _safe_write_text(log_path, entry, append=True)
 
 
-def _build_query_prompt(topic: str, question: str) -> str:
-    """Build the query prompt for answering from wiki pages."""
-    return (
-        f"Answer this question about '{topic}': {question}\n\n"
-        "Required workflow:\n"
-        "1) Read `/wiki/index.md` first.\n"
-        "2) Read all relevant `/wiki/*.md` pages before answering.\n"
-        "3) Provide a direct answer first, then concise supporting rationale.\n"
-        "4) Cite the wiki file paths that support the answer.\n\n"
-        "Quality bar:\n"
-        "- Prioritize grounded claims over speculation.\n"
-        "- If the wiki lacks enough evidence, say what is unknown.\n"
-        "- If synthesis would materially improve future answers, update/create `/wiki/synthesis.md`.\n"
-        "- Never write to `/raw/`.\n"
-    )
-
-
 def _build_lint_prompt(topic: str, note: str | None) -> str:
     """Build the lint prompt for wiki consistency checks."""
     note_text = note or "(none)"
@@ -758,42 +696,42 @@ def _run_agent_review_mode(
 
 def _resolve_internal_source_flag(deps: CliDeps) -> tuple[str, ...]:
     """Resolve an init flag set that enforces internal repo source."""
-    from wiki_init import resolve_internal_source_flag
+    from init import resolve_internal_source_flag
 
     return resolve_internal_source_flag(deps)
 
 
 def _extract_repo_source(payload: dict[str, object]) -> str | None:
     """Extract repo source metadata from hub get payload."""
-    from wiki_init import extract_repo_source
+    from init import extract_repo_source
 
     return extract_repo_source(payload)
 
 
 def _verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
     """Verify that the target hub repo source is internal."""
-    from wiki_init import verify_internal_repo_source
+    from init import verify_internal_repo_source
 
     verify_internal_repo_source(hub_identifier, deps)
 
 
 def _run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     """Initialize a local topic repo and push its first hub revision."""
-    from wiki_init import run_init
+    from init import run_init
 
     return run_init(config, deps)
 
 
 def _collect_directory_sources(directory: Path) -> list[Path]:
     """Collect allowed file paths from a source directory recursively."""
-    from wiki_ingest import collect_directory_sources
+    from ingest import collect_directory_sources
 
     return collect_directory_sources(directory)
 
 
 def _expand_sources(sources: Sequence[Path]) -> list[Path]:
     """Expand source arguments into a deterministic list of file paths."""
-    from wiki_ingest import expand_sources
+    from ingest import expand_sources
 
     return expand_sources(sources)
 
@@ -802,7 +740,7 @@ def _build_ingest_review_prompt(
     topic: str, staged_paths: Sequence[Path], note: str | None
 ) -> str:
     """Build the ingest review prompt for staged source material."""
-    from wiki_ingest import build_ingest_review_prompt
+    from ingest import build_ingest_review_prompt
 
     return build_ingest_review_prompt(topic, staged_paths, note)
 
@@ -814,14 +752,14 @@ def _build_ingest_apply_prompt(
     note: str | None,
 ) -> str:
     """Build the ingest apply prompt after operator approval."""
-    from wiki_ingest import build_ingest_apply_prompt
+    from ingest import build_ingest_apply_prompt
 
     return build_ingest_apply_prompt(topic, staged_paths, review_summary, note)
 
 
 def _confirm_ingest_apply(review: str, ask_user: Callable[[str], str]) -> bool:
     """Ask operator to approve ingest apply after the review phase."""
-    from wiki_ingest import confirm_ingest_apply
+    from ingest import confirm_ingest_apply
 
     return confirm_ingest_apply(review, ask_user)
 
@@ -830,20 +768,9 @@ def _run_ingest_workspace(
     config: RunnerConfig, workspace_dir: Path, deps: CliDeps
 ) -> IngestResult:
     """Run ingest mode against a pulled workspace directory."""
-    from wiki_ingest import run_ingest_workspace
+    from ingest import run_ingest_workspace
 
     return run_ingest_workspace(config, workspace_dir, deps)
-
-
-def _run_query_workspace(
-    config: RunnerConfig, workspace_dir: Path, deps: CliDeps
-) -> str:
-    """Run query mode and return the model answer."""
-    question = config.question or ""
-    prompt = _build_query_prompt(config.topic, question)
-    answer = deps.run_agent_mode(workspace_dir, config.topic, prompt, config.model)
-    _append_log_entry(workspace_dir, "query", f"question={question}")
-    return answer
 
 
 def _run_lint_workspace(
@@ -882,8 +809,11 @@ def _run_pull_mode(config: RunnerConfig, deps: CliDeps) -> RunResult:
             answer = ingest_result.answer
             should_push = ingest_result.should_push
         elif config.mode == "query":
-            answer = _run_query_workspace(config, workspace_dir, deps)
-            should_push = True
+            from query import run_query_workspace
+
+            query_result = run_query_workspace(config, workspace_dir, deps)
+            answer = query_result.answer
+            should_push = query_result.should_push
         else:
             _run_lint_workspace(config, workspace_dir, deps)
             answer = None

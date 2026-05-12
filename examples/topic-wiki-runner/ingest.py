@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Sequence
 
+from models import CliDeps, RunnerConfig
 import wiki_helpers as helpers
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+@dataclass(frozen=True)
+class IngestResult:
+    """Result from one ingest workspace pass."""
 
-    from wiki_helpers import CliDeps, IngestResult, RunnerConfig
+    answer: str | None
+    should_push: bool
 
 
 def collect_directory_sources(directory: Path) -> list[Path]:
@@ -167,7 +171,7 @@ def run_ingest_workspace(
 
         approved = confirm_ingest_apply(review_summary, deps.ask_user)
         if not approved:
-            return helpers.IngestResult(
+            return IngestResult(
                 answer="Ingest canceled after review. No wiki changes were applied.",
                 should_push=False,
             )
@@ -201,6 +205,4 @@ def run_ingest_workspace(
         detail += f" note={config.note}"
     helpers._append_log_entry(workspace_dir, "ingest", detail)
 
-    return helpers.IngestResult(
-        answer=apply_answer or "Ingest applied.", should_push=True
-    )
+    return IngestResult(answer=apply_answer or "Ingest applied.", should_push=True)

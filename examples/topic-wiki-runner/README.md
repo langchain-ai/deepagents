@@ -6,8 +6,10 @@ A script-first DeepAgents example that builds a persistent topic wiki and syncs 
 
 - `wiki_runner.py` - thin CLI entrypoint
 - `wiki_helpers.py` - shared helpers, CLI parsing, and mode orchestration
-- `wiki_init.py` - `init` mode workflow and internal-source enforcement
-- `wiki_ingest.py` - `ingest` mode source expansion + review/apply flow
+- `models.py` - shared config/dependency/result dataclasses
+- `init.py` - `init` mode workflow and internal-source enforcement
+- `ingest.py` - `ingest` mode source expansion + review/apply flow
+- `query.py` - `query` mode analysis + optional durable filing flow
 - `README.md` - setup and usage
 - `pyproject.toml` - example-local dependency config
 
@@ -102,3 +104,10 @@ If you pass `--review`, ingest becomes a two-phase, operator-in-the-loop flow:
 3. If you decline confirmation, ingest exits without applying wiki changes.
 
 Batch ingest is the default. A single run can process multiple files and directories.
+
+## Query workflow
+
+`query` runs in two phases automatically:
+
+1. Analysis phase (read-only): the model reads `wiki/index.md`, then (when helpful) checks prior `wiki/query/*.md` pages first for discovery/routing, expands into canonical wiki pages for grounding, answers with citations, and decides whether the result should be filed for future reuse. Query pages are treated as routing hints rather than primary evidence.
+2. Filing phase (write, conditional): if the answer is durable, the runner files it into `wiki/query/<question-slug>.md`, refreshes `wiki/index.md`, appends a query entry to `log.md`, and pushes.

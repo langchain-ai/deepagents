@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import wiki_helpers as helpers
+import query as query_helpers
 
 
 @pytest.fixture(autouse=True)
@@ -725,4 +726,233 @@ def test_run_pull_mode_skips_push_when_ingest_cancelled(tmp_path: Path) -> None:
     result = helpers._run_pull_mode(config, deps)
 
     assert result.answer and "canceled" in result.answer.lower()
+    assert not any(call[:2] == ("hub", "push") for call in calls)
+
+
+def test_build_query_prompt_prefers_query_pages_for_discovery() -> None:
+    """Guide query analysis to use prior query pages as a discovery pre-pass."""
+    prompt = query_helpers.build_query_prompt("Ada", "What did Ada do?")
+
+    assert (
+        "Prefer checking relevant prior `/wiki/query/*.md` pages first as a discovery step."
+        in prompt
+    )
+    assert (
+        "Use those query pages to identify likely canonical `/wiki/*.md` pages and topics."
+        in prompt
+    )
+    assert "Read the canonical wiki pages before final synthesis." in prompt
+
+
+def test_build_query_prompt_sets_query_pages_as_routing_hints() -> None:
+    """Require canonical evidence and uncertainty when only query pages support claims."""
+    prompt = query_helpers.build_query_prompt("Ada", "What did Ada do?")
+
+    assert (
+        "Treat `/wiki/query/*.md` pages as routing hints, not primary evidence."
+        in prompt
+    )
+    assert "Cite canonical wiki pages for final claims whenever possible." in prompt
+    assert (
+        "If a claim is only supported by query pages, explicitly note uncertainty and "
+        "missing canonical grounding." in prompt
+    )
+
+
+def test_parse_query_decision_extracts_answer_and_file_signal() -> None:
+    """Parse structured query decision output with file recommendation."""
+    raw = (
+        "ANSWER:\nAda introduced a programmable workflow. See `wiki/overview.md`.\n\n"
+        "FILING_DECISION: file\n"
+        "FILING_REASON: durable synthesis"
+    )
+
+    decision = query_helpers.parse_query_decision(raw)
+
+    assert decision.should_file is True
+    assert "programmable workflow" in decision.answer
+    assert decision.reason == "durable synthesis"
+
+
+def test_parse_query_decision_defaults_to_skip_when_marker_missing() -> None:
+    """Default to skip when decision markers are not present."""
+    raw = "ANSWER:\nInsufficient evidence in the current wiki."
+
+    decision = query_helpers.parse_query_decision(raw)
+
+    assert decision.should_file is False
+    assert decision.answer == "Insufficient evidence in the current wiki."
+    assert "defaulted to skip" in decision.reason.lower()
+
+
+def test_run_query_workspace_skip_keeps_query_read_only(tmp_path: Path) -> None:
+    """Skip filing when analysis says the answer is not durable."""
+    workspace_dir = tmp_path / "workspace"
+    (workspace_dir / "wiki").mkdir(parents=True)
+    (workspace_dir / "wiki" / "index.md").write_text("# Ada Wiki\n", encoding="utf-8")
+    log_path = workspace_dir / "log.md"
+    log_path.write_text("# Change Log\n", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def fake_review(*_args: object) -> str:
+        calls.append("review")
+        return (
+            "ANSWER:\nThis answer is ad-hoc and not reusable.\n\n"
+            "FILING_DECISION: skip\n"
+            "FILING_REASON: low reuse value"
+        )
+
+    def fake_apply(*_args: object) -> str:
+        calls.append("apply")
+        return "should not run"
+
+    deps = _make_deps(
+        run_langsmith_cli=lambda args: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        ),
+        run_agent_mode=fake_apply,
+        run_agent_review_mode=fake_review,
+    )
+
+    config = helpers.RunnerConfig(
+        mode="query",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "unused",
+        sources=(),
+        note=None,
+        question="What changed this week?",
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    before_log = log_path.read_text(encoding="utf-8")
+    result = query_helpers.run_query_workspace(config, workspace_dir, deps)
+
+    assert result.should_push is False
+    assert result.filed_path is None
+    assert "ad-hoc" in result.answer
+    assert calls == ["review"]
+    assert log_path.read_text(encoding="utf-8") == before_log
+
+
+def test_run_query_workspace_files_durable_answer(tmp_path: Path) -> None:
+    """File durable query answers into `wiki/query/<slug>.md` and log the run."""
+    workspace_dir = tmp_path / "workspace"
+    (workspace_dir / "wiki").mkdir(parents=True)
+    (workspace_dir / "wiki" / "index.md").write_text("# Ada Wiki\n", encoding="utf-8")
+    (workspace_dir / "log.md").write_text("# Change Log\n", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def fake_review(*_args: object) -> str:
+        calls.append("review")
+        return (
+            "ANSWER:\nAda introduced analytical workflow patterns. See `wiki/history.md`.\n\n"
+            "FILING_DECISION: file\n"
+            "FILING_REASON: reusable synthesis"
+        )
+
+    def fake_apply(
+        workspace_dir_arg: Path, _topic: str, prompt: str, _model: str | None
+    ) -> str:
+        calls.append("apply")
+        assert "/wiki/query/what-did-ada-do.md" in prompt
+        target = workspace_dir_arg / "wiki" / "query" / "what-did-ada-do.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            "# What Did Ada Do\n\n## Answer\n\nDurable synthesis.\n",
+            encoding="utf-8",
+        )
+        return "filed"
+
+    deps = _make_deps(
+        run_langsmith_cli=lambda args: subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        ),
+        run_agent_mode=fake_apply,
+        run_agent_review_mode=fake_review,
+    )
+
+    config = helpers.RunnerConfig(
+        mode="query",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "unused",
+        sources=(),
+        note=None,
+        question="What did Ada do?",
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    result = query_helpers.run_query_workspace(config, workspace_dir, deps)
+
+    assert result.should_push is True
+    assert result.filed_path == "/wiki/query/what-did-ada-do.md"
+    assert "analytical workflow" in result.answer
+    assert calls == ["review", "apply"]
+
+    index_text = (workspace_dir / "wiki" / "index.md").read_text(encoding="utf-8")
+    assert "(query/what-did-ada-do.md)" in index_text
+
+    log_text = (workspace_dir / "log.md").read_text(encoding="utf-8")
+    assert "decision=file" in log_text
+    assert "/wiki/query/what-did-ada-do.md" in log_text
+
+
+def test_run_pull_mode_skips_push_when_query_is_not_filed(tmp_path: Path) -> None:
+    """Avoid hub push when query analysis decides to skip filing."""
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(args))
+        if args[:2] == ["hub", "pull"]:
+            workspace = Path(args[args.index("--dir") + 1])
+            (workspace / "raw").mkdir(parents=True, exist_ok=True)
+            (workspace / "wiki").mkdir(parents=True, exist_ok=True)
+            (workspace / "wiki" / "index.md").write_text(
+                "# Ada Wiki\n", encoding="utf-8"
+            )
+            (workspace / "log.md").write_text("# Change Log\n", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    def fake_apply(*_args: object) -> str:
+        msg = "write phase should not run for skipped query filing"
+        raise AssertionError(msg)
+
+    deps = _make_deps(
+        run_langsmith_cli=fake_run_langsmith_cli,
+        run_agent_mode=fake_apply,
+        run_agent_review_mode=lambda *_args: (
+            "ANSWER:\nAd-hoc answer.\n\n"
+            "FILING_DECISION: skip\n"
+            "FILING_REASON: low reuse"
+        ),
+    )
+
+    config = helpers.RunnerConfig(
+        mode="query",
+        topic="Ada",
+        repo="ada-wiki",
+        owner=None,
+        topic_dir=tmp_path / "unused",
+        sources=(),
+        note=None,
+        question="What happened today?",
+        model=None,
+        description=None,
+        review=False,
+    )
+
+    result = helpers._run_pull_mode(config, deps)
+
+    assert "Ad-hoc answer" in (result.answer or "")
     assert not any(call[:2] == ("hub", "push") for call in calls)

@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from models import CliDeps, RunResult, RunnerConfig
 import wiki_helpers as helpers
-
-if TYPE_CHECKING:
-    from wiki_helpers import CliDeps, RunResult, RunnerConfig
-
 
 def resolve_internal_source_flag(deps: CliDeps) -> tuple[str, ...]:
     """Resolve an init flag set that enforces internal repo source."""
@@ -141,4 +136,4 @@ def run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     )
     verify_internal_repo_source(hub_identifier, deps)
     hub_url = helpers._resolve_hub_url(config.owner, config.repo)
-    return helpers.RunResult(answer=None, hub_url=hub_url)
+    return RunResult(answer=None, hub_url=hub_url)

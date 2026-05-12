@@ -1,4 +1,4 @@
-# context-hub-kb-issues
+# memory-backed-agent
 
 A minimal one-file example that treats Context Hub as a living knowledge base:
 
@@ -46,7 +46,7 @@ Optional:
 ## Run
 
 ```bash
-cd examples/context-hub-kb-issues
+cd examples/memory-backed-agent
 
 # Deploy + auto-wire issues board
 uv run python deploy_memory_backed_agent.py --project-name my-agent

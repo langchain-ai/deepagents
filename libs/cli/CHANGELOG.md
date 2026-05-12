@@ -1,5 +1,12 @@
 # Deep Agents CLI Changelog
 
+## [0.0.58](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.57...deepagents-cli==0.0.58) (2026-05-12)
+
+
+### Features
+
+* **sdk:** v0.6 ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
 ## [0.0.57](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.56...deepagents-cli==0.0.57) (2026-05-12)
 
 ### Features

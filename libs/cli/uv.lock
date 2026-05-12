@@ -1023,7 +1023,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.56"
+version = "0.0.57"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

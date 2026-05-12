@@ -14,9 +14,6 @@ required-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 overrides = [
     { name = "e2b", specifier = "==2.4.3" },

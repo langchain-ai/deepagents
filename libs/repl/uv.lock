@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <4.0"
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 constraints = [{ name = "urllib3", specifier = ">=2.6.3" }]
 

@@ -100,7 +100,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | Path | Method | Body | Does |
 | --- | --- | --- | --- |
 | `/` | GET | — | Serves the HTML control panel |
-| `/overlay` | GET | — | Serves the transparent OBS Browser Source overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. |
+| `/overlay` | GET | — | Serves the transparent OBS Browser Source graphics overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. Live video feeds are expected to be composed in OBS by default. |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
 | `/api/eval/last` | GET | — | Returns the latest per-player judge results |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
@@ -137,6 +137,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
 | `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
 | `VIBE_ROUND_SECONDS` | `300` | Player coding time in seconds; starts after the CLI launch countdown and triggers the judge on expiry |
+| `VIBE_OVERLAY_INLINE_FEEDS` | _(unset)_ | Set to `1`, `true`, `yes`, or `on` to restore the legacy `/overlay` mode that embeds local NDI bridge iframes from `127.0.0.1:8889`. Leave unset for the production graphics-only overlay. |
 | `VIBE_EVAL_DIR` | _(bundled `vibe-coding-olympics/eval`)_ | Override path to the eval workspace, useful for local development |
 | `VIBE_EVAL_RESULTS_DIR` | system temp dir | Parent directory for `round-N-<name>.json` files written by the judge |
 | `VIBE_DEEPAGENTS_CONFIG_PATH` | `~/.deepagents/config.toml` | Deep Agents CLI config mutated by player reset cleanup |

@@ -2564,20 +2564,20 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="split-player left">
         <div class="pane preview">
-          <iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>
+          __INLINE_P1_PREVIEW__
           <div class="preview-name left" id="split-p1-name">Player 1</div>
         </div>
         <div class="pane terminal">
-          <iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>
+          __INLINE_P1_TERMINAL__
         </div>
       </div>
       <div class="split-player right">
         <div class="pane preview">
-          <iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>
+          __INLINE_P2_PREVIEW__
           <div class="preview-name right" id="split-p2-name">Player 2</div>
         </div>
         <div class="pane terminal">
-          <iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>
+          __INLINE_P2_TERMINAL__
         </div>
       </div>
     </div>
@@ -2598,13 +2598,11 @@ _OVERLAY_HTML = """<!doctype html>
         <span class="prompt-text" id="focus-prompt">Waiting for prompt</span>
       </div>
       <div class="pane focus-website">
-        <iframe class="ndi-feed crop-left focus-feed p1" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>
-        <iframe class="ndi-feed crop-left focus-feed p2" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>
+        __INLINE_FOCUS_WEBSITE__
         <div class="pane-label" id="focus-preview-label">Live Preview</div>
       </div>
       <div class="pane focus-terminal">
-        <iframe class="ndi-feed crop-right focus-feed p1" src="http://127.0.0.1:8889/p1-screen/" title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>
-        <iframe class="ndi-feed crop-right focus-feed p2" src="http://127.0.0.1:8889/p2-screen/" title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>
+        __INLINE_FOCUS_TERMINAL__
         <div class="pane-label right" id="focus-code-label">Deep Agents Code</div>
       </div>
     </div>
@@ -2865,6 +2863,58 @@ setInterval(() => {
 """
 
 
+_INLINE_FEED_REPLACEMENTS = {
+    "__INLINE_P1_PREVIEW__": (
+        '<iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p1-screen/" '
+        'title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+    "__INLINE_P1_TERMINAL__": (
+        '<iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p1-screen/" '
+        'title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+    "__INLINE_P2_PREVIEW__": (
+        '<iframe class="ndi-feed crop-left" src="http://127.0.0.1:8889/p2-screen/" '
+        'title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+    "__INLINE_P2_TERMINAL__": (
+        '<iframe class="ndi-feed crop-right" src="http://127.0.0.1:8889/p2-screen/" '
+        'title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+    "__INLINE_FOCUS_WEBSITE__": (
+        '<iframe class="ndi-feed crop-left focus-feed p1" '
+        'src="http://127.0.0.1:8889/p1-screen/" '
+        'title="Player 1 website preview" allow="autoplay; fullscreen"></iframe>\n'
+        '        <iframe class="ndi-feed crop-left focus-feed p2" '
+        'src="http://127.0.0.1:8889/p2-screen/" '
+        'title="Player 2 website preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+    "__INLINE_FOCUS_TERMINAL__": (
+        '<iframe class="ndi-feed crop-right focus-feed p1" '
+        'src="http://127.0.0.1:8889/p1-screen/" '
+        'title="Player 1 CLI preview" allow="autoplay; fullscreen"></iframe>\n'
+        '        <iframe class="ndi-feed crop-right focus-feed p2" '
+        'src="http://127.0.0.1:8889/p2-screen/" '
+        'title="Player 2 CLI preview" allow="autoplay; fullscreen"></iframe>'
+    ),
+}
+
+
+def _env_flag(name: str) -> bool:
+    """Return whether an env var uses a common truthy value."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _overlay_html() -> str:
+    """Return the OBS overlay HTML, optionally embedding legacy live feeds."""
+    html = _OVERLAY_HTML
+    replacements = (
+        _INLINE_FEED_REPLACEMENTS if _env_flag("VIBE_OVERLAY_INLINE_FEEDS") else {}
+    )
+    for token in _INLINE_FEED_REPLACEMENTS:
+        html = html.replace(token, replacements.get(token, ""))
+    return html
+
+
 def create_app() -> FastAPI:
     """Build the control-panel FastAPI app."""
     app = FastAPI(title="Vibe Olympics Control Panel")
@@ -2876,7 +2926,7 @@ def create_app() -> FastAPI:
 
     @app.get("/overlay", response_class=HTMLResponse)
     async def overlay() -> str:
-        return _OVERLAY_HTML
+        return _overlay_html()
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:

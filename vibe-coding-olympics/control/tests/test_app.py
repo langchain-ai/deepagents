@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -78,7 +79,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("linear-gradient(180deg, var(--paper) 0%, var(--soft-pink) 44%, var(--pink-a) 100%", response.text)
         self.assertIn("background-image: var(--blue-name-gradient)", response.text)
         self.assertIn("background-image: var(--pink-name-gradient)", response.text)
-        self.assertIn("height: 11%;", response.text)
+        self.assertIn("height: 10.5%;", response.text)
         self.assertIn("border-bottom: var(--line) solid var(--ink)", response.text)
         self.assertIn(
             "clip-path: polygon(5% 0, 95% 0, 100% 50%, 95% 100%, 5% 100%, 0 50%);\n"
@@ -109,7 +110,10 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("timer-warning", response.text)
         self.assertIn("function syncTimerWarning", response.text)
         self.assertIn("threshold_secs", response.text)
-        self.assertIn('<div class="pane focus-terminal"></div>', response.text)
+        self.assertNotIn("http://127.0.0.1:8889", response.text)
+        self.assertNotIn('class="ndi-feed', response.text)
+        self.assertNotIn("__INLINE_", response.text)
+        self.assertIn('id="focus-code-label">Deep Agents Code</div>', response.text)
         self.assertIn(".focus-prompt", response.text)
         self.assertIn("focus-bg middle-gap", response.text)
         self.assertIn("focus-bg bottom-website", response.text)
@@ -117,6 +121,21 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("bottom: 3%;", response.text)
         self.assertNotIn("focus-terminal-title", response.text)
         self.assertNotIn("focus-caption", response.text)
+
+    def test_overlay_route_can_inline_legacy_feeds_with_env_var(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        with patch.dict(os.environ, {"VIBE_OVERLAY_INLINE_FEEDS": "1"}):
+            response = client.get("/overlay")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("http://127.0.0.1:8889/p1-screen/", response.text)
+        self.assertIn("http://127.0.0.1:8889/p2-screen/", response.text)
+        self.assertIn('class="ndi-feed crop-left"', response.text)
+        self.assertIn('class="ndi-feed crop-right focus-feed p2"', response.text)
+        self.assertIn('id="focus-code-label">Deep Agents Code</div>', response.text)
+        self.assertEqual(response.text.count('id="focus-code-label"'), 1)
+        self.assertNotIn("__INLINE_", response.text)
 
     def test_index_links_to_overlay_route(self) -> None:
         client = TestClient(app_mod.create_app())

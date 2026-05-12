@@ -8,7 +8,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithAPIError, LangSmithNotFoundError
+from langsmith.utils import (
+    LangSmithAPIError,
+    LangSmithConflictError,
+    LangSmithNotFoundError,
+)
 
 from deepagents.backends import CompositeBackend, ContextHubBackend, FilesystemBackend
 
@@ -168,6 +172,81 @@ def test_write_updates_cache_after_commit() -> None:
     assert result.error is None
     assert result.file_data is not None
     assert result.file_data["content"] == "hello"
+
+
+def test_write_precreates_internal_repo_for_dash_owner() -> None:
+    """Fresh `-/repo` identifiers should pre-create with `source=internal`."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.push_agent.return_value = _COMMIT_URL
+    backend = ContextHubBackend("-/fresh", client=mock_client)
+
+    result = backend.write("/seed.md", "hello")
+    assert result.error is None
+
+    mock_client.request_with_retries.assert_called_once_with(
+        "POST",
+        "/repos",
+        json={
+            "repo_handle": "fresh",
+            "is_public": False,
+            "repo_type": "agent",
+            "source": "internal",
+        },
+    )
+    mock_client.push_agent.assert_called_once()
+
+
+def test_write_precreates_internal_repo_for_explicit_owner() -> None:
+    """Fresh `owner/repo` identifiers should preserve owner on pre-create."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.push_agent.return_value = _COMMIT_URL
+    backend = ContextHubBackend("acme/fresh", client=mock_client)
+
+    result = backend.write("/seed.md", "hello")
+    assert result.error is None
+
+    mock_client.request_with_retries.assert_called_once_with(
+        "POST",
+        "/repos",
+        json={
+            "repo_handle": "fresh",
+            "is_public": False,
+            "repo_type": "agent",
+            "source": "internal",
+            "owner": "acme",
+        },
+    )
+    mock_client.push_agent.assert_called_once()
+
+
+def test_internal_precreate_conflict_falls_back_to_push() -> None:
+    """Repo-already-exists conflicts should not block writes."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.request_with_retries.side_effect = LangSmithConflictError("exists")
+    mock_client.push_agent.return_value = _COMMIT_URL
+    backend = ContextHubBackend("-/fresh", client=mock_client)
+
+    result = backend.write("/seed.md", "hello")
+    assert result.error is None
+    mock_client.request_with_retries.assert_called_once()
+    mock_client.push_agent.assert_called_once()
+
+
+def test_internal_precreate_api_error_falls_back_to_push() -> None:
+    """Create API failures should preserve legacy push-agent creation path."""
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithNotFoundError("not found")
+    mock_client.request_with_retries.side_effect = LangSmithAPIError("422")
+    mock_client.push_agent.return_value = _COMMIT_URL
+    backend = ContextHubBackend("-/fresh", client=mock_client)
+
+    result = backend.write("/seed.md", "hello")
+    assert result.error is None
+    mock_client.request_with_retries.assert_called_once()
+    mock_client.push_agent.assert_called_once()
 
 
 def test_write_sibling_of_linked_entry_allowed() -> None:

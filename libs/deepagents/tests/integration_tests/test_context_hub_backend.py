@@ -47,7 +47,7 @@ def backend(identifier: str) -> Iterator[ContextHubBackend]:
         logger.warning("Failed to delete test repo %r", identifier, exc_info=True)
 
 
-def test_lazy_create_on_first_write(backend: ContextHubBackend) -> None:
+def test_lazy_create_on_first_write(backend: ContextHubBackend, identifier: str) -> None:
     """Missing paths should read as not found, and writes should round-trip."""
     missing = backend.read("/notes.md")
     assert missing.error is not None
@@ -60,6 +60,10 @@ def test_lazy_create_on_first_write(backend: ContextHubBackend) -> None:
     assert read.error is None
     assert read.file_data is not None
     assert read.file_data["content"] == "# hi"
+
+    repo_response = Client().request_with_retries("GET", f"/repos/{identifier}")
+    repo = repo_response.json()["repo"]
+    assert repo["source"] == "internal"
 
 
 def test_round_trip_with_ls_grep_glob_edit(backend: ContextHubBackend) -> None:

@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 
 from langsmith import Client
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
-from langsmith.utils import LangSmithError, LangSmithNotFoundError
+from langsmith.utils import (
+    LangSmithConflictError,
+    LangSmithError,
+    LangSmithNotFoundError,
+)
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
@@ -102,10 +106,64 @@ class ContextHubBackend(BackendProtocol):
         self._ensure_cache()
         return self._commit_hash is not None
 
+    def _repo_create_payload(self) -> dict[str, str | bool]:
+        """Build the `/repos` create payload for this backend identifier."""
+        owner, sep, repo_handle = self._identifier.partition("/")
+        if sep and repo_handle:
+            payload: dict[str, str | bool] = {
+                "repo_handle": repo_handle,
+                "is_public": False,
+                "repo_type": "agent",
+                "source": "internal",
+            }
+            if owner and owner != "-":
+                payload["owner"] = owner
+            return payload
+
+        # Defensive fallback for malformed identifiers. Runtime writes may still
+        # succeed via push_agent even when create metadata cannot be normalized.
+        return {
+            "repo_handle": self._identifier,
+            "is_public": False,
+            "repo_type": "agent",
+            "source": "internal",
+        }
+
+    def _ensure_internal_repo_exists(self) -> None:
+        """Best-effort pre-create repo as `source=internal` before first commit.
+
+        Without this, first write to a missing repo is created implicitly by
+        `push_agent` and may default to `source=None`, which keeps it out of
+        LangSmith's `/context` view.
+        """
+        if self._commit_hash is not None:
+            return
+
+        request_with_retries = getattr(self._client, "request_with_retries", None)
+        if not callable(request_with_retries):
+            return
+
+        payload = self._repo_create_payload()
+        try:
+            request_with_retries("POST", "/repos", json=payload)
+        except LangSmithConflictError:
+            # Repo already exists.
+            return
+        except LangSmithError:
+            # Keep legacy behavior as a fallback: `push_agent` can still create
+            # the repo on first write in environments that reject `/repos` create.
+            logger.debug(
+                "Hub pre-create failed for %r; falling back to push_agent create.",
+                self._identifier,
+                exc_info=True,
+            )
+
     def _commit(self, files: dict[str, str]) -> None:
         """Push ``files`` as one commit; update the cache on success."""
         if not files:
             return
+
+        self._ensure_internal_repo_exists()
 
         payload: dict[str, FileEntry | AgentEntry | SkillEntry | None] = {
             path: FileEntry(type="file", content=content) for path, content in files.items()

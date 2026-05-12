@@ -103,8 +103,8 @@ required-environments = [
 override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",
-    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
-    "python-multipart>=0.0.22",
+    # CVE-2026-42561: DoS via unbounded multipart part headers in < 0.0.27
+    "python-multipart>=0.0.27",
     # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
     "protobuf>=6.33.5",
 ]

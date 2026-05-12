@@ -51,13 +51,16 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("Vibe Olympics Overlay", response.text)
         self.assertIn("background: transparent !important", response.text)
         self.assertIn("/static/fonts/aeonik-mono/aeonikmono-regular.woff2", response.text)
-        self.assertIn("overlayMode = params.get('mode')", response.text)
+        self.assertIn("defaultOverlayMode = params.get('mode')", response.text)
+        self.assertIn("function syncOverlayMode", response.text)
         self.assertIn("fetch('/api/state'", response.text)
         self.assertIn("Player: Player 1", response.text)
         self.assertIn("function playerName", response.text)
         self.assertIn("transform: translateX(-50%)", response.text)
         self.assertIn(".player-name.right", response.text)
-        self.assertIn("left: 66.7%", response.text)
+        self.assertIn("right: 2.2%", response.text)
+        self.assertIn("split-event-chip", response.text)
+        self.assertIn("split-prompt-strip", response.text)
         self.assertIn("timer-warning", response.text)
         self.assertIn("function syncTimerWarning", response.text)
         self.assertIn("threshold_secs", response.text)
@@ -81,6 +84,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("Run transition tour", response.text)
         self.assertIn("#smoke-modal button", response.text)
         self.assertIn("smoke-command-actions", response.text)
+        self.assertIn("btn-smoke-layout-split", response.text)
+        self.assertIn("btn-smoke-layout-p1", response.text)
+        self.assertNotIn("smoke-overlay-link", response.text)
 
     def test_static_fonts_are_served(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -838,6 +844,8 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
                 "contestants": ["Alice", "Bob"],
                 "duration_secs": 300,
                 "remaining_secs": 60,
+                "mode": "focus",
+                "focus_player": 2,
             },
         )
 
@@ -848,6 +856,8 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertEqual(state["contestants"], ["Alice", "Bob"])
         self.assertEqual(state["timer"]["warning"]["threshold_secs"], 60)
         self.assertTrue(state["overlay_smoke"]["active"])
+        self.assertEqual(state["overlay_smoke"]["mode"], "focus")
+        self.assertEqual(state["overlay_smoke"]["focus_player"], 2)
 
         with patch(
             "control_server.app._get_obs_state",
@@ -858,6 +868,8 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         body = smoke.json()
         self.assertEqual(body["phase"], "coding")
         self.assertTrue(body["overlay_smoke"]["active"])
+        self.assertEqual(body["overlay_smoke"]["mode"], "focus")
+        self.assertEqual(body["overlay_smoke"]["focus_player"], 2)
 
     def test_overlay_smoke_scoreboard_defaults_scores(self) -> None:
         client = TestClient(app_mod.create_app())

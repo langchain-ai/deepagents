@@ -295,6 +295,8 @@ class OverlaySmokeRequest(BaseModel):
     )
     duration_secs: Annotated[float, Field(ge=0)] = 300.0
     remaining_secs: Annotated[float | None, Field(ge=0)] = None
+    mode: str = "split"
+    focus_player: Annotated[int, Field(ge=1, le=2)] = 1
 
     @field_validator("phase")
     @classmethod
@@ -305,6 +307,16 @@ class OverlaySmokeRequest(BaseModel):
             msg = "phase must be one of: idle, coding, scoreboard"
             raise ValueError(msg)
         return phase
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        """Allow only overlay layout modes the browser source can render."""
+        mode = value.strip().lower()
+        if mode not in {"split", "focus"}:
+            msg = "mode must be one of: split, focus"
+            raise ValueError(msg)
+        return mode
 
     @field_validator("prompt")
     @classmethod
@@ -376,6 +388,8 @@ def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
     now = time.monotonic()
     _overlay_smoke_state = {
         "phase": req.phase,
+        "mode": req.mode,
+        "focus_player": req.focus_player,
         "prompt": req.prompt
         or "Build a bold event landing page for a time-traveling taco truck.",
         "contestants": contestants,
@@ -447,6 +461,8 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
         },
         "overlay_smoke": {
             "active": True,
+            "mode": smoke["mode"],
+            "focus_player": smoke["focus_player"],
         },
     }
 
@@ -1068,16 +1084,16 @@ _INDEX_HTML = """<!doctype html>
   #btn-smoke-cancel {
     min-width: 4.8rem;
   }
-  .smoke-links {
-    display: flex;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-top: 0.75rem;
-    font-size: 0.85rem;
+  .smoke-layout-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.4rem;
+    margin-top: 0.5rem;
   }
   @media (max-width: 560px) {
     .smoke-actions,
-    .smoke-command-actions {
+    .smoke-command-actions,
+    .smoke-layout-actions {
       grid-template-columns: 1fr;
     }
   }
@@ -1215,10 +1231,10 @@ _INDEX_HTML = """<!doctype html>
       <button type="button" class="danger" id="btn-smoke-clear">Clear smoke mode</button>
       <button type="button" class="secondary" id="btn-smoke-cancel">Close</button>
     </div>
-    <div class="smoke-links">
-      <a id="smoke-overlay-link" href="/overlay" target="_blank" rel="noreferrer">Open split</a>
-      <a id="smoke-focus-p1-link" href="/overlay?mode=focus&p=1" target="_blank" rel="noreferrer">Open P1 focus</a>
-      <a id="smoke-focus-p2-link" href="/overlay?mode=focus&p=2" target="_blank" rel="noreferrer">Open P2 focus</a>
+    <div class="smoke-layout-actions">
+      <button type="button" class="secondary" id="btn-smoke-layout-split">Split</button>
+      <button type="button" class="secondary" id="btn-smoke-layout-p1">P1 focus</button>
+      <button type="button" class="secondary" id="btn-smoke-layout-p2">P2 focus</button>
     </div>
     <span class="inline-error" id="smoke-error" role="alert"></span>
   </form>
@@ -1703,6 +1719,8 @@ document.getElementById('btn-override-submit').onclick = async () => {
 };
 
 const smokeModal = document.getElementById('smoke-modal');
+let smokeMode = 'split';
+let smokeFocusPlayer = 1;
 function setSmokeError(message) {
   document.getElementById('smoke-error').textContent = message;
 }
@@ -1726,6 +1744,8 @@ function smokePrompt() {
 function smokeBody(phase, options = {}) {
   const contestants = smokeContestants();
   const scores = {};
+  const mode = options.mode || smokeMode;
+  const focusPlayer = options.focus_player || smokeFocusPlayer;
   scores[contestants[0]] = smokeNumber('smoke-s1', 8.6);
   scores[contestants[1]] = smokeNumber('smoke-s2', 7.8);
   return {
@@ -1734,6 +1754,8 @@ function smokeBody(phase, options = {}) {
     contestants,
     scores,
     duration_secs: 300,
+    mode,
+    focus_player: focusPlayer,
     ...options,
   };
 }
@@ -1757,6 +1779,8 @@ function closeSmokeModal() {
 }
 async function setOverlaySmoke(phase, options = {}) {
   setSmokeError('');
+  if (options.mode) smokeMode = options.mode;
+  if (options.focus_player) smokeFocusPlayer = options.focus_player;
   const result = await api('/api/overlay-smoke', smokeBody(phase, options));
   if (result.ok && result.json && result.json.state) {
     renderState(result.json.state);
@@ -1812,6 +1836,15 @@ document.getElementById('btn-smoke-warning-60').onclick = () => (
 );
 document.getElementById('btn-smoke-warning-30').onclick = () => (
   setOverlaySmoke('coding', { remaining_secs: 30 })
+);
+document.getElementById('btn-smoke-layout-split').onclick = () => (
+  setOverlaySmoke('coding', { mode: 'split', focus_player: 1, remaining_secs: 300 })
+);
+document.getElementById('btn-smoke-layout-p1').onclick = () => (
+  setOverlaySmoke('coding', { mode: 'focus', focus_player: 1, remaining_secs: 300 })
+);
+document.getElementById('btn-smoke-layout-p2').onclick = () => (
+  setOverlaySmoke('coding', { mode: 'focus', focus_player: 2, remaining_secs: 300 })
 );
 document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
 document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
@@ -1907,11 +1940,6 @@ refreshPlayers();
 refreshState({ quiet: true });
 loadPromptPool();
 document.getElementById('overlay-link').href = `${window.location.origin}/overlay`;
-document.getElementById('smoke-overlay-link').href = `${window.location.origin}/overlay`;
-document.getElementById('smoke-focus-p1-link').href =
-  `${window.location.origin}/overlay?mode=focus&p=1`;
-document.getElementById('smoke-focus-p2-link').href =
-  `${window.location.origin}/overlay?mode=focus&p=2`;
 setInterval(refreshPlayers, 2000);
 setInterval(() => refreshState({ quiet: true }), 2000);
 </script>
@@ -2088,21 +2116,40 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .player-name {
     position: absolute;
-    top: 2.85%;
+    top: 12.3%;
+    height: 4.9%;
+    display: flex;
+    align-items: center;
+    padding: 0 1vw;
+    background: rgba(255, 255, 255, 0.94);
+    border: var(--line) solid var(--ink);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: min(1.75vw, 3.1vh);
+    font-size: min(1.35vw, 2.4vh);
     font-weight: 500;
     text-transform: uppercase;
   }
   .player-name.left {
     left: 2.2%;
-    max-width: 31%;
+    width: 46.2%;
   }
   .player-name.right {
-    left: 66.7%;
-    max-width: 21.5%;
+    right: 2.2%;
+    width: 46.2%;
+  }
+  .split-event-chip {
+    left: 2.2%;
+    top: 2.85%;
+    width: 27%;
+    height: auto;
+    justify-content: flex-start;
+    padding: 0;
+    background: transparent;
+    color: var(--ink);
+    clip-path: none;
+    transform: none;
+    font-size: min(1.45vw, 2.58vh);
   }
   .prompt-strip {
     position: absolute;
@@ -2118,6 +2165,17 @@ _OVERLAY_HTML = """<!doctype html>
     border: var(--line) solid var(--ink);
     font-size: min(1.16vw, 2.06vh);
     font-weight: 500;
+  }
+  .split-prompt-strip {
+    left: 34%;
+    right: 14%;
+    top: 2.25%;
+    min-height: 5.5%;
+    justify-content: center;
+    padding: 0.65vh 1.2vw;
+  }
+  .split-prompt-strip span:first-child {
+    display: none;
   }
   .prompt-strip span:first-child {
     flex: 0 0 auto;
@@ -2360,14 +2418,14 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="bottom-band left gradient-left"></div>
       <div class="bottom-band right gradient-right"></div>
       <div class="divider"></div>
-      <div class="player-name left" id="split-p1-name">Player: Player 1</div>
-      <div class="player-name right" id="split-p2-name">Player: Player 2</div>
-      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
-      <div class="prompt-strip">
+      <div class="chip event-chip split-event-chip">Deep Agents PVP</div>
+      <div class="prompt-strip split-prompt-strip">
         <span>Prompt</span>
         <span class="prompt-text" id="split-prompt">Waiting for prompt</span>
       </div>
+      <div class="player-name left" id="split-p1-name">Player: Player 1</div>
+      <div class="player-name right" id="split-p2-name">Player: Player 2</div>
       <div class="split-player left">
         <div class="pane preview">
           <div class="pane-label">P1 Live<br>Preview</div>
@@ -2428,8 +2486,10 @@ const state = {
 };
 
 const params = new URLSearchParams(window.location.search);
-const overlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
-const focusIndex = params.get('p') === '2' ? 1 : 0;
+const defaultOverlayMode = params.get('mode') === 'focus' ? 'focus' : 'split';
+const defaultFocusIndex = params.get('p') === '2' ? 1 : 0;
+let overlayMode = defaultOverlayMode;
+let focusIndex = defaultFocusIndex;
 
 const els = {
   idleView: document.getElementById('idle-view'),
@@ -2462,6 +2522,17 @@ function text(value, fallback) {
 
 function playerName(value, fallback) {
   return `Player: ${text(value, fallback)}`;
+}
+
+function syncOverlayMode(payload) {
+  const smoke = payload.overlay_smoke;
+  if (smoke && smoke.active) {
+    overlayMode = smoke.mode === 'focus' ? 'focus' : 'split';
+    focusIndex = Number(smoke.focus_player) === 2 ? 1 : 0;
+    return;
+  }
+  overlayMode = defaultOverlayMode;
+  focusIndex = defaultFocusIndex;
 }
 
 function formatClock(seconds) {
@@ -2609,6 +2680,7 @@ async function refreshState() {
     const response = await fetch('/api/state', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
+    syncOverlayMode(payload);
     state.phase = payload.phase || 'idle';
     state.prompt = payload.prompt || (payload.round && payload.round.prompt) || '';
     state.contestants = Array.isArray(payload.contestants) && payload.contestants.length

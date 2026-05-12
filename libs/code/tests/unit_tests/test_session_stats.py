@@ -67,7 +67,7 @@ class TestSessionStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
-        assert stats.wall_time_seconds == 0.0
+        assert stats.wall_time_seconds == pytest.approx(0.0)
         assert stats.per_model == {}
 
     def test_record_request_increments_totals(self) -> None:

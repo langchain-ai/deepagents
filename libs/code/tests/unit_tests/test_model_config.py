@@ -3286,7 +3286,7 @@ class TestGetBuiltinProviders:
         had_builtin = hasattr(base_module, "_BUILTIN_PROVIDERS")
         if had_builtin:
             saved = base_module._BUILTIN_PROVIDERS
-            delattr(base_module, "_BUILTIN_PROVIDERS")
+            del base_module._BUILTIN_PROVIDERS
 
         try:
             with patch.object(base_module, "_SUPPORTED_PROVIDERS", legacy, create=True):

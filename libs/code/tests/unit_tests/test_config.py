@@ -2084,7 +2084,7 @@ use_responses_api = false
 
         create_model("openai:gpt-5.2")
         _, exact_kwargs = mock_init.call_args
-        assert exact_kwargs.get("temperature") == 0.42
+        assert exact_kwargs.get("temperature") == pytest.approx(0.42)
 
         mock_init.reset_mock()
         create_model("openai:gpt-4o")

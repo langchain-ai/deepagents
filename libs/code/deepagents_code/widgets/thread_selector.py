@@ -20,10 +20,9 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
-from textual.widgets._select import (
-    SelectCurrent,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
-    SelectOverlay,  # noqa: PLC2701  # needed to specialize focused Select overlay key handling
-)
+
+# Specialize focused Select overlay key handling; no public re-export available.
+from textual.widgets._select import SelectCurrent, SelectOverlay  # noqa: PLC2701
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping

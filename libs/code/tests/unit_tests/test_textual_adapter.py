@@ -213,7 +213,7 @@ class TestInterruptCleanup:
 
         assert mounted
         assert show_calls == [True]
-        assert turn_stats.wall_time_seconds == 1.0
+        assert turn_stats.wall_time_seconds == pytest.approx(1.0)
         set_active.assert_called_once_with(None)
         set_spinner.assert_awaited_once_with(None)
         tool_widget.set_rejected.assert_called_once_with()

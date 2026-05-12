@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -626,7 +623,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "../../libs/partners/quickjs" }
 dependencies = [
     { name = "deepagents" },

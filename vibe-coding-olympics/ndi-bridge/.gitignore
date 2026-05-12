@@ -1,0 +1,4 @@
+.env
+.build/
+.local/
+vendor/ndi-sdk-macos.tar.gz

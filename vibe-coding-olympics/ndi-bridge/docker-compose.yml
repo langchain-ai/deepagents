@@ -1,0 +1,47 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    container_name: vibe-mediamtx
+    restart: unless-stopped
+    ports:
+      - "1935:1935"      # RTMP publish
+      - "8554:8554"      # RTSP publish/read
+      - "8888:8888"      # HLS read
+      - "8889:8889"      # WebRTC/WHEP/WHIP read/publish
+      - "8189:8189/udp"  # WebRTC UDP media
+      - "8189:8189/tcp"  # WebRTC TCP fallback
+    environment:
+      MTX_RTSPTRANSPORTS: tcp
+      MTX_WEBRTCLOCALTCPADDRESS: :8189
+      MTX_WEBRTCLOCALUDPADDRESS: :8189
+      MTX_WEBRTCIPSFROMINTERFACES: "no"
+      MTX_WEBRTCADDITIONALHOSTS: ${MTX_WEBRTCADDITIONALHOSTS:-127.0.0.1}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+
+  # Smoke-test publishers (no NDI required).
+  testsrc-p1:
+    image: linuxserver/ffmpeg:latest
+    profiles: ["testsrc"]
+    depends_on: ["mediamtx"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >
+      ffmpeg -re -f lavfi -i testsrc=size=1280x720:rate=30
+      -an
+      -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bf 0
+      -g 30 -keyint_min 30 -sc_threshold 0 -tune zerolatency
+      -f flv rtmp://mediamtx:1935/${P1_STREAM_NAME:-p1-screen}
+
+  testsrc-p2:
+    image: linuxserver/ffmpeg:latest
+    profiles: ["testsrc"]
+    depends_on: ["mediamtx"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >
+      ffmpeg -re -f lavfi -i testsrc2=size=1280x720:rate=30
+      -an
+      -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bf 0
+      -g 30 -keyint_min 30 -sc_threshold 0 -tune zerolatency
+      -f flv rtmp://mediamtx:1935/${P2_STREAM_NAME:-p2-screen}

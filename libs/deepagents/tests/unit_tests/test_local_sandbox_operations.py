@@ -20,6 +20,7 @@ Linting exceptions:
 
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -140,6 +141,8 @@ class LocalSubprocessSandbox(BaseSandbox):
         if result.entries is not None:
             for entry in result.entries:
                 entry["path"] = self._to_virtual_path(entry["path"])
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
         return result
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
@@ -193,7 +196,13 @@ class LocalSubprocessSandbox(BaseSandbox):
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Run glob against mapped real paths."""
-        return super().glob(pattern, path=self._to_real_path(path))
+        result = super().glob(pattern, path=self._to_real_path(path))
+        if result.error is not None:
+            result.error = self._to_virtual_path(result.error)
+        if result.matches is not None:
+            for match in result.matches:
+                match["path"] = self._to_virtual_path(match["path"])
+        return result
 
     @property
     def id(self) -> str:
@@ -393,6 +402,30 @@ class TestLocalSandboxOperations:
 
         assert result.error is not None
         assert "not_found" in result.error.lower() or "not found" in result.error.lower()
+
+    def test_read_permission_denied(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Read on a chmod 000 file must surface permission_denied, not crash."""
+        test_path = "/tmp/test_sandbox_ops/locked_read.txt"
+        sandbox.write(test_path, "secret")
+        sandbox.execute(f"chmod 000 {test_path}")
+        try:
+            result = sandbox.read(test_path)
+            assert result.file_data is None
+            assert result.error is not None
+            assert "permission_denied" in result.error
+        finally:
+            sandbox.execute(f"chmod {stat.S_IRUSR | stat.S_IWUSR:o} {test_path}")
+
+    def test_read_directory_path(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Read on a directory must surface not_a_file, not crash."""
+        base_dir = "/tmp/test_sandbox_ops/read_dir_target"
+        sandbox.execute(f"mkdir -p {base_dir}")
+
+        result = sandbox.read(base_dir)
+
+        assert result.file_data is None
+        assert result.error is not None
+        assert "not_a_file" in result.error
 
     def test_read_empty_file(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test reading an empty file."""
@@ -623,6 +656,18 @@ class TestLocalSandboxOperations:
 
         assert result.error is not None
         assert "not_found" in result.error.lower() or "not found" in result.error.lower()
+
+    def test_edit_permission_denied(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Edit on a chmod 000 file must surface permission_denied, not crash."""
+        test_path = "/tmp/test_sandbox_ops/locked_edit.txt"
+        sandbox.write(test_path, "Hello world")
+        sandbox.execute(f"chmod 000 {test_path}")
+        try:
+            result = sandbox.edit(test_path, "Hello", "Goodbye")
+            assert result.error is not None
+            assert "permission" in result.error.lower()
+        finally:
+            sandbox.execute(f"chmod {stat.S_IRUSR | stat.S_IWUSR:o} {test_path}")
 
     def test_edit_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test editing with special characters and regex metacharacters."""
@@ -1012,12 +1057,24 @@ class TestLocalSandboxOperations:
         assert result.entries == []
 
     def test_ls_info_nonexistent_directory(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test listing a directory that doesn't exist."""
+        """Ls on a missing path must surface the failure on .error, not return []."""
         nonexistent_dir = "/tmp/test_sandbox_ops/does_not_exist"
 
         result = sandbox.ls(nonexistent_dir)
 
-        assert result.entries == []
+        assert result.entries is None
+        assert result.error == f"Path '{nonexistent_dir}': path_not_found"
+
+    def test_ls_info_permission_denied(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Ls on an unreadable directory must surface the failure on .error."""
+        base_dir = "/tmp/test_sandbox_ops/ls_locked"
+        sandbox.execute(f"mkdir -p {base_dir} && chmod 000 {base_dir}")
+        try:
+            result = sandbox.ls(base_dir)
+            assert result.entries is None
+            assert result.error == f"Path '{base_dir}': permission_denied"
+        finally:
+            sandbox.execute(f"chmod {stat.S_IRWXU:o} {base_dir}")
 
     def test_ls_info_hidden_files(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that ls_info includes hidden files (starting with .)."""
@@ -1107,10 +1164,17 @@ class TestLocalSandboxOperations:
         assert f"{base_dir}/file-3.txt" in paths
 
     def test_ls_info_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that ls_info base64-encodes paths to prevent injection."""
+        """Test that ls base64-encodes paths to prevent injection.
+
+        The malicious path is treated as a literal (non-existent) path on the
+        sandbox side, which must surface as a structured error rather than
+        executing any injected code.
+        """
         malicious_path = "'; import os; os.system('echo INJECTED'); #"
         result = sandbox.ls(malicious_path)
-        assert result.entries == []
+        assert result.entries is None
+        assert result.error is not None
+        assert "path_not_found" in result.error
 
     def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that read does not execute injected code in the path.
@@ -1459,6 +1523,28 @@ class TestLocalSandboxOperations:
 
         # Should work with explicit path
         assert result.matches is not None
+
+    def test_glob_path_not_found(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Glob on a missing search path must surface path_not_found, not crash."""
+        missing = "/tmp/test_sandbox_ops/glob_missing_root"
+
+        result = sandbox.glob("*.py", path=missing)
+
+        assert result.matches is None
+        assert result.error is not None
+        assert "path_not_found" in result.error
+
+    def test_glob_permission_denied(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Glob on an unreadable search path must surface permission_denied."""
+        locked_dir = "/tmp/test_sandbox_ops/glob_locked"
+        sandbox.execute(f"mkdir -p {locked_dir} && chmod 000 {locked_dir}")
+        try:
+            result = sandbox.glob("*.py", path=locked_dir)
+            assert result.matches is None
+            assert result.error is not None
+            assert "permission_denied" in result.error
+        finally:
+            sandbox.execute(f"chmod {stat.S_IRWXU:o} {locked_dir}")
 
     # ==================== Integration tests ====================
 

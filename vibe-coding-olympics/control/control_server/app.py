@@ -2260,6 +2260,7 @@ _OVERLAY_HTML = """<!doctype html>
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 400;
   }
   .pane {
     position: absolute;
@@ -2393,6 +2394,7 @@ _OVERLAY_HTML = """<!doctype html>
     left: 2.2%;
     right: 2.2%;
     top: 12.1%;
+    background-size: 100% 125%;
   }
   #coding-view[data-focus="1"] .focus-prompt {
     background-image: var(--blue-name-gradient);

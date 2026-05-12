@@ -250,7 +250,6 @@ def make_model_request(
         model=mock_model,
         messages=state["messages"],
         system_message=None,
-        tools=[],
         runtime=runtime,
         state=state,
     )
@@ -897,7 +896,6 @@ async def test_async_system_message_counts_for_truncate_trigger() -> None:
         model=mock_model,
         messages=state["messages"],
         system_message=SystemMessage(content="sys"),
-        tools=[],
         runtime=runtime,
         state=state,
     )

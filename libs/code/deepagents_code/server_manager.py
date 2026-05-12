@@ -20,6 +20,7 @@ import os
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +36,7 @@ from deepagents_code._server_config import ServerConfig
 from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+_DISTRIBUTION_NAME = "deepagents-code"
 
 
 def _set_or_clear_server_env(name: str, value: str | None) -> None:
@@ -167,13 +169,12 @@ def _write_pyproject(work_dir: Path) -> None:
     Args:
         work_dir: Server working directory.
     """
-    cli_dir = Path(__file__).parent.parent
     content = f"""[project]
 name = "deepagents-server-runtime"
 version = "0.0.1"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents-code @ file://{cli_dir}",
+    "{_runtime_package_dependency()}",
 ]
 
 [build-system]
@@ -181,6 +182,31 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 """
     (work_dir / "pyproject.toml").write_text(content)
+
+
+def _runtime_package_dependency(package_root: Path | None = None) -> str:
+    """Return the dependency spec for the app package in the server runtime.
+
+    Editable source checkouts can use a local path dependency so the generated
+    runtime sees the working tree. Installed wheels cannot: the package parent is
+    `site-packages`, which is not an installable project. In that case, depend on
+    the installed distribution version instead.
+
+    Args:
+        package_root: Optional package project root for tests.
+
+    Returns:
+        Requirement string for the generated runtime `pyproject.toml`.
+    """
+    root = package_root or Path(__file__).parent.parent
+    if (root / "pyproject.toml").is_file():
+        return f"{_DISTRIBUTION_NAME} @ {root.as_uri()}"
+
+    try:
+        installed_version = version(_DISTRIBUTION_NAME)
+    except PackageNotFoundError:
+        return _DISTRIBUTION_NAME
+    return f"{_DISTRIBUTION_NAME}=={installed_version}"
 
 
 # ------------------------------------------------------------------

@@ -17,6 +17,7 @@ from deepagents_code.project_utils import ProjectContext
 from deepagents_code.server_manager import (
     _apply_server_config,
     _preflight_validate_mcp_config,
+    _runtime_package_dependency,
     _write_pyproject,
     server_session,
     start_server_and_get_agent,
@@ -199,16 +200,29 @@ class TestStartServerAndGetAgent:
 class TestWritePyproject:
     """Tests for the generated runtime pyproject."""
 
-    def test_runtime_pyproject_relies_on_cli_dependency_only(
+    def test_runtime_pyproject_uses_source_checkout_dependency(
         self, tmp_path: Path
     ) -> None:
-        """The runtime should inherit `langgraph-cli` from `deepagents-code`."""
+        """Source checkouts should keep using the local package path."""
         _write_pyproject(tmp_path)
 
         content = (tmp_path / "pyproject.toml").read_text()
 
         assert '"deepagents-code @ file://' in content
         assert "langgraph-cli[inmem]" not in content
+
+    def test_runtime_dependency_uses_installed_distribution_for_wheel(
+        self, tmp_path: Path
+    ) -> None:
+        """Wheel installs should not generate a `site-packages` file dependency."""
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        with patch("deepagents_code.server_manager.version", return_value="1.2.3"):
+            dependency = _runtime_package_dependency(site_packages)
+
+        assert dependency == "deepagents-code==1.2.3"
+        assert "file://" not in dependency
 
 
 class TestServerSession:

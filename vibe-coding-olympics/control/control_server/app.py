@@ -2212,7 +2212,7 @@ _OVERLAY_HTML = """<!doctype html>
     left: 0;
     right: 0;
     top: 0;
-    height: 11%;
+    height: 14.9%;
     display: flex;
     align-items: center;
     padding: 0 1vw;

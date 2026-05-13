@@ -126,6 +126,7 @@ export VIBE_WAIT_FOR_CONTROLLER="$WAIT_FOR_CONTROLLER"
 export VIBE_RELAY_HOST="$RELAY_HOST" VIBE_RELAY_PORT="$RELAY_PORT"
 export VIBE_LAUNCH_RELAY="$LAUNCH_RELAY"
 export VIBE_CONTROL_DIR="$CONTROL_DIR"
+export VIBE_OPEN_ON_CLEAR=1
 export DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE=1
 
 # Best-effort controller signal: the player process has launched. Later CLI
@@ -244,6 +245,7 @@ async def main(connection):
         "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS=1 "
         "DEEPAGENTS_CLI_HIDE_STARTUP_COMMAND_TEXT=1 "
         "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET=1 "
+        "VIBE_OPEN_ON_CLEAR=1 "
         "DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE=1 "
         f"DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH={shlex.quote(EVENT_SOCKET)} "
         f"DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START={int(WAIT_FOR_CONTROLLER)} "
@@ -290,9 +292,11 @@ async def main(connection):
         await relay.async_set_name(f"vibe-relay-{PORT}")
         await relay.async_send_text(
             "export "
+            f"VIBE_PORT={shlex.quote(PORT)} "
             f"VIBE_DIR={shlex.quote(DIR)} "
             f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
             f"VIBE_PLAYER_TOKEN={shlex.quote(os.environ.get('VIBE_PLAYER_TOKEN', ''))} "
+            "VIBE_OPEN_ON_CLEAR=1 "
             f"VIBE_RELAY_HOST={shlex.quote(os.environ['VIBE_RELAY_HOST'])} "
             f"VIBE_RELAY_PORT={shlex.quote(os.environ['VIBE_RELAY_PORT'])}\n"
         )

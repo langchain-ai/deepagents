@@ -32,6 +32,9 @@ export VIBE_PLAYER_3002_RELAY=http://<player-2-static-ip>:9771
 export VIBE_CONTROL_HOST=0.0.0.0
 export VIBE_CONTROL_PORT=8766
 export VIBE_OBS_API="http://localhost:8765"
+
+# Required on the controller machine for automatic LLM judging.
+export OPENAI_API_KEY=<controller-openai-api-key>
 ```
 
 Open the controller UI from the controller machine:

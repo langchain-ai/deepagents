@@ -1208,6 +1208,7 @@ _INDEX_HTML = """<!doctype html>
     overflow-wrap: anywhere;
   }
   #override-modal,
+  #log-modal,
   #prompt-pool-modal,
   #smoke-modal {
     border: 1px solid #2a2a2a;
@@ -1219,8 +1220,12 @@ _INDEX_HTML = """<!doctype html>
     width: 90%;
   }
   #override-modal::backdrop,
+  #log-modal::backdrop,
   #prompt-pool-modal::backdrop,
   #smoke-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+  #log-modal {
+    max-width: 760px;
+  }
   #prompt-pool-form {
     max-height: min(72vh, 720px);
     display: flex;
@@ -1451,8 +1456,16 @@ _INDEX_HTML = """<!doctype html>
 
 <section>
   <h2>Log</h2>
-  <div id="log"></div>
+  <button class="secondary" id="btn-open-log">Open log…</button>
 </section>
+
+<dialog id="log-modal">
+  <form method="dialog">
+    <h2 style="margin-top:0">Log</h2>
+    <div id="log"></div>
+    <button type="button" class="secondary" id="btn-log-close">Close</button>
+  </form>
+</dialog>
 
 <script>
 const logEl = document.getElementById('log');
@@ -1464,6 +1477,17 @@ function log(msg, isErr) {
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
 }
+
+const logModal = document.getElementById('log-modal');
+document.getElementById('btn-open-log').onclick = () => {
+  if (typeof logModal.showModal === 'function') logModal.showModal();
+  else logModal.setAttribute('open', '');
+  logEl.scrollTop = logEl.scrollHeight;
+};
+document.getElementById('btn-log-close').onclick = () => {
+  if (typeof logModal.close === 'function') logModal.close();
+  else logModal.removeAttribute('open');
+};
 
 async function api(path, body, options = {}) {
   try {

@@ -1020,11 +1020,13 @@ class TestStartupSequence:
         restart = AsyncMock()
         app._restart_launch_init_task = restart  # type: ignore[method-assign]
 
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await app._handle_command("/force-clear")
+        with patch("deepagents_cli.model_config.clear_caches") as clear_caches:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._handle_command("/force-clear")
 
         restart.assert_awaited_once_with()
+        clear_caches.assert_called_once_with()
 
     async def test_clear_announces_new_thread_by_default(
         self, monkeypatch: pytest.MonkeyPatch

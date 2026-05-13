@@ -5016,6 +5016,9 @@ class DeepAgentsApp(App):
                 await self._dismiss_modals_for_reset()
                 await self._reset_times_up_state()
                 await self._reset_vibe_dev_server()
+                from deepagents_cli.model_config import clear_caches
+
+                clear_caches()
             self._pending_messages.clear()
             self._queued_widgets.clear()
             await self._clear_messages()

@@ -216,7 +216,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "font/woff2")
         self.assertGreater(len(response.content), 0)
 
-    def test_ready_players_forward_to_obs_in_submission_order(self) -> None:
+    def test_ready_players_forward_to_obs_in_slot_order(self) -> None:
         client = TestClient(app_mod.create_app())
         forward = AsyncMock(return_value={"phase": "idle"})
 
@@ -232,16 +232,16 @@ class TestReadyPlayers(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(second.json()["contestants"], ["Bob", "Alice"])
+        self.assertEqual(second.json()["contestants"], ["Alice", "Bob"])
         forward.assert_any_await("ready", {"contestants": ["Bob"]})
-        forward.assert_any_await("ready", {"contestants": ["Bob", "Alice"]})
+        forward.assert_any_await("ready", {"contestants": ["Alice", "Bob"]})
 
     def test_round_start_uses_ready_names_when_contestants_omitted(self) -> None:
         client = TestClient(app_mod.create_app())
         app_mod._ready_players.update({"3002": "Bob", "3001": "Alice"})
         app_mod._model_ready_ports.update({"3002", "3001"})
         forward = AsyncMock(return_value={"phase": "coding"})
-        send_prompt = AsyncMock(return_value=["3002", "3001"])
+        send_prompt = AsyncMock(return_value=["3001", "3002"])
 
         with (
             patch("control_server.app._forward", forward),
@@ -258,9 +258,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         forward.assert_awaited_once_with(
             "start",
-            {"prompt": "build a taco truck", "contestants": ["Bob", "Alice"]},
+            {"prompt": "build a taco truck", "contestants": ["Alice", "Bob"]},
         )
-        send_prompt.assert_awaited_once_with(["3002", "3001"], "build a taco truck")
+        send_prompt.assert_awaited_once_with(["3001", "3002"], "build a taco truck")
 
     def test_round_start_rejects_before_both_models_ready(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -752,6 +752,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="state-scores">none</dd>', response.text)
         self.assertIn("Waiting for player", response.text)
         self.assertIn("Not connected", response.text)
+        self.assertIn("const PLAYER_SLOT_PORTS = ['3001', '3002'];", response.text)
+        self.assertIn("connected: connectedPorts.has(port)", response.text)
         self.assertIn('id="ready-players">none</span>', response.text)
         self.assertNotIn("Connected players:", response.text)
         self.assertIn("renderPromptEditor", response.text)

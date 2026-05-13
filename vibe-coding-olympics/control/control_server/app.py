@@ -53,6 +53,7 @@ PLAYER_HEARTBEAT_TIMEOUT_SECS = 6.0
 _DEFAULT_ROUND_DURATION_SECS = 300.0
 _PLAYER_LAUNCH_COUNTDOWN_SECS = 5.0
 """Seconds the CLI blocks on `LaunchCountdownScreen` after controller start."""
+_PLAYER_SLOT_PORTS = ("3001", "3002")
 
 
 def _round_duration_config() -> tuple[float, str | None]:
@@ -427,7 +428,7 @@ def _scores_from_eval_results(results: list[dict[str, Any]]) -> dict[str, float]
 
 def _ready_contestants() -> list[str]:
     """Return ready player names in submission order."""
-    return list(_ready_players.values())
+    return [_ready_players[port] for port in _round_player_ports()]
 
 
 def _clear_overlay_smoke() -> None:
@@ -554,7 +555,10 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
 
 def _round_player_ports() -> list[str]:
     """Return the two player ports assigned to the current round."""
-    return list(_ready_players)[:2]
+    extras = [port for port in _ready_players if port not in _PLAYER_SLOT_PORTS]
+    ordered = [port for port in _PLAYER_SLOT_PORTS if port in _ready_players]
+    ordered.extend(extras)
+    return ordered[:2]
 
 
 def _mark_player_connected(port: str) -> None:
@@ -1780,6 +1784,7 @@ let latestEvalResults = [];
 let latestPendingScores = {};
 let latestContestants = [];
 let scoreEditMode = false;
+const PLAYER_SLOT_PORTS = ['3001', '3002'];
 function setStartError(message) {
   document.getElementById('start-error').textContent = message;
 }
@@ -2048,20 +2053,30 @@ function hideRoundStarted() {
   }
 }
 function orderedPlayerEntries(ready, connected) {
-  const entries = [];
+  const connectedPorts = new Set(connected || []);
   const seen = new Set();
-  for (const port of connected || []) {
+  const entries = PLAYER_SLOT_PORTS.map((port) => {
     seen.add(port);
-    entries.push({ port, name: ready && ready[port] ? ready[port] : '' });
-  }
+    return {
+      port,
+      name: ready && ready[port] ? ready[port] : '',
+      connected: connectedPorts.has(port),
+    };
+  });
   for (const [port, name] of Object.entries(ready || {})) {
     if (seen.has(port)) continue;
-    entries.push({ port, name });
+    seen.add(port);
+    entries.push({ port, name, connected: connectedPorts.has(port) });
+  }
+  for (const port of connected || []) {
+    if (seen.has(port)) continue;
+    seen.add(port);
+    entries.push({ port, name: '', connected: true });
   }
   return entries.slice(0, 2);
 }
 function playerSummary(entries) {
-  const labels = entries.map((entry) => (
+  const labels = entries.filter((entry) => entry.name || entry.connected).map((entry) => (
     entry.name ? `${displayName(entry.name)} (${entry.port})` : `Connected (${entry.port})`
   ));
   return labels.length ? labels.join(', ') : 'none';
@@ -2070,13 +2085,12 @@ function renderReady(ready, modelReady, connected) {
   const entries = orderedPlayerEntries(ready, connected);
   const names = entries.map((entry) => entry.name).filter(Boolean);
   const modelReadyPorts = new Set(modelReady || []);
-  const connectedPorts = new Set(connected || []);
   document.getElementById('ready-players').textContent = playerSummary(entries);
   ['c1', 'c2'].forEach((id, index) => {
     const slot = document.getElementById(id);
     const entry = entries[index];
     const next = entry ? entry.name : '';
-    const isConnected = Boolean(entry && connectedPorts.has(entry.port));
+    const isConnected = Boolean(entry && entry.connected);
     slot.dataset.name = next;
     slot.textContent = displayName(next) || (isConnected ? 'Waiting for name' : 'Waiting for player');
     slot.classList.toggle('empty', !next);

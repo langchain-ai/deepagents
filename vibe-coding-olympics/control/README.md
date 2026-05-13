@@ -97,7 +97,7 @@ VIBE_OBS_API=http://localhost:8875 VIBE_CONTROL_HOST=0.0.0.0 uv run vibe-control
 
 In normal event flow, run `../play.sh <port>` once per player computer at the start of the day. It starts the Vite server, opens the browser preview once, and leaves the CLI waiting for controller prompts. Use the web UI's
 
-**Reset round all** button between rounds; it resets CLI thread/readiness state and blanks the Vite project without restarting Vite or reopening the browser.
+Click **Prepare next round** between rounds; it resets CLI thread/readiness state and blanks the Vite project without restarting Vite or reopening the browser.
 
 ## Endpoints
 

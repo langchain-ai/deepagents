@@ -763,6 +763,11 @@ class TestReadyPlayers(unittest.TestCase):
             'id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>',
             response.text,
         )
+        self.assertIn('id="btn-clear">Prepare next round</button>', response.text)
+        self.assertLess(
+            response.text.index('id="btn-clear"'),
+            response.text.index("Debug controls"),
+        )
         self.assertIn('id="round-duration"', response.text)
         self.assertIn('value="5:00"', response.text)
         self.assertIn("function roundDurationValue", response.text)
@@ -771,6 +776,8 @@ class TestReadyPlayers(unittest.TestCase):
             "clock.textContent = timer && timer.duration_secs ? '00:00'",
             response.text,
         )
+        self.assertNotIn('id="btn-reset"', response.text)
+        self.assertNotIn("Reset to Idle", response.text)
         self.assertIn('id="btn-open-override"', response.text)
         self.assertIn('id="override-modal"', response.text)
         self.assertIn('class="modal-header"', response.text)

@@ -79,7 +79,7 @@ It also starts a heartbeat loop and launches `vibe-player-relay` in a separate i
 6. Review the pending judge results in the control UI.
    1. Click **Accept scores** to publish the judge scores.
    2. Click **Edit scores** to adjust values, then publish the edited scores.
-7. Between rounds, open **Debug controls** and click **Reset round all** to blank player pages, reset OBS/control state, and clear player readiness.
+7. Between rounds, click **Prepare next round** to blank player pages, reset OBS/control state, and clear player readiness.
 
 ## More Detail
 

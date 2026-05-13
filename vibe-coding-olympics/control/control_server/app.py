@@ -1549,6 +1549,7 @@ _INDEX_HTML = """<!doctype html>
       End early to stop coding and send scores for host approval.
     </p>
     <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
+    <button class="secondary" id="btn-clear">Prepare next round</button>
     <span class="inline-error" id="end-error" role="alert"></span>
   </section>
 </div>
@@ -1653,7 +1654,6 @@ _INDEX_HTML = """<!doctype html>
 
 <section>
   <h2>Game state</h2>
-  <button class="danger" id="btn-reset">Reset to Idle</button>
   <div class="muted">OBS phase: <span id="obs-phase">unknown</span></div>
   <dl class="state-summary" id="state-summary">
     <dt>Prompt</dt><dd id="state-prompt">none</dd>
@@ -1694,7 +1694,6 @@ _INDEX_HTML = """<!doctype html>
         <h3>Players</h3>
         <button class="secondary" id="btn-list">List</button>
         <button id="btn-times-up">Times up all</button>
-        <button class="secondary" id="btn-clear">Reset round all</button>
         <div class="muted">Ready players: <span id="ready-players">none</span></div>
       </div>
       <div class="debug-group">
@@ -2532,11 +2531,6 @@ document.getElementById('btn-smoke-layout-p2').onclick = () => (
 document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
 document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
 
-document.getElementById('btn-reset').onclick = () => {
-  api('/api/round/reset', {}).then((result) => {
-    if (result.ok && result.json) renderState(result.json);
-  });
-};
 document.getElementById('btn-draw-prompt').onclick = drawPrompt;
 
 const promptPoolModal = document.getElementById('prompt-pool-modal');

@@ -3084,6 +3084,16 @@ _OVERLAY_HTML = """<!doctype html>
     text-transform: none;
     text-overflow: ellipsis;
   }
+  .split-prompt-label {
+    flex: 0 0 auto;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .split-prompt-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .timer-chip {
     right: 2.2%;
     top: 2.25%;
@@ -3347,7 +3357,14 @@ _OVERLAY_HTML = """<!doctype html>
     position: absolute;
     inset: 0;
     background:
-      linear-gradient(90deg, rgba(134, 140, 254, 0.98) 0 50%, rgba(237, 146, 255, 0.98) 50% 100%);
+      linear-gradient(90deg, transparent calc(50% - var(--line) / 2), var(--ink) calc(50% - var(--line) / 2), var(--ink) calc(50% + var(--line) / 2), transparent calc(50% + var(--line) / 2)),
+      linear-gradient(180deg, transparent 10.7%, var(--ink) 10.7%, var(--ink) calc(10.7% + var(--line)), transparent calc(10.7% + var(--line))),
+      linear-gradient(180deg, transparent 71.3%, var(--ink) 71.3%, var(--ink) calc(71.3% + var(--line)), transparent calc(71.3% + var(--line))),
+      var(--blue-gradient),
+      var(--pink-gradient);
+    background-position: 0 0, 0 0, 0 0, left top, right top;
+    background-repeat: no-repeat;
+    background-size: 100% 100%, 100% 100%, 100% 100%, 50% 100%, 50% 100%;
   }
   .idle-card {
     position: absolute;
@@ -3455,7 +3472,10 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="split-gap-dot"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
       <div class="event-title">vibe speedrun</div>
-      <div class="chip split-prompt-chip" id="split-prompt">Waiting for prompt</div>
+      <div class="chip split-prompt-chip">
+        <span class="split-prompt-label">Prompt:</span>
+        <span class="split-prompt-text" id="split-prompt">Waiting for prompt</span>
+      </div>
       <div class="split-player left">
         <div class="pane preview">
           __INLINE_P1_PREVIEW__

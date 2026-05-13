@@ -17,7 +17,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
 
 from textual import on
 from textual.app import App, ScreenStackError
@@ -2415,17 +2415,56 @@ class DeepAgentsApp(App):
             # `_await_prewarm_imports` for the deadlock rationale.
             await self._await_prewarm_imports()
 
-            from deepagents_cli.config import create_model
-            from deepagents_cli.model_config import ModelConfigError, save_recent_model
+            from deepagents_cli.config import create_model, detect_provider, settings
+            from deepagents_cli.model_config import (
+                ModelConfig,
+                ModelConfigError,
+                ModelSpec,
+                save_recent_model,
+            )
+
+            selected_spec = str(self._model_kwargs.get("model_spec") or "")
+            selected = ModelSpec.try_parse(selected_spec)
+            if selected:
+                selected_provider: str | None = selected.provider
+                selected_model_name = selected.model
+                selected_display = selected_spec
+            else:
+                selected_model_name = selected_spec
+                selected_provider = detect_provider(selected_spec)
+                selected_display = (
+                    f"{selected_provider}:{selected_model_name}"
+                    if selected_provider
+                    else selected_spec
+                )
+            effective_display = _apply_fast_mode_preference(
+                selected_display,
+                enabled=ModelConfig.load().fast_mode,
+            )
+            effective_kwargs = {**self._model_kwargs, "model_spec": effective_display}
+            if self._server_kwargs is not None:
+                self._server_kwargs["model_name"] = effective_display
 
             try:
                 async with self._deepagents_import_lock:
-                    result = create_model(**self._model_kwargs)
+                    result = create_model(
+                        effective_display,
+                        extra_kwargs=cast(
+                            "dict[str, Any] | None",
+                            effective_kwargs.get("extra_kwargs"),
+                        ),
+                        profile_overrides=cast(
+                            "dict[str, Any] | None",
+                            effective_kwargs.get("profile_overrides"),
+                        ),
+                    )
             except ModelConfigError as exc:
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
             result.apply_to_settings()
-            save_recent_model(f"{result.provider}:{result.model_name}")
+            settings.model_provider = selected_provider or result.provider
+            settings.model_name = selected_model_name
+            save_recent_model(selected_display)
             self._model_kwargs = None  # consumed
 
         from deepagents_cli.server_manager import start_server_and_get_agent
@@ -8772,10 +8811,6 @@ class DeepAgentsApp(App):
             # Defensively strip leading colon in case of empty provider,
             # treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
-            model_spec = _apply_fast_mode_preference(
-                model_spec,
-                enabled=ModelConfig.load().fast_mode,
-            )
 
             if not self._remote_agent():
                 if self._connecting:
@@ -8813,13 +8848,29 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            parsed = ModelSpec.try_parse(model_spec)
-            if parsed:
-                provider: str | None = parsed.provider
-                model_name = parsed.model
+            selected = ModelSpec.try_parse(model_spec)
+            if selected:
+                selected_provider: str | None = selected.provider
+                selected_model_name = selected.model
+                selected_display = model_spec
             else:
-                model_name = model_spec
-                provider = detect_provider(model_spec)
+                selected_model_name = model_spec
+                selected_provider = detect_provider(model_spec)
+                selected_display = (
+                    f"{selected_provider}:{selected_model_name}"
+                    if selected_provider
+                    else model_spec
+                )
+
+            effective_display = _apply_fast_mode_preference(
+                selected_display,
+                enabled=ModelConfig.load().fast_mode,
+            )
+            effective = ModelSpec.try_parse(effective_display)
+            if effective:
+                provider: str | None = effective.provider
+            else:
+                provider = detect_provider(effective_display)
 
             # Check credentials
             auth_status = get_provider_auth_status(provider) if provider else None
@@ -8843,15 +8894,15 @@ class DeepAgentsApp(App):
                 )
 
             # Check if already using this exact model
-            if model_name == settings.model_name and (
-                not provider or provider == settings.model_provider
+            if selected_model_name == settings.model_name and (
+                not selected_provider or selected_provider == settings.model_provider
             ):
-                current = f"{settings.model_provider}:{settings.model_name}"
+                current = selected_display
                 # Mirror the regular-switch path so `--model-params` semantics
                 # are consistent across same-model and different-model cases:
                 # passing params applies them, omitting params clears any
                 # prior per-session override.
-                self._model_override = current
+                self._model_override = effective_display
                 self._model_params_override = extra_kwargs
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
@@ -8863,19 +8914,16 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            # Build the provider:model spec for the configurable middleware.
-            display = model_spec
-            if provider and not parsed:
-                display = f"{provider}:{model_name}"
-
             try:
                 create_model(
-                    display,
+                    effective_display,
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,
                 ).apply_to_settings()
             except Exception as exc:
-                logger.exception("Failed to resolve model metadata for %s", display)
+                logger.exception(
+                    "Failed to resolve model metadata for %s", effective_display
+                )
                 await self._mount_message(
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
@@ -8884,8 +8932,10 @@ class DeepAgentsApp(App):
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the
             # middleware swaps the model per-invocation — no graph recreation.
-            self._model_override = display
+            self._model_override = effective_display
             self._model_params_override = extra_kwargs
+            settings.model_provider = selected_provider or provider or ""
+            settings.model_name = selected_model_name
 
             if self._status_bar:
                 self._status_bar.set_model(
@@ -8893,7 +8943,7 @@ class DeepAgentsApp(App):
                     model=settings.model_name or "",
                 )
 
-            if not await asyncio.to_thread(save_recent_model, display):
+            if not await asyncio.to_thread(save_recent_model, selected_display):
                 await self._mount_message(
                     ErrorMessage(
                         "Model switched for this session, but could not save "
@@ -8903,11 +8953,12 @@ class DeepAgentsApp(App):
             else:
                 params_suffix = _format_model_params(extra_kwargs)
                 await self._mount_message(
-                    AppMessage(f"model selected: {display}{params_suffix}")
+                    AppMessage(f"model selected: {selected_display}{params_suffix}")
                 )
             logger.info(
-                "Model switched to %s (via configurable middleware); model_params=%s",
-                display,
+                "Model switched to %s (effective=%s); model_params=%s",
+                selected_display,
+                effective_display,
                 extra_kwargs,
             )
 
@@ -9044,7 +9095,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.config import detect_provider
         from deepagents_cli.model_config import (
-            ModelConfig,
             ModelSpec,
             save_default_model,
         )
@@ -9056,10 +9106,6 @@ class DeepAgentsApp(App):
             provider = detect_provider(model_spec)
             if provider:
                 model_spec = f"{provider}:{model_spec}"
-        model_spec = _apply_fast_mode_preference(
-            model_spec,
-            enabled=ModelConfig.load().fast_mode,
-        )
 
         if await asyncio.to_thread(save_default_model, model_spec):
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))

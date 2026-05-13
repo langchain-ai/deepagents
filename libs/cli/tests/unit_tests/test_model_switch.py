@@ -1257,10 +1257,10 @@ class TestFastCommand:
             await app._switch_model(selected)
 
         assert app._model_override == expected
-        provider, model = expected.split(":", maxsplit=1)
+        provider, model = selected.split(":", maxsplit=1)
         assert settings.model_provider == provider
         assert settings.model_name == model
-        save.assert_called_once_with(expected)
+        save.assert_called_once_with(selected)
 
     async def test_disabled_fast_preference_rewrites_fast_selection_to_standard(
         self, tmp_path: Path
@@ -1288,14 +1288,12 @@ class TestFastCommand:
             await app._switch_model("openrouter:anthropic/claude-opus-4.7-fast")
 
         assert app._model_override == "anthropic:claude-opus-4-7"
-        assert settings.model_provider == "anthropic"
-        assert settings.model_name == "claude-opus-4-7"
-        save.assert_called_once_with("anthropic:claude-opus-4-7")
+        assert settings.model_provider == "openrouter"
+        assert settings.model_name == "anthropic/claude-opus-4.7-fast"
+        save.assert_called_once_with("openrouter:anthropic/claude-opus-4.7-fast")
 
-    async def test_default_model_save_uses_fast_preference(
-        self, tmp_path: Path
-    ) -> None:
-        """`/model --default` saves the effective model for fast mode."""
+    async def test_default_model_save_keeps_selected_spec(self, tmp_path: Path) -> None:
+        """`/model --default` saves the visible model, not the fast rewrite."""
         config_path = tmp_path / "config.toml"
         config_path.write_text("[models]\nfast = true\n")
         app = DeepAgentsApp()
@@ -1311,4 +1309,4 @@ class TestFastCommand:
             clear_caches()
             await app._set_default_model("anthropic:claude-opus-4-7")
 
-        save.assert_called_once_with("openrouter:anthropic/claude-opus-4.7-fast")
+        save.assert_called_once_with("anthropic:claude-opus-4-7")

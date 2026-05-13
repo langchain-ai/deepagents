@@ -3498,15 +3498,15 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .idle-card {
     position: absolute;
-    left: 13.5%;
-    right: 13.5%;
-    top: 25%;
-    min-height: 30%;
+    left: 18%;
+    right: 18%;
+    top: 27%;
+    min-height: 24%;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 2.1vh;
-    padding: 4.4% 5.2%;
+    gap: 1.55vh;
+    padding: 3.25% 4.4%;
     background: var(--ink);
     color: var(--paper);
     clip-path: polygon(2.5% 0, 97.5% 0, 100% 50%, 97.5% 100%, 2.5% 100%, 0 50%);
@@ -3514,8 +3514,8 @@ _OVERLAY_HTML = """<!doctype html>
     z-index: 4;
   }
   .idle-title {
-    font-size: min(5.1vw, 9.07vh);
-    line-height: 0.9;
+    font-size: min(4.3vw, 7.64vh);
+    line-height: 0.93;
     font-weight: 700;
     text-transform: uppercase;
   }

@@ -1208,6 +1208,7 @@ _INDEX_HTML = """<!doctype html>
     overflow-wrap: anywhere;
   }
   #override-modal,
+  #prompt-pool-modal,
   #smoke-modal {
     border: 1px solid #2a2a2a;
     border-radius: 10px;
@@ -1218,7 +1219,17 @@ _INDEX_HTML = """<!doctype html>
     width: 90%;
   }
   #override-modal::backdrop,
+  #prompt-pool-modal::backdrop,
   #smoke-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
+  #prompt-pool-form {
+    max-height: min(72vh, 720px);
+    display: flex;
+    flex-direction: column;
+  }
+  #prompt-pool {
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
   .smoke-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1296,19 +1307,10 @@ _INDEX_HTML = """<!doctype html>
   <div class="action-line">
     <button id="btn-start" aria-disabled="true">Start</button>
     <button class="secondary" id="btn-draw-prompt">Draw prompt</button>
+    <button class="secondary" id="btn-open-prompt-pool">Manage prompt pool…</button>
     <span class="ready-badge ready" id="round-started">Round started</span>
     <span class="inline-error" id="start-error" role="alert"></span>
   </div>
-</section>
-
-<section>
-  <h2>Prompt pool</h2>
-  <div class="action-line">
-    <input id="new-prompt" type="text" placeholder="Add a new website prompt">
-    <button id="btn-add-prompt">Add</button>
-  </div>
-  <div class="muted">Leave the round prompt blank to draw randomly from this pool.</div>
-  <div class="prompt-pool" id="prompt-pool"></div>
 </section>
 
 <section>
@@ -1359,6 +1361,19 @@ _INDEX_HTML = """<!doctype html>
       <button type="button" class="secondary" id="btn-override-cancel">Cancel</button>
     </div>
     <span class="inline-error" id="override-error" role="alert"></span>
+  </form>
+</dialog>
+
+<dialog id="prompt-pool-modal">
+  <form method="dialog" id="prompt-pool-form">
+    <h2 style="margin-top:0">Prompt pool</h2>
+    <div class="action-line">
+      <input id="new-prompt" type="text" placeholder="Add a new website prompt">
+      <button type="button" id="btn-add-prompt">Add</button>
+      <button type="button" class="secondary" id="btn-prompt-pool-cancel">Close</button>
+    </div>
+    <div class="muted">Leave the round prompt blank to draw randomly from this pool.</div>
+    <div class="prompt-pool" id="prompt-pool"></div>
   </form>
 </dialog>
 
@@ -2088,6 +2103,19 @@ document.getElementById('btn-reset').onclick = () => {
   });
 };
 document.getElementById('btn-draw-prompt').onclick = drawPrompt;
+
+const promptPoolModal = document.getElementById('prompt-pool-modal');
+function openPromptPoolModal() {
+  loadPromptPool();
+  if (typeof promptPoolModal.showModal === 'function') promptPoolModal.showModal();
+  else promptPoolModal.setAttribute('open', '');
+}
+function closePromptPoolModal() {
+  if (typeof promptPoolModal.close === 'function') promptPoolModal.close();
+  else promptPoolModal.removeAttribute('open');
+}
+document.getElementById('btn-open-prompt-pool').onclick = openPromptPoolModal;
+document.getElementById('btn-prompt-pool-cancel').onclick = closePromptPoolModal;
 
 async function addPrompt() {
   const input = document.getElementById('new-prompt');

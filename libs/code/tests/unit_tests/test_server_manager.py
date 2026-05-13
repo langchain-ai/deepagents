@@ -200,15 +200,31 @@ class TestStartServerAndGetAgent:
 class TestWritePyproject:
     """Tests for the generated runtime pyproject."""
 
-    def test_runtime_pyproject_uses_source_checkout_dependency(
+    def test_runtime_dependency_uses_source_checkout_dependency(
         self, tmp_path: Path
     ) -> None:
         """Source checkouts should keep using the local package path."""
-        _write_pyproject(tmp_path)
+        package_root = tmp_path / "package"
+        package_root.mkdir()
+        (package_root / "pyproject.toml").write_text("[project]\n")
+
+        dependency = _runtime_package_dependency(package_root)
+
+        assert dependency == f"deepagents-code @ {package_root.as_uri()}"
+
+    def test_runtime_pyproject_excludes_langgraph_cli_dependency(
+        self, tmp_path: Path
+    ) -> None:
+        """The runtime project should rely on the app package dependency only."""
+        with patch(
+            "deepagents_code.server_manager._runtime_package_dependency",
+            return_value="deepagents-code==1.2.3",
+        ):
+            _write_pyproject(tmp_path)
 
         content = (tmp_path / "pyproject.toml").read_text()
 
-        assert '"deepagents-code @ file://' in content
+        assert '"deepagents-code==1.2.3"' in content
         assert "langgraph-cli[inmem]" not in content
 
     def test_runtime_dependency_uses_installed_distribution_for_wheel(

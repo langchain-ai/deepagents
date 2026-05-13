@@ -292,6 +292,12 @@ class LaunchCountdownScreen(ModalScreen[None]):
         text-style: bold;
         text-align: center;
     }
+
+    LaunchCountdownScreen .launch-countdown-copy {
+        color: $text-muted;
+        text-align: center;
+        margin-top: 1;
+    }
     """
 
     def __init__(self, seconds: int) -> None:
@@ -317,6 +323,10 @@ class LaunchCountdownScreen(ModalScreen[None]):
             yield Static(
                 self._format_seconds(),
                 id="launch-countdown-value",
+            )
+            yield Static(
+                "The prompt and timer will appear at the top of your screen.",
+                classes="launch-countdown-copy",
             )
 
     def on_mount(self) -> None:

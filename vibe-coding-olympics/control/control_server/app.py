@@ -1145,6 +1145,23 @@ _INDEX_HTML = """<!doctype html>
   }
   button:hover { filter: brightness(1.15); }
   button:disabled, button[aria-disabled="true"] { cursor: not-allowed; filter: grayscale(0.7) brightness(0.75); opacity: 0.55; }
+  button.processing {
+    position: relative;
+    padding-left: 2.35rem;
+  }
+  button.processing::before {
+    content: "";
+    position: absolute;
+    left: 0.9rem;
+    top: 50%;
+    width: 0.82rem;
+    height: 0.82rem;
+    margin-top: -0.41rem;
+    border: 2px solid rgba(255, 255, 255, 0.36);
+    border-top-color: #fff;
+    border-radius: 999px;
+    animation: spin 780ms linear infinite;
+  }
   button.danger { background: #dc2626; }
   button.secondary { background: #525252; }
   button.outline {
@@ -1160,6 +1177,31 @@ _INDEX_HTML = """<!doctype html>
   a { color: #93c5fd; }
   .muted { color: #888; font-size: 0.85rem; margin-top: 0.65rem; }
   .eval-help { margin-bottom: 0.6rem; }
+  .judge-processing {
+    display: none;
+    align-items: center;
+    gap: 0.7rem;
+    margin-top: 0.75rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid #92400e;
+    border-radius: 6px;
+    background: #271403;
+    color: #fde68a;
+    font-size: 0.88rem;
+  }
+  .judge-processing.visible { display: flex; }
+  .judge-spinner {
+    width: 1rem;
+    height: 1rem;
+    flex: 0 0 auto;
+    border: 2px solid rgba(253, 230, 138, 0.3);
+    border-top-color: #fde68a;
+    border-radius: 999px;
+    animation: spin 780ms linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
   .port-note { color: #707070; font-size: 0.8rem; }
   .inline-error { color: #fca5a5; font-size: 0.85rem; }
   .inline-error:empty { display: none; }
@@ -1387,6 +1429,11 @@ _INDEX_HTML = """<!doctype html>
     border-color: #404040;
     color: #a3a3a3;
   }
+  .eval-card.processing .eval-score-pill {
+    border-color: #92400e;
+    background: #271403;
+    color: #fde68a;
+  }
   .eval-card h3 {
     margin: 0 0 0.4rem 0;
     font-size: 0.95rem;
@@ -1462,6 +1509,9 @@ _INDEX_HTML = """<!doctype html>
   .eval-placeholder-note {
     color: #737373;
     font-size: 0.78rem;
+  }
+  .eval-card.processing .eval-placeholder-note {
+    color: #fde68a;
   }
   .score-edit {
     display: none;
@@ -1699,6 +1749,10 @@ _INDEX_HTML = """<!doctype html>
       End early to stop coding and send scores for host approval.
     </p>
     <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
+    <div class="judge-processing" id="judge-processing" role="status" aria-live="polite">
+      <span class="judge-spinner" aria-hidden="true"></span>
+      <span>LLM judge is processing scores…</span>
+    </div>
     <button class="secondary" id="btn-clear">Prepare next round</button>
     <span class="inline-error" id="end-error" role="alert"></span>
   </section>
@@ -1996,6 +2050,8 @@ let latestContestants = [];
 let latestEvalModalSignature = '';
 let dismissedEvalModalSignature = '';
 let scoreEditMode = false;
+let scoreEditDraft = {};
+let evalProcessing = false;
 const PLAYER_SLOT_PORTS = ['3001', '3002'];
 function setStartError(message) {
   document.getElementById('start-error').textContent = message;
@@ -2011,7 +2067,7 @@ function renderPhase(phase) {
   document.getElementById('obs-phase').textContent = currentPhase;
   document.getElementById('btn-end-early').setAttribute(
     'aria-disabled',
-    String(currentPhase !== 'coding'),
+    String(currentPhase !== 'coding' || evalProcessing),
   );
   if (currentPhase === 'coding') setEndError('');
 }
@@ -2128,10 +2184,20 @@ function closeEvalModal() {
   if (typeof modal.close === 'function') modal.close();
   else modal.removeAttribute('open');
 }
+function openEvalModal() {
+  const modal = document.getElementById('eval-modal');
+  if (modal.open) return;
+  if (typeof modal.showModal === 'function') modal.showModal();
+  else modal.setAttribute('open', '');
+}
 function maybeOpenEvalModal(results, pendingScores) {
   const modal = document.getElementById('eval-modal');
   const hasResults = Boolean(results && results.length);
   const hasPending = Object.keys(pendingScores || {}).length > 0;
+  if (evalProcessing) {
+    openEvalModal();
+    return;
+  }
   if (!hasResults || !hasPending) {
     dismissedEvalModalSignature = '';
     latestEvalModalSignature = '';
@@ -2140,8 +2206,7 @@ function maybeOpenEvalModal(results, pendingScores) {
   }
   latestEvalModalSignature = evalModalSignature(results, pendingScores);
   if (modal.open || latestEvalModalSignature === dismissedEvalModalSignature) return;
-  if (typeof modal.showModal === 'function') modal.showModal();
-  else modal.setAttribute('open', '');
+  openEvalModal();
 }
 function placeholderEvalEntries() {
   const names = latestContestants.filter(Boolean).slice(0, 2);
@@ -2151,7 +2216,7 @@ function placeholderEvalEntries() {
 function renderEvalPlaceholder(container) {
   for (const name of placeholderEvalEntries()) {
     const card = document.createElement('div');
-    card.className = 'eval-card placeholder';
+    card.className = 'eval-card placeholder' + (evalProcessing ? ' processing' : '');
 
     const header = document.createElement('h3');
     const label = document.createElement('span');
@@ -2166,7 +2231,7 @@ function renderEvalPlaceholder(container) {
 
     const note = document.createElement('div');
     note.className = 'eval-placeholder-note';
-    note.textContent = 'Waiting for judge results';
+    note.textContent = evalProcessing ? 'LLM judge is processing scores' : 'Waiting for judge results';
     card.appendChild(note);
     container.appendChild(card);
   }
@@ -2187,6 +2252,39 @@ function axisInputId(index, axis) {
 }
 function clampScore(value) {
   return Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 0;
+}
+function draftKey(entry) {
+  return String(entry.name || '').trim();
+}
+function ensureScoreEditDraft(entry) {
+  const key = draftKey(entry);
+  if (!key) return null;
+  if (!scoreEditDraft[key]) scoreEditDraft[key] = { axes: {} };
+  if (!scoreEditDraft[key].axes) scoreEditDraft[key].axes = {};
+  return scoreEditDraft[key];
+}
+function captureScoreEditDraft() {
+  if (!scoreEditMode) return;
+  latestEvalResults.forEach((entry, index) => {
+    const draft = ensureScoreEditDraft(entry);
+    if (!draft) return;
+    const scoreInput = document.getElementById(scoreInputId(index));
+    if (scoreInput) draft.score = scoreInput.value;
+    for (const axis of Object.keys(AXIS_WEIGHTS)) {
+      const input = document.getElementById(axisInputId(index, axis));
+      if (input) draft.axes[axis] = input.value;
+    }
+  });
+}
+function draftScoreValue(entry, fallback) {
+  const draft = scoreEditDraft[draftKey(entry)];
+  return draft && draft.score !== undefined ? draft.score : fallback;
+}
+function draftAxisValue(entry, axis, fallback) {
+  const draft = scoreEditDraft[draftKey(entry)];
+  return draft && draft.axes && draft.axes[axis] !== undefined
+    ? draft.axes[axis]
+    : fallback;
 }
 function collectAxisScores(index, entry) {
   const axes = {};
@@ -2249,6 +2347,7 @@ async function publishScores(payload) {
   const result = await api('/api/eval/publish', payload);
   if (result.ok) {
     scoreEditMode = false;
+    scoreEditDraft = {};
     closeEvalModal();
     if (result.json && result.json.state) renderState(result.json.state);
     await refreshState({ quiet: true });
@@ -2262,6 +2361,7 @@ async function publishScores(payload) {
 }
 function renderEval(results, pendingScores = {}) {
   const container = document.getElementById('eval-results');
+  captureScoreEditDraft();
   container.replaceChildren();
   latestEvalResults = results || [];
   latestPendingScores = pendingScores || {};
@@ -2288,7 +2388,14 @@ function renderEval(results, pendingScores = {}) {
     editable.step = '0.01';
     editable.min = '0';
     editable.max = '10';
-    editable.value = pendingScoreFor(entry, latestPendingScores).toFixed(2);
+    editable.value = draftScoreValue(
+      entry,
+      pendingScoreFor(entry, latestPendingScores).toFixed(2),
+    );
+    editable.addEventListener('input', () => {
+      const draft = ensureScoreEditDraft(entry);
+      if (draft) draft.score = editable.value;
+    });
     const score = document.createElement('span');
     score.className = 'eval-score-pill';
     score.textContent = `${pendingScoreFor(entry, latestPendingScores).toFixed(2)} / 10`;
@@ -2342,7 +2449,15 @@ function renderEval(results, pendingScores = {}) {
       editableAxis.step = '0.1';
       editableAxis.min = '0';
       editableAxis.max = '10';
-      editableAxis.value = value === null || value === undefined ? '' : (value * 10).toFixed(1);
+      editableAxis.value = draftAxisValue(
+        entry,
+        axis,
+        value === null || value === undefined ? '' : (value * 10).toFixed(1),
+      );
+      editableAxis.addEventListener('input', () => {
+        const draft = ensureScoreEditDraft(entry);
+        if (draft) draft.axes[axis] = editableAxis.value;
+      });
       const valueCell = document.createElement('div');
       valueCell.append(num, editableAxis);
       axes.append(name, barWrap, valueCell);
@@ -2359,6 +2474,15 @@ function renderEval(results, pendingScores = {}) {
     container.appendChild(card);
   }
   maybeOpenEvalModal(latestEvalResults, latestPendingScores);
+}
+function setEvalProcessing(active) {
+  evalProcessing = Boolean(active);
+  const button = document.getElementById('btn-end-early');
+  button.classList.toggle('processing', evalProcessing);
+  button.textContent = evalProcessing ? 'Processing scores' : 'End early (trigger judge)';
+  button.setAttribute('aria-disabled', String(currentPhase !== 'coding' || evalProcessing));
+  document.getElementById('judge-processing').classList.toggle('visible', evalProcessing);
+  renderEval(latestEvalResults, latestPendingScores);
 }
 function showRoundStarted() {
   const badge = document.getElementById('round-started');
@@ -2595,22 +2719,25 @@ document.getElementById('btn-start').onclick = async () => {
   }
 };
 
-document.getElementById('btn-end-early').onclick = () => {
+document.getElementById('btn-end-early').onclick = async () => {
+  if (evalProcessing) return;
   if (currentPhase !== 'coding') {
     const message = `No live round to end early. OBS is ${currentPhase}.`;
     setEndError(message);
     log(message, true);
     return;
   }
-  api('/api/round/end-early', {}).then((result) => {
-    if (result.ok && result.json) {
-      if (result.json.state) renderState(result.json.state);
-      refreshState({ quiet: true });
-    }
-    if (!result.ok && result.json && result.json.detail) {
-      setEndError(String(result.json.detail));
-    }
-  });
+  setEndError('');
+  setEvalProcessing(true);
+  const result = await api('/api/round/end-early', {});
+  setEvalProcessing(false);
+  if (result.ok && result.json) {
+    if (result.json.state) renderState(result.json.state);
+    refreshState({ quiet: true });
+  }
+  if (!result.ok && result.json && result.json.detail) {
+    setEndError(String(result.json.detail));
+  }
 };
 
 document.getElementById('btn-accept-scores').onclick = () => {
@@ -2620,6 +2747,7 @@ document.getElementById('btn-accept-scores').onclick = () => {
 document.getElementById('btn-edit-scores').onclick = () => {
   if (Object.keys(latestPendingScores || {}).length === 0) return;
   scoreEditMode = true;
+  scoreEditDraft = {};
   setPublishError('');
   renderEval(latestEvalResults, latestPendingScores);
 };
@@ -2629,6 +2757,7 @@ document.getElementById('btn-publish-edited').onclick = () => {
 };
 document.getElementById('btn-cancel-score-edit').onclick = () => {
   scoreEditMode = false;
+  scoreEditDraft = {};
   setPublishError('');
   refreshState({ quiet: true });
 };

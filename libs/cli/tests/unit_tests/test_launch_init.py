@@ -159,6 +159,11 @@ class TestLaunchCountdownScreen:
 
             value = app.screen.query_one("#launch-countdown-value", Static)
             assert str(value.render()) == "5..."
+            copy = app.screen.query_one(".launch-countdown-copy", Static)
+            assert (
+                str(copy.render())
+                == "The prompt and timer will appear at the top of your screen."
+            )
 
             screen.set_seconds(4)
             await pilot.pause()

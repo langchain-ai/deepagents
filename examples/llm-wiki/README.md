@@ -1,4 +1,4 @@
-# Wiki Runner
+# LLM Wiki
 
 A script-first Deep Agents example that builds a persistent wiki and syncs it through `langsmith hub` commands.
 
@@ -46,14 +46,14 @@ Each run syncs updates to Context Hub so teammates can review changes, comment, 
 
 ```bash
 # From the deepagents repo root:
-uv sync --project examples/wiki-runner
+uv sync --project examples/llm-wiki
 ```
 
 ## Preflight checks
 
 ```bash
 # Verify Hub commands from the example environment.
-uv run --project examples/wiki-runner langsmith hub --help
+uv run --project examples/llm-wiki langsmith hub --help
 
 # Verify auth env var for sandbox-backed modes.
 echo "${LANGSMITH_API_KEY:+set}"
@@ -68,30 +68,30 @@ with an actionable error.
 
 ```bash
 # Initialize a wiki and publish first Context Hub revision
-uv run --project examples/wiki-runner \
-  python examples/wiki-runner/runner.py \
+uv run --project examples/llm-wiki \
+  python examples/llm-wiki/runner.py \
   --mode init \
   --repo "ada-lovelace-wiki"
 
 # Ingest source notes into canonical wiki pages (file + folder)
-uv run --project examples/wiki-runner \
-  python examples/wiki-runner/runner.py \
+uv run --project examples/llm-wiki \
+  python examples/llm-wiki/runner.py \
   --mode ingest \
   --repo "ada-lovelace-wiki" \
   --source ./notes/ada.md \
   --source ./notes/speeches/
 
 # Ask grounded questions against the maintained wiki
-uv run --project examples/wiki-runner \
-  python examples/wiki-runner/runner.py \
+uv run --project examples/llm-wiki \
+  python examples/llm-wiki/runner.py \
   --mode query \
   --repo "ada-lovelace-wiki" \
   --question "What did Ada contribute to computing?"
 
 # Run a wiki maintenance pass and publish an updated Context Hub revision
 # (fix links, deduplicate pages, refresh index.md, append log.md entry)
-uv run --project examples/wiki-runner \
-  python examples/wiki-runner/runner.py \
+uv run --project examples/llm-wiki \
+  python examples/llm-wiki/runner.py \
   --mode lint \
   --repo "ada-lovelace-wiki"
 

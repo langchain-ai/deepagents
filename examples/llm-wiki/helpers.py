@@ -1,4 +1,4 @@
-"""Helper utilities for the wiki runner example."""
+"""Helper utilities for the LLM wiki example."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ Filesystem policy:
 
 
 class WikiError(RuntimeError):
-    """Raised when the wiki runner cannot complete a requested operation."""
+    """Raised when the LLM wiki cannot complete a requested operation."""
 
 def _slugify_topic(topic: str) -> str:
     """Convert a topic label into a stable slug."""
@@ -136,7 +136,7 @@ def _hub_identifier(owner: str | None, repo: str) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description="Wiki runner (Deep Agents + LangSmith Hub CLI)"
+        description="LLM wiki (Deep Agents + LangSmith Hub CLI)"
     )
     parser.add_argument(
         "--mode", required=True, choices=["init", "ingest", "query", "lint"]

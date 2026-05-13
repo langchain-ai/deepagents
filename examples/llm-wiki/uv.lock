@@ -1203,7 +1203,7 @@ wheels = [
 ]
 
 [[package]]
-name = "wiki-runner-example"
+name = "llm-wiki-example"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

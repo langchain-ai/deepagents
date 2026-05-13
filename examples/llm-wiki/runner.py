@@ -1,4 +1,4 @@
-"""CLI entrypoint for the wiki runner example."""
+"""CLI entrypoint for the LLM wiki example."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from helpers import WikiError, parse_config, run
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the wiki runner CLI."""
+    """Run the LLM wiki CLI."""
     try:
         config = parse_config(argv)
         run_result = run(config)

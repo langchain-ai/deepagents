@@ -1,4 +1,4 @@
-"""Lint-specific workflow for the wiki runner."""
+"""Lint-specific workflow for the LLM wiki."""
 
 from __future__ import annotations
 

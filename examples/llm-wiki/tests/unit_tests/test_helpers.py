@@ -1,4 +1,4 @@
-"""Unit tests for wiki runner setup and ingest helpers."""
+"""Unit tests for LLM wiki setup and ingest helpers."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 [project]
-name = "wiki-runner-example"
+name = "llm-wiki-example"
 version = "0.1.0"
-description = "Wiki runner using Deep Agents + LangSmith CLI"
+description = "LLM wiki using Deep Agents + LangSmith CLI"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.6.1",

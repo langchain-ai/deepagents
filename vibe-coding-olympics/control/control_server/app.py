@@ -1632,7 +1632,6 @@ _INDEX_HTML = """<!doctype html>
 
 <section>
   <h2>Game state</h2>
-  <button class="secondary" id="btn-state">Get state</button>
   <button class="danger" id="btn-reset">Reset to Idle</button>
   <div class="muted">OBS phase: <span id="obs-phase">unknown</span></div>
   <dl class="state-summary" id="state-summary">
@@ -2487,7 +2486,6 @@ document.getElementById('btn-smoke-layout-p2').onclick = () => (
 document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
 document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
 
-document.getElementById('btn-state').onclick = () => refreshState();
 document.getElementById('btn-reset').onclick = () => {
   api('/api/round/reset', {}).then((result) => {
     if (result.ok && result.json) renderState(result.json);

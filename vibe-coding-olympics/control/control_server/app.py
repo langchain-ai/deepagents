@@ -1028,6 +1028,10 @@ _INDEX_HTML = """<!doctype html>
     background: #0a0a0a;
   }
   .eval-card.fallback { border-color: #7f1d1d; }
+  .eval-card.fallback .eval-score-pill {
+    border-color: #f97316;
+    color: #fed7aa;
+  }
   .eval-card h3 {
     margin: 0 0 0.4rem 0;
     font-size: 0.95rem;
@@ -1060,11 +1064,34 @@ _INDEX_HTML = """<!doctype html>
     font-size: 0.72rem;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+  }
+  .eval-score-pill {
+    border: 1px solid #14532d;
+    border-radius: 999px;
+    color: #bbf7d0;
+    font-size: 0.72rem;
+    padding: 0.12rem 0.45rem;
+    white-space: nowrap;
+  }
+  .eval-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0.35rem 0 0.55rem;
+    color: #94a3b8;
+    font-size: 0.76rem;
+  }
+  .eval-meta span {
+    border: 1px solid #263244;
+    border-radius: 999px;
+    padding: 0.1rem 0.45rem;
   }
   .eval-overall {
     margin-top: 0.4rem;
     color: #cbd5e1;
     font-size: 0.85rem;
+    overflow-wrap: anywhere;
   }
   #override-modal,
   #smoke-modal {
@@ -1412,6 +1439,15 @@ function renderState(state) {
   renderTimer(state.timer);
   renderEval((state.eval && state.eval.results) || []);
 }
+const AXIS_LABELS = {
+  color: 'Color',
+  typography: 'Typography',
+  layout: 'Layout',
+  content_completeness: 'Content',
+  creativity: 'Creativity',
+  interpretation_quality: 'Interpretation',
+  accessibility: 'Accessibility',
+};
 function formatClock(seconds) {
   if (!isFinite(seconds) || seconds < 0) return '--:--';
   const total = Math.max(0, Math.round(seconds));
@@ -1453,15 +1489,29 @@ function renderEval(results) {
 
     const header = document.createElement('h3');
     const label = document.createElement('span');
-    label.textContent = `${displayName(entry.name, '?')} — ${(entry.obs_score || 0).toFixed(2)} / 10`;
+    label.textContent = displayName(entry.name, '?');
     header.appendChild(label);
+    const score = document.createElement('span');
+    score.className = 'eval-score-pill';
+    score.textContent = `${Number(entry.obs_score || 0).toFixed(2)} / 10`;
+    header.appendChild(score);
+    card.appendChild(header);
+
+    const meta = document.createElement('div');
+    meta.className = 'eval-meta';
+    const status = document.createElement('span');
+    status.textContent = entry.fallback ? 'random fallback' : 'gpt-5.5 low';
+    meta.appendChild(status);
+    const overall = document.createElement('span');
+    overall.textContent = `overall ${Number(entry.overall || 0).toFixed(3)}`;
+    meta.appendChild(overall);
     if (entry.fallback) {
       const tag = document.createElement('span');
       tag.className = 'fallback-tag';
-      tag.textContent = `fallback: ${entry.fallback_reason || 'unknown'}`;
-      header.appendChild(tag);
+      tag.textContent = entry.fallback_reason || 'fallback reason unknown';
+      meta.appendChild(tag);
     }
-    card.appendChild(header);
+    card.appendChild(meta);
 
     const axes = document.createElement('div');
     axes.className = 'eval-axes';
@@ -1473,7 +1523,7 @@ function renderEval(results) {
       const value = entry.axes ? entry.axes[axis] : null;
       const display = value === null || value === undefined ? 'n/a' : (value * 10).toFixed(1);
       const name = document.createElement('div');
-      name.textContent = axis.replace(/_/g, ' ');
+      name.textContent = AXIS_LABELS[axis] || axis.replace(/_/g, ' ');
       const barWrap = document.createElement('div');
       barWrap.className = 'axis-bar';
       const fill = document.createElement('span');
@@ -1488,10 +1538,10 @@ function renderEval(results) {
     card.appendChild(axes);
 
     if (entry.url) {
-      const overall = document.createElement('div');
-      overall.className = 'eval-overall';
-      overall.textContent = entry.url;
-      card.appendChild(overall);
+      const url = document.createElement('div');
+      url.className = 'eval-overall';
+      url.textContent = entry.url;
+      card.appendChild(url);
     }
 
     container.appendChild(card);
@@ -1717,6 +1767,7 @@ document.getElementById('btn-end-early').onclick = () => {
   api('/api/round/end-early', {}).then((result) => {
     if (result.ok && result.json && result.json.state) {
       renderState(result.json.state);
+      renderEval(result.json.results || []);
       clearPromptInput();
     }
     if (!result.ok && result.json && result.json.detail) {

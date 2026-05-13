@@ -265,6 +265,7 @@ _round_context: dict[str, Any] = {}
 _round_counter = 0
 _last_eval_results: list[dict[str, Any]] = []
 _overlay_smoke_state: dict[str, Any] | None = None
+_overlay_layout_state: dict[str, int | str] = {"mode": "split", "focus_player": 1}
 _eval_lock: asyncio.Lock | None = None
 
 
@@ -409,6 +410,22 @@ class ObsSceneRequest(BaseModel):
     scene: str = Field(min_length=1)
 
 
+class CameraSceneRequest(BaseModel):
+    """Production camera scene switch request."""
+
+    scene: str
+
+    @field_validator("scene")
+    @classmethod
+    def validate_scene(cls, value: str) -> str:
+        """Allow only production camera scenes."""
+        scene = value.strip()
+        if scene not in {"coding", "p1 focus", "p2 focus", "fallback"}:
+            msg = "scene must be one of: coding, p1 focus, p2 focus, fallback"
+            raise ValueError(msg)
+        return scene
+
+
 def _reset_round_state() -> None:
     """Forget the in-flight round context and the last eval snapshot."""
     _round_context.clear()
@@ -438,6 +455,21 @@ def _clear_overlay_smoke() -> None:
     """Disable the controller-only overlay smoke state."""
     global _overlay_smoke_state
     _overlay_smoke_state = None
+
+
+def _overlay_layout_payload() -> dict[str, int | str]:
+    """Return production overlay layout state."""
+    return dict(_overlay_layout_state)
+
+
+def _sync_overlay_layout_for_scene(scene: str) -> None:
+    """Update production overlay layout for camera scenes that need it."""
+    if scene == "coding":
+        _overlay_layout_state.update({"mode": "split", "focus_player": 1})
+    elif scene == "p1 focus":
+        _overlay_layout_state.update({"mode": "focus", "focus_player": 1})
+    elif scene == "p2 focus":
+        _overlay_layout_state.update({"mode": "focus", "focus_player": 2})
 
 
 def _smoke_contestants(contestants: list[str]) -> list[str]:
@@ -550,6 +582,10 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
         },
         "overlay_smoke": {
             "active": True,
+            "mode": smoke["mode"],
+            "focus_player": smoke["focus_player"],
+        },
+        "overlay_layout": {
             "mode": smoke["mode"],
             "focus_player": smoke["focus_player"],
         },
@@ -714,6 +750,7 @@ async def _api_state() -> dict[str, Any]:
         "overlay_smoke": {
             "active": False,
         },
+        "overlay_layout": _overlay_layout_payload(),
     }
 
 
@@ -1531,11 +1568,21 @@ _INDEX_HTML = """<!doctype html>
     gap: 0.4rem;
     margin-top: 0.5rem;
   }
+  .camera-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+  .camera-actions button {
+    margin: 0;
+    width: 100%;
+  }
   @media (max-width: 560px) {
     .round-row {
       grid-template-columns: 1fr;
     }
     .round-settings-row,
+    .camera-actions,
     .smoke-actions,
     .smoke-command-actions,
     .smoke-layout-actions {
@@ -1595,6 +1642,17 @@ _INDEX_HTML = """<!doctype html>
     <span class="inline-error" id="end-error" role="alert"></span>
   </section>
 </div>
+
+<section>
+  <h2>Camera control</h2>
+  <div class="camera-actions">
+    <button type="button" class="secondary" id="btn-camera-split">Split screen</button>
+    <button type="button" class="secondary" id="btn-camera-p1">P1 focus</button>
+    <button type="button" class="secondary" id="btn-camera-p2">P2 focus</button>
+    <button type="button" class="secondary" id="btn-camera-fallback">Fallback</button>
+  </div>
+  <span class="inline-error" id="camera-error" role="alert"></span>
+</section>
 
 <dialog id="override-modal">
   <form method="dialog" id="override-form">
@@ -1883,6 +1941,9 @@ function setStartError(message) {
 }
 function setEndError(message) {
   document.getElementById('end-error').textContent = message;
+}
+function setCameraError(message) {
+  document.getElementById('camera-error').textContent = message;
 }
 function renderPhase(phase) {
   currentPhase = phase || 'unknown';
@@ -2566,6 +2627,19 @@ async function switchObsScene(scene) {
   setSmokeError(message);
   return false;
 }
+async function setCameraScene(scene) {
+  setCameraError('');
+  const result = await api('/api/camera/scene', { scene });
+  if (result.ok) {
+    await refreshState({ quiet: true });
+    return true;
+  }
+  const message = result.json && result.json.detail
+    ? String(result.json.detail)
+    : result.text;
+  setCameraError(message);
+  return false;
+}
 async function focusOverlayAndObs(player) {
   const [overlayOk, obsOk] = await Promise.all([
     setOverlaySmoke('coding', {
@@ -2636,6 +2710,10 @@ document.getElementById('btn-smoke-layout-p2').onclick = () => (
 );
 document.getElementById('btn-smoke-clear').onclick = clearOverlaySmoke;
 document.getElementById('btn-smoke-tour').onclick = runSmokeTour;
+document.getElementById('btn-camera-split').onclick = () => setCameraScene('coding');
+document.getElementById('btn-camera-p1').onclick = () => setCameraScene('p1 focus');
+document.getElementById('btn-camera-p2').onclick = () => setCameraScene('p2 focus');
+document.getElementById('btn-camera-fallback').onclick = () => setCameraScene('fallback');
 
 document.getElementById('btn-draw-prompt').onclick = drawPrompt;
 
@@ -3479,6 +3557,12 @@ function syncOverlayMode(payload) {
     focusIndex = Number(smoke.focus_player) === 2 ? 1 : 0;
     return;
   }
+  const layout = payload.overlay_layout;
+  if (layout) {
+    overlayMode = layout.mode === 'focus' ? 'focus' : 'split';
+    focusIndex = Number(layout.focus_player) === 2 ? 1 : 0;
+    return;
+  }
   overlayMode = defaultOverlayMode;
   focusIndex = defaultFocusIndex;
 }
@@ -3832,6 +3916,13 @@ def create_app() -> FastAPI:
     @app.post("/api/obs/scene")
     async def obs_scene(req: ObsSceneRequest) -> dict[str, Any]:
         return {"obs": await _set_obs_scene(req.scene)}
+
+    @app.post("/api/camera/scene")
+    async def camera_scene(req: CameraSceneRequest) -> dict[str, Any]:
+        obs = await _set_obs_scene(req.scene)
+        _sync_overlay_layout_for_scene(req.scene)
+        await _publish_state_update()
+        return {"obs": obs, "overlay_layout": _overlay_layout_payload()}
 
     @app.get("/api/prompts")
     async def prompts_list() -> dict[str, list[dict[str, Any]]]:

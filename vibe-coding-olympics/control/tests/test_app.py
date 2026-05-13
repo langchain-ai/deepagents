@@ -30,6 +30,8 @@ def _reset_module_globals() -> None:
     app_mod._round_context.clear()
     app_mod._last_eval_results.clear()
     app_mod._overlay_smoke_state = None
+    app_mod._overlay_layout_state.clear()
+    app_mod._overlay_layout_state.update({"mode": "split", "focus_player": 1})
     app_mod._state_events.clear()
     app_mod._round_counter = 0
     # Swap in a fresh RoundTimer rather than awaiting cancel() across
@@ -119,6 +121,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("function applyState(payload)", response.text)
         self.assertIn("setInterval(refreshState, 5000)", response.text)
         self.assertIn("function currentTimerWarning()", response.text)
+        self.assertIn("const layout = payload.overlay_layout;", response.text)
         self.assertIn("if (activeView === view) return;", response.text)
         self.assertIn("function updateText(element, value)", response.text)
         self.assertNotIn("http://127.0.0.1:8889", response.text)
@@ -154,14 +157,19 @@ class TestReadyPlayers(unittest.TestCase):
         response = client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Vibe Olympics Control", response.text)
-        self.assertIn('href="/overlay"', response.text)
+        self.assertIn("Interrupt PvP Admin", response.text)
         self.assertIn('id="smoke-modal"', response.text)
         self.assertIn('id="prompt-pool-modal"', response.text)
         self.assertIn('id="btn-open-prompt-pool"', response.text)
         self.assertIn('id="btn-prompt-pool-cancel"', response.text)
         self.assertIn("function openPromptPoolModal()", response.text)
         self.assertIn('id="btn-open-smoke"', response.text)
+        self.assertIn('id="btn-camera-split"', response.text)
+        self.assertIn('id="btn-camera-p1"', response.text)
+        self.assertIn('id="btn-camera-p2"', response.text)
+        self.assertIn('id="btn-camera-fallback"', response.text)
+        self.assertIn("/api/camera/scene", response.text)
+        self.assertIn("setCameraScene('fallback')", response.text)
         self.assertIn("/api/overlay-smoke", response.text)
         self.assertIn("function displayName(value, fallback = '')", response.text)
         self.assertIn("slot.dataset.name = next;", response.text)
@@ -193,6 +201,46 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"obs": {"phase": "coding"}})
         set_scene.assert_awaited_once_with("p1 focus")
+
+    def test_camera_scene_updates_obs_and_overlay_layout(self) -> None:
+        client = TestClient(app_mod.create_app())
+        set_scene = AsyncMock(return_value={"scene": "p1 focus"})
+
+        with patch("control_server.app._set_obs_scene", set_scene):
+            response = client.post("/api/camera/scene", json={"scene": "p1 focus"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["overlay_layout"],
+            {"mode": "focus", "focus_player": 1},
+        )
+        self.assertEqual(
+            app_mod._overlay_layout_state,
+            {"mode": "focus", "focus_player": 1},
+        )
+        set_scene.assert_awaited_once_with("p1 focus")
+
+    def test_camera_fallback_does_not_change_overlay_layout(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._overlay_layout_state.update({"mode": "focus", "focus_player": 2})
+        set_scene = AsyncMock(return_value={"scene": "fallback"})
+
+        with patch("control_server.app._set_obs_scene", set_scene):
+            response = client.post("/api/camera/scene", json={"scene": "fallback"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["overlay_layout"],
+            {"mode": "focus", "focus_player": 2},
+        )
+        set_scene.assert_awaited_once_with("fallback")
+
+    def test_camera_scene_rejects_unknown_scene(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post("/api/camera/scene", json={"scene": "scoreboard"})
+
+        self.assertEqual(response.status_code, 422)
 
     def test_state_event_broadcaster_sends_full_state_payload(self) -> None:
         queue = app_mod._state_events.subscribe()
@@ -1074,6 +1122,10 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertIsNone(body["round"]["prompt"])
         self.assertEqual(body["round"]["contestants"], [])
         self.assertIsNone(body["round"]["duration_warning"])
+        self.assertEqual(
+            body["overlay_layout"],
+            {"mode": "split", "focus_player": 1},
+        )
 
     def test_state_namespaces_obs_runner_errors(self) -> None:
         from fastapi import HTTPException
@@ -1149,6 +1201,10 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertTrue(state["overlay_smoke"]["active"])
         self.assertEqual(state["overlay_smoke"]["mode"], "focus")
         self.assertEqual(state["overlay_smoke"]["focus_player"], 2)
+        self.assertEqual(
+            state["overlay_layout"],
+            {"mode": "focus", "focus_player": 2},
+        )
 
         with patch(
             "control_server.app._get_obs_state",
@@ -1161,6 +1217,10 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertTrue(body["overlay_smoke"]["active"])
         self.assertEqual(body["overlay_smoke"]["mode"], "focus")
         self.assertEqual(body["overlay_smoke"]["focus_player"], 2)
+        self.assertEqual(
+            body["overlay_layout"],
+            {"mode": "focus", "focus_player": 2},
+        )
 
     def test_overlay_smoke_scoreboard_defaults_scores(self) -> None:
         client = TestClient(app_mod.create_app())

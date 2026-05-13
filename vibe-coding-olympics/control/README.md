@@ -111,6 +111,7 @@ Click **Prepare next round** between rounds; it resets CLI thread/readiness stat
 | `/api/eval/publish` | POST | `{scores?: {name: float}}` | Publishes host-approved scores to the scoreboard. Empty `scores` accepts the pending judge scores. |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/obs/scene` | POST | `{scene: str}` | Asks the OBS runner to switch directly to an OBS scene without changing game-state phase |
+| `/api/camera/scene` | POST | `{scene: "coding" \| "p1 focus" \| "p2 focus" \| "fallback"}` | Production camera cut. Switches OBS to a known camera scene; `coding`/focus scenes also update the live overlay layout without changing game state |
 | `/api/round/start` | POST | `{prompt?, contestants[], duration_secs?}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
 | `/api/round/end` | POST | `{}` | Cancels the timer, sends `times-up` to player CLI(s), runs the LLM judge, and stores results on the control server for host approval |
 | `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, and stores results on the control server for host approval |

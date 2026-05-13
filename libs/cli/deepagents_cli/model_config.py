@@ -1710,6 +1710,9 @@ class ModelConfig:
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
+    fast_mode: bool = False
+    """Whether model selection should prefer supported fast model variants."""
+
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
@@ -1772,6 +1775,7 @@ class ModelConfig:
         config = cls(
             default_model=models_section.get("default"),
             recent_model=models_section.get("recent"),
+            fast_mode=models_section.get("fast") is True,
             providers=models_section.get("providers", {}),
         )
 
@@ -1803,6 +1807,13 @@ class ModelConfig:
                 "recent_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.recent_model,
+            )
+
+        if not isinstance(self.fast_mode, bool):
+            logger.warning(
+                "models.fast has non-boolean value %r (expected true/false). "
+                "Fast mode will remain disabled.",
+                self.fast_mode,
             )
 
         # Validate enabled field type and class_path format / params references
@@ -2006,7 +2017,7 @@ class ModelConfig:
 def _save_toml_field(
     section: str,
     field: str,
-    value: str,
+    value: object,
     config_path: Path | None = None,
 ) -> bool:
     """Read-modify-write a `[section].<field>` key in the config file.
@@ -2014,7 +2025,7 @@ def _save_toml_field(
     Args:
         section: TOML table name (e.g., `'models'`, `'agents'`).
         field: Key within the table (e.g., `'default'`, `'recent'`).
-        value: String value to persist.
+        value: TOML-serializable value to persist.
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -2103,6 +2114,21 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
         This function does not preserve comments in the config file.
     """
     return _save_model_field("default", model_spec, config_path)
+
+
+def save_fast_mode(enabled: bool, config_path: Path | None = None) -> bool:
+    """Update the fast model-selection preference in config file.
+
+    Args:
+        enabled: Whether supported model selections should use fast variants.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_toml_field("models", "fast", enabled, config_path)
 
 
 def clear_default_model(config_path: Path | None = None) -> bool:

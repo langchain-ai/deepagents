@@ -24,10 +24,11 @@ uv sync
 
 1. OBS 28+ (obs-websocket is built-in).
 2. Tools → WebSocket Server Settings → enable, note port (default `4455`). Leave authentication disabled for the default local setup.
-3. Create three scenes:
+3. Create four scenes:
    - `coding`
    - `p1 focus`
    - `p2 focus`
+   - `fallback`
 4. In `coding`, add these sources:
    - `Browser` — OBS Browser Source pointed at `http://localhost:8766/overlay`
    - `P1 Browser` — NDI player 1 browser feed
@@ -45,6 +46,9 @@ per scene item, so the same NDI source can usually have different layouts in
 unless you deliberately want that crop shared everywhere. If you need different
 NDI input settings for the same feed, create a second NDI source pointed at the
 same upstream source.
+
+In `fallback`, add the looping fallback video source. The control panel switches
+to this scene directly without changing round state or overlay layout.
 
 ## Run
 

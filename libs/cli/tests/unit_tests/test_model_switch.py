@@ -1,6 +1,7 @@
 """Tests for model switching functionality."""
 
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -80,10 +81,16 @@ def mock_create_model() -> Iterator[Mock]:
     """Avoid provider package imports while preserving metadata updates."""
     context_limits = {
         "anthropic:claude-opus-4-5": 200_000,
+        "anthropic:claude-opus-4-7": 200_000,
         "anthropic:claude-sonnet-4-5": 200_000,
+        "fireworks:accounts/fireworks/models/glm-5p1": 131_072,
+        "fireworks:accounts/fireworks/models/kimi-k2p6": 131_072,
+        "fireworks:accounts/fireworks/routers/glm-5p1-fast": 131_072,
+        "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo": 131_072,
         "fireworks:llama-v3p1-70b": 131_072,
         "ollama:llama3": 8_192,
         "openai:gpt-4o": 128_000,
+        "openrouter:anthropic/claude-opus-4.7-fast": 200_000,
     }
 
     def fake_create_model(
@@ -1120,3 +1127,188 @@ class TestModelCommandIntegration:
 
         assert len(captured_errors) == 1
         assert "cannot be used with --default" in captured_errors[0]
+
+
+class TestFastCommand:
+    """Tests for the hidden `/fast` model-selection preference."""
+
+    async def test_fast_toggles_persisted_preference(self, tmp_path: Path) -> None:
+        """`/fast` flips `[models].fast` without switching the current model."""
+        config_path = tmp_path / "config.toml"
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app.notify = Mock()  # type: ignore[method-assign]
+        settings.model_name = "claude-opus-4-7"
+        settings.model_provider = "anthropic"
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            await app._handle_command("/fast")
+            assert model_config.ModelConfig.load().fast_mode is True
+
+        assert app._model_override is None
+        assert settings.model_provider == "anthropic"
+        assert settings.model_name == "claude-opus-4-7"
+        app.notify.assert_called_once_with(  # type: ignore[union-attr]
+            "Fast mode enabled. Supported model selections will use fast variants.",
+            timeout=4,
+            markup=False,
+        )
+
+    async def test_fast_disables_persisted_preference(self, tmp_path: Path) -> None:
+        """`/fast` turns off `[models].fast` when it is already enabled."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nfast = true\n")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app.notify = Mock()  # type: ignore[method-assign]
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            await app._handle_command("/fast")
+            assert model_config.ModelConfig.load().fast_mode is False
+
+        assert app._model_override is None
+        app.notify.assert_called_once_with(  # type: ignore[union-attr]
+            "Fast mode disabled. Supported model selections will use "
+            "standard variants.",
+            timeout=4,
+            markup=False,
+        )
+
+    async def test_fast_save_failure_shows_warning(self) -> None:
+        """`/fast` shows a toast if the preference cannot be persisted."""
+        app = DeepAgentsApp()
+        app.notify = Mock()  # type: ignore[method-assign]
+
+        with patch("deepagents_cli.model_config.save_fast_mode", return_value=False):
+            await app._handle_fast_command()
+
+        app.notify.assert_called_once_with(  # type: ignore[union-attr]
+            "Could not save fast mode preference.",
+            severity="warning",
+            timeout=5,
+            markup=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("selected", "expected", "auth"),
+        [
+            (
+                "anthropic:claude-opus-4-7",
+                "openrouter:anthropic/claude-opus-4.7-fast",
+                ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="openrouter",
+                    env_var="OPENROUTER_API_KEY",
+                    source=ProviderAuthSource.ENV,
+                ),
+            ),
+            (
+                "fireworks:accounts/fireworks/models/kimi-k2p6",
+                "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo",
+                ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="fireworks",
+                    env_var="FIREWORKS_API_KEY",
+                    source=ProviderAuthSource.ENV,
+                ),
+            ),
+            (
+                "fireworks:accounts/fireworks/models/glm-5p1",
+                "fireworks:accounts/fireworks/routers/glm-5p1-fast",
+                ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="fireworks",
+                    env_var="FIREWORKS_API_KEY",
+                    source=ProviderAuthSource.ENV,
+                ),
+            ),
+        ],
+    )
+    async def test_fast_preference_rewrites_selected_models(
+        self,
+        tmp_path: Path,
+        selected: str,
+        expected: str,
+        auth: ProviderAuthStatus,
+    ) -> None:
+        """Enabled fast mode rewrites supported selections to fast variants."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nfast = true\n")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=auth,
+            ),
+            patch(
+                "deepagents_cli.model_config.save_recent_model",
+                return_value=True,
+            ) as save,
+        ):
+            clear_caches()
+            await app._switch_model(selected)
+
+        assert app._model_override == expected
+        provider, model = expected.split(":", maxsplit=1)
+        assert settings.model_provider == provider
+        assert settings.model_name == model
+        save.assert_called_once_with(expected)
+
+    async def test_disabled_fast_preference_rewrites_fast_selection_to_standard(
+        self, tmp_path: Path
+    ) -> None:
+        """Disabled fast mode rewrites fast selections to standard variants."""
+        config_path = tmp_path / "config.toml"
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+        app._agent = _make_remote_agent()
+        settings.model_name = "gpt-4o"
+        settings.model_provider = "openai"
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_cli.model_config.save_recent_model",
+                return_value=True,
+            ) as save,
+        ):
+            clear_caches()
+            await app._switch_model("openrouter:anthropic/claude-opus-4.7-fast")
+
+        assert app._model_override == "anthropic:claude-opus-4-7"
+        assert settings.model_provider == "anthropic"
+        assert settings.model_name == "claude-opus-4-7"
+        save.assert_called_once_with("anthropic:claude-opus-4-7")
+
+    async def test_default_model_save_uses_fast_preference(
+        self, tmp_path: Path
+    ) -> None:
+        """`/model --default` saves the effective model for fast mode."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nfast = true\n")
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # type: ignore[method-assign]
+
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_cli.model_config.save_default_model",
+                return_value=True,
+            ) as save,
+        ):
+            clear_caches()
+            await app._set_default_model("anthropic:claude-opus-4-7")
+
+        save.assert_called_once_with("openrouter:anthropic/claude-opus-4.7-fast")

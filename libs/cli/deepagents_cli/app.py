@@ -99,6 +99,37 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_FAST_MODE_SOURCE_MODEL = "anthropic:claude-opus-4-7"
+_FAST_MODE_TARGET_MODEL = "openrouter:anthropic/claude-opus-4.7-fast"
+_FAST_MODE_BASE_TO_FAST: dict[str, str] = {
+    _FAST_MODE_SOURCE_MODEL: _FAST_MODE_TARGET_MODEL,
+    "fireworks:accounts/fireworks/models/kimi-k2p6": (
+        "fireworks:accounts/fireworks/routers/kimi-k2p6-turbo"
+    ),
+    "fireworks:accounts/fireworks/models/glm-5p1": (
+        "fireworks:accounts/fireworks/routers/glm-5p1-fast"
+    ),
+}
+_FAST_MODE_FAST_TO_BASE: dict[str, str] = {
+    fast: base for base, fast in _FAST_MODE_BASE_TO_FAST.items()
+}
+
+
+def _apply_fast_mode_preference(model_spec: str, *, enabled: bool) -> str:
+    """Rewrite a supported model spec according to the fast-mode preference.
+
+    Args:
+        model_spec: Selected model spec.
+        enabled: Whether fast variants should be preferred.
+
+    Returns:
+        The rewritten model spec, or the original spec when unsupported.
+    """
+    if enabled:
+        return _FAST_MODE_BASE_TO_FAST.get(model_spec, model_spec)
+    return _FAST_MODE_FAST_TO_BASE.get(model_spec, model_spec)
+
+
 # Serializes process-local read-modify-write operations for `config.toml`.
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
@@ -5232,6 +5263,8 @@ class DeepAgentsApp(App):
                 await self._switch_model(model_arg, extra_kwargs=extra_kwargs)
             else:
                 await self._show_model_selector(extra_kwargs=extra_kwargs)
+        elif cmd == "/fast":
+            await self._handle_fast_command()
         elif cmd == "/reload":
             await self._mount_message(UserMessage(command))
 
@@ -5328,6 +5361,31 @@ class DeepAgentsApp(App):
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
             self.query_one("#chat", VerticalScroll).anchor()
+
+    async def _handle_fast_command(self) -> None:
+        """Toggle the hidden persisted fast model-selection preference."""
+        from deepagents_cli.model_config import ModelConfig, save_fast_mode
+
+        enabled = not ModelConfig.load().fast_mode
+        if not await asyncio.to_thread(save_fast_mode, enabled):
+            self.notify(
+                "Could not save fast mode preference.",
+                severity="warning",
+                timeout=5,
+                markup=False,
+            )
+            return
+
+        if enabled:
+            message = (
+                "Fast mode enabled. Supported model selections will use fast variants."
+            )
+        else:
+            message = (
+                "Fast mode disabled. Supported model selections will use "
+                "standard variants."
+            )
+        self.notify(message, timeout=4, markup=False)
 
     _TIMER_DEFAULT_MINUTES: ClassVar[int] = 5
     _TIMER_MAX_MINUTES: ClassVar[int] = 24 * 60
@@ -8696,6 +8754,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_cli.config import create_model, detect_provider, settings
         from deepagents_cli.model_config import (
+            ModelConfig,
             ModelSpec,
             ProviderAuthState,
             get_provider_auth_status,
@@ -8713,6 +8772,10 @@ class DeepAgentsApp(App):
             # Defensively strip leading colon in case of empty provider,
             # treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
+            model_spec = _apply_fast_mode_preference(
+                model_spec,
+                enabled=ModelConfig.load().fast_mode,
+            )
 
             if not self._remote_agent():
                 if self._connecting:
@@ -8980,7 +9043,11 @@ class DeepAgentsApp(App):
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
         from deepagents_cli.config import detect_provider
-        from deepagents_cli.model_config import ModelSpec, save_default_model
+        from deepagents_cli.model_config import (
+            ModelConfig,
+            ModelSpec,
+            save_default_model,
+        )
 
         model_spec = model_spec.removeprefix(":")
 
@@ -8989,6 +9056,10 @@ class DeepAgentsApp(App):
             provider = detect_provider(model_spec)
             if provider:
                 model_spec = f"{provider}:{model_spec}"
+        model_spec = _apply_fast_mode_preference(
+            model_spec,
+            enabled=ModelConfig.load().fast_mode,
+        )
 
         if await asyncio.to_thread(save_default_model, model_spec):
             await self._mount_message(AppMessage(f"Default model set to {model_spec}"))

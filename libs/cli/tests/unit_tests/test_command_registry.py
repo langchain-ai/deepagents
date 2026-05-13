@@ -78,6 +78,10 @@ class TestBypassTiers:
         assert "/compact" in QUEUE_BOUND
         assert "/connect" in IMMEDIATE_UI
 
+    def test_fast_is_hidden(self) -> None:
+        assert "/fast" in HIDDEN_DEBUG
+        assert "/fast" not in {entry.name for entry in SLASH_COMMANDS}
+
     def test_every_command_classified(self) -> None:
         for cmd in COMMANDS:
             assert cmd.name in ALL_CLASSIFIED, f"{cmd.name} not in any tier"

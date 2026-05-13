@@ -13,7 +13,7 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
 ## 1. OBS one-time setup
 
 1. OBS → Tools → WebSocket Server Settings → enable, note port (`4455`). Leave authentication disabled for the default local setup.
-2. Create scenes: `coding`, `p1 focus`, and `p2 focus`.
+2. Create scenes: `coding`, `p1 focus`, `p2 focus`, and `fallback`.
 3. In `coding`, add:
    - `Browser` — Browser Source at `http://localhost:8766/overlay`
    - `P1 Browser` — NDI player 1 browser feed
@@ -22,7 +22,8 @@ defaults read /Applications/OBS.app/Contents/Info CFBundleShortVersionString
    - `P2 CLI` — NDI player 2 CLI feed
 4. In `p1 focus` and `p2 focus`, reuse the same NDI sources where possible and
    set crop/position per scene item for the focus layout.
-5. Select `coding` as the active scene.
+5. In `fallback`, add the looping fallback video source.
+6. Select `coding` as the active scene.
 
 ## 2. Launch runner
 
@@ -138,6 +139,6 @@ curl -s -X POST localhost:8765/transition -H 'content-type: application/json' \
 | --- | --- |
 | `obs_connected: false` on start | Wrong port/password, or WebSocket server not enabled |
 | `409` on first `start` | FSM not in `idle` — `POST /transition reset` (from `scoreboard`) or restart runner |
-| Scene switch fails with code 600 | Scene name mismatch. Confirm scenes are named exactly `coding`, `p1 focus`, and `p2 focus`, or set the `OBS_SCENE_*` env vars |
+| Scene switch fails with code 600 | Scene name mismatch. Confirm scenes are named exactly `coding`, `p1 focus`, `p2 focus`, and `fallback`, or set the `OBS_SCENE_*` env vars |
 | Overlay content is stale | Confirm `Browser` points at `http://localhost:8766/overlay` and the control server can reach the OBS runner |
 | A slot you expected to fill is blank | Contestant order in the `start` payload does not match the slot you're eyeballing; only the first two contestants are rendered |

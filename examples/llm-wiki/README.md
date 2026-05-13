@@ -8,7 +8,7 @@ This example implements a workflow where an agent researches a topic and writes 
 
 The agent is given source material and questions, then gathers information, organizes it, and incrementally builds a reusable wiki that future agents can reference. Over time, the wiki evolves through ingest, query, and lint passes instead of restarting from scratch on every run.
 
-Queries are powered by Deep Agents (`create_deep_agent`) running in the sandbox-backed workflow: the query pass reads the current wiki state, reasons over relevant pages, produces a grounded answer, and can file durable results back into `wiki/query/` when useful.
+`ingest`, `query`, and `lint` are powered by Deep Agents (`create_deep_agent`) running in LangSmith Sandbox: the query pass reads the current wiki state, reasons over relevant pages, produces a grounded answer, and can file durable results back into `wiki/query/` when useful.
 
 Each run syncs updates to Context Hub so teammates can review changes, comment, and promote versions.
 
@@ -39,7 +39,7 @@ Each run syncs updates to Context Hub so teammates can review changes, comment, 
 ## Requirements
 
 - Python 3.11+
-- `langsmith` with `hub` commands available (installed in the example env by `uv sync`)
+- `langsmith[sandbox]` with `hub` commands available (installed in the example env by `uv sync`)
 - `LANGSMITH_API_KEY` set for `ingest`, `query`, and `lint` modes
 
 ## Setup

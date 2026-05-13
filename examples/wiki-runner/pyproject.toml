@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Wiki runner using DeepAgents + LangSmith CLI"
 requires-python = ">=3.11"
 dependencies = [
-    "deepagents>=0.5.7",
+    "deepagents>=0.6.1",
     "langsmith[sandbox]>=0.8.0",
 ]
 

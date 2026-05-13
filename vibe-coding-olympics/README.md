@@ -72,11 +72,11 @@ It also starts a heartbeat loop and launches `vibe-player-relay` in a separate i
 
 1. Players enter their names and select models in the CLI.
 2. The controller UI should show both players and both model-ready badges.
-3. The controller chooses or draws a prompt, then clicks **Start**.
+3. The controller chooses a prompt, draws one, or leaves the prompt blank to draw from the prompt pool, then clicks **Start**.
 4. If the round must stop before the timer, click **End early**.
-   1. (This option is available only if a round is ongoing)
-5. When the timer reaches zero, judging begins
-6. Between rounds, click **Reset round all** to blank player pages and reset readiness.
+   1. This only works while a round is in progress.
+5. When the timer reaches zero, the controller sends times-up to the players and judging begins.
+6. Between rounds, click **Reset round all** to blank player pages, reset OBS/control state, and clear player readiness.
 
 ## More Detail
 

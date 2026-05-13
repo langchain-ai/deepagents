@@ -1293,9 +1293,6 @@ _INDEX_HTML = """<!doctype html>
 
 <section>
   <h2>Start round</h2>
-  <label>Prompt
-    <input id="prompt" type="text" placeholder="blank draws from prompt pool">
-  </label>
   <div class="row">
     <label><span class="label-line"><span>Player 1</span><span class="ready-badge" id="c1-ready">Ready</span></span>
       <div class="player-slot empty" id="c1">Waiting for CLI player</div>
@@ -1304,6 +1301,9 @@ _INDEX_HTML = """<!doctype html>
       <div class="player-slot empty" id="c2">Waiting for CLI player</div>
     </label>
   </div>
+  <label>Prompt
+    <input id="prompt" type="text" placeholder="leave blank to draw random prompt automatically">
+  </label>
   <div class="action-line">
     <button id="btn-start" aria-disabled="true">Start</button>
     <button class="secondary" id="btn-draw-prompt">Draw prompt</button>

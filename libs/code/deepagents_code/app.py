@@ -679,6 +679,13 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
 
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
+_VIM_QUIT_COMMANDS: frozenset[str] = frozenset({":q", ":q!", ":quit", ":wq", ":x"})
+"""Vim-style quit commands accepted in normal-mode input as aliases for `/quit`.
+
+Routed through the `/quit` fast path so they behave identically to the
+canonical slash command, including bypassing the busy-state queue.
+"""
+
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
 """Seconds since the last keystroke after which the user is considered idle and
 a pending approval widget can be shown.
@@ -4352,6 +4359,10 @@ class DeepAgentsApp(App):
                 urgent.
         """
         from deepagents_code.command_registry import ALWAYS_IMMEDIATE
+
+        if mode == "normal" and value.strip().lower() in _VIM_QUIT_COMMANDS:
+            value = "/quit"
+            mode = "command"
 
         if force_bypass or (
             mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE

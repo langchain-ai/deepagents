@@ -59,6 +59,7 @@ _TIPS: dict[str, int] = {
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
+    "Type :q (or /quit) to exit": 1,
 }
 """Rotating tips shown in the welcome footer, with relative selection weights.
 

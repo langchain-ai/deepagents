@@ -4626,6 +4626,54 @@ class TestSlashCommandBypass:
             exit_mock.assert_called_once()
             assert len(app._pending_messages) == 0
 
+    @pytest.mark.parametrize(
+        "vim_command", [":q", ":quit", ":wq", ":x", ":Q", "  :q  "]
+    )
+    async def test_vim_quit_exits_app(self, vim_command: str) -> None:
+        """Vim-style quit commands submitted in normal mode should exit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted(vim_command, "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_vim_quit_bypasses_queue_when_agent_running(self) -> None:
+        """`:q` should exit immediately even when the agent is running."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+
+            with patch.object(app, "exit") as exit_mock:
+                app.post_message(ChatInput.Submitted(":q", "normal"))
+                await pilot.pause()
+
+            exit_mock.assert_called_once()
+            assert len(app._pending_messages) == 0
+
+    async def test_vim_quit_only_intercepts_exact_match(self) -> None:
+        """`:q something` should be treated as a normal user message."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "exit") as exit_mock,
+                patch.object(app, "_handle_user_message", new_callable=AsyncMock) as h,
+            ):
+                app.post_message(
+                    ChatInput.Submitted(":q is the vim quit command", "normal")
+                )
+                await pilot.pause()
+
+            exit_mock.assert_not_called()
+            h.assert_called_once_with(":q is the vim quit command")
+
     async def test_force_clear_bypasses_queue_when_agent_running(self) -> None:
         """/force-clear should process immediately when agent is running."""
         app = DeepAgentsApp()

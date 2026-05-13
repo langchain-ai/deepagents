@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from urllib.parse import quote
+
 from models import CliDeps, RunResult, RunnerConfig
 import helpers
+
 
 def resolve_internal_source_flag(deps: CliDeps) -> tuple[str, ...]:
     """Resolve an init flag set that enforces internal repo source."""
@@ -66,6 +70,69 @@ def extract_repo_source(payload: dict[str, object]) -> str | None:
     return None
 
 
+def _repo_api_path(owner: str | None, repo: str) -> str:
+    """Build the repos API path for owner/repo lookup."""
+    owner_segment = owner or "-"
+    return f"/api/v1/repos/{quote(owner_segment, safe='')}/{quote(repo, safe='')}"
+
+
+def ensure_internal_repo_default(config: RunnerConfig, deps: CliDeps) -> None:
+    """Ensure the hub repo exists with `source=internal` before first push."""
+    repo_path = _repo_api_path(config.owner, config.repo)
+    try:
+        result = deps.run_langsmith_cli(["api", repo_path, "--format", "json"])
+    except helpers.WikiError as exc:
+        if "404" not in str(exc):
+            raise
+
+        create_payload = json.dumps(
+            {
+                "repo_handle": config.repo,
+                "repo_type": "agent",
+                "is_public": False,
+                "source": "internal",
+            }
+        )
+        try:
+            deps.run_langsmith_cli(
+                [
+                    "api",
+                    "/api/v1/repos",
+                    "-X",
+                    "POST",
+                    "--body",
+                    create_payload,
+                    "--format",
+                    "json",
+                ]
+            )
+        except helpers.WikiError as create_exc:
+            if "409" in str(create_exc):
+                return
+            raise
+        return
+
+    payload = helpers._parse_cli_json_output(result)
+    if payload is None:
+        msg = "Unable to verify repo source from `/api/v1/repos/{owner}/{repo}` output."
+        raise helpers.WikiError(msg)
+
+    source = extract_repo_source(payload)
+    if source is None:
+        msg = (
+            "Wiki repo exists but has no source metadata. "
+            "Delete and recreate it with `source=internal`."
+        )
+        raise helpers.WikiError(msg)
+
+    if source.lower() != "internal":
+        msg = (
+            "Wiki repos must use `source=internal`. "
+            f"Found source={source!r} for {helpers._hub_cli_repo_arg(helpers._hub_identifier(config.owner, config.repo))!r}."
+        )
+        raise helpers.WikiError(msg)
+
+
 def verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
     """Verify that the target hub repo source is internal."""
     result = deps.run_langsmith_cli(
@@ -78,9 +145,11 @@ def verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
 
     source = extract_repo_source(payload)
     if source is None:
-        # Some Hub API/CLI builds do not include source metadata in `hub get`.
-        # Enforce internal only when the field is available.
-        return
+        msg = (
+            "Unable to verify repo source from `hub get --format json` output. "
+            "Expected source metadata with value `internal`."
+        )
+        raise helpers.WikiError(msg)
 
     if source.lower() != "internal":
         msg = (
@@ -97,6 +166,7 @@ def run_init(config: RunnerConfig, deps: CliDeps) -> RunResult:
     helpers._ensure_scaffold(config.topic_dir, config.topic)
 
     hub_identifier = helpers._hub_identifier(config.owner, config.repo)
+    ensure_internal_repo_default(config, deps)
     help_text = _hub_init_help_text(deps)
     source_flags = _resolve_internal_source_flag_from_help(help_text)
     description_flags = _resolve_description_flag(help_text, config.description)

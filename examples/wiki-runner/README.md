@@ -59,9 +59,10 @@ uv run --project examples/wiki-runner langsmith hub --help
 echo "${LANGSMITH_API_KEY:+set}"
 ```
 
-`init` auto-detects available source flags from `hub init --help`. If your CLI
-omits source flags, the runner still proceeds. When Hub metadata exposes a
-source field, the runner enforces `source=internal`.
+`init` auto-detects available source flags from `hub init --help`, and also
+pre-creates/verifies the repo through `/api/v1/repos` with `source=internal`
+before the first push. If an existing repo is not internal, init fails fast
+with an actionable error.
 
 ## Usage
 
@@ -107,7 +108,7 @@ uv run --project examples/wiki-runner \
 If you pass `--review`, ingest becomes a two-phase, operator-in-the-loop flow:
 
 1. Review phase (read-only): the model reads staged source files and returns key takeaways, proposed wiki updates, contradictions, and index updates.
-2. Apply phase (write): after your confirmation, the model writes source summary updates and concept/entity updates.
+2. Apply phase (write): after your confirmation, the model writes canonical concept/entity/theme updates and integrates evidence directly into those pages.
 3. The runner refreshes `wiki/index.md` and appends structured `ingest.review` / `ingest.apply` timeline entries in `log.md`.
 4. In `--review` mode, declining confirmation skips wiki edits, but still appends an `ingest.apply | outcome=canceled` entry and pushes so the timeline remains complete.
 

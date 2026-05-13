@@ -4703,6 +4703,7 @@ def create_app() -> FastAPI:
     @app.post("/api/players/model-unready")
     async def players_model_unready(req: PlayerModelReadyRequest) -> dict[str, Any]:
         _mark_player_connected(req.port)
+        _ready_players.pop(req.port, None)
         _model_ready_ports.discard(req.port)
         return {
             "connected": _connected_player_ports(),

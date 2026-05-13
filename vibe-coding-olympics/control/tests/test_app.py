@@ -874,7 +874,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.json()["players_ready_sent"], ["3001", "3002"])
         players_ready.assert_awaited_once_with(["3001", "3002"])
 
-    def test_model_unready_clears_only_that_port(self) -> None:
+    def test_model_unready_clears_local_player_readiness(self) -> None:
         client = TestClient(app_mod.create_app())
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
         app_mod._model_ready_ports.update({"3001", "3002"})
@@ -883,8 +883,9 @@ class TestReadyPlayers(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["connected"], ["3001"])
-        self.assertEqual(response.json()["ready"], {"3001": "Alice", "3002": "Bob"})
+        self.assertEqual(response.json()["ready"], {"3002": "Bob"})
         self.assertEqual(response.json()["model_ready"], ["3002"])
+        self.assertEqual(app_mod._ready_players, {"3002": "Bob"})
         self.assertEqual(app_mod._model_ready_ports, {"3002"})
 
     def test_players_list_includes_model_ready_ports(self) -> None:

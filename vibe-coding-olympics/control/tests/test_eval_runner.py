@@ -32,7 +32,7 @@ class TestEvalRunner(unittest.TestCase):
         axes: dict[str, float | None] = dict.fromkeys(eval_runner.LLM_AXES, None)
         self.assertEqual(eval_runner.aggregate(axes), 0.0)
 
-    def test_sanitize_axes_coerces_strings_and_drops_unknowns(self) -> None:
+    def test_sanitize_axes_coerces_strings_and_defaults_missing_values(self) -> None:
         raw = {
             "color": "0.6",
             "typography": 0.7,
@@ -40,11 +40,14 @@ class TestEvalRunner(unittest.TestCase):
             "creativity": None,
             "junk_axis": 0.9,
         }
-        sanitized = eval_runner._sanitize_axes(raw)  # noqa: SLF001
+        with patch.object(eval_runner.random, "randint", return_value=6):
+            sanitized = eval_runner._sanitize_axes(raw)  # noqa: SLF001
         self.assertEqual(sanitized["color"], 0.6)
         self.assertEqual(sanitized["typography"], 0.7)
-        self.assertIsNone(sanitized["layout"])
-        self.assertIsNone(sanitized["creativity"])
+        self.assertEqual(sanitized["layout"], 0.6)
+        self.assertEqual(sanitized["content_completeness"], 0.6)
+        self.assertEqual(sanitized["creativity"], 0.6)
+        self.assertEqual(sanitized["interpretation_quality"], 0.6)
         self.assertNotIn("junk_axis", sanitized)
 
     def test_eval_result_rejects_fallback_without_reason(self) -> None:
@@ -140,7 +143,7 @@ class TestEvalRunner(unittest.TestCase):
         self.assertTrue(result.fallback)
         self.assertIn("exceeded", result.fallback_reason or "")
 
-    def test_run_eval_falls_back_when_llm_axes_are_missing(self) -> None:
+    def test_run_eval_defaults_missing_llm_axes_to_random_scores(self) -> None:
         async def fake_spawn(**kwargs: object) -> tuple[int, bytes, bytes]:
             work_dir = kwargs["work_dir"]
             round_num = kwargs["round_num"]
@@ -149,7 +152,10 @@ class TestEvalRunner(unittest.TestCase):
             path.write_text(json.dumps({"axes": {"accessibility": 1.0}}))
             return 0, b"", b""
 
-        with patch.object(eval_runner, "_spawn_judge", new=fake_spawn):
+        with (
+            patch.object(eval_runner, "_spawn_judge", new=fake_spawn),
+            patch.object(eval_runner.random, "randint", return_value=6),
+        ):
             with TemporaryDirectory() as tmp:
                 result = asyncio.run(
                     eval_runner.run_eval(
@@ -161,8 +167,11 @@ class TestEvalRunner(unittest.TestCase):
                     )
                 )
 
-        self.assertTrue(result.fallback)
-        self.assertEqual(result.fallback_reason, "judge output missing LLM scores")
+        self.assertFalse(result.fallback)
+        self.assertIsNone(result.fallback_reason)
+        self.assertEqual(result.axes["accessibility"], 1.0)
+        self.assertEqual(result.axes["color"], 0.6)
+        self.assertEqual(result.axes["interpretation_quality"], 0.6)
 
     def test_run_eval_falls_back_when_judge_output_json_missing(self) -> None:
         async def fake_spawn(**_: object) -> tuple[int, bytes, bytes]:

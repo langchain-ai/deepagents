@@ -24,19 +24,22 @@ class TestProjectClear(unittest.TestCase):
             self.assertTrue(cleared)
             index_html = (path / "index.html").read_text(encoding="utf-8")
             self.assertIn("/src/main.js", index_html)
-            self.assertIn("Site will be built here...", index_html)
-            self.assertIn("LangChain x Interrupt 2026", index_html)
-            self.assertIn("Awaiting the next live prompt", index_html)
-            self.assertIn('class="board"', index_html)
+            self.assertIn("site will load here", index_html)
+            self.assertNotIn("LangChain x Interrupt 2026", index_html)
+            self.assertNotIn("Awaiting the next live prompt", index_html)
+            self.assertNotIn('class="board"', index_html)
             self.assertNotIn("<h1>old</h1>", index_html)
             self.assertEqual(
                 (src / "main.js").read_text(encoding="utf-8"),
                 'import "./style.css";\n\nlocalStorage.clear();\nsessionStorage.clear();\n',
             )
-            self.assertIn(".top-band", (src / "style.css").read_text(encoding="utf-8"))
-            self.assertIn(".panel", (src / "style.css").read_text(encoding="utf-8"))
+            style_css = (src / "style.css").read_text(encoding="utf-8")
+            self.assertIn("background-size: 50% 100%, 50% 100%;", style_css)
+            self.assertIn("padding: clamp(0.75rem, 2.2vh, 1.5rem) 1rem 0;", style_css)
+            self.assertNotIn(".top-band", style_css)
+            self.assertNotIn(".panel", style_css)
             self.assertNotIn(
-                "body{color:red}", (src / "style.css").read_text(encoding="utf-8")
+                "body{color:red}", style_css
             )
             self.assertEqual((src / "counter.js").read_text(encoding="utf-8"), "")
 

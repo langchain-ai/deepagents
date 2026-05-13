@@ -63,9 +63,14 @@ def _eval_project_dir() -> Path:
     return _default_eval_project_dir()
 
 
+def _random_axis_score() -> float:
+    """Return a whole-number display score on the internal `[0, 1]` scale."""
+    return random.randint(0, 10) / 10.0  # noqa: S311  # not cryptographic
+
+
 def _random_axes() -> dict[str, float | None]:
     """Return a synthetic axis-score dict so the composite always renders."""
-    return {axis: round(random.uniform(0.45, 0.85), 3) for axis in LLM_AXES}  # noqa: S311  # not cryptographic
+    return {axis: _random_axis_score() for axis in LLM_AXES}
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,12 +150,12 @@ class EvalResult:
 
 
 def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
-    """Coerce judge JSON axis values to `float | None`, dropping unknown axes."""
+    """Coerce judge JSON axis values, defaulting missing values to random ints."""
     out: dict[str, float | None] = {}
     for axis in LLM_AXES:
         value = raw.get(axis)
         if value is None:
-            out[axis] = None
+            out[axis] = _random_axis_score()
             continue
         try:
             out[axis] = max(0.0, min(1.0, float(value)))
@@ -158,7 +163,7 @@ def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
             logger.warning(
                 "Judge returned non-numeric value for axis %r: %r", axis, value
             )
-            out[axis] = None
+            out[axis] = _random_axis_score()
     return out
 
 

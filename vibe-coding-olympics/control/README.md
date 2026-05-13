@@ -127,7 +127,7 @@ Click **Prepare next round** between rounds; it resets CLI thread/readiness stat
 | `/api/players/heartbeat` | POST | `{port: str}` | Refreshes player connection state; stale ports expire after 6 seconds |
 | `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and fires `ready` on the FSM to render names in OBS |
 | `/api/players/model-ready` | POST | `{port: str}` | Records that one player has selected a model and can wait for round start |
-| `/api/players/model-unready` | POST | `{port: str}` | Clears model-ready status for one player after a local CLI round reset |
+| `/api/players/model-unready` | POST | `{port: str}` | Clears local name and model readiness for one player after a local CLI reset |
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
 | `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |
 | `/api/players/clear` | POST | `{port?: str, all?: bool}` | Blanks the player Vite project, sends a socket `force-clear` signal, and clears controller readiness for the targeted player CLI(s) |

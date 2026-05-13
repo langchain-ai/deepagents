@@ -1,3 +1,6 @@
+> [!NOTE]
+> Experimented with but **not used during the day-of event**. Kept for reference only.
+
 # `ndi-bridge/` — local ffmpeg NDI bridge + MediaMTX
 
 This path is now local-ffmpeg only.
@@ -25,19 +28,19 @@ cd vibe-coding-olympics/ndi-bridge
 cp .env.example .env
 ```
 
-2. Start MediaMTX:
+1. Start MediaMTX:
 
 ```bash
 docker compose --env-file .env up -d mediamtx
 ```
 
-3. Validate pipeline without NDI:
+1. Validate pipeline without NDI:
 
 ```bash
 ./scripts/publish_color_bars.sh p1-screen
 ```
 
-4. Build host ffmpeg with NDI support (macOS only, if needed):
+1. Build host ffmpeg with NDI support (macOS only, if needed):
 
 ```bash
 brew install x264 pkg-config nasm yasm
@@ -55,13 +58,13 @@ Default behavior:
 - If `vendor/ndi-sdk-macos.tar.gz` exists, `make build-ffmpeg-ndi` uses it automatically.
 - Otherwise it falls back to `NDI_SDK_ROOT` (default: `/Library/NDI SDK for Apple`).
 
-5. Discover source names:
+1. Discover source names:
 
 ```bash
 ./scripts/discover_ndi_sources.sh
 ```
 
-6. Set `NDI_SOURCE_P1` / `NDI_SOURCE_P2` in `.env`, then publish:
+1. Set `NDI_SOURCE_P1` / `NDI_SOURCE_P2` in `.env`, then publish:
 
 ```bash
 ./scripts/publish_ndi_to_stream.sh p1

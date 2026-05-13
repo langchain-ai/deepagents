@@ -1,3 +1,6 @@
+> [!NOTE]
+> Experimented with but **not used during the day-of event**. Kept for reference/demo content only.
+
 # CUA demo
 
 Drives a website with an OpenAI computer-use agent running on a Browserbase cloud browser. Prints a Browserbase session replay URL you can share as demo content.

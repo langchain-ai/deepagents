@@ -72,7 +72,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("transform: translateX(-50%)", response.text)
         self.assertIn(".preview-name.right", response.text)
         self.assertIn("right: 2.2%", response.text)
-        self.assertGreaterEqual(response.text.count("Deep Agents: PVP Speedrun"), 2)
+        self.assertIn("LangChain Interrupt 2026", response.text)
+        self.assertIn("Deep Agents PvP Vibe Coding Speedrun", response.text)
+        self.assertIn("Deep Agents: PVP Speedrun", response.text)
         self.assertIn('class="idle-ready-grid"', response.text)
         self.assertIn('id="idle-p1">Awaiting</div>', response.text)
         self.assertIn("idleP1: document.getElementById('idle-p1')", response.text)
@@ -636,6 +638,54 @@ class TestReadyPlayers(unittest.TestCase):
             {"scores": {"Alice": 5.0, "Bob": 6.0}},
         )
 
+    def test_publish_eval_scores_can_override_axis_scores(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._last_eval_results.extend(
+            [
+                {
+                    "name": "Alice",
+                    "axes": {
+                        "color": 0.5,
+                        "typography": 0.5,
+                        "layout": 0.5,
+                        "content_completeness": 0.5,
+                        "creativity": 0.5,
+                        "interpretation_quality": 0.5,
+                        "accessibility": 0.5,
+                    },
+                    "overall": 0.5,
+                    "obs_score": 5.0,
+                },
+            ],
+        )
+        app_mod._round_context["pending_scores"] = {"Alice": 5.0}
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+
+        with patch("control_server.app._forward", new=forward):
+            response = client.post(
+                "/api/eval/publish",
+                json={
+                    "scores": {"Alice": 5.0},
+                    "axes": {
+                        "Alice": {
+                            "color": 10.0,
+                            "typography": 10.0,
+                            "layout": 10.0,
+                            "content_completeness": 10.0,
+                            "creativity": 10.0,
+                            "interpretation_quality": 10.0,
+                            "accessibility": 10.0,
+                        },
+                    },
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["scores"], {"Alice": 10.0})
+        self.assertEqual(app_mod._last_eval_results[0]["axes"]["color"], 1.0)
+        self.assertEqual(app_mod._last_eval_results[0]["obs_score"], 10.0)
+        forward.assert_awaited_once_with("end", {"scores": {"Alice": 10.0}})
+
     def test_publish_eval_scores_rejects_when_no_scores_exist(self) -> None:
         client = TestClient(app_mod.create_app())
 
@@ -915,6 +965,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="eval-results"', response.text)
         self.assertIn('id="eval-modal"', response.text)
         self.assertIn('id="btn-eval-close"', response.text)
+        self.assertIn("const AXIS_WEIGHTS", response.text)
+        self.assertIn("function collectEditedScorePayload", response.text)
+        self.assertIn("axis-score-edit", response.text)
         self.assertIn("Waiting for judge results", response.text)
         self.assertNotIn("No results yet.", response.text)
         self.assertIn('class="debug-chevron" aria-hidden="true">', response.text)

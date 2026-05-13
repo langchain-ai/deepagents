@@ -352,6 +352,9 @@ class PublishScoresRequest(BaseModel):
     scores: dict[str, Annotated[float, Field(ge=0, le=10)]] = Field(
         default_factory=dict,
     )
+    axes: dict[str, dict[str, Annotated[float, Field(ge=0, le=10)]]] = Field(
+        default_factory=dict,
+    )
 
 
 class OverlaySmokeRequest(BaseModel):
@@ -444,6 +447,26 @@ def _scores_from_eval_results(results: list[dict[str, Any]]) -> dict[str, float]
         except (TypeError, ValueError):
             scores[name] = 0.0
     return scores
+
+
+def _apply_axis_score_overrides(
+    axis_scores: dict[str, dict[str, float]],
+) -> dict[str, float]:
+    """Apply display-scale axis overrides and recompute composite scores."""
+    for entry in _last_eval_results:
+        name = str(entry.get("name") or "").strip()
+        overrides = axis_scores.get(name)
+        if not name or not overrides:
+            continue
+        axes = dict(entry.get("axes") or {})
+        for axis in eval_runner.LLM_AXES:
+            if axis in overrides:
+                axes[axis] = max(0.0, min(1.0, float(overrides[axis]) / 10.0))
+        overall = eval_runner.aggregate(axes)
+        entry["axes"] = axes
+        entry["overall"] = overall
+        entry["obs_score"] = eval_runner.to_obs_score(overall)
+    return _scores_from_eval_results(_last_eval_results)
 
 
 def _ready_contestants() -> list[str]:
@@ -1392,6 +1415,16 @@ _INDEX_HTML = """<!doctype html>
   }
   .eval-card.fallback .axis-fill { background: #f97316; }
   .eval-card.editing .eval-score-pill { display: none; }
+  .axis-score-edit {
+    display: none;
+    width: 3.9rem;
+    margin: 0;
+    padding: 0.18rem 0.3rem;
+    font-size: 0.78rem;
+    text-align: right;
+  }
+  .eval-card.editing .axis-score-edit { display: block; }
+  .eval-card.editing .axis-score-value { display: none; }
   .eval-card .fallback-tag {
     color: #fca5a5;
     font-size: 0.72rem;
@@ -2018,6 +2051,15 @@ const AXIS_LABELS = {
   interpretation_quality: 'Interpretation',
   accessibility: 'Accessibility',
 };
+const AXIS_WEIGHTS = {
+  color: 0.10,
+  typography: 0.10,
+  layout: 0.20,
+  content_completeness: 0.20,
+  creativity: 0.15,
+  interpretation_quality: 0.15,
+  accessibility: 0.10,
+};
 function formatClock(seconds) {
   if (!isFinite(seconds) || seconds < 0) return '--:--';
   const total = Math.max(0, Math.round(seconds));
@@ -2140,24 +2182,71 @@ function pendingScoreFor(entry, pendingScores) {
 function scoreInputId(index) {
   return `score-edit-${index}`;
 }
-function collectEditedScores() {
+function axisInputId(index, axis) {
+  return `axis-edit-${index}-${axis}`;
+}
+function clampScore(value) {
+  return Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 0;
+}
+function collectAxisScores(index, entry) {
+  const axes = {};
+  for (const axis of Object.keys(AXIS_WEIGHTS)) {
+    const input = document.getElementById(axisInputId(index, axis));
+    if (!input) continue;
+    if (!input.value.trim()) continue;
+    axes[axis] = clampScore(parseFloat(input.value));
+  }
+  if (Object.keys(axes).length > 0) return axes;
+  const source = entry.axes || {};
+  for (const axis of Object.keys(AXIS_WEIGHTS)) {
+    const value = source[axis];
+    if (value === null || value === undefined) continue;
+    axes[axis] = clampScore(Number(value) * 10);
+  }
+  return axes;
+}
+function aggregateAxisScores(axes) {
+  let total = 0;
+  let weighted = 0;
+  for (const [axis, weight] of Object.entries(AXIS_WEIGHTS)) {
+    if (!Object.prototype.hasOwnProperty.call(axes, axis)) continue;
+    total += weight;
+    weighted += (axes[axis] / 10) * weight;
+  }
+  return total > 0 ? (weighted / total) * 10 : 0;
+}
+function entryHasAxisScores(entry) {
+  return Boolean(entry.axes && Object.values(entry.axes).some((value) => (
+    value !== null && value !== undefined
+  )));
+}
+function collectEditedScorePayload() {
   const scores = {};
+  const axesByName = {};
   latestEvalResults.forEach((entry, index) => {
     const name = String(entry.name || '').trim();
     if (!name) return;
+    if (scoreEditMode && entryHasAxisScores(entry)) {
+      const axes = collectAxisScores(index, entry);
+      axesByName[name] = axes;
+      scores[name] = aggregateAxisScores(axes);
+      return;
+    }
     const input = document.getElementById(scoreInputId(index));
     const value = input ? parseFloat(input.value) : Number(entry.obs_score || 0);
-    scores[name] = Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 0;
+    scores[name] = clampScore(value);
   });
-  return scores;
+  return Object.keys(axesByName).length > 0
+    ? { scores, axes: axesByName }
+    : { scores };
 }
-async function publishScores(scores) {
+async function publishScores(payload) {
   setPublishError('');
-  if (!scores || Object.keys(scores).length === 0) {
+  if (!payload || !payload.scores || Object.keys(payload.scores).length === 0) {
     setPublishError('No pending scores to publish yet.');
     return;
   }
-  const result = await api('/api/eval/publish', { scores });
+  const result = await api('/api/eval/publish', payload);
   if (result.ok) {
     scoreEditMode = false;
     closeEvalModal();
@@ -2203,7 +2292,9 @@ function renderEval(results, pendingScores = {}) {
     const score = document.createElement('span');
     score.className = 'eval-score-pill';
     score.textContent = `${pendingScoreFor(entry, latestPendingScores).toFixed(2)} / 10`;
-    header.appendChild(editable);
+    if (!scoreEditMode || !entryHasAxisScores(entry)) {
+      header.appendChild(editable);
+    }
     header.appendChild(score);
     card.appendChild(header);
 
@@ -2241,9 +2332,20 @@ function renderEval(results, pendingScores = {}) {
       fill.style.width = `${Math.round(Math.max(0, Math.min(1, value || 0)) * 100)}%`;
       barWrap.appendChild(fill);
       const num = document.createElement('div');
+      num.className = 'axis-score-value';
       num.textContent = display;
       num.style.textAlign = 'right';
-      axes.append(name, barWrap, num);
+      const editableAxis = document.createElement('input');
+      editableAxis.className = 'axis-score-edit';
+      editableAxis.id = axisInputId(index, axis);
+      editableAxis.type = 'number';
+      editableAxis.step = '0.1';
+      editableAxis.min = '0';
+      editableAxis.max = '10';
+      editableAxis.value = value === null || value === undefined ? '' : (value * 10).toFixed(1);
+      const valueCell = document.createElement('div');
+      valueCell.append(num, editableAxis);
+      axes.append(name, barWrap, valueCell);
     }
     card.appendChild(axes);
 
@@ -2513,7 +2615,7 @@ document.getElementById('btn-end-early').onclick = () => {
 
 document.getElementById('btn-accept-scores').onclick = () => {
   if (Object.keys(latestPendingScores || {}).length === 0) return;
-  publishScores(collectEditedScores());
+  publishScores(collectEditedScorePayload());
 };
 document.getElementById('btn-edit-scores').onclick = () => {
   if (Object.keys(latestPendingScores || {}).length === 0) return;
@@ -2523,7 +2625,7 @@ document.getElementById('btn-edit-scores').onclick = () => {
 };
 document.getElementById('btn-publish-edited').onclick = () => {
   if (Object.keys(latestPendingScores || {}).length === 0) return;
-  publishScores(collectEditedScores());
+  publishScores(collectEditedScorePayload());
 };
 document.getElementById('btn-cancel-score-edit').onclick = () => {
   scoreEditMode = false;
@@ -3425,22 +3527,22 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .idle-ready-grid {
     position: absolute;
-    left: 12%;
-    right: 12%;
-    bottom: 10.5%;
+    left: 8%;
+    right: 8%;
+    bottom: 8.2%;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 2.1vw;
+    gap: 2.4vw;
     z-index: 4;
   }
   .idle-player {
     min-width: 0;
-    height: 13.5vh;
+    height: 17.5vh;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 1.05vh;
-    padding: 0 1.6vw;
+    gap: 1.25vh;
+    padding: 0 2vw;
     border: var(--line) solid var(--ink);
     background: var(--paper);
   }
@@ -3454,7 +3556,7 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .idle-player-label {
     overflow: hidden;
-    font-size: min(1vw, 1.78vh);
+    font-size: min(1.25vw, 2.22vh);
     font-weight: 700;
     line-height: 1;
     text-transform: uppercase;
@@ -3463,7 +3565,7 @@ _OVERLAY_HTML = """<!doctype html>
   .idle-player-name {
     max-width: 100%;
     overflow: hidden;
-    font-size: min(2.4vw, 4.27vh);
+    font-size: min(3.35vw, 5.95vh);
     font-weight: 700;
     line-height: 1;
     text-overflow: ellipsis;
@@ -3512,10 +3614,10 @@ _OVERLAY_HTML = """<!doctype html>
   .score-axes {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(42%, 1.4fr) 4.2ch;
-    gap: 1vh 0.7vw;
+    gap: 1.25vh 0.85vw;
     margin-top: 5%;
     align-items: center;
-    font-size: min(0.95vw, 1.69vh);
+    font-size: min(1.43vw, 2.54vh);
     font-weight: 700;
     text-transform: uppercase;
   }
@@ -3525,8 +3627,8 @@ _OVERLAY_HTML = """<!doctype html>
     white-space: nowrap;
   }
   .score-axis-bar {
-    height: 1.35vh;
-    min-height: 8px;
+    height: 2.03vh;
+    min-height: 12px;
     border: var(--line) solid var(--ink);
     background: transparent;
   }
@@ -3584,9 +3686,9 @@ _OVERLAY_HTML = """<!doctype html>
   <section class="view active" id="idle-view">
     <div class="stage">
       <div class="full-backdrop"></div>
-      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
+      <div class="chip event-chip">LangChain Interrupt 2026</div>
       <div class="idle-card">
-        <div class="idle-title">vibe speedrun</div>
+        <div class="idle-title">Deep Agents PvP Vibe Coding Speedrun</div>
         <div class="idle-subhead" id="idle-subhead">Waiting for players</div>
       </div>
       <div class="idle-ready-grid">
@@ -4242,6 +4344,8 @@ def create_app() -> FastAPI:
     @app.post("/api/eval/publish")
     async def publish_eval_scores(req: PublishScoresRequest) -> dict[str, Any]:
         scores = dict(req.scores) or dict(_round_context.get("pending_scores") or {})
+        if req.axes:
+            scores = _apply_axis_score_overrides(req.axes) or scores
         state = await _publish_round_scores(scores)
         await _publish_state_update()
         return {"state": state, "scores": scores}

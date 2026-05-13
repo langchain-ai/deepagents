@@ -36,6 +36,10 @@ class TestProjectClear(unittest.TestCase):
             style_css = (src / "style.css").read_text(encoding="utf-8")
             self.assertIn("background-size: 50% 100%, 50% 100%;", style_css)
             self.assertIn("padding: clamp(0.75rem, 2.2vh, 1.5rem) 1rem 0;", style_css)
+            self.assertIn('"Aeonik Mono", "IBM Plex Mono"', style_css)
+            self.assertIn("border: 2px solid #000000;", style_css)
+            self.assertIn("rgba(216, 239, 255, 0.94)", style_css)
+            self.assertNotIn("text-transform: uppercase", style_css)
             self.assertNotIn(".top-band", style_css)
             self.assertNotIn(".panel", style_css)
             self.assertNotIn(

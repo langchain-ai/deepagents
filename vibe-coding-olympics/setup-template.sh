@@ -72,7 +72,7 @@ body {
   background-size: 50% 100%, 50% 100%;
   background-repeat: no-repeat;
   color: #000000;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Aeonik Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 }
 
 #app {
@@ -87,11 +87,15 @@ body {
 
 h1 {
   margin: 0;
-  font-size: clamp(1.4rem, 3.2vw, 3.4rem);
-  font-weight: 800;
+  padding: 0.95rem 1.35rem;
+  border: 2px solid #000000;
+  background:
+    linear-gradient(90deg, rgba(216, 239, 255, 0.94), rgba(245, 216, 255, 0.94)),
+    #ffffff;
+  font-size: clamp(1.2rem, 2.6vw, 2.7rem);
+  font-weight: 700;
   letter-spacing: 0;
   line-height: 1;
-  text-transform: uppercase;
 }
 
 @media (max-width: 640px) {

@@ -111,9 +111,9 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/obs/scene` | POST | `{scene: str}` | Asks the OBS runner to switch directly to an OBS scene without changing game-state phase |
 | `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
-| `/api/round/end` | POST | `{}` | Cancels the timer, runs the LLM judge against every player site, and forwards `end` to the FSM |
-| `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, then fires `end` |
-| `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and forwards the supplied scores without invoking the judge |
+| `/api/round/end` | POST | `{}` | Cancels the timer, sends `times-up` to player CLI(s), runs the LLM judge, and stores results on the control server |
+| `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, and stores results on the control server |
+| `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and stores the supplied scores without invoking the judge |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM and cancels the timer |
 | `/api/prompts` | GET | — | Lists prompt pool entries |
 | `/api/prompts` | POST | `{prompt: str}` | Adds a prompt pool entry |
@@ -161,8 +161,8 @@ The control server is the only thing that runs the LLM judge. When the round tim
 1. Sends `times-up` to both player CLIs.
 2. Derives each player's site URL — `http://<relay-host>:<player-port>` by default, or `VIBE_PLAYER_<port>_SITE_URL` if set.
 3. Runs `vibe-coding-olympics/eval/judge.py` per site concurrently via `uv run`.
-4. Aggregates per-axis scores into a single `[0, 1]` overall, scales to `0..10`, and fires `end` on the FSM with those scores (which drives the OBS scoreboard).
-5. Stores per-axis results so the control website can render them and the OBS composite can pick them up.
+4. Aggregates per-axis scores into a single `[0, 1]` overall and scales them to `0..10` for the control website.
+5. Stores per-axis results on the control server.
 
 If the judge subprocess fails (15-second timeout, non-zero exit, missing/malformed JSON, or no usable LLM scores) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.
 

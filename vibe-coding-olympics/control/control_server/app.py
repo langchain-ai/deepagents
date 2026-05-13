@@ -329,9 +329,9 @@ def _eval_workdir() -> Path:
 
 
 class OverrideScoresRequest(BaseModel):
-    """Manual smoke-test override: bypass the judge and force OBS scores.
+    """Manual smoke-test override: bypass the judge and store entered scores.
 
-    Scores are constrained to the OBS scoreboard's 0..10 scale; `ge`/`le`
+    Scores are constrained to the display scoreboard's 0..10 scale; `ge`/`le`
     bounds also reject `NaN` and `inf` payloads, so a malformed POST is
     a 422 rather than a poisoned scoreboard.
     """
@@ -670,6 +670,7 @@ async def _api_state() -> dict[str, Any]:
             "started_at": _round_context.get("started_at"),
             "completed_at": _round_context.get("completed_at"),
             "last_reason": _round_context.get("last_reason"),
+            "manual_scores": dict(_round_context.get("manual_scores") or {}),
             "obs_error": _round_context.get("obs_error"),
             "times_up_error": _round_context.get("times_up_error"),
             "duration_warning": duration_warning,
@@ -715,7 +716,7 @@ def _round_player_targets() -> list[dict[str, str]]:
 
 
 def _eval_to_payload(result: eval_runner.EvalResult, *, port: str) -> dict[str, Any]:
-    """Coerce an `EvalResult` to the JSON shape the OBS UI consumes."""
+    """Coerce an `EvalResult` to the JSON shape the control UI consumes."""
     return {
         "port": port,
         "name": result.site_name,
@@ -772,7 +773,7 @@ async def _evaluate_one(
 
 
 async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
-    """Score the current round's players and forward the end event to OBS.
+    """Score the current round's players and retain results on the server.
 
     Args:
         reason: Diagnostic tag, either `"timer"` or `"end_early"`.
@@ -840,21 +841,11 @@ async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
             else:
                 per_site.append(item)
 
-        obs_scores = {entry["name"]: entry["obs_score"] for entry in per_site}
-
-        obs_state: dict[str, Any] | None = None
-        obs_error: str | None = None
-        try:
-            obs_state = await _forward("end", {"scores": obs_scores})
-        except HTTPException as exc:
-            obs_error = str(exc.detail)
-            logger.warning("Could not forward eval scores to OBS: %s", exc.detail)
-
         _last_eval_results.clear()
         _last_eval_results.extend(per_site)
         _round_context["last_reason"] = reason
-        _round_context["obs_state"] = obs_state
-        _round_context["obs_error"] = obs_error
+        _round_context["obs_state"] = None
+        _round_context["obs_error"] = None
         _round_context["completed_at"] = time.time()
         return per_site
 
@@ -946,7 +937,7 @@ _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Vibe Olympics Control</title>
+<title>Interrupt PvP Admin</title>
 <style>
   :root { color-scheme: dark; }
   body {
@@ -1011,6 +1002,16 @@ _INDEX_HTML = """<!doctype html>
   button:disabled, button[aria-disabled="true"] { cursor: not-allowed; filter: grayscale(0.7) brightness(0.75); opacity: 0.55; }
   button.danger { background: #dc2626; }
   button.secondary { background: #525252; }
+  button.outline {
+    background: transparent;
+    border: 1px solid #3a3a3a;
+    color: #b8b8b8;
+  }
+  button.outline:hover {
+    background: #1f1f1f;
+    border-color: #555;
+    color: #e5e5e5;
+  }
   a { color: #93c5fd; }
   .muted { color: #888; font-size: 0.85rem; margin-top: 0.65rem; }
   .port-note { color: #707070; font-size: 0.8rem; }
@@ -1049,8 +1050,63 @@ _INDEX_HTML = """<!doctype html>
     background: #052e16;
   }
   .action-line { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+  .push-right { margin-left: auto; }
   .row { display: flex; gap: 0.75rem; }
   .row > label { flex: 1; }
+  .round-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 0.45fr);
+    gap: 1rem;
+  }
+  .round-row section {
+    margin-bottom: 1rem;
+  }
+  .debug-section {
+    padding: 0;
+    overflow: hidden;
+  }
+  .debug-toggle {
+    padding: 0.9rem 1.25rem;
+  }
+  .debug-toggle[open] {
+    padding-bottom: 1rem;
+  }
+  .debug-toggle summary {
+    cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    gap: 0.65rem;
+    color: #e5e5e5;
+  }
+  .debug-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+  }
+  .debug-hint {
+    color: #888;
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+  .debug-grid {
+    display: grid;
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+  .debug-group {
+    border-top: 1px solid #2a2a2a;
+    padding-top: 0.85rem;
+  }
+  .debug-group:first-of-type {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .debug-group h3 {
+    margin: 0 0 0.4rem;
+    color: #a0a0a0;
+    font-size: 0.86rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
   .prompt-pool {
     display: grid;
     gap: 0.5rem;
@@ -1273,6 +1329,9 @@ _INDEX_HTML = """<!doctype html>
     margin-top: 0.5rem;
   }
   @media (max-width: 560px) {
+    .round-row {
+      grid-template-columns: 1fr;
+    }
     .smoke-actions,
     .smoke-command-actions,
     .smoke-layout-actions {
@@ -1282,19 +1341,7 @@ _INDEX_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>Vibe Olympics Control</h1>
-
-<section>
-  <h2>OBS overlay</h2>
-  <div class="muted">
-    Add <a id="overlay-link" href="/overlay" target="_blank" rel="noreferrer">/overlay</a>
-    as an OBS Browser Source on top of the player feeds.
-  </div>
-  <div class="action-line">
-    <button class="secondary" id="btn-open-smoke">Smoke test overlay…</button>
-    <span class="ready-badge waiting" id="smoke-active">Smoke active</span>
-  </div>
-</section>
+<h1>Interrupt PvP Admin</h1>
 
 <section>
   <h2>Start round</h2>
@@ -1307,38 +1354,38 @@ _INDEX_HTML = """<!doctype html>
     </label>
   </div>
   <label>Prompt
-    <input id="prompt" type="text" placeholder="leave blank to draw random prompt automatically">
+    <input id="prompt" type="text" placeholder="(leave blank to draw random prompt automatically)">
   </label>
   <div class="action-line">
     <button id="btn-start" aria-disabled="true">Start</button>
     <button class="secondary" id="btn-draw-prompt">Draw prompt</button>
-    <button class="secondary" id="btn-open-prompt-pool">Manage prompt pool…</button>
+    <button class="outline push-right" id="btn-open-prompt-pool">Manage prompt pool…</button>
     <span class="ready-badge ready" id="round-started">Round started</span>
     <span class="inline-error" id="start-error" role="alert"></span>
   </div>
 </section>
 
-<section>
-  <h2>Round timer</h2>
-  <div class="timer-display">
-    <span id="timer-clock">--:--</span>
-    <span class="timer-meta" id="timer-meta">idle</span>
-  </div>
-  <progress id="timer-bar" max="1" value="0"></progress>
-  <div class="muted">When the timer expires, the LLM judge scores both player websites automatically.</div>
-</section>
+<div class="round-row">
+  <section>
+    <h2>Round timer</h2>
+    <div class="timer-display">
+      <span id="timer-clock">--:--</span>
+      <span class="timer-meta" id="timer-meta">idle</span>
+    </div>
+    <progress id="timer-bar" max="1" value="0"></progress>
+    <div class="muted">When the timer expires, the LLM judge scores both player websites automatically.</div>
+  </section>
 
-<section>
-  <h2>End round</h2>
-  <p class="muted">
-    Scores are computed automatically when the timer expires. End early to
-    stop the round and trigger judging now. Use <em>Override scores</em>
-    for smoke tests when you need to bypass the judge.
-  </p>
-  <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
-  <button class="secondary" id="btn-open-override">Override scores…</button>
-  <span class="inline-error" id="end-error" role="alert"></span>
-</section>
+  <section>
+    <h2>End round</h2>
+    <p class="muted">
+      Scores are computed automatically when the timer expires. End early to
+      stop the round and trigger judging now.
+    </p>
+    <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
+    <span class="inline-error" id="end-error" role="alert"></span>
+  </section>
+</div>
 
 <section>
   <h2>Judge results</h2>
@@ -1436,27 +1483,44 @@ _INDEX_HTML = """<!doctype html>
     <dt>Contestants</dt><dd id="state-contestants">none</dd>
     <dt>Scores</dt><dd id="state-scores">none</dd>
   </dl>
-  <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #2a2a2a;">
-    <button id="btn-full-round">Run full round</button>
-    <div style="color:#707070;font-size:0.8rem;margin-top:0.5rem;">
-      <strong>Demo only.</strong> Fires <code>start</code> &rarr; wait 2s &rarr;
-      <code>end</code> &rarr; wait 2s &rarr; <code>reset</code>, using the inputs
-      above. Not intended for a live round.
+</section>
+
+<section class="debug-section">
+  <details class="debug-toggle">
+    <summary>
+      <span class="debug-title">Debug controls</span>
+      <span class="debug-hint">Smoke tests, logs, player tools</span>
+    </summary>
+    <div class="debug-grid">
+      <div class="debug-group">
+        <h3>Overlay</h3>
+        <button class="secondary" id="btn-open-smoke">Smoke test overlay…</button>
+        <span class="ready-badge waiting" id="smoke-active">Smoke active</span>
+      </div>
+      <div class="debug-group">
+        <h3>Round</h3>
+        <div class="action-line">
+          <button class="secondary" id="btn-open-override">Override scores…</button>
+          <button id="btn-full-round">Run full round</button>
+        </div>
+        <div class="muted">
+          Full round is demo only: start &rarr; wait 2s &rarr; end with override
+          scores &rarr; wait 2s &rarr; reset.
+        </div>
+      </div>
+      <div class="debug-group">
+        <h3>Players</h3>
+        <button class="secondary" id="btn-list">List</button>
+        <button id="btn-times-up">Times up all</button>
+        <button class="secondary" id="btn-clear">Reset round all</button>
+        <div class="muted">Ready players: <span id="ready-players">none</span></div>
+      </div>
+      <div class="debug-group">
+        <h3>Log</h3>
+        <button class="secondary" id="btn-open-log">Open log…</button>
+      </div>
     </div>
-  </div>
-</section>
-
-<section>
-  <h2>Players</h2>
-  <button class="secondary" id="btn-list">List</button>
-  <button id="btn-times-up">Times up all</button>
-  <button class="secondary" id="btn-clear">Reset round all</button>
-  <div class="muted">Ready players: <span id="ready-players">none</span></div>
-</section>
-
-<section>
-  <h2>Log</h2>
-  <button class="secondary" id="btn-open-log">Open log…</button>
+  </details>
 </section>
 
 <dialog id="log-modal">
@@ -2223,7 +2287,6 @@ document.getElementById('btn-clear').onclick = () => {
 refreshPlayers();
 refreshState({ quiet: true });
 loadPromptPool();
-document.getElementById('overlay-link').href = `${window.location.origin}/overlay`;
 setInterval(refreshPlayers, 2000);
 setInterval(() => refreshState({ quiet: true }), 2000);
 </script>
@@ -3399,13 +3462,13 @@ def create_app() -> FastAPI:
     async def round_override_end(req: OverrideScoresRequest) -> dict[str, Any]:
         _clear_overlay_smoke()
         await _round_timer.cancel()
-        obs_state = await _forward("end", {"scores": req.scores})
         _round_context["last_reason"] = "override"
-        _round_context["obs_state"] = obs_state
+        _round_context["manual_scores"] = dict(req.scores)
+        _round_context["obs_state"] = None
         _round_context["obs_error"] = None
         _round_context["completed_at"] = time.time()
         await _publish_state_update()
-        return {"state": obs_state, "scores": req.scores}
+        return {"state": None, "scores": req.scores}
 
     @app.post("/api/round/reset")
     async def round_reset() -> dict[str, Any]:

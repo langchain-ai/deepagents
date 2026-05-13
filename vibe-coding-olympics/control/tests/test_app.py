@@ -399,7 +399,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.json()["duration_secs"], 120.0)
         self.assertEqual(response.json()["round_num"], 1)
 
-    def test_round_end_early_runs_judge_and_forwards_scores(self) -> None:
+    def test_round_end_early_runs_judge_without_forwarding_scores(self) -> None:
         from control_server import eval_runner
 
         client = TestClient(app_mod.create_app())
@@ -446,11 +446,9 @@ class TestReadyPlayers(unittest.TestCase):
             response = client.post("/api/round/end-early", json={})
 
         self.assertEqual(response.status_code, 200)
-        forward.assert_awaited_once_with(
-            "end",
-            {"scores": {"Alice": 5.0, "Bob": 5.0}},
-        )
+        forward.assert_not_awaited()
         body = response.json()
+        self.assertIsNone(body["state"])
         names = sorted(entry["name"] for entry in body["results"])
         self.assertEqual(names, ["Alice", "Bob"])
         for entry in body["results"]:
@@ -707,9 +705,9 @@ class TestRoundOverrideEnd(unittest.TestCase):
     def tearDown(self) -> None:
         _reset_module_globals()
 
-    def test_override_end_forwards_supplied_scores_without_judge(self) -> None:
+    def test_override_end_stores_supplied_scores_without_judge_or_obs(self) -> None:
         client = TestClient(app_mod.create_app())
-        forward = AsyncMock(return_value={"phase": "scoreboard"})
+        forward = AsyncMock()
         run_eval = AsyncMock()
 
         with (
@@ -722,10 +720,13 @@ class TestRoundOverrideEnd(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        forward.assert_awaited_once_with(
-            "end",
-            {"scores": {"Alice": 9.5, "Bob": 4.2}},
+        self.assertEqual(response.json()["state"], None)
+        self.assertEqual(response.json()["scores"], {"Alice": 9.5, "Bob": 4.2})
+        self.assertEqual(
+            app_mod._round_context["manual_scores"],
+            {"Alice": 9.5, "Bob": 4.2},
         )
+        forward.assert_not_awaited()
         run_eval.assert_not_awaited()
 
     def test_override_end_rejects_out_of_range_scores(self) -> None:
@@ -745,7 +746,7 @@ class TestRoundOverrideEnd(unittest.TestCase):
         with (
             patch(
                 "control_server.app._forward",
-                new=AsyncMock(return_value={"phase": "scoreboard"}),
+                new=AsyncMock(),
             ),
             patch.object(app_mod._round_timer, "cancel", new=timer_cancel),
         ):
@@ -812,10 +813,7 @@ class TestRoundEvalFallback(unittest.TestCase):
             # generic "no site URL configured" string.
             self.assertTrue(entry["fallback_reason"].startswith("unset for"))
             self.assertEqual(entry["url"], "")
-        forward.assert_awaited_once()
-        forwarded_event, forwarded_payload = forward.await_args.args
-        self.assertEqual(forwarded_event, "end")
-        self.assertEqual(set(forwarded_payload["scores"].keys()), {"Alice", "Bob"})
+        forward.assert_not_awaited()
 
     def test_crashing_eval_does_not_abort_other_players(self) -> None:
         from control_server import eval_runner

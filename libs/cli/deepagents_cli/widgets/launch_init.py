@@ -47,10 +47,11 @@ class LaunchNameScreen(ModalScreen[str | None]):
     CSS = """
     LaunchNameScreen {
         align: center middle;
+        background: $background;
     }
 
     LaunchNameScreen > Vertical {
-        width: 64;
+        width: 72;
         max-width: 90%;
         height: auto;
         background: $surface;
@@ -68,6 +69,13 @@ class LaunchNameScreen(ModalScreen[str | None]):
     LaunchNameScreen .launch-init-copy {
         height: auto;
         color: $text;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    LaunchNameScreen .launch-init-premise {
+        height: auto;
+        color: $text-muted;
         text-align: center;
         margin-bottom: 1;
     }
@@ -99,6 +107,15 @@ class LaunchNameScreen(ModalScreen[str | None]):
             yield Static(
                 "Welcome to Interrupt 2026: Deep Agents PvP Speedrun",
                 classes="launch-init-title",
+            )
+            yield Static(
+                Content.assemble(
+                    "You are racing another player to ship the best website "
+                    "from the same prompt. When the round starts, your agent "
+                    "will ask a few questions, then vibe code from your "
+                    "answers while you give feedback and steer the build."
+                ),
+                classes="launch-init-premise",
             )
             yield Static(
                 Content.assemble("Enter your name to play"),

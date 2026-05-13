@@ -1374,7 +1374,7 @@ _INDEX_HTML = """<!doctype html>
   }
   .eval-card.editing .score-edit { display: block; }
   #override-modal,
-  #log-modal,
+  #eval-modal,
   #prompt-pool-modal,
   #smoke-modal {
     border: 1px solid #2a2a2a;
@@ -1386,11 +1386,21 @@ _INDEX_HTML = """<!doctype html>
     width: 90%;
   }
   #override-modal::backdrop,
-  #log-modal::backdrop,
+  #eval-modal::backdrop,
   #prompt-pool-modal::backdrop,
   #smoke-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
-  #log-modal {
+  #eval-modal {
     max-width: 760px;
+  }
+  #eval-form {
+    max-height: min(78vh, 780px);
+    display: flex;
+    flex-direction: column;
+  }
+  #eval-results {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.25rem;
   }
   #prompt-pool-form {
     max-height: min(72vh, 720px);
@@ -1448,7 +1458,39 @@ _INDEX_HTML = """<!doctype html>
   .prompt-add-row button {
     margin-top: 0;
   }
+  .prompt-pool-scroll {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .prompt-pool-scroll.has-more::after {
+    content: "...";
+    position: absolute;
+    right: 0.25rem;
+    bottom: 0;
+    left: 0;
+    height: 2.8rem;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 0.15rem;
+    background: linear-gradient(
+      to bottom,
+      rgba(20, 20, 20, 0),
+      rgba(20, 20, 20, 0.82) 62%,
+      #141414
+    );
+    color: #737373;
+    font-size: 1rem;
+    letter-spacing: 0.16em;
+    line-height: 1;
+    pointer-events: none;
+  }
   #prompt-pool {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding-right: 0.25rem;
   }
@@ -1540,7 +1582,7 @@ _INDEX_HTML = """<!doctype html>
       <span class="timer-meta" id="timer-meta">idle</span>
     </div>
     <progress id="timer-bar" max="1" value="0"></progress>
-    <div class="muted">When the timer expires, judge results are held for host approval before publishing.</div>
+    <div class="muted">When the timer expires, judge results open for host approval before publishing.</div>
   </section>
 
   <section>
@@ -1553,19 +1595,6 @@ _INDEX_HTML = """<!doctype html>
     <span class="inline-error" id="end-error" role="alert"></span>
   </section>
 </div>
-
-<section>
-  <h2>Judge results</h2>
-  <div class="muted eval-help">Latest per-axis evaluation. Review scores here before publishing them to OBS.</div>
-  <div class="action-line" id="eval-approval" hidden>
-    <button type="button" id="btn-accept-scores" disabled>Accept scores</button>
-    <button type="button" class="secondary" id="btn-edit-scores" disabled>Edit scores</button>
-    <button type="button" id="btn-publish-edited" hidden disabled>Publish edited scores</button>
-    <button type="button" class="secondary" id="btn-cancel-score-edit" hidden>Cancel edit</button>
-    <span class="inline-error" id="publish-error" role="alert"></span>
-  </div>
-  <div id="eval-results"></div>
-</section>
 
 <dialog id="override-modal">
   <form method="dialog" id="override-form">
@@ -1590,6 +1619,28 @@ _INDEX_HTML = """<!doctype html>
   </form>
 </dialog>
 
+<dialog id="eval-modal">
+  <form method="dialog" id="eval-form">
+    <div class="modal-header">
+      <h2>Judge results</h2>
+      <button type="button" class="icon-button" id="btn-eval-close" aria-label="Close judge results">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="muted eval-help">Latest per-axis evaluation. Review scores here before publishing them to OBS.</div>
+    <div id="eval-results"></div>
+    <div class="action-line" id="eval-approval" hidden>
+      <button type="button" id="btn-accept-scores" disabled>Accept scores</button>
+      <button type="button" class="secondary" id="btn-edit-scores" disabled>Edit scores</button>
+      <button type="button" id="btn-publish-edited" hidden disabled>Publish edited scores</button>
+      <button type="button" class="secondary" id="btn-cancel-score-edit" hidden>Cancel edit</button>
+      <span class="inline-error" id="publish-error" role="alert"></span>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="prompt-pool-modal">
   <form method="dialog" id="prompt-pool-form">
     <div class="modal-header">
@@ -1604,7 +1655,9 @@ _INDEX_HTML = """<!doctype html>
       <input id="new-prompt" type="text" placeholder="Add a new website prompt">
       <button type="button" id="btn-add-prompt">Add</button>
     </div>
-    <div class="prompt-pool" id="prompt-pool"></div>
+    <div class="prompt-pool-scroll">
+      <div class="prompt-pool" id="prompt-pool"></div>
+    </div>
   </form>
 </dialog>
 
@@ -1652,21 +1705,11 @@ _INDEX_HTML = """<!doctype html>
   </form>
 </dialog>
 
-<section>
-  <h2>Game state</h2>
-  <div class="muted">OBS phase: <span id="obs-phase">unknown</span></div>
-  <dl class="state-summary" id="state-summary">
-    <dt>Prompt</dt><dd id="state-prompt">none</dd>
-    <dt>Contestants</dt><dd id="state-contestants">none</dd>
-    <dt>Scores</dt><dd id="state-scores">none</dd>
-  </dl>
-</section>
-
 <section class="debug-section">
   <details class="debug-toggle">
     <summary>
       <span class="debug-title">Debug controls</span>
-      <span class="debug-hint">Smoke tests, logs, player tools</span>
+      <span class="debug-hint">Smoke tests, player tools, game state</span>
       <span class="debug-chevron" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none">
           <path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
@@ -1697,20 +1740,32 @@ _INDEX_HTML = """<!doctype html>
         <div class="muted">Ready players: <span id="ready-players">none</span></div>
       </div>
       <div class="debug-group">
-        <h3>Log</h3>
-        <button class="secondary" id="btn-open-log">Open log…</button>
+        <h3>Game state</h3>
+        <div class="muted">OBS phase: <span id="obs-phase">unknown</span></div>
+        <dl class="state-summary" id="state-summary">
+          <dt>Prompt</dt><dd id="state-prompt">none</dd>
+          <dt>Contestants</dt><dd id="state-contestants">none</dd>
+          <dt>Scores</dt><dd id="state-scores">none</dd>
+        </dl>
       </div>
     </div>
   </details>
 </section>
 
-<dialog id="log-modal">
-  <form method="dialog">
-    <h2 style="margin-top:0">Log</h2>
+<section class="debug-section">
+  <details class="debug-toggle" id="log-toggle">
+    <summary>
+      <span class="debug-title">Log</span>
+      <span class="debug-hint">Recent admin actions and API responses</span>
+      <span class="debug-chevron" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </span>
+    </summary>
     <div id="log"></div>
-    <button type="button" class="secondary" id="btn-log-close">Close</button>
-  </form>
-</dialog>
+  </details>
+</section>
 
 <script>
 const logEl = document.getElementById('log');
@@ -1722,17 +1777,9 @@ function log(msg, isErr) {
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
 }
-
-const logModal = document.getElementById('log-modal');
-document.getElementById('btn-open-log').onclick = () => {
-  if (typeof logModal.showModal === 'function') logModal.showModal();
-  else logModal.setAttribute('open', '');
-  logEl.scrollTop = logEl.scrollHeight;
-};
-document.getElementById('btn-log-close').onclick = () => {
-  if (typeof logModal.close === 'function') logModal.close();
-  else logModal.removeAttribute('open');
-};
+document.getElementById('log-toggle').addEventListener('toggle', (event) => {
+  if (event.target.open) logEl.scrollTop = logEl.scrollHeight;
+});
 
 async function api(path, body, options = {}) {
   try {
@@ -1827,6 +1874,8 @@ let currentPhase = 'unknown';
 let latestEvalResults = [];
 let latestPendingScores = {};
 let latestContestants = [];
+let latestEvalModalSignature = '';
+let dismissedEvalModalSignature = '';
 let scoreEditMode = false;
 const PLAYER_SLOT_PORTS = ['3001', '3002'];
 function setStartError(message) {
@@ -1930,6 +1979,39 @@ function renderEvalActions(results, pendingScores) {
   publishEdited.disabled = !hasPending;
   document.getElementById('btn-cancel-score-edit').hidden = !scoreEditMode;
 }
+function evalModalSignature(results, pendingScores) {
+  const pending = Object.entries(pendingScores || {}).sort(([left], [right]) => (
+    left.localeCompare(right)
+  ));
+  const resultSummary = (results || []).map((entry) => [
+    entry.name || '',
+    Number(entry.overall || 0),
+    Number(entry.obs_score || 0),
+    Boolean(entry.fallback),
+  ]);
+  return JSON.stringify({ pending, results: resultSummary });
+}
+function closeEvalModal() {
+  const modal = document.getElementById('eval-modal');
+  dismissedEvalModalSignature = latestEvalModalSignature;
+  if (typeof modal.close === 'function') modal.close();
+  else modal.removeAttribute('open');
+}
+function maybeOpenEvalModal(results, pendingScores) {
+  const modal = document.getElementById('eval-modal');
+  const hasResults = Boolean(results && results.length);
+  const hasPending = Object.keys(pendingScores || {}).length > 0;
+  if (!hasResults || !hasPending) {
+    dismissedEvalModalSignature = '';
+    latestEvalModalSignature = '';
+    if (modal.open) closeEvalModal();
+    return;
+  }
+  latestEvalModalSignature = evalModalSignature(results, pendingScores);
+  if (modal.open || latestEvalModalSignature === dismissedEvalModalSignature) return;
+  if (typeof modal.showModal === 'function') modal.showModal();
+  else modal.setAttribute('open', '');
+}
 function placeholderEvalEntries() {
   const names = latestContestants.filter(Boolean).slice(0, 2);
   while (names.length < 2) names.push(`Player ${names.length + 1}`);
@@ -1989,6 +2071,7 @@ async function publishScores(scores) {
   const result = await api('/api/eval/publish', { scores });
   if (result.ok) {
     scoreEditMode = false;
+    closeEvalModal();
     if (result.json && result.json.state) renderState(result.json.state);
     await refreshState({ quiet: true });
     clearPromptInput();
@@ -2007,6 +2090,7 @@ function renderEval(results, pendingScores = {}) {
   renderEvalActions(latestEvalResults, latestPendingScores);
   if (!results || results.length === 0) {
     renderEvalPlaceholder(container);
+    maybeOpenEvalModal(latestEvalResults, latestPendingScores);
     return;
   }
   for (const [index, entry] of results.entries()) {
@@ -2083,6 +2167,7 @@ function renderEval(results, pendingScores = {}) {
 
     container.appendChild(card);
   }
+  maybeOpenEvalModal(latestEvalResults, latestPendingScores);
 }
 function showRoundStarted() {
   const badge = document.getElementById('round-started');
@@ -2185,6 +2270,13 @@ async function refreshState(options = {}) {
   if (result.ok && result.json) renderState(result.json);
   return result;
 }
+function updatePromptPoolScrollCue() {
+  const container = document.getElementById('prompt-pool');
+  const wrapper = container.closest('.prompt-pool-scroll');
+  if (!wrapper) return;
+  const remaining = container.scrollHeight - container.scrollTop - container.clientHeight;
+  wrapper.classList.toggle('has-more', remaining > 1);
+}
 async function loadPromptPool() {
   const result = await api('/api/prompts', undefined, { quiet: true });
   if (!result.ok || !result.json) return;
@@ -2220,6 +2312,7 @@ async function loadPromptPool() {
     row.append(text, edit, remove);
     container.appendChild(row);
   }
+  requestAnimationFrame(updatePromptPoolScrollCue);
 }
 function renderPromptEditor(row, entry) {
   row.classList.add('editing');
@@ -2268,6 +2361,7 @@ function renderPromptEditor(row, entry) {
   row.append(input, save, cancel, remove);
   input.focus();
   input.select();
+  requestAnimationFrame(updatePromptPoolScrollCue);
 }
 async function drawPrompt() {
   const result = await api('/api/prompts/draw');
@@ -2347,6 +2441,10 @@ document.getElementById('btn-cancel-score-edit').onclick = () => {
   setPublishError('');
   refreshState({ quiet: true });
 };
+document.getElementById('btn-eval-close').onclick = closeEvalModal;
+document.getElementById('eval-modal').addEventListener('close', () => {
+  dismissedEvalModalSignature = latestEvalModalSignature;
+});
 
 const overrideModal = document.getElementById('override-modal');
 function openOverrideModal() {
@@ -2546,6 +2644,7 @@ function openPromptPoolModal() {
   loadPromptPool();
   if (typeof promptPoolModal.showModal === 'function') promptPoolModal.showModal();
   else promptPoolModal.setAttribute('open', '');
+  requestAnimationFrame(updatePromptPoolScrollCue);
 }
 function closePromptPoolModal() {
   if (typeof promptPoolModal.close === 'function') promptPoolModal.close();
@@ -2553,6 +2652,8 @@ function closePromptPoolModal() {
 }
 document.getElementById('btn-open-prompt-pool').onclick = openPromptPoolModal;
 document.getElementById('btn-prompt-pool-cancel').onclick = closePromptPoolModal;
+document.getElementById('prompt-pool').addEventListener('scroll', updatePromptPoolScrollCue);
+window.addEventListener('resize', updatePromptPoolScrollCue);
 
 async function addPrompt() {
   const input = document.getElementById('new-prompt');

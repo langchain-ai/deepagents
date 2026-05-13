@@ -805,6 +805,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('aria-label="Close prompt pool"', response.text)
         self.assertIn('id="timer-clock"', response.text)
         self.assertIn('id="eval-results"', response.text)
+        self.assertIn('id="eval-modal"', response.text)
+        self.assertIn('id="btn-eval-close"', response.text)
         self.assertIn("Waiting for judge results", response.text)
         self.assertNotIn("No results yet.", response.text)
         self.assertIn('class="debug-chevron" aria-hidden="true">', response.text)
@@ -812,13 +814,31 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="eval-approval"', response.text)
         self.assertIn('id="btn-accept-scores" disabled', response.text)
         self.assertIn('id="btn-edit-scores" disabled', response.text)
+        self.assertIn("function maybeOpenEvalModal", response.text)
+        self.assertIn("modal.showModal()", response.text)
+        self.assertIn("document.getElementById('btn-eval-close').onclick", response.text)
+        self.assertIn("addEventListener('close', () =>", response.text)
+        self.assertNotIn("<section>\n  <h2>Judge results</h2>", response.text)
         self.assertIn("/api/eval/publish", response.text)
         self.assertIn('id="end-error"', response.text)
         self.assertIn('id="obs-phase">unknown</span>', response.text)
         self.assertIn('id="state-summary"', response.text)
+        self.assertGreater(
+            response.text.index("<h3>Game state</h3>"),
+            response.text.index("Debug controls"),
+        )
         self.assertIn('id="state-prompt">none</dd>', response.text)
         self.assertIn('id="state-contestants">none</dd>', response.text)
         self.assertIn('id="state-scores">none</dd>', response.text)
+        self.assertGreater(
+            response.text.index('<span class="debug-title">Log</span>'),
+            response.text.index("</details>\n</section>\n\n<section class=\"debug-section\">"),
+        )
+        self.assertIn('id="log"', response.text)
+        self.assertIn('id="log-toggle"', response.text)
+        self.assertIn("addEventListener('toggle'", response.text)
+        self.assertNotIn('id="log-modal"', response.text)
+        self.assertNotIn('id="btn-open-log"', response.text)
         self.assertIn("Waiting for player", response.text)
         self.assertIn("Not connected", response.text)
         self.assertIn("const PLAYER_SLOT_PORTS = ['3001', '3002'];", response.text)
@@ -832,6 +852,24 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("function clearPromptInput()", response.text)
         self.assertGreaterEqual(response.text.count("clearPromptInput();"), 2)
         self.assertNotIn("Send prompt to all", response.text)
+
+    def test_prompt_pool_modal_has_scroll_affordance(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('class="prompt-pool-scroll"', response.text)
+        self.assertIn(".prompt-pool-scroll.has-more::after", response.text)
+        self.assertIn('content: "...";', response.text)
+        self.assertIn("linear-gradient(", response.text)
+        self.assertIn("function updatePromptPoolScrollCue()", response.text)
+        self.assertIn("container.scrollHeight - container.scrollTop", response.text)
+        self.assertIn("wrapper.classList.toggle('has-more'", response.text)
+        self.assertIn(
+            "addEventListener('scroll', updatePromptPoolScrollCue)",
+            response.text,
+        )
 
 
 class TestRoundOverrideEnd(unittest.TestCase):

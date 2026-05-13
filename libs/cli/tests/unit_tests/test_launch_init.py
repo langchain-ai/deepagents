@@ -60,6 +60,22 @@ class TestLaunchNameScreen:
             name_input = app.screen.query_one("#launch-name-input", Input)
             assert name_input.has_focus
 
+    async def test_name_screen_explains_premise_and_hides_backdrop(self) -> None:
+        """The first screen should explain the game without showing old app state."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_name_screen()
+            await pilot.pause()
+
+            premise = app.screen.query_one(".launch-init-premise", Static)
+            copy = app.screen.query_one(".launch-init-copy", Static)
+
+            assert "racing another player" in str(premise.render())
+            assert "will ask a few questions" in str(premise.render())
+            assert "steer the build" in str(premise.render())
+            assert str(copy.render()) == "Enter your name to play"
+            assert "background: $background;" in LaunchNameScreen.CSS
+
     async def test_submit_returns_normalized_name(self) -> None:
         """Submitting a name should dismiss with the trimmed, title-cased value."""
         app = LaunchNameTestApp()

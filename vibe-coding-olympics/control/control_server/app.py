@@ -1397,7 +1397,7 @@ _INDEX_HTML = """<!doctype html>
   }
   .eval-axes {
     display: grid;
-    grid-template-columns: 9rem 1fr 3rem;
+    grid-template-columns: 9rem 1fr minmax(5.25rem, auto);
     gap: 0.25rem 0.6rem;
     align-items: center;
     font-size: 0.82rem;
@@ -1417,7 +1417,7 @@ _INDEX_HTML = """<!doctype html>
   .eval-card.editing .eval-score-pill { display: none; }
   .axis-score-edit {
     display: none;
-    width: 3.9rem;
+    width: 5.25rem;
     margin: 0;
     padding: 0.18rem 0.3rem;
     font-size: 0.78rem;
@@ -1465,7 +1465,7 @@ _INDEX_HTML = """<!doctype html>
   }
   .score-edit {
     display: none;
-    width: 5.5rem;
+    width: 6.5rem;
     margin: 0;
     padding: 0.25rem 0.35rem;
     font-size: 0.82rem;

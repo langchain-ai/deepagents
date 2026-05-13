@@ -1893,9 +1893,7 @@ function renderTimer(timer) {
   const meta = document.getElementById('timer-meta');
   const bar = document.getElementById('timer-bar');
   if (!timer || !timer.running) {
-    clock.textContent = timer && timer.duration_secs
-      ? formatClock(timer.duration_secs)
-      : '--:--';
+    clock.textContent = timer && timer.duration_secs ? '00:00' : '--:--';
     meta.textContent = 'idle';
     bar.value = 0;
     bar.max = 1;
@@ -3835,7 +3833,7 @@ def create_app() -> FastAPI:
         _clear_overlay_smoke()
         _ready_players.clear()
         _model_ready_ports.clear()
-        await _round_timer.cancel()
+        await _round_timer.reset()
         _reset_round_state()
         state = await _forward("reset", {})
         await _publish_state_update()

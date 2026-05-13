@@ -72,6 +72,18 @@ class TestRoundTimer(unittest.TestCase):
 
         self.assertEqual(asyncio.run(scenario()), 0)
 
+    def test_reset_clears_last_duration(self) -> None:
+        async def scenario() -> float:
+            async def on_expire() -> None:
+                return None
+
+            timer = RoundTimer()
+            await timer.start(0.5, on_expire)
+            await timer.reset()
+            return timer.snapshot().duration_secs
+
+        self.assertEqual(asyncio.run(scenario()), 0.0)
+
     def test_restart_supersedes_previous_callback(self) -> None:
         async def scenario() -> tuple[int, int]:
             first = 0

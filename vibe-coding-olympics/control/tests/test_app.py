@@ -658,13 +658,18 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._connected_ports["3001"] = app_mod.time.monotonic()
         app_mod._ready_players.update({"3001": "Alice"})
 
-        with patch("control_server.app._forward", new=AsyncMock(return_value={})):
+        timer_reset = AsyncMock()
+        with (
+            patch("control_server.app._forward", new=AsyncMock(return_value={})),
+            patch.object(app_mod._round_timer, "reset", new=timer_reset),
+        ):
             response = client.post("/api/round/reset", json={})
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("3001", app_mod._connected_ports)
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
+        timer_reset.assert_awaited_once()
 
     def test_model_ready_tracks_port_separately_from_name_ready(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -762,6 +767,10 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('value="5:00"', response.text)
         self.assertIn("function roundDurationValue", response.text)
         self.assertIn("duration_secs: durationSecs", response.text)
+        self.assertIn(
+            "clock.textContent = timer && timer.duration_secs ? '00:00'",
+            response.text,
+        )
         self.assertIn('id="btn-open-override"', response.text)
         self.assertIn('id="override-modal"', response.text)
         self.assertIn('class="modal-header"', response.text)

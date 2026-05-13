@@ -210,6 +210,12 @@ class RoundTimer:
         async with self._get_lock():
             await self._cancel_locked()
 
+    async def reset(self) -> None:
+        """Cancel the countdown and clear remembered round duration."""
+        async with self._get_lock():
+            await self._cancel_locked()
+            self._last_duration_secs = 0.0
+
     async def _cancel_locked(self) -> None:
         """Cancel the in-flight task; assumes `self._lock` is held."""
         active = self._active

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import iterm2
 
-from control_server import deepagents_config
+from control_server import deepagents_config, preview_refresh
 from control_server.event_socket import send_socket_event
 from control_server.project_clear import clear_round_project
 
@@ -112,12 +112,18 @@ async def _project_dir_for_session(session: iterm2.Session) -> Path | None:
     return Path(str(raw))
 
 
-async def _send_force_clear(socket_path: Path, project_dir: Path | None = None) -> None:
+async def _send_force_clear(
+    socket_path: Path,
+    project_dir: Path | None = None,
+    *,
+    preview_port: str | None = None,
+) -> None:
     """Ask a running CLI to force-clear via its external event socket.
 
     Args:
         socket_path: Unix-domain socket path exported by the player CLI.
         project_dir: Optional web-vibe project directory to blank before reset.
+        preview_port: Optional local Vite port to reopen after reset.
 
     Raises:
         OSError: If the socket cannot be reached.
@@ -127,6 +133,7 @@ async def _send_force_clear(socket_path: Path, project_dir: Path | None = None) 
     deepagents_config.clear_recent_model()
     if project_dir is not None and not clear_round_project(project_dir):
         logger.warning("Could not clear round project at %s", project_dir)
+    preview_refresh.schedule_preview_refresh(preview_port)
     await _send_socket_event(
         socket_path,
         kind="signal",
@@ -181,7 +188,7 @@ async def clear_players(ports: list[str] | None) -> list[str]:
             continue
         project_dir = await _project_dir_for_session(session)
         try:
-            await _send_force_clear(socket_path, project_dir)
+            await _send_force_clear(socket_path, project_dir, preview_port=port)
         except (OSError, TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
             logger.warning(
                 "Failed to clear player %s via external event socket %s: %s",

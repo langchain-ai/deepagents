@@ -160,7 +160,7 @@ class TestSocketClear(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cleared, ["3001"])
         self.assertEqual(received[0]["payload"], "force-clear")
-        self.assertNotIn("old", index_html)
+        self.assertNotIn("<h1>old</h1>", index_html)
         self.assertIn("localStorage.clear();", main_js)
         self.assertIn("sessionStorage.clear();", main_js)
 

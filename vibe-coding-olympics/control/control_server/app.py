@@ -3055,6 +3055,35 @@ _OVERLAY_HTML = """<!doctype html>
     font-size: min(1.65vw, 2.92vh);
     letter-spacing: 0.02em;
   }
+  .event-title {
+    position: absolute;
+    left: 2.2%;
+    top: 3.1%;
+    max-width: 34%;
+    overflow: hidden;
+    color: var(--ink);
+    font-size: min(1.5vw, 2.67vh);
+    font-weight: 500;
+    line-height: 1;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+    z-index: 4;
+  }
+  .split-prompt-chip {
+    left: 50%;
+    top: 2.25%;
+    width: fit-content;
+    min-width: 15%;
+    max-width: 42%;
+    height: 5.5%;
+    transform: translateX(-50%);
+    padding: 0 1.65vw;
+    font-size: min(1.28vw, 2.28vh);
+    letter-spacing: 0;
+    text-transform: none;
+    text-overflow: ellipsis;
+  }
   .timer-chip {
     right: 2.2%;
     top: 2.25%;
@@ -3425,7 +3454,8 @@ _OVERLAY_HTML = """<!doctype html>
       <div class="split-gap-line"></div>
       <div class="split-gap-dot"></div>
       <div class="chip timer-chip" id="split-clock">--:--</div>
-      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
+      <div class="event-title">vibe speedrun</div>
+      <div class="chip split-prompt-chip" id="split-prompt">Waiting for prompt</div>
       <div class="split-player left">
         <div class="pane preview">
           __INLINE_P1_PREVIEW__
@@ -3512,6 +3542,7 @@ const els = {
   splitP1Name: document.getElementById('split-p1-name'),
   splitP2Name: document.getElementById('split-p2-name'),
   splitClock: document.getElementById('split-clock'),
+  splitPrompt: document.getElementById('split-prompt'),
   focusName: document.getElementById('focus-name'),
   focusClock: document.getElementById('focus-clock'),
   focusPrompt: document.getElementById('focus-prompt'),
@@ -3665,6 +3696,7 @@ function renderCoding() {
   updateText(els.splitP1Name, playerName(p1, 'Player 1'));
   updateText(els.splitP2Name, playerName(p2, 'Player 2'));
   updateText(els.splitClock, clock);
+  updateText(els.splitPrompt, prompt);
 
   updateText(els.focusName, playerName(focused, `Player ${focusIndex + 1}`));
   updateText(els.focusPrompt, prompt);

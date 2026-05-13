@@ -12,7 +12,7 @@ import uvicorn
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from control_server import deepagents_config
+from control_server import deepagents_config, preview_refresh
 from control_server.event_socket import send_socket_event
 from control_server.project_clear import clear_round_project
 
@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
             project_dir = _round_project_path()
             if project_dir is not None and not clear_round_project(project_dir):
                 logger.warning("Could not clear round project at %s", project_dir)
+            preview_refresh.schedule_preview_refresh_from_env()
         try:
             await send_socket_event(
                 socket_path,

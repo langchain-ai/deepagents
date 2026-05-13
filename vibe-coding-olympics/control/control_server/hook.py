@@ -36,6 +36,9 @@ def main() -> None:
     elif event == "competition.player.ready":
         path = "/api/players/model-ready"
         body = {"port": port}
+    elif event == "competition.player.reset":
+        path = "/api/players/model-unready"
+        body = {"port": port}
     else:
         return
 

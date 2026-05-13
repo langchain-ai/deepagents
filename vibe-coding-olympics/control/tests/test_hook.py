@@ -51,6 +51,26 @@ class TestPlayerHook(unittest.TestCase):
             timeout=2.0,
         )
 
+    def test_competition_player_reset_posts_model_unready(self) -> None:
+        payload = {"event": "competition.player.reset"}
+
+        with (
+            patch.dict(
+                "os.environ",
+                {"VIBE_PORT": "3001", "VIBE_CONTROL_API": "http://control"},
+            ),
+            patch("sys.stdin", io.StringIO(json.dumps(payload))),
+            patch("control_server.hook.httpx.post") as post,
+        ):
+            post.return_value = Mock()
+            hook.main()
+
+        post.assert_called_once_with(
+            "http://control/api/players/model-unready",
+            json={"port": "3001"},
+            timeout=2.0,
+        )
+
     def test_malformed_json_logs_warning(self) -> None:
         with (
             patch("sys.stdin", io.StringIO("{bad")),

@@ -8640,7 +8640,12 @@ class TestTimesUpState:
         """The reset action should only reset the current CLI."""
         app = DeepAgentsApp()
 
-        with patch.object(app, "_submit_input", new_callable=AsyncMock) as submit:
+        with (
+            patch.object(app, "_submit_input", new_callable=AsyncMock) as submit,
+            patch(
+                "deepagents_cli.hooks.dispatch_hook_fire_and_forget"
+            ) as dispatch_hook,
+        ):
             await app.action_force_reset_round()
 
         submit.assert_awaited_once_with(
@@ -8648,6 +8653,7 @@ class TestTimesUpState:
             "command",
             force_bypass=True,
         )
+        dispatch_hook.assert_called_once_with("competition.player.reset", {})
 
 
 class TestExternalBypassFieldHonored:

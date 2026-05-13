@@ -3902,6 +3902,16 @@ def create_app() -> FastAPI:
             "players_ready_sent": players_ready_sent,
         }
 
+    @app.post("/api/players/model-unready")
+    async def players_model_unready(req: PlayerModelReadyRequest) -> dict[str, Any]:
+        _mark_player_connected(req.port)
+        _model_ready_ports.discard(req.port)
+        return {
+            "connected": _connected_player_ports(),
+            "ready": dict(_ready_players),
+            "model_ready": sorted(_model_ready_ports),
+        }
+
     @app.post("/api/players/prompt")
     async def players_prompt(req: PlayerPromptRequest) -> dict[str, list[str]]:
         ports = _resolve_ports(req)

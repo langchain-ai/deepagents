@@ -84,7 +84,11 @@ hooks_file.write_text(
         {
             "hooks": [
                 {
-                    "events": ["competition.player.ready", "user.name.set"],
+                    "events": [
+                        "competition.player.ready",
+                        "competition.player.reset",
+                        "user.name.set",
+                    ],
                     "command": [
                         "uv",
                         "run",

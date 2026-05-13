@@ -7222,6 +7222,9 @@ class DeepAgentsApp(App):
 
     async def action_force_reset_round(self) -> None:
         """Reset only this CLI and return it to the player-ready flow."""
+        from deepagents_cli.hooks import dispatch_hook_fire_and_forget
+
+        dispatch_hook_fire_and_forget("competition.player.reset", {})
         await self._submit_input("/force-clear", "command", force_bypass=True)
 
     def on_paste(self, event: Paste) -> None:

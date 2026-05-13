@@ -24,7 +24,7 @@ Screen {
 /* Chat area - main scrollable messages area */
 #chat {
     height: 1fr;
-    padding: 1 2;
+    padding: 1 2 0 2;
     background: $background;
 }
 
@@ -44,7 +44,7 @@ Screen {
 /* Bottom app container - holds ChatInput (now inside scroll) */
 #bottom-app-container {
     height: auto;
-    margin-top: 1;
+    margin-top: 0;
 }
 
 /* Input area */

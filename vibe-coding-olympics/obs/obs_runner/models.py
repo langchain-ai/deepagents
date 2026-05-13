@@ -1,44 +1,24 @@
-"""Pydantic request/response schemas for the control API."""
+"""Pydantic request/response schemas for the OBS runner API."""
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
-
-from obs_runner.state_machine import Event, Phase
-
-
-class TransitionRequest(BaseModel):
-    """Single entry point for state transitions.
-
-    The API intentionally mirrors the state machine's shape: one event,
-    one payload. Payload schema is per-event, validated downstream.
-    `ready` accepts `{"contestants": [...]}` to render submitted player names
-    before a round starts.
-    """
-
-    event: Event
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class SceneRequest(BaseModel):
-    """Direct OBS scene switch request that leaves FSM state unchanged."""
+    """Direct OBS scene switch request."""
 
     name: str = Field(min_length=1)
 
 
-class StateResponse(BaseModel):
-    """Current machine snapshot returned by `GET /state` and transitions."""
+class TextRequest(BaseModel):
+    """Direct OBS text-source update."""
 
-    phase: Phase
-    prompt: str | None = None
-    contestants: list[str] = Field(default_factory=list)
-    scores: dict[str, float] = Field(default_factory=dict)
+    source: str = Field(min_length=1)
+    value: str = ""
 
 
 class HealthResponse(BaseModel):
-    """OBS + FSM connectivity reported by `GET /healthz`."""
+    """OBS connectivity reported by `GET /healthz`."""
 
     obs_connected: bool
-    phase: Phase

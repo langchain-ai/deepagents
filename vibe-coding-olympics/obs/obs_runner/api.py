@@ -1,14 +1,13 @@
-"""FastAPI surface for the game state machine.
+"""FastAPI surface for the OBS compositor.
 
-Endpoints (MVP):
+Two verbs, no state:
 
-- `POST /transition` — advance the FSM.
-- `POST /scene`      — switch OBS scenes without changing the FSM.
-- `GET  /state`      — current snapshot.
-- `GET  /healthz`    — OBS connection probe + current phase.
+- `POST /scene` — switch OBS scenes.
+- `POST /text`  — update an OBS text-source value.
+- `GET  /healthz` — obs-websocket connection probe.
 
-Producers (timer, judge, `play.sh`, manual curl) fire one-shot commands.
-No pub/sub, no websockets; adding those is a later pass.
+The round state machine lives in the control plane; this runner only
+renders what control tells it.
 """
 
 from __future__ import annotations
@@ -16,26 +15,14 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
 
 from obs_runner.compositor import CompositorProtocol, ObsCompositor
 from obs_runner.config import Config, load_config
-from obs_runner.models import (
-    HealthResponse,
-    SceneRequest,
-    StateResponse,
-    TransitionRequest,
-)
-from obs_runner.state_machine import InvalidTransitionError, StateMachine
+from obs_runner.models import HealthResponse, SceneRequest, TextRequest
 
 logger = logging.getLogger("obs_runner")
-
-
-def _snapshot_response(machine: StateMachine) -> StateResponse:
-    """Translate the in-memory snapshot into the wire schema."""
-    return StateResponse(**asdict(machine.snapshot))
 
 
 def create_app(
@@ -55,13 +42,10 @@ def create_app(
         A FastAPI instance with routes and lifespan wired up.
     """
     cfg = config or load_config()
-    # Only the real compositor participates in the lifespan connect/close
-    # dance; injected fakes (e.g. in tests) are assumed pre-configured.
     owns_compositor = compositor is None
     comp = compositor or ObsCompositor(
         host=cfg.obs_host, port=cfg.obs_port, password=cfg.obs_password
     )
-    machine = StateMachine(compositor=comp, config=cfg)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -69,7 +53,6 @@ def create_app(
             assert isinstance(comp, ObsCompositor)
             try:
                 comp.connect()
-                machine.prime()
             except ConnectionError as exc:
                 logger.warning("OBS unreachable at startup: %s", exc)
         try:
@@ -84,32 +67,23 @@ def create_app(
     @app.get("/healthz", response_model=HealthResponse)
     async def healthz() -> HealthResponse:
         connected = isinstance(comp, ObsCompositor) and comp._client is not None  # noqa: SLF001
-        return HealthResponse(
-            obs_connected=bool(connected),
-            phase=machine.snapshot.phase,
-        )
+        return HealthResponse(obs_connected=bool(connected))
 
-    @app.get("/state", response_model=StateResponse)
-    async def get_state() -> StateResponse:
-        return _snapshot_response(machine)
-
-    @app.post("/transition", response_model=StateResponse)
-    async def transition(req: TransitionRequest) -> StateResponse:
-        try:
-            machine.dispatch(req.event, req.payload)
-        except InvalidTransitionError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ConnectionError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return _snapshot_response(machine)
-
-    @app.post("/scene", response_model=StateResponse)
-    async def set_scene(req: SceneRequest) -> StateResponse:
+    @app.post("/scene")
+    async def set_scene(req: SceneRequest) -> dict[str, str]:
         try:
             comp.set_scene(req.name)
         except ConnectionError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return _snapshot_response(machine)
+        return {"name": req.name}
+
+    @app.post("/text")
+    async def set_text(req: TextRequest) -> dict[str, str]:
+        try:
+            comp.set_text(req.source, req.value)
+        except ConnectionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"source": req.source, "value": req.value}
 
     return app
 

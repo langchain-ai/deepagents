@@ -1,17 +1,18 @@
-"""Round state machine for the Vibe Coding Olympics MVP.
+"""Round state machine for the Vibe Coding Olympics control plane.
 
-Three phases, three events, deterministic transitions:
+Three phases, four events, deterministic transitions:
 
 ```
 IDLE  --start--> CODING  --end--> SCOREBOARD  --reset--> IDLE
 ```
 
-Each successful transition fires an on-entry hook that writes the
-compositor — e.g. entering `CODING` switches OBS to the coding scene
-and writes the prompt/round-number/contestants to their text inputs.
+Each successful transition fires an on-entry hook that drives the
+remote OBS compositor — e.g. entering `CODING` switches OBS to the
+coding scene and writes the prompt/contestants to their text inputs.
 
-Intentionally hand-rolled: a `Phase` enum, an `Event` enum, and a
-`dict[(Phase, Event), Phase]` transition table. No library, no decorators.
+The FSM lives in the control plane because every operator action that
+changes phase already originates here (round start, end, reset, player
+ready). OBS is a downstream renderer.
 """
 
 from __future__ import annotations
@@ -22,15 +23,15 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from obs_runner.compositor import CompositorProtocol
-    from obs_runner.config import Config
+    from control_server.compositor import CompositorProtocol
+    from control_server.state_config import StateConfig
 
 
 CONTESTANT_SLOTS = 2
 
 
 class Phase(StrEnum):
-    """Game phases. String values are the wire format for `GET /state`."""
+    """Game phases. String values are the wire format for state payloads."""
 
     IDLE = "idle"
     CODING = "coding"
@@ -68,11 +69,7 @@ class InvalidTransitionError(Exception):
 
 @dataclass
 class Snapshot:
-    """Serializable view of the current machine state.
-
-    Carried forward across phases so `GET /state` can show what the
-    current scene is displaying.
-    """
+    """Serializable view of the current machine state."""
 
     phase: Phase = Phase.IDLE
     prompt: str | None = None
@@ -86,12 +83,12 @@ class StateMachine:
     Not thread-safe — FastAPI serializes dispatch through the event loop.
     """
 
-    def __init__(self, compositor: CompositorProtocol, config: Config) -> None:
+    def __init__(self, compositor: CompositorProtocol, config: StateConfig) -> None:
         """Initialize the machine in `IDLE` without touching OBS.
 
         Args:
-            compositor: Object implementing `set_scene` and `set_text`.
-            config: Resolved scene/text-source names.
+            compositor: Object implementing async `set_scene` and `set_text`.
+            config: Scene names and text-source templates.
         """
         self._compositor = compositor
         self._config = config
@@ -102,22 +99,20 @@ class StateMachine:
         """Return the latest snapshot (by reference — do not mutate)."""
         return self._snapshot
 
-    def prime(self) -> None:
+    async def prime(self) -> None:
         """Push the IDLE scene so OBS reflects the starting phase.
 
-        Called once on server startup. A `dispatch(start)` from IDLE is
-        what normally triggers scene writes; without priming, OBS may
-        linger on whatever scene the operator last selected manually.
+        Called once on server startup. Without priming, OBS may linger
+        on whatever scene the operator last selected manually.
         """
-        self._enter_idle()
+        await self._enter_idle()
 
-    def dispatch(self, event: Event, payload: dict[str, Any]) -> Snapshot:
+    async def dispatch(self, event: Event, payload: dict[str, Any]) -> Snapshot:
         """Advance the machine by `event`, applying `payload` on entry.
 
         Args:
             event: Transition trigger.
-            payload: Event-specific data. Shape is validated by the API
-                layer before it reaches the machine.
+            payload: Event-specific data.
 
         Returns:
             The post-transition snapshot.
@@ -134,13 +129,13 @@ class StateMachine:
 
         target = _TRANSITIONS[key]
         if event is Event.READY:
-            self._enter_ready(payload)
+            await self._enter_ready(payload)
         elif target is Phase.CODING:
-            self._enter_coding(payload)
+            await self._enter_coding(payload)
         elif target is Phase.SCOREBOARD:
-            self._enter_scoreboard(payload)
+            await self._enter_scoreboard(payload)
         elif target is Phase.IDLE:
-            self._enter_idle()
+            await self._enter_idle()
         return self._snapshot
 
     def _contestants_from_payload(self, payload: dict[str, Any]) -> list[str]:
@@ -155,27 +150,17 @@ class StateMachine:
             raise InvalidTransitionError(msg)
         return contestants
 
-    def _write_contestant_slots(
+    async def _write_contestant_slots(
         self, contestants: list[str], scores: dict[str, float] | None
     ) -> None:
-        """Write names + scores into configured per-slot sources.
-
-        Slots are 1-indexed. Contestants beyond `CONTESTANT_SLOTS` are
-        silently dropped — the Olympics layout can only show N at a time.
-
-        Args:
-            contestants: Ordered contestant names. Slot `i` receives
-                `contestants[i-1]`.
-            scores: Optional per-name score map. When score sources are
-                configured, each slot gets `"X.XX"` or is cleared.
-        """
+        """Write names + scores into configured per-slot sources."""
         cfg = self._config
         for slot in range(1, CONTESTANT_SLOTS + 1):
             index = slot - 1
             name = contestants[index] if index < len(contestants) else ""
             name_source = cfg.name_source(slot)
             if name_source is not None:
-                self._compositor.set_text(name_source, name)
+                await self._compositor.set_text(name_source, name)
 
             if scores is None or not name:
                 score_text = ""
@@ -184,26 +169,26 @@ class StateMachine:
                 score_text = f"{value:.2f}" if value is not None else ""
             score_source = cfg.score_source(slot)
             if score_source is not None:
-                self._compositor.set_text(score_source, score_text)
+                await self._compositor.set_text(score_source, score_text)
 
-    def _enter_idle(self) -> None:
+    async def _enter_idle(self) -> None:
         """Clear round state and switch OBS to the configured idle scene."""
         self._snapshot = Snapshot(phase=Phase.IDLE)
         cfg = self._config
-        self._compositor.set_scene(cfg.scenes[Phase.IDLE])
+        await self._compositor.set_scene(cfg.scenes[Phase.IDLE])
         if cfg.text_prompt is not None:
-            self._compositor.set_text(cfg.text_prompt, "")
-        self._write_contestant_slots([], None)
+            await self._compositor.set_text(cfg.text_prompt, "")
+        await self._write_contestant_slots([], None)
 
-    def _enter_ready(self, payload: dict[str, Any]) -> None:
+    async def _enter_ready(self, payload: dict[str, Any]) -> None:
         """Render ready player names while waiting in the idle phase."""
         contestants = self._contestants_from_payload(payload)
         self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
         cfg = self._config
-        self._compositor.set_scene(cfg.scenes[Phase.IDLE])
-        self._write_contestant_slots(contestants, None)
+        await self._compositor.set_scene(cfg.scenes[Phase.IDLE])
+        await self._write_contestant_slots(contestants, None)
 
-    def _enter_coding(self, payload: dict[str, Any]) -> None:
+    async def _enter_coding(self, payload: dict[str, Any]) -> None:
         """Switch to the coding scene and write round metadata."""
         prompt = str(payload.get("prompt", ""))
         contestants = self._contestants_from_payload(payload)
@@ -214,17 +199,13 @@ class StateMachine:
             contestants=contestants,
         )
         cfg = self._config
-        self._compositor.set_scene(cfg.scenes[Phase.CODING])
+        await self._compositor.set_scene(cfg.scenes[Phase.CODING])
         if cfg.text_prompt is not None:
-            self._compositor.set_text(cfg.text_prompt, prompt)
-        self._write_contestant_slots(contestants, None)
+            await self._compositor.set_text(cfg.text_prompt, prompt)
+        await self._write_contestant_slots(contestants, None)
 
-    def _enter_scoreboard(self, payload: dict[str, Any]) -> None:
-        """Switch to the configured scoreboard scene and render per-slot scores.
-
-        Scores are mapped to the same slot their contestant occupied in
-        `CODING`, preserving visual position across the round.
-        """
+    async def _enter_scoreboard(self, payload: dict[str, Any]) -> None:
+        """Switch to the scoreboard scene and render per-slot scores."""
         raw = payload.get("scores")
         if not isinstance(raw, Mapping):
             msg = "payload must include a `scores` object"
@@ -241,5 +222,5 @@ class StateMachine:
             scores=scores,
         )
         cfg = self._config
-        self._compositor.set_scene(cfg.scenes[Phase.SCOREBOARD])
-        self._write_contestant_slots(self._snapshot.contestants, scores)
+        await self._compositor.set_scene(cfg.scenes[Phase.SCOREBOARD])
+        await self._write_contestant_slots(self._snapshot.contestants, scores)

@@ -1,8 +1,12 @@
 # Vibe Olympics control plane
 
-Operator commands go through one control surface:
+Operator commands go through one control surface. This service also owns the
+round state machine (`IDLE → CODING → SCOREBOARD → IDLE`); the OBS runner is a
+downstream renderer.
 
-- `vibe-control` — FastAPI web UI at `http://localhost:8766`. Dispatches game-state events (proxied to the OBS runner) and player commands.
+- `vibe-control` — FastAPI web UI at `http://localhost:8766`. Owns the FSM,
+  drives the OBS runner over HTTP for scene/text writes, and fans out player
+  commands.
 - `vibe-player-hook` — Deep Agents hook adapter that runs on each player laptop. It reports player names and model-ready status back to `vibe-control`.
 
 Player command dispatch uses LAN relays when `VIBE_PLAYER_<port>_RELAY` is
@@ -10,8 +14,8 @@ configured, with local iTerm2 session discovery as a same-machine fallback. See
 `LAN_COMMAND_CHANNEL.md` for the relay details.
 
 ```txt
-browser ──POST /api/…──▶ vibe-control ──POST /transition──▶ obs runner ──▶ OBS
-                              │
+browser ──POST /api/…──▶ vibe-control ──┬──POST /scene──▶ obs runner ──▶ OBS
+                              │         └──POST /text───▶
                               ├──HTTP──▶ player relays ──Unix socket──▶ player CLIs
                               └──iterm2 API──▶ local player CLIs
 ```
@@ -29,7 +33,7 @@ The live setup assumes the controller and player laptops are on the same LAN.
 
 The controller machine runs both the OBS runner and this control panel.
 
-Bring the OBS runner up first because it owns game state:
+Bring the OBS runner up first so the control panel has a compositor to drive:
 
 ```bash
 # terminal 1
@@ -101,7 +105,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | --- | --- | --- | --- |
 | `/` | GET | — | Serves the HTML control panel |
 | `/overlay` | GET | — | Serves the transparent OBS Browser Source graphics overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. Live video feeds are expected to be composed in OBS by default. |
-| `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
+| `/api/state` | GET | — | Returns the in-process FSM snapshot plus `timer`, `round`, and `eval` fields |
 | `/api/state/events` | GET | — | Server-sent event stream that pushes full `/api/state` payloads to the overlay; `/overlay` keeps slow polling as a fallback |
 | `/api/eval/last` | GET | — | Returns the latest per-player judge results |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
@@ -119,7 +123,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/api/players` | GET | — | Lists active player ports |
 | `/api/players/connect` | POST | `{port: str}` | Marks a player launcher as connected |
 | `/api/players/heartbeat` | POST | `{port: str}` | Refreshes player connection state; stale ports expire after 6 seconds |
-| `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and forwards ready names to OBS |
+| `/api/players/ready` | POST | `{port: str, name: str}` | Records a player name reported by the CLI hook and fires `ready` on the FSM to render names in OBS |
 | `/api/players/prompt` | POST | `{prompt: str, port?: str, all?: bool}` | Sends `/skill:web-vibe Prompt: ...` to player CLI(s) |
 | `/api/players/times-up` | POST | `{port?: str, all?: bool}` | Sends a `times-up` signal to player CLI(s) |
 | `/api/players/clear` | POST | `{port?: str, all?: bool}` | Blanks the player Vite project, sends a socket `force-clear` signal, and clears controller readiness for the targeted player CLI(s) |
@@ -128,7 +132,13 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
-| `VIBE_OBS_API` | `http://localhost:8765` | URL of the OBS runner |
+| `VIBE_OBS_API` | `http://localhost:8765` | URL of the OBS runner (compositor target) |
+| `OBS_SCENE_IDLE` | `coding` | OBS scene to switch to on `IDLE` entry |
+| `OBS_SCENE_CODING` | `coding` | OBS scene to switch to on `CODING` entry |
+| `OBS_SCENE_SCOREBOARD` | `coding` | OBS scene to switch to on `SCOREBOARD` entry |
+| `OBS_TEXT_PROMPT` | _(unset)_ | Optional OBS text source written with the round prompt |
+| `OBS_TEXT_CONTESTANT_NAME_FMT` | _(unset)_ | Optional `{n}`-template for per-slot name sources |
+| `OBS_TEXT_CONTESTANT_SCORE_FMT` | _(unset)_ | Optional `{n}`-template for per-slot score sources |
 | `VIBE_CONTROL_HOST` | `127.0.0.1` | Bind host for the control panel |
 | `VIBE_CONTROL_PORT` | `8766` | Bind port for the control panel |
 | `VIBE_CONTROL_API` | `http://localhost:8766` | URL used by `vibe-player-hook` from player machines |
@@ -151,7 +161,7 @@ The control server is the only thing that runs the LLM judge. When the round tim
 1. Sends `times-up` to both player CLIs.
 2. Derives each player's site URL — `http://<relay-host>:<player-port>` by default, or `VIBE_PLAYER_<port>_SITE_URL` if set.
 3. Runs `vibe-coding-olympics/eval/judge.py` per site concurrently via `uv run`.
-4. Aggregates per-axis scores into a single `[0, 1]` overall, scales to `0..10`, and forwards them to the OBS runner's `end` transition.
+4. Aggregates per-axis scores into a single `[0, 1]` overall, scales to `0..10`, and fires `end` on the FSM with those scores (which drives the OBS scoreboard).
 5. Stores per-axis results so the control website can render them and the OBS composite can pick them up.
 
 If the judge subprocess fails (15-second timeout, non-zero exit, missing/malformed JSON, or no usable LLM scores) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.

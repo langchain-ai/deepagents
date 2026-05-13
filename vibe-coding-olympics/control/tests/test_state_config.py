@@ -1,9 +1,11 @@
+"""Tests for `control_server.state_config.load_state_config`."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from obs_runner.config import load_config
-from obs_runner.state_machine import Phase
+from control_server.state_config import load_state_config
+from control_server.state_machine import Phase
 
 
 def test_load_config_defaults_all_phases_to_coding_scene() -> None:
@@ -11,10 +13,13 @@ def test_load_config_defaults_all_phases_to_coding_scene() -> None:
         "OBS_SCENE_IDLE": "",
         "OBS_SCENE_CODING": "",
         "OBS_SCENE_SCOREBOARD": "",
+        "OBS_TEXT_PROMPT": "",
+        "OBS_TEXT_CONTESTANT_NAME_FMT": "",
+        "OBS_TEXT_CONTESTANT_SCORE_FMT": "",
     }
 
     with patch.dict("os.environ", env, clear=False):
-        config = load_config()
+        config = load_state_config()
 
     assert config.scenes == {
         Phase.IDLE: "coding",
@@ -37,7 +42,7 @@ def test_load_config_allows_phase_scene_overrides() -> None:
     }
 
     with patch.dict("os.environ", env, clear=False):
-        config = load_config()
+        config = load_state_config()
 
     assert config.scenes == {
         Phase.IDLE: "Idle",

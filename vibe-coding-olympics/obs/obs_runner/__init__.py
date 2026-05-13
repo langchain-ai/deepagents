@@ -1,5 +1,5 @@
-"""Game state machine + OBS compositor for the Vibe Coding Olympics."""
+"""OBS compositor shim for the Vibe Coding Olympics.
 
-from obs_runner.state_machine import Event, Phase, StateMachine
-
-__all__ = ["Event", "Phase", "StateMachine"]
+A thin HTTP adapter over obs-websocket. The round state machine lives
+in the control plane; this runner just renders what control tells it.
+"""

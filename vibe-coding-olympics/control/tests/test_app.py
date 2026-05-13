@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from control_server import app as app_mod
 from control_server import site_urls as site_urls_mod
 from control_server.round_timer import RoundTimer, TimerSnapshot
+from control_server.state_machine import StateMachine
 
 
 def _reset_module_globals() -> None:
@@ -36,6 +37,8 @@ def _reset_module_globals() -> None:
     # closed.
     app_mod._round_timer = RoundTimer()
     app_mod._eval_lock = None
+    # FSM is module-level; rebuild it so phase doesn't bleed between tests.
+    app_mod._state_machine = StateMachine(app_mod._compositor, app_mod._state_config)
 
 
 class TestReadyPlayers(unittest.TestCase):

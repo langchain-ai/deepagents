@@ -1,9 +1,9 @@
 """FastAPI control panel: HTML page + JSON endpoints.
 
-Fans one-shot commands to:
+Owns the round state machine. Drives:
 
-- The OBS runner (`POST /transition` at `VIBE_OBS_API`, default
-  `http://localhost:8765`) for game-state events.
+- The OBS runner (`POST /scene` and `POST /text` at `VIBE_OBS_API`,
+  default `http://localhost:8765`) — pure compositor over the LAN.
 - iTerm2 player sessions via the helpers in `iterm_ctrl`.
 
 No auth, no persistence, no websockets. Localhost MVP.
@@ -20,6 +20,8 @@ import random
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -30,10 +32,17 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from control_server import eval_runner, iterm_ctrl, player_dispatch, site_urls
+from control_server.compositor import RemoteCompositor
 from control_server.round_timer import (
     RoundTimer,
     TimerWarning,
     timer_warning_for_remaining,
+)
+from control_server.state_config import load_state_config
+from control_server.state_machine import (
+    Event,
+    InvalidTransitionError,
+    StateMachine,
 )
 
 logger = logging.getLogger(__name__)
@@ -293,6 +302,11 @@ class StateEventBroadcaster:
 
 
 _state_events = StateEventBroadcaster()
+
+
+_state_config = load_state_config()
+_compositor = RemoteCompositor(base_url=VIBE_OBS_API)
+_state_machine = StateMachine(_compositor, _state_config)
 
 
 def _get_eval_lock() -> asyncio.Lock:
@@ -562,25 +576,37 @@ def _start_blocked_message() -> str:
     return "Both players must select a model before the round can start."
 
 
+def _snapshot_dict() -> dict[str, Any]:
+    """Return the FSM snapshot as a JSON-serializable dict."""
+    snapshot = asdict(_state_machine.snapshot)
+    # Phase is a StrEnum — collapse to its string value so callers
+    # comparing `state["phase"] == "coding"` keep working unchanged.
+    snapshot["phase"] = str(snapshot["phase"])
+    return snapshot
+
+
 async def _forward(event: str, payload: dict[str, Any]) -> dict[str, Any]:
-    """Relay an FSM event to the OBS runner's `/transition` endpoint."""
-    url = f"{VIBE_OBS_API}/transition"
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.post(url, json={"event": event, "payload": payload})
-        except httpx.HTTPError as exc:
-            msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
-            raise HTTPException(status_code=502, detail=msg) from exc
-    if response.status_code >= 400:
-        # Unwrap the upstream JSON detail so the UI sees one error
-        # layer, not `{"detail": "{\"detail\": ...}"}`.
-        try:
-            body = response.json()
-            detail = body.get("detail", body) if isinstance(body, dict) else body
-        except ValueError:
-            detail = response.text
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    return response.json()
+    """Drive an FSM transition; OBS writes happen as a side effect.
+
+    Kept as an async function so existing call sites and tests that
+    patch this name continue to work after the FSM moved in-process.
+    """
+    try:
+        event_enum = Event(event)
+    except ValueError as exc:
+        msg = f"unknown event '{event}'"
+        raise HTTPException(status_code=409, detail=msg) from exc
+    try:
+        await _state_machine.dispatch(event_enum, payload)
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        # OBS runner unreachable / rejected the compositor call. The
+        # FSM has already updated its snapshot; the operator UI will
+        # surface this via `obs_error`.
+        logger.warning("OBS compositor write failed for %s: %s", event, exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _snapshot_dict()
 
 
 async def _set_obs_scene(scene: str) -> dict[str, Any]:
@@ -599,25 +625,16 @@ async def _set_obs_scene(scene: str) -> dict[str, Any]:
         except ValueError:
             detail = response.text
         raise HTTPException(status_code=response.status_code, detail=detail)
-    return response.json()
+    return response.json() if response.content else {}
 
 
 async def _get_obs_state() -> dict[str, Any]:
-    """Return the OBS runner's current state snapshot."""
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            response = await client.get(f"{VIBE_OBS_API}/state")
-        except httpx.HTTPError as exc:
-            msg = f"OBS runner at {VIBE_OBS_API} unreachable: {exc}"
-            raise HTTPException(status_code=502, detail=msg) from exc
-    if response.status_code >= 400:
-        try:
-            body = response.json()
-            detail = body.get("detail", body) if isinstance(body, dict) else body
-        except ValueError:
-            detail = response.text
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    return response.json()
+    """Return the in-process FSM snapshot.
+
+    Kept async + named for compatibility with existing call sites and
+    tests that patch this function.
+    """
+    return _snapshot_dict()
 
 
 async def _api_state() -> dict[str, Any]:

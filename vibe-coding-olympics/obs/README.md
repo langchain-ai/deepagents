@@ -1,14 +1,16 @@
-# `obs/` — Vibe Coding Olympics game state machine + OBS compositor
+# `obs/` — Vibe Coding Olympics OBS compositor
 
-MVP runner. Three-phase FSM (`IDLE` → `CODING` → `SCOREBOARD` → `IDLE`) plus a minimal compositor interface to OBS (scene switch + text updates). One-shot commands over HTTP. By default all FSM phases target the same OBS scene, `coding`; the browser overlay handles the idle, coding, and scoreboard visual states.
+Thin HTTP shim over obs-websocket. Two verbs: switch scene, update text source.
+No game state — the round FSM lives in the control plane
+(`control_server.state_machine`). This runner just renders what control tells
+it.
 
 For live event startup, use `../README.md`. This file documents OBS setup and
 the runner API.
 
 ```
-producer  ──POST /transition──▶  FastAPI  ──obs-websocket──▶  OBS
-                                    │
-                                    └── StateMachine (in-proc)
+control  ──POST /scene──▶  FastAPI  ──obs-websocket──▶  OBS
+         ──POST /text──▶
 ```
 
 ## Install
@@ -52,56 +54,40 @@ uv run vibe-obs              # starts FastAPI on 127.0.0.1:8765
 
 If you enable OBS WebSocket authentication, set `OBS_PASSWORD` before launching.
 
-On startup the runner connects to OBS and primes the configured `IDLE` phase scene (default `coding`). If OBS is unreachable, the server still starts and `/healthz` reports `obs_connected: false`.
+On startup the runner connects to OBS. If OBS is unreachable, the server still
+starts and `/healthz` reports `obs_connected: false`. The runner is stateless
+between requests — the control plane is responsible for writing scene/text on
+every phase entry.
 
 ## API
 
-### `POST /transition`
-
-```bash
-# Player names submitted before the round
-curl -sS -X POST localhost:8765/transition \
-  -H 'content-type: application/json' \
-  -d '{"event":"ready","payload":{"contestants":["Alice","Bob"]}}'
-
-# Start round
-curl -sS -X POST localhost:8765/transition \
-  -H 'content-type: application/json' \
-  -d '{"event":"start","payload":{"prompt":"build a cat shrine","contestants":["Alice","Bob"]}}'
-
-# End round → scoreboard
-curl -sS -X POST localhost:8765/transition \
-  -H 'content-type: application/json' \
-  -d '{"event":"end","payload":{"scores":{"Alice":8.2,"Bob":7.5}}}'
-
-# Reset → idle
-curl -sS -X POST localhost:8765/transition \
-  -H 'content-type: application/json' \
-  -d '{"event":"reset","payload":{}}'
-```
-
-Invalid transitions return `409`. An unreachable OBS returns `503`.
-
 ### `POST /scene`
 
-Switches OBS directly to a scene without changing the FSM snapshot. This is for
-operator-controlled camera/layout cuts such as focus scenes.
+Switch the current OBS program scene.
 
 ```bash
 curl -sS -X POST localhost:8765/scene \
   -H 'content-type: application/json' \
-  -d '{"name":"p1 focus"}'
+  -d '{"name":"coding"}'
 ```
 
 An unreachable OBS returns `503`.
 
-### `GET /state`
+### `POST /text`
 
-Returns the current snapshot (phase, round, prompt, contestants, scores).
+Update the text content of an OBS text input.
+
+```bash
+curl -sS -X POST localhost:8765/text \
+  -H 'content-type: application/json' \
+  -d '{"source":"PromptText","value":"build a cat shrine"}'
+```
+
+An unreachable OBS returns `503`.
 
 ### `GET /healthz`
 
-Returns `{ obs_connected, phase }`. Use from a producer to gate startup.
+Returns `{ obs_connected }`. Use from a producer to gate startup.
 
 ## Configuration
 
@@ -112,28 +98,11 @@ All env-driven. Defaults shown.
 | `OBS_HOST` | `localhost` | obs-websocket host |
 | `OBS_PORT` | `4455` | obs-websocket port |
 | `OBS_PASSWORD` | _(empty)_ | Optional obs-websocket password, only needed when OBS WebSocket authentication is enabled |
-| `OBS_SCENE_IDLE` | `coding` | Scene for `IDLE` phase |
-| `OBS_SCENE_CODING` | `coding` | Scene for `CODING` phase |
-| `OBS_SCENE_SCOREBOARD` | `coding` | Scene for `SCOREBOARD` phase |
-| `OBS_TEXT_PROMPT` | _(unset)_ | Optional text input for the round prompt |
-| `OBS_TEXT_CONTESTANT_NAME_FMT` | _(unset)_ | Optional `{n}`-template for per-slot name sources |
-| `OBS_TEXT_CONTESTANT_SCORE_FMT` | _(unset)_ | Optional `{n}`-template for per-slot score sources |
 | `VIBE_OBS_API_HOST` | `127.0.0.1` | FastAPI bind host |
 | `VIBE_OBS_API_PORT` | `8765` | FastAPI bind port |
 
-## Transitions
-
-```
-IDLE  ──ready──▶  IDLE        # writes: scene=coding
-IDLE  ──start──▶  CODING      # writes: scene=coding
-CODING ──end──▶  SCOREBOARD   # writes: scene=coding; scores stay in API state
-SCOREBOARD ──reset──▶  IDLE   # writes: scene=coding
-```
-
-Any other `(phase, event)` pair is rejected. The FSM does not auto-advance; the 5-minute timer lives in `timer/index.html` and the producer (or a later pub/sub layer) decides when to fire `end`.
-
-Slot ordering is stable in API state across a round. The overlay reads that
-state directly from the control server.
+Scene names per phase and OBS text-source mappings are configured in the
+control plane — see `control_server.state_config`.
 
 ## Out of scope for this MVP
 

@@ -193,9 +193,7 @@ HEARTBEAT_BODY = json.dumps({"port": PORT}, separators=(",", ":"))
 LAUNCH_RELAY = os.environ["VIBE_LAUNCH_RELAY"] == "1"
 WAIT_FOR_CONTROLLER = os.environ["VIBE_WAIT_FOR_CONTROLLER"] == "1"
 if WAIT_FOR_CONTROLLER:
-    STARTUP_SUBHEADER = (
-        "Welcome to LangChain Interrupt 2026\n\nWaiting for the prompt..."
-    )
+    STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026"
 elif PROMPT:
     STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026\n\nReady to vibecode!"
 else:

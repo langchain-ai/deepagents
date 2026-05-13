@@ -12,17 +12,20 @@ No auth, no persistence, no websockets. Localhost MVP.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import os
 import random
 import tempfile
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -250,6 +253,46 @@ _round_counter = 0
 _last_eval_results: list[dict[str, Any]] = []
 _overlay_smoke_state: dict[str, Any] | None = None
 _eval_lock: asyncio.Lock | None = None
+
+
+class StateEventBroadcaster:
+    """Small in-process SSE fanout for overlay state updates."""
+
+    def __init__(self) -> None:
+        self._queues: set[asyncio.Queue[str]] = set()
+
+    def subscribe(self) -> asyncio.Queue[str]:
+        """Register a client queue for future events."""
+        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=3)
+        self._queues.add(queue)
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[str]) -> None:
+        """Remove a client queue."""
+        self._queues.discard(queue)
+
+    def clear(self) -> None:
+        """Drop every connected queue. Intended for test isolation."""
+        self._queues.clear()
+
+    @property
+    def has_subscribers(self) -> bool:
+        """Return whether any overlay clients are currently connected."""
+        return bool(self._queues)
+
+    def publish(self, payload: dict[str, Any]) -> None:
+        """Queue a full-state SSE message for every connected client."""
+        if not self._queues:
+            return
+        event = f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        for queue in list(self._queues):
+            while queue.full():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+            queue.put_nowait(event)
+
+
+_state_events = StateEventBroadcaster()
 
 
 def _get_eval_lock() -> asyncio.Lock:
@@ -577,6 +620,59 @@ async def _get_obs_state() -> dict[str, Any]:
     return response.json()
 
 
+async def _api_state() -> dict[str, Any]:
+    """Return the full control/OBS state payload consumed by the overlay."""
+    smoke_state = _overlay_smoke_api_state()
+    if smoke_state is not None:
+        return smoke_state
+
+    obs: dict[str, Any] = {}
+    obs_error: dict[str, Any] | None = None
+    try:
+        obs = await _get_obs_state()
+    except HTTPException as exc:
+        # Namespaced so a real OBS payload key like "error" or
+        # "status" cannot silently shadow the diagnostic.
+        obs_error = {"detail": str(exc.detail), "status": exc.status_code}
+    snapshot = _round_timer.snapshot()
+    _, duration_warning = _round_duration_config()
+    return {
+        **obs,
+        "obs_error": obs_error,
+        "timer": {
+            "running": snapshot.running,
+            "duration_secs": snapshot.duration_secs,
+            "remaining_secs": snapshot.remaining_secs,
+            "started_at": snapshot.started_at,
+            "warning": _timer_warning_payload(snapshot.warning),
+        },
+        "round": {
+            "prompt": _round_context.get("prompt"),
+            "round_num": _round_context.get("round_num"),
+            "contestants": list(_round_context.get("contestants") or []),
+            "started_at": _round_context.get("started_at"),
+            "completed_at": _round_context.get("completed_at"),
+            "last_reason": _round_context.get("last_reason"),
+            "obs_error": _round_context.get("obs_error"),
+            "times_up_error": _round_context.get("times_up_error"),
+            "duration_warning": duration_warning,
+        },
+        "eval": {
+            "results": list(_last_eval_results),
+        },
+        "overlay_smoke": {
+            "active": False,
+        },
+    }
+
+
+async def _publish_state_update() -> None:
+    """Push the latest full state to connected `/overlay` clients."""
+    if not _state_events.has_subscribers:
+        return
+    _state_events.publish(await _api_state())
+
+
 def _round_player_targets() -> list[dict[str, str]]:
     """Return per-player eval targets captured from current state.
 
@@ -768,6 +864,7 @@ async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
         logger.info("Round timer expired; auto-evaluating.")
         try:
             await _run_round_eval(reason="timer")
+            await _publish_state_update()
         except Exception:
             logger.exception("Auto-eval on timer expiry failed.")
 
@@ -2820,6 +2917,11 @@ function currentRemaining() {
 }
 
 let timerWarningClearHandle = null;
+const timerWarnings = [
+  { threshold_secs: 30, message: '30 seconds left' },
+  { threshold_secs: 60, message: '1 minute left' },
+  { threshold_secs: 150, message: '2.5 minutes left' },
+];
 
 function flashTimerWarning() {
   const chips = [els.splitClock, els.focusClock];
@@ -2840,8 +2942,10 @@ function flashTimerWarning() {
 }
 
 function syncTimerWarning() {
-  if (state.phase !== 'coding' || !state.timer || !state.timer.warning) return;
-  const threshold = Number(state.timer.warning.threshold_secs);
+  if (state.phase !== 'coding' || !state.timer) return;
+  const warning = currentTimerWarning();
+  if (!warning) return;
+  const threshold = Number(warning.threshold_secs);
   if (!Number.isFinite(threshold)) return;
   const startedAt = Number(state.timer.started_at);
   const timerId = Number.isFinite(startedAt) ? startedAt.toFixed(3) : 'unknown';
@@ -2849,6 +2953,21 @@ function syncTimerWarning() {
   if (state.lastTimerWarningId === warningId) return;
   state.lastTimerWarningId = warningId;
   flashTimerWarning();
+}
+
+function currentTimerWarning() {
+  if (!state.timer.running) return state.timer.warning || null;
+  const duration = Number(state.timer.duration_secs);
+  const remaining = currentRemaining();
+  if (!Number.isFinite(duration) || !Number.isFinite(remaining) || remaining <= 0) {
+    return null;
+  }
+  for (const warning of timerWarnings) {
+    if (duration >= warning.threshold_secs && remaining <= warning.threshold_secs) {
+      return warning;
+    }
+  }
+  return null;
 }
 
 function renderIdle() {
@@ -2885,6 +3004,7 @@ function renderCoding() {
   updateText(els.focusPrompt, prompt);
   updateText(els.focusClock, clock);
   updateText(els.focusPreviewLabel, 'Live Preview');
+  syncTimerWarning();
 }
 
 function updateText(element, value) {
@@ -2956,26 +3076,44 @@ async function refreshState() {
   try {
     const response = await fetch('/api/state', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-    syncOverlayMode(payload);
-    state.phase = payload.phase || 'idle';
-    state.prompt = payload.prompt || (payload.round && payload.round.prompt) || '';
-    state.contestants = Array.isArray(payload.contestants) && payload.contestants.length
-      ? payload.contestants
-      : ((payload.round && payload.round.contestants) || []);
-    state.scores = payload.scores || {};
-    state.timer = payload.timer || null;
-    state.lastFetch = Date.now();
-    state.connected = !payload.obs_error;
-    syncTimerWarning();
+    applyState(await response.json());
   } catch (error) {
     state.connected = false;
+    render();
   }
+}
+
+function applyState(payload) {
+  syncOverlayMode(payload);
+  state.phase = payload.phase || 'idle';
+  state.prompt = payload.prompt || (payload.round && payload.round.prompt) || '';
+  state.contestants = Array.isArray(payload.contestants) && payload.contestants.length
+    ? payload.contestants
+    : ((payload.round && payload.round.contestants) || []);
+  state.scores = payload.scores || {};
+  state.timer = payload.timer || null;
+  state.lastFetch = Date.now();
+  state.connected = !payload.obs_error;
+  syncTimerWarning();
   render();
 }
 
+function connectStateEvents() {
+  if (!window.EventSource) return;
+  const events = new EventSource('/api/state/events');
+  events.onmessage = (event) => {
+    try {
+      applyState(JSON.parse(event.data));
+    } catch (error) {
+      state.connected = false;
+      render();
+    }
+  };
+}
+
 refreshState();
-setInterval(refreshState, 250);
+connectStateEvents();
+setInterval(refreshState, 5000);
 setInterval(() => {
   if (state.phase === 'coding') renderCoding();
 }, 100);
@@ -3052,48 +3190,34 @@ def create_app() -> FastAPI:
 
     @app.get("/api/state")
     async def get_state() -> dict[str, Any]:
-        smoke_state = _overlay_smoke_api_state()
-        if smoke_state is not None:
-            return smoke_state
+        return await _api_state()
 
-        obs: dict[str, Any] = {}
-        obs_error: dict[str, Any] | None = None
-        try:
-            obs = await _get_obs_state()
-        except HTTPException as exc:
-            # Namespaced so a real OBS payload key like "error" or
-            # "status" cannot silently shadow the diagnostic.
-            obs_error = {"detail": str(exc.detail), "status": exc.status_code}
-        snapshot = _round_timer.snapshot()
-        _, duration_warning = _round_duration_config()
-        return {
-            **obs,
-            "obs_error": obs_error,
-            "timer": {
-                "running": snapshot.running,
-                "duration_secs": snapshot.duration_secs,
-                "remaining_secs": snapshot.remaining_secs,
-                "started_at": snapshot.started_at,
-                "warning": _timer_warning_payload(snapshot.warning),
+    @app.get("/api/state/events")
+    async def state_events(request: Request) -> StreamingResponse:
+        queue = _state_events.subscribe()
+
+        async def stream() -> AsyncIterator[str]:
+            try:
+                payload = await _api_state()
+                yield f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+                while not await request.is_disconnected():
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                    else:
+                        yield event
+            finally:
+                _state_events.unsubscribe(queue)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
             },
-            "round": {
-                "prompt": _round_context.get("prompt"),
-                "round_num": _round_context.get("round_num"),
-                "contestants": list(_round_context.get("contestants") or []),
-                "started_at": _round_context.get("started_at"),
-                "completed_at": _round_context.get("completed_at"),
-                "last_reason": _round_context.get("last_reason"),
-                "obs_error": _round_context.get("obs_error"),
-                "times_up_error": _round_context.get("times_up_error"),
-                "duration_warning": duration_warning,
-            },
-            "eval": {
-                "results": list(_last_eval_results),
-            },
-            "overlay_smoke": {
-                "active": False,
-            },
-        }
+        )
 
     @app.get("/api/eval/last")
     async def get_last_eval() -> dict[str, Any]:
@@ -3101,12 +3225,16 @@ def create_app() -> FastAPI:
 
     @app.post("/api/overlay-smoke")
     async def overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
-        return {"state": _set_overlay_smoke(req)}
+        state = _set_overlay_smoke(req)
+        await _publish_state_update()
+        return {"state": state}
 
     @app.delete("/api/overlay-smoke")
     async def overlay_smoke_clear() -> dict[str, Any]:
         _clear_overlay_smoke()
-        return {"state": await get_state()}
+        state = await _api_state()
+        await _publish_state_update()
+        return {"state": state}
 
     @app.post("/api/obs/scene")
     async def obs_scene(req: ObsSceneRequest) -> dict[str, Any]:
@@ -3160,6 +3288,7 @@ def create_app() -> FastAPI:
             _round_player_ports(), prompt
         )
         await _start_round_timer(prompt, contestants)
+        await _publish_state_update()
         return {
             "state": state,
             "prompt": prompt,
@@ -3173,6 +3302,7 @@ def create_app() -> FastAPI:
         _clear_overlay_smoke()
         await _round_timer.cancel()
         results = await _run_round_eval(reason="end_now")
+        await _publish_state_update()
         return {
             "state": _round_context.get("obs_state"),
             "obs_error": _round_context.get("obs_error"),
@@ -3189,6 +3319,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=msg)
         await _round_timer.cancel()
         results = await _run_round_eval(reason="end_early")
+        await _publish_state_update()
         return {
             "state": _round_context.get("obs_state"),
             "obs_error": _round_context.get("obs_error"),
@@ -3204,6 +3335,7 @@ def create_app() -> FastAPI:
         _round_context["obs_state"] = obs_state
         _round_context["obs_error"] = None
         _round_context["completed_at"] = time.time()
+        await _publish_state_update()
         return {"state": obs_state, "scores": req.scores}
 
     @app.post("/api/round/reset")
@@ -3213,7 +3345,9 @@ def create_app() -> FastAPI:
         _model_ready_ports.clear()
         await _round_timer.cancel()
         _reset_round_state()
-        return await _forward("reset", {})
+        state = await _forward("reset", {})
+        await _publish_state_update()
+        return state
 
     @app.get("/api/players")
     async def players_list() -> dict[str, Any]:
@@ -3258,6 +3392,7 @@ def create_app() -> FastAPI:
         except HTTPException as exc:
             obs_error = str(exc.detail)
             logger.warning("Could not forward ready players to OBS: %s", exc.detail)
+        await _publish_state_update()
         return {
             "connected": _connected_player_ports(),
             "ready": dict(_ready_players),
@@ -3306,6 +3441,7 @@ def create_app() -> FastAPI:
         except HTTPException as exc:
             obs_error = str(exc.detail)
             logger.warning("Could not forward cleared players to OBS: %s", exc.detail)
+        await _publish_state_update()
         return {
             "cleared": cleared,
             "connected": _connected_player_ports(),

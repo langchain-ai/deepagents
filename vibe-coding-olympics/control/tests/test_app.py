@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from typing import Any
@@ -28,6 +29,7 @@ def _reset_module_globals() -> None:
     app_mod._round_context.clear()
     app_mod._last_eval_results.clear()
     app_mod._overlay_smoke_state = None
+    app_mod._state_events.clear()
     app_mod._round_counter = 0
     # Swap in a fresh RoundTimer rather than awaiting cancel() across
     # the previous test's event loop, which TestClient has already
@@ -110,7 +112,10 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("timer-warning", response.text)
         self.assertIn("function syncTimerWarning", response.text)
         self.assertIn("threshold_secs", response.text)
-        self.assertIn("setInterval(refreshState, 250)", response.text)
+        self.assertIn("new EventSource('/api/state/events')", response.text)
+        self.assertIn("function applyState(payload)", response.text)
+        self.assertIn("setInterval(refreshState, 5000)", response.text)
+        self.assertIn("function currentTimerWarning()", response.text)
         self.assertIn("if (activeView === view) return;", response.text)
         self.assertIn("function updateText(element, value)", response.text)
         self.assertNotIn("http://127.0.0.1:8889", response.text)
@@ -181,6 +186,19 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"obs": {"phase": "coding"}})
         set_scene.assert_awaited_once_with("p1 focus")
+
+    def test_state_event_broadcaster_sends_full_state_payload(self) -> None:
+        queue = app_mod._state_events.subscribe()
+        payload = {"phase": "idle", "overlay_smoke": {"active": False}}
+
+        try:
+            app_mod._state_events.publish(payload)
+            line = queue.get_nowait()
+        finally:
+            app_mod._state_events.unsubscribe(queue)
+
+        self.assertTrue(line.startswith("data: "))
+        self.assertEqual(json.loads(line.removeprefix("data: ")), payload)
 
     def test_static_fonts_are_served(self) -> None:
         client = TestClient(app_mod.create_app())

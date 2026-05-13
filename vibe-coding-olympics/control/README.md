@@ -102,6 +102,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/` | GET | — | Serves the HTML control panel |
 | `/overlay` | GET | — | Serves the transparent OBS Browser Source graphics overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. Live video feeds are expected to be composed in OBS by default. |
 | `/api/state` | GET | — | Proxies `GET /state` on the OBS runner and adds `timer`, `round`, and `eval` fields |
+| `/api/state/events` | GET | — | Server-sent event stream that pushes full `/api/state` payloads to the overlay; `/overlay` keeps slow polling as a fallback |
 | `/api/eval/last` | GET | — | Returns the latest per-player judge results |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/obs/scene` | POST | `{scene: str}` | Asks the OBS runner to switch directly to an OBS scene without changing game-state phase |

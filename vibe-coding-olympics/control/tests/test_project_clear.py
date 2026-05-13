@@ -26,13 +26,15 @@ class TestProjectClear(unittest.TestCase):
             self.assertIn("/src/main.js", index_html)
             self.assertIn("Site will be built here...", index_html)
             self.assertIn("LangChain x Interrupt 2026", index_html)
-            self.assertIn("ready for build", index_html)
+            self.assertIn("Awaiting the next live prompt", index_html)
+            self.assertIn('class="board"', index_html)
             self.assertNotIn("<h1>old</h1>", index_html)
             self.assertEqual(
                 (src / "main.js").read_text(encoding="utf-8"),
                 'import "./style.css";\n\nlocalStorage.clear();\nsessionStorage.clear();\n',
             )
-            self.assertIn(".terminal", (src / "style.css").read_text(encoding="utf-8"))
+            self.assertIn(".top-band", (src / "style.css").read_text(encoding="utf-8"))
+            self.assertIn(".panel", (src / "style.css").read_text(encoding="utf-8"))
             self.assertNotIn(
                 "body{color:red}", (src / "style.css").read_text(encoding="utf-8")
             )

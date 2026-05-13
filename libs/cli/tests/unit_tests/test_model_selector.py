@@ -185,6 +185,10 @@ class TestModelSelectorEscapeKey:
 class TestModelSelectorChrome:
     """Tests for model selector title chrome."""
 
+    def test_selector_screen_hides_backdrop(self) -> None:
+        """The launch model picker should hide old app state behind the modal."""
+        assert "background: $background;" in ModelSelectorScreen.CSS
+
     async def test_optional_title_renders(self) -> None:
         """A custom title should render above the filter."""
         app = ModelSelectorTestApp()

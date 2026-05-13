@@ -91,6 +91,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("linear-gradient(180deg, var(--paper) 0%, var(--soft-pink) 44%, var(--pink-a) 100%", response.text)
         self.assertIn("background-image: var(--blue-name-gradient)", response.text)
         self.assertIn("background-image: var(--pink-name-gradient)", response.text)
+        self.assertIn("var(--blue-gradient),", response.text)
+        self.assertIn("var(--pink-gradient);", response.text)
+        self.assertIn("background-size: 100% 100%, 100% 100%, 100% 100%, 50% 100%, 50% 100%;", response.text)
         self.assertIn("height: 10.5%;", response.text)
         self.assertIn("border-bottom: var(--line) solid var(--ink)", response.text)
         self.assertIn(

@@ -162,7 +162,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     CSS = """
     ModelSelectorScreen {
         align: center middle;
-        background: transparent;
+        background: $background;
     }
 
     ModelSelectorScreen > Vertical {

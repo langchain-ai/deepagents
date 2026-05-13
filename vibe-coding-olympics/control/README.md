@@ -107,12 +107,13 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/overlay` | GET | — | Serves the transparent OBS Browser Source graphics overlay for the LED panel. Add `?mode=focus&p=1` or `?mode=focus&p=2` for a single-player focus layout. Live video feeds are expected to be composed in OBS by default. |
 | `/api/state` | GET | — | Returns the in-process FSM snapshot plus `timer`, `round`, and `eval` fields |
 | `/api/state/events` | GET | — | Server-sent event stream that pushes full `/api/state` payloads to the overlay; `/overlay` keeps slow polling as a fallback |
-| `/api/eval/last` | GET | — | Returns the latest per-player judge results |
+| `/api/eval/last` | GET | — | Returns the latest per-player judge results plus pending/published score maps |
+| `/api/eval/publish` | POST | `{scores?: {name: float}}` | Publishes host-approved scores to the scoreboard. Empty `scores` accepts the pending judge scores. |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/obs/scene` | POST | `{scene: str}` | Asks the OBS runner to switch directly to an OBS scene without changing game-state phase |
 | `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
-| `/api/round/end` | POST | `{}` | Cancels the timer, sends `times-up` to player CLI(s), runs the LLM judge, and stores results on the control server |
-| `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, and stores results on the control server |
+| `/api/round/end` | POST | `{}` | Cancels the timer, sends `times-up` to player CLI(s), runs the LLM judge, and stores results on the control server for host approval |
+| `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, and stores results on the control server for host approval |
 | `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and stores the supplied scores without invoking the judge |
 | `/api/round/reset` | POST | `{}` | Fires `reset` on the FSM and cancels the timer |
 | `/api/prompts` | GET | — | Lists prompt pool entries |
@@ -162,11 +163,12 @@ The control server is the only thing that runs the LLM judge. When the round tim
 2. Derives each player's site URL — `http://<relay-host>:<player-port>` by default, or `VIBE_PLAYER_<port>_SITE_URL` if set.
 3. Runs `vibe-coding-olympics/eval/judge.py` per site concurrently via `uv run`.
 4. Aggregates per-axis scores into a single `[0, 1]` overall and scales them to `0..10` for the control website.
-5. Stores per-axis results on the control server.
+5. Holds the scores in the control panel as pending results. The host can accept them or edit manual overrides, then publish to the OBS scoreboard.
+6. Stores per-axis results on the control server.
 
 If the judge subprocess fails (15-second timeout, non-zero exit, missing/malformed JSON, or no usable LLM scores) the controller substitutes randomized axis scores and tags the result with `fallback=true` plus a `fallback_reason` so post-event analysis can audit which sites were judged versus filled in. No DQs are ever issued — the show goes on.
 
-The **Override scores** modal on the control website calls `/api/round/override-end` and is intended only for smoke tests; it skips the judge and writes the entered scores directly to OBS.
+The **Override scores** modal on the control website calls `/api/round/override-end` and is intended only for smoke tests; it skips the judge and stores the entered scores without publishing to OBS.
 
 ## Player readiness hook
 

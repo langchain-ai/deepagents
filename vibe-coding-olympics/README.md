@@ -58,7 +58,7 @@ export VIBE_PLAYER_TOKEN=<shared-token>
 export VIBE_CONTROL_API=http://<controller-static-ip>:8766
 
 export VIBE_RELAY_HOST=0.0.0.0
-export VIBE_RELAY_HOST=9771
+export VIBE_RELAY_PORT=9771
 export VIBE_LAUNCH_RELAY=1
 
 export model api keys...
@@ -76,7 +76,10 @@ It also starts a heartbeat loop and launches `vibe-player-relay` in a separate i
 4. If the round must stop before the timer, click **End early**.
    1. This only works while a round is in progress.
 5. When the timer reaches zero, the controller sends times-up to the players and judging begins.
-6. Between rounds, click **Reset round all** to blank player pages, reset OBS/control state, and clear player readiness.
+6. Review the pending judge results in the control UI.
+   1. Click **Accept scores** to publish the judge scores.
+   2. Click **Edit scores** to adjust values, then publish the edited scores.
+7. Between rounds, open **Debug controls** and click **Reset round all** to blank player pages, reset OBS/control state, and clear player readiness.
 
 ## More Detail
 

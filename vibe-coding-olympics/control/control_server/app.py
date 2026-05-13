@@ -341,6 +341,14 @@ class OverrideScoresRequest(BaseModel):
     )
 
 
+class PublishScoresRequest(BaseModel):
+    """Host-approved scores to publish to the scoreboard."""
+
+    scores: dict[str, Annotated[float, Field(ge=0, le=10)]] = Field(
+        default_factory=dict,
+    )
+
+
 class OverlaySmokeRequest(BaseModel):
     """Controller-only overlay preview state for OBS smoke tests."""
 
@@ -401,6 +409,20 @@ def _reset_round_state() -> None:
     """Forget the in-flight round context and the last eval snapshot."""
     _round_context.clear()
     _last_eval_results.clear()
+
+
+def _scores_from_eval_results(results: list[dict[str, Any]]) -> dict[str, float]:
+    """Return display-scale scores keyed by judged player name."""
+    scores: dict[str, float] = {}
+    for entry in results:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            scores[name] = float(entry.get("obs_score") or 0.0)
+        except (TypeError, ValueError):
+            scores[name] = 0.0
+    return scores
 
 
 def _ready_contestants() -> list[str]:
@@ -671,12 +693,16 @@ async def _api_state() -> dict[str, Any]:
             "completed_at": _round_context.get("completed_at"),
             "last_reason": _round_context.get("last_reason"),
             "manual_scores": dict(_round_context.get("manual_scores") or {}),
+            "pending_scores": dict(_round_context.get("pending_scores") or {}),
+            "published_scores": dict(_round_context.get("published_scores") or {}),
             "obs_error": _round_context.get("obs_error"),
             "times_up_error": _round_context.get("times_up_error"),
             "duration_warning": duration_warning,
         },
         "eval": {
             "results": list(_last_eval_results),
+            "pending_scores": dict(_round_context.get("pending_scores") or {}),
+            "published_scores": dict(_round_context.get("published_scores") or {}),
         },
         "overlay_smoke": {
             "active": False,
@@ -844,10 +870,31 @@ async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
         _last_eval_results.clear()
         _last_eval_results.extend(per_site)
         _round_context["last_reason"] = reason
+        _round_context["pending_scores"] = _scores_from_eval_results(per_site)
+        _round_context.pop("published_scores", None)
         _round_context["obs_state"] = None
         _round_context["obs_error"] = None
         _round_context["completed_at"] = time.time()
         return per_site
+
+
+async def _publish_round_scores(scores: dict[str, float]) -> dict[str, Any]:
+    """Publish host-approved scores to OBS and clear pending approval."""
+    if not scores:
+        msg = "No scores are available to publish."
+        raise HTTPException(status_code=409, detail=msg)
+    try:
+        state = await _forward("end", {"scores": scores})
+    except HTTPException as exc:
+        _round_context["obs_state"] = None
+        _round_context["obs_error"] = str(exc.detail)
+        raise
+    _round_context["published_scores"] = dict(scores)
+    _round_context.pop("pending_scores", None)
+    _round_context["obs_state"] = state
+    _round_context["obs_error"] = None
+    _round_context["completed_at"] = _round_context.get("completed_at") or time.time()
+    return state
 
 
 async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
@@ -1014,6 +1061,7 @@ _INDEX_HTML = """<!doctype html>
   }
   a { color: #93c5fd; }
   .muted { color: #888; font-size: 0.85rem; margin-top: 0.65rem; }
+  .eval-help { margin-bottom: 0.6rem; }
   .port-note { color: #707070; font-size: 0.8rem; }
   .inline-error { color: #fca5a5; font-size: 0.85rem; }
   .inline-error:empty { display: none; }
@@ -1074,10 +1122,12 @@ _INDEX_HTML = """<!doctype html>
   .debug-toggle summary {
     cursor: pointer;
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.65rem;
     color: #e5e5e5;
   }
+  .debug-toggle summary::-webkit-details-marker { display: none; }
+  .debug-toggle summary::marker { content: ""; }
   .debug-title {
     font-size: 0.95rem;
     font-weight: 700;
@@ -1086,6 +1136,35 @@ _INDEX_HTML = """<!doctype html>
     color: #888;
     font-size: 0.82rem;
     font-weight: 500;
+  }
+  .debug-chevron {
+    margin-left: auto;
+    width: 2rem;
+    height: 2rem;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #101010;
+    color: #a3a3a3;
+    flex: 0 0 auto;
+    transition:
+      background 120ms ease,
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+  .debug-toggle summary:hover .debug-chevron {
+    background: #1b1b1b;
+    border-color: #4a4a4a;
+    color: #e5e5e5;
+  }
+  .debug-chevron svg {
+    width: 1rem;
+    height: 1rem;
+    transition: transform 120ms ease;
+  }
+  .debug-toggle[open] .debug-chevron svg {
+    transform: rotate(180deg);
   }
   .debug-grid {
     display: grid;
@@ -1198,9 +1277,17 @@ _INDEX_HTML = """<!doctype html>
     background: #0a0a0a;
   }
   .eval-card.fallback { border-color: #7f1d1d; }
+  .eval-card.placeholder {
+    border-style: dashed;
+    color: #737373;
+  }
   .eval-card.fallback .eval-score-pill {
     border-color: #f97316;
     color: #fed7aa;
+  }
+  .eval-card.placeholder .eval-score-pill {
+    border-color: #404040;
+    color: #a3a3a3;
   }
   .eval-card h3 {
     margin: 0 0 0.4rem 0;
@@ -1229,6 +1316,7 @@ _INDEX_HTML = """<!doctype html>
     background: #22c55e;
   }
   .eval-card.fallback .axis-fill { background: #f97316; }
+  .eval-card.editing .eval-score-pill { display: none; }
   .eval-card .fallback-tag {
     color: #fca5a5;
     font-size: 0.72rem;
@@ -1263,6 +1351,18 @@ _INDEX_HTML = """<!doctype html>
     font-size: 0.85rem;
     overflow-wrap: anywhere;
   }
+  .eval-placeholder-note {
+    color: #737373;
+    font-size: 0.78rem;
+  }
+  .score-edit {
+    display: none;
+    width: 5.5rem;
+    margin: 0;
+    padding: 0.25rem 0.35rem;
+    font-size: 0.82rem;
+  }
+  .eval-card.editing .score-edit { display: block; }
   #override-modal,
   #log-modal,
   #prompt-pool-modal,
@@ -1286,6 +1386,48 @@ _INDEX_HTML = """<!doctype html>
     max-height: min(72vh, 720px);
     display: flex;
     flex-direction: column;
+    gap: 0.7rem;
+  }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+  .modal-header h2 {
+    margin: 0;
+  }
+  .icon-button {
+    width: 2rem;
+    height: 2rem;
+    display: inline-grid;
+    place-items: center;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #333;
+    border-radius: 6px;
+    background: #101010;
+    color: #a3a3a3;
+    line-height: 1;
+  }
+  .icon-button:hover {
+    background: #1b1b1b;
+    border-color: #4a4a4a;
+    color: #e5e5e5;
+  }
+  .icon-button svg {
+    width: 1rem;
+    height: 1rem;
+  }
+  .prompt-add-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .prompt-add-row input,
+  .prompt-add-row button {
+    margin-top: 0;
   }
   #prompt-pool {
     overflow-y: auto;
@@ -1373,14 +1515,13 @@ _INDEX_HTML = """<!doctype html>
       <span class="timer-meta" id="timer-meta">idle</span>
     </div>
     <progress id="timer-bar" max="1" value="0"></progress>
-    <div class="muted">When the timer expires, the LLM judge scores both player websites automatically.</div>
+    <div class="muted">When the timer expires, judge results are held for host approval before publishing.</div>
   </section>
 
   <section>
     <h2>End round</h2>
     <p class="muted">
-      Scores are computed automatically when the timer expires. End early to
-      stop the round and trigger judging now.
+      End early to stop coding and send scores for host approval.
     </p>
     <button class="danger" id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>
     <span class="inline-error" id="end-error" role="alert"></span>
@@ -1389,8 +1530,15 @@ _INDEX_HTML = """<!doctype html>
 
 <section>
   <h2>Judge results</h2>
-  <div class="muted">Latest per-axis evaluation. Fallback rows used randomized scores.</div>
-  <div id="eval-results">No results yet.</div>
+  <div class="muted eval-help">Latest per-axis evaluation. Review scores here before publishing them to OBS.</div>
+  <div class="action-line" id="eval-approval" hidden>
+    <button type="button" id="btn-accept-scores" disabled>Accept scores</button>
+    <button type="button" class="secondary" id="btn-edit-scores" disabled>Edit scores</button>
+    <button type="button" id="btn-publish-edited" hidden disabled>Publish edited scores</button>
+    <button type="button" class="secondary" id="btn-cancel-score-edit" hidden>Cancel edit</button>
+    <span class="inline-error" id="publish-error" role="alert"></span>
+  </div>
+  <div id="eval-results"></div>
 </section>
 
 <dialog id="override-modal">
@@ -1418,13 +1566,18 @@ _INDEX_HTML = """<!doctype html>
 
 <dialog id="prompt-pool-modal">
   <form method="dialog" id="prompt-pool-form">
-    <h2 style="margin-top:0">Prompt pool</h2>
-    <div class="action-line">
+    <div class="modal-header">
+      <h2>Prompt pool</h2>
+      <button type="button" class="icon-button" id="btn-prompt-pool-cancel" aria-label="Close prompt pool">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </button>
+    </div>
+    <div class="prompt-add-row">
       <input id="new-prompt" type="text" placeholder="Add a new website prompt">
       <button type="button" id="btn-add-prompt">Add</button>
-      <button type="button" class="secondary" id="btn-prompt-pool-cancel">Close</button>
     </div>
-    <div class="muted">Leave the round prompt blank to draw randomly from this pool.</div>
     <div class="prompt-pool" id="prompt-pool"></div>
   </form>
 </dialog>
@@ -1490,6 +1643,11 @@ _INDEX_HTML = """<!doctype html>
     <summary>
       <span class="debug-title">Debug controls</span>
       <span class="debug-hint">Smoke tests, logs, player tools</span>
+      <span class="debug-chevron" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </span>
     </summary>
     <div class="debug-grid">
       <div class="debug-group">
@@ -1618,6 +1776,10 @@ let lastReadyNames = [];
 let roundStartedTimer = null;
 let canStartRound = false;
 let currentPhase = 'unknown';
+let latestEvalResults = [];
+let latestPendingScores = {};
+let latestContestants = [];
+let scoreEditMode = false;
 function setStartError(message) {
   document.getElementById('start-error').textContent = message;
 }
@@ -1646,6 +1808,7 @@ function renderState(state) {
   }
   document.getElementById('state-prompt').textContent = state.prompt || 'none';
   const contestants = state.contestants || [];
+  latestContestants = contestants;
   document.getElementById('state-contestants').textContent =
     contestants.length ? contestants.map((name) => displayName(name)).join(', ') : 'none';
   const scores = state.scores || {};
@@ -1654,7 +1817,10 @@ function renderState(state) {
     ? scoreEntries.map(([name, score]) => `${displayName(name)}: ${score}`).join(', ')
     : 'none';
   renderTimer(state.timer);
-  renderEval((state.eval && state.eval.results) || []);
+  renderEval(
+    (state.eval && state.eval.results) || [],
+    (state.eval && state.eval.pending_scores) || {},
+  );
 }
 const AXIS_LABELS = {
   color: 'Color',
@@ -1690,27 +1856,126 @@ function renderTimer(timer) {
   bar.max = timer.duration_secs || 1;
   bar.value = Math.max(0, (timer.duration_secs || 0) - (timer.remaining_secs || 0));
 }
-function renderEval(results) {
-  const container = document.getElementById('eval-results');
-  container.replaceChildren();
-  if (!results || results.length === 0) {
-    const placeholder = document.createElement('div');
-    placeholder.className = 'muted';
-    placeholder.textContent = 'No results yet.';
-    container.appendChild(placeholder);
+function setPublishError(message) {
+  document.getElementById('publish-error').textContent = message;
+}
+function renderEvalActions(results, pendingScores) {
+  const hasResults = Boolean(results && results.length);
+  const hasPending = Object.keys(pendingScores || {}).length > 0;
+  if (!hasPending) scoreEditMode = false;
+  document.getElementById('eval-approval').hidden = !(hasResults && hasPending);
+  const accept = document.getElementById('btn-accept-scores');
+  const edit = document.getElementById('btn-edit-scores');
+  const publishEdited = document.getElementById('btn-publish-edited');
+  accept.hidden = scoreEditMode;
+  edit.hidden = scoreEditMode;
+  publishEdited.hidden = !scoreEditMode;
+  accept.disabled = !hasPending;
+  edit.disabled = !hasPending;
+  publishEdited.disabled = !hasPending;
+  document.getElementById('btn-cancel-score-edit').hidden = !scoreEditMode;
+}
+function placeholderEvalEntries() {
+  const names = latestContestants.filter(Boolean).slice(0, 2);
+  while (names.length < 2) names.push(`Player ${names.length + 1}`);
+  return names;
+}
+function renderEvalPlaceholder(container) {
+  for (const name of placeholderEvalEntries()) {
+    const card = document.createElement('div');
+    card.className = 'eval-card placeholder';
+
+    const header = document.createElement('h3');
+    const label = document.createElement('span');
+    label.textContent = displayName(name, name);
+    header.appendChild(label);
+
+    const score = document.createElement('span');
+    score.className = 'eval-score-pill';
+    score.textContent = '-- / 10';
+    header.appendChild(score);
+    card.appendChild(header);
+
+    const note = document.createElement('div');
+    note.className = 'eval-placeholder-note';
+    note.textContent = 'Waiting for judge results';
+    card.appendChild(note);
+    container.appendChild(card);
+  }
+}
+function pendingScoreFor(entry, pendingScores) {
+  const name = String(entry.name || '');
+  const value = pendingScores && Object.prototype.hasOwnProperty.call(pendingScores, name)
+    ? pendingScores[name]
+    : entry.obs_score;
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+function scoreInputId(index) {
+  return `score-edit-${index}`;
+}
+function collectEditedScores() {
+  const scores = {};
+  latestEvalResults.forEach((entry, index) => {
+    const name = String(entry.name || '').trim();
+    if (!name) return;
+    const input = document.getElementById(scoreInputId(index));
+    const value = input ? parseFloat(input.value) : Number(entry.obs_score || 0);
+    scores[name] = Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 0;
+  });
+  return scores;
+}
+async function publishScores(scores) {
+  setPublishError('');
+  if (!scores || Object.keys(scores).length === 0) {
+    setPublishError('No pending scores to publish yet.');
     return;
   }
-  for (const entry of results) {
+  const result = await api('/api/eval/publish', { scores });
+  if (result.ok) {
+    scoreEditMode = false;
+    if (result.json && result.json.state) renderState(result.json.state);
+    await refreshState({ quiet: true });
+    clearPromptInput();
+    return;
+  }
+  const message = result.json && result.json.detail
+    ? String(result.json.detail)
+    : result.text;
+  setPublishError(message);
+}
+function renderEval(results, pendingScores = {}) {
+  const container = document.getElementById('eval-results');
+  container.replaceChildren();
+  latestEvalResults = results || [];
+  latestPendingScores = pendingScores || {};
+  renderEvalActions(latestEvalResults, latestPendingScores);
+  if (!results || results.length === 0) {
+    renderEvalPlaceholder(container);
+    return;
+  }
+  for (const [index, entry] of results.entries()) {
     const card = document.createElement('div');
-    card.className = 'eval-card' + (entry.fallback ? ' fallback' : '');
+    card.className = 'eval-card'
+      + (entry.fallback ? ' fallback' : '')
+      + (scoreEditMode ? ' editing' : '');
 
     const header = document.createElement('h3');
     const label = document.createElement('span');
     label.textContent = displayName(entry.name, '?');
     header.appendChild(label);
+    const editable = document.createElement('input');
+    editable.className = 'score-edit';
+    editable.id = scoreInputId(index);
+    editable.type = 'number';
+    editable.step = '0.01';
+    editable.min = '0';
+    editable.max = '10';
+    editable.value = pendingScoreFor(entry, latestPendingScores).toFixed(2);
     const score = document.createElement('span');
     score.className = 'eval-score-pill';
-    score.textContent = `${Number(entry.obs_score || 0).toFixed(2)} / 10`;
+    score.textContent = `${pendingScoreFor(entry, latestPendingScores).toFixed(2)} / 10`;
+    header.appendChild(editable);
     header.appendChild(score);
     card.appendChild(header);
 
@@ -1813,7 +2078,7 @@ function renderReady(ready, modelReady, connected) {
     const next = entry ? entry.name : '';
     const isConnected = Boolean(entry && connectedPorts.has(entry.port));
     slot.dataset.name = next;
-    slot.textContent = displayName(next) || (isConnected ? `Connected (${entry.port})` : 'Not connected');
+    slot.textContent = displayName(next) || (isConnected ? 'Waiting for name' : 'Waiting for player');
     slot.classList.toggle('empty', !next);
     const badge = document.getElementById(`${id}-ready`);
     const isReady = Boolean(entry && modelReadyPorts.has(entry.port));
@@ -1870,11 +2135,13 @@ async function loadPromptPool() {
     text.textContent = entry.prompt;
 
     const edit = document.createElement('button');
+    edit.type = 'button';
     edit.className = 'secondary';
     edit.textContent = 'Edit';
     edit.onclick = () => renderPromptEditor(row, entry);
 
     const remove = document.createElement('button');
+    remove.type = 'button';
     remove.className = 'danger';
     remove.textContent = 'Delete';
     remove.onclick = async () => {
@@ -1899,6 +2166,7 @@ function renderPromptEditor(row, entry) {
   input.value = entry.prompt;
 
   const save = document.createElement('button');
+  save.type = 'button';
   save.textContent = 'Save';
   save.onclick = async () => {
     const prompt = input.value.trim();
@@ -1915,11 +2183,13 @@ function renderPromptEditor(row, entry) {
   };
 
   const cancel = document.createElement('button');
+  cancel.type = 'button';
   cancel.className = 'secondary';
   cancel.textContent = 'Cancel';
   cancel.onclick = loadPromptPool;
 
   const remove = document.createElement('button');
+  remove.type = 'button';
   remove.className = 'danger';
   remove.textContent = 'Delete';
   remove.onclick = async () => {
@@ -1982,15 +2252,34 @@ document.getElementById('btn-end-early').onclick = () => {
     return;
   }
   api('/api/round/end-early', {}).then((result) => {
-    if (result.ok && result.json && result.json.state) {
-      renderState(result.json.state);
-      renderEval(result.json.results || []);
-      clearPromptInput();
+    if (result.ok && result.json) {
+      if (result.json.state) renderState(result.json.state);
+      refreshState({ quiet: true });
     }
     if (!result.ok && result.json && result.json.detail) {
       setEndError(String(result.json.detail));
     }
   });
+};
+
+document.getElementById('btn-accept-scores').onclick = () => {
+  if (Object.keys(latestPendingScores || {}).length === 0) return;
+  publishScores(collectEditedScores());
+};
+document.getElementById('btn-edit-scores').onclick = () => {
+  if (Object.keys(latestPendingScores || {}).length === 0) return;
+  scoreEditMode = true;
+  setPublishError('');
+  renderEval(latestEvalResults, latestPendingScores);
+};
+document.getElementById('btn-publish-edited').onclick = () => {
+  if (Object.keys(latestPendingScores || {}).length === 0) return;
+  publishScores(collectEditedScores());
+};
+document.getElementById('btn-cancel-score-edit').onclick = () => {
+  scoreEditMode = false;
+  setPublishError('');
+  refreshState({ quiet: true });
 };
 
 const overrideModal = document.getElementById('override-modal');
@@ -3353,7 +3642,18 @@ def create_app() -> FastAPI:
 
     @app.get("/api/eval/last")
     async def get_last_eval() -> dict[str, Any]:
-        return {"results": list(_last_eval_results)}
+        return {
+            "results": list(_last_eval_results),
+            "pending_scores": dict(_round_context.get("pending_scores") or {}),
+            "published_scores": dict(_round_context.get("published_scores") or {}),
+        }
+
+    @app.post("/api/eval/publish")
+    async def publish_eval_scores(req: PublishScoresRequest) -> dict[str, Any]:
+        scores = dict(req.scores) or dict(_round_context.get("pending_scores") or {})
+        state = await _publish_round_scores(scores)
+        await _publish_state_update()
+        return {"state": state, "scores": scores}
 
     @app.post("/api/overlay-smoke")
     async def overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:

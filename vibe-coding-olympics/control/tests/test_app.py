@@ -456,6 +456,58 @@ class TestReadyPlayers(unittest.TestCase):
             self.assertEqual(entry["obs_score"], 5.0)
             self.assertFalse(entry["fallback"])
         self.assertIsNone(body["obs_error"])
+        self.assertEqual(
+            app_mod._round_context["pending_scores"],
+            {"Alice": 5.0, "Bob": 5.0},
+        )
+
+    def test_publish_eval_scores_forwards_host_approved_scores(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._round_context["pending_scores"] = {"Alice": 5.0, "Bob": 6.0}
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+
+        with patch("control_server.app._forward", forward):
+            response = client.post(
+                "/api/eval/publish",
+                json={"scores": {"Alice": 7.25, "Bob": 6.5}},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["scores"], {"Alice": 7.25, "Bob": 6.5})
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 7.25, "Bob": 6.5}},
+        )
+        self.assertNotIn("pending_scores", app_mod._round_context)
+        self.assertEqual(
+            app_mod._round_context["published_scores"],
+            {"Alice": 7.25, "Bob": 6.5},
+        )
+
+    def test_publish_eval_scores_uses_pending_scores_by_default(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._round_context["pending_scores"] = {"Alice": 5.0, "Bob": 6.0}
+        forward = AsyncMock(return_value={"phase": "scoreboard"})
+
+        with patch("control_server.app._forward", forward):
+            response = client.post("/api/eval/publish", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["scores"], {"Alice": 5.0, "Bob": 6.0})
+        forward.assert_awaited_once_with(
+            "end",
+            {"scores": {"Alice": 5.0, "Bob": 6.0}},
+        )
+
+    def test_publish_eval_scores_rejects_when_no_scores_exist(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        with patch("control_server.app._forward", new=AsyncMock()) as forward:
+            response = client.post("/api/eval/publish", json={})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("No scores are available to publish.", response.text)
+        forward.assert_not_awaited()
 
     def test_round_end_early_rejects_when_not_coding(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -679,18 +731,31 @@ class TestReadyPlayers(unittest.TestCase):
         )
         self.assertIn('id="btn-open-override"', response.text)
         self.assertIn('id="override-modal"', response.text)
+        self.assertIn('class="modal-header"', response.text)
+        self.assertIn('class="prompt-add-row"', response.text)
+        self.assertIn('aria-label="Close prompt pool"', response.text)
         self.assertIn('id="timer-clock"', response.text)
         self.assertIn('id="eval-results"', response.text)
+        self.assertIn("Waiting for judge results", response.text)
+        self.assertNotIn("No results yet.", response.text)
+        self.assertIn('class="debug-chevron" aria-hidden="true">', response.text)
+        self.assertIn('d="m6 9 6 6 6-6"', response.text)
+        self.assertIn('id="eval-approval"', response.text)
+        self.assertIn('id="btn-accept-scores" disabled', response.text)
+        self.assertIn('id="btn-edit-scores" disabled', response.text)
+        self.assertIn("/api/eval/publish", response.text)
         self.assertIn('id="end-error"', response.text)
         self.assertIn('id="obs-phase">unknown</span>', response.text)
         self.assertIn('id="state-summary"', response.text)
         self.assertIn('id="state-prompt">none</dd>', response.text)
         self.assertIn('id="state-contestants">none</dd>', response.text)
         self.assertIn('id="state-scores">none</dd>', response.text)
+        self.assertIn("Waiting for player", response.text)
         self.assertIn("Not connected", response.text)
         self.assertIn('id="ready-players">none</span>', response.text)
         self.assertNotIn("Connected players:", response.text)
         self.assertIn("renderPromptEditor", response.text)
+        self.assertIn("cancel.type = 'button';", response.text)
         self.assertIn("edit.textContent = 'Edit'", response.text)
         self.assertIn("save.textContent = 'Save'", response.text)
         self.assertIn("function clearPromptInput()", response.text)

@@ -24,6 +24,14 @@
 
 set -euo pipefail
 
+on_error() {
+  local status=$?
+  local line="${1:-unknown}"
+  echo "play.sh failed on line $line (exit $status)" >&2
+  exit "$status"
+}
+trap 'on_error "$LINENO"' ERR
+
 WAIT_FOR_CONTROLLER=1
 PROMPT=""
 PORT="3001"
@@ -51,7 +59,10 @@ DIR=$(mktemp -d -t "vibe-player-${PORT}-XXXX")
 LOG="/tmp/vite-${PORT}.log"
 EVENT_SOCKET="/tmp/deepagents-vibe-${PORT}.sock"
 HOOKS_FILE="$DIR/hooks.json"
+ENV_FILE="$DIR/player-env.sh"
+PROMPT_FILE="$DIR/prompt.txt"
 : > "$LOG"   # ensure tail -f has a file to open even on first-ever run
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # Expose the repo's .deepagents/ (skills, configs) to the fresh round dir so
 # the CLI's project-level skill lookup finds web-vibe. The CLI's project
@@ -103,11 +114,44 @@ hooks_file.write_text(
 )
 PY
 
+write_export() {
+  local name="$1"
+  local value="$2"
+  printf 'export %s=%q\n' "$name" "$value" >> "$ENV_FILE"
+}
+
+: > "$ENV_FILE"
+chmod 600 "$ENV_FILE"
+write_export VIBE_PORT "$PORT"
+write_export VIBE_DIR "$DIR"
+write_export VIBE_PROMPT "$PROMPT"
+write_export VIBE_PROMPT_FILE "$PROMPT_FILE"
+write_export VIBE_LOG "$LOG"
+write_export VIBE_EVENT_SOCKET "$EVENT_SOCKET"
+write_export VIBE_CONTROL_API "$CONTROL_API"
+write_export DEEPAGENTS_CLI_HOOKS_PATH "$HOOKS_FILE"
+write_export DEEPAGENTS_CLI_HIDE_SPLASH_VERSION "1"
+write_export DEEPAGENTS_CLI_HIDE_GIT_BRANCH "1"
+write_export DEEPAGENTS_CLI_HIDE_CWD "1"
+write_export DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING "1"
+write_export DEEPAGENTS_CLI_HIDE_MODEL_SELECTOR_SEARCH "1"
+write_export DEEPAGENTS_CLI_DEBUG_ONBOARDING "1"
+write_export DEEPAGENTS_CLI_THEME "langchain dark"
+write_export DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE "1"
+write_export DEEPAGENTS_CLI_HIDE_SPLASH_TIPS "1"
+write_export DEEPAGENTS_CLI_HIDE_STARTUP_COMMAND_TEXT "1"
+write_export DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET "1"
+write_export VIBE_OPEN_ON_CLEAR "1"
+write_export DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE "1"
+write_export DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH "$EVENT_SOCKET"
+write_export DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START "$WAIT_FOR_CONTROLLER"
+
 echo "Player dir: $DIR"
 echo "Port:       $PORT"
 echo "Log:        $LOG"
 echo "Socket:     $EVENT_SOCKET"
 echo "Hooks:      $HOOKS_FILE"
+echo "Env:        $ENV_FILE"
 echo "Control:    $CONTROL_API"
 if [ "$LAUNCH_RELAY" = "1" ]; then
   echo "Relay:      http://$RELAY_HOST:$RELAY_PORT"
@@ -126,8 +170,26 @@ export VIBE_WAIT_FOR_CONTROLLER="$WAIT_FOR_CONTROLLER"
 export VIBE_RELAY_HOST="$RELAY_HOST" VIBE_RELAY_PORT="$RELAY_PORT"
 export VIBE_LAUNCH_RELAY="$LAUNCH_RELAY"
 export VIBE_CONTROL_DIR="$CONTROL_DIR"
+export VIBE_ENV_FILE="$ENV_FILE"
 export VIBE_OPEN_ON_CLEAR=1
 export DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE=1
+
+free_listen_port() {
+  local port="$1"
+  local label="$2"
+  if ! command -v lsof >/dev/null 2>&1; then
+    return
+  fi
+  local stale_pids
+  stale_pids="$(lsof -ti ":$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -z "$stale_pids" ]; then
+    return
+  fi
+  echo "Freeing $label port $port from previous round (pids: $stale_pids)"
+  # shellcheck disable=SC2086
+  kill -9 $stale_pids 2>/dev/null || true
+  sleep 0.3
+}
 
 # Best-effort controller signal: the player process has launched. Later CLI
 # hooks report name submission and model-selection readiness.
@@ -142,14 +204,9 @@ curl -fsS -m 1 \
 # killed moments later when start-server.sh tears the zombie down.
 # LISTEN-only to avoid SIGKILLing clients (e.g. a still-open browser tab)
 # that hold an established connection to the port.
-if command -v lsof >/dev/null 2>&1; then
-  stale_pids="$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null || true)"
-  if [ -n "$stale_pids" ]; then
-    echo "Freeing port $PORT from previous round (pids: $stale_pids)"
-    # shellcheck disable=SC2086
-    kill -9 $stale_pids 2>/dev/null || true
-    sleep 0.3
-  fi
+free_listen_port "$PORT" "preview"
+if [ "$LAUNCH_RELAY" = "1" ]; then
+  free_listen_port "$RELAY_PORT" "relay"
 fi
 
 # Poll for the Vite server in the background, open the browser as soon as
@@ -167,7 +224,9 @@ fi
 disown
 
 # Bring iTerm2 to the foreground before the Python API connects.
-open -a iTerm
+if ! open -a iTerm 2>/dev/null; then
+  open -a iTerm2 2>/dev/null || echo "warning: could not open iTerm; continuing with Python API connection" >&2
+fi
 
 # Resolve the python that has `iterm2` installed. Prefer this project's venv
 # (populated by `uv sync`); fall back to bare python3 for users who installed
@@ -181,6 +240,7 @@ fi
 "${PY_RUN[@]}" - <<'PY'
 import json
 import os
+from pathlib import Path
 import shlex
 
 import iterm2
@@ -199,6 +259,13 @@ elif PROMPT:
     STARTUP_SUBHEADER = "Welcome to LangChain Interrupt 2026\n\nReady to vibecode!"
 else:
     raise SystemExit("VIBE_PROMPT is empty; pass a non-empty --prompt value")
+
+env_file = Path(os.environ["VIBE_ENV_FILE"])
+with env_file.open("a") as f:
+    f.write(
+        "export DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER="
+        f"{shlex.quote(STARTUP_SUBHEADER)}\n"
+    )
 
 
 async def main(connection):
@@ -225,33 +292,9 @@ async def main(connection):
     await top.async_set_variable("user.vibe_dir", DIR)
 
     # Prime env + cwd in the CLI pane so the agent's shell-outs see VIBE_* vars.
-    await top.async_send_text(
-        "export "
-        f"VIBE_PORT={shlex.quote(PORT)} "
-        f"VIBE_DIR={shlex.quote(DIR)} "
-        f"VIBE_LOG={shlex.quote(LOG)} "
-        f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
-        f"VIBE_CONTROL_API={shlex.quote(os.environ['VIBE_CONTROL_API'])} "
-        "DEEPAGENTS_CLI_HOOKS_PATH="
-        f"{shlex.quote(os.environ['DEEPAGENTS_CLI_HOOKS_PATH'])} "
-        "DEEPAGENTS_CLI_HIDE_SPLASH_VERSION=1 "
-        "DEEPAGENTS_CLI_HIDE_GIT_BRANCH=1 "
-        "DEEPAGENTS_CLI_HIDE_CWD=1 "
-        "DEEPAGENTS_CLI_HIDE_LANGSMITH_TRACING=1 "
-        "DEEPAGENTS_CLI_HIDE_MODEL_SELECTOR_SEARCH=1 "
-        "DEEPAGENTS_CLI_DEBUG_ONBOARDING=1 "
-        f"DEEPAGENTS_CLI_THEME={shlex.quote('langchain dark')} "
-        "DEEPAGENTS_CLI_HIDE_NEW_THREAD_MESSAGE=1 "
-        "DEEPAGENTS_CLI_HIDE_SPLASH_TIPS=1 "
-        "DEEPAGENTS_CLI_HIDE_STARTUP_COMMAND_TEXT=1 "
-        "DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET=1 "
-        "VIBE_OPEN_ON_CLEAR=1 "
-        "DEEPAGENTS_CLI_NO_TERMINAL_ESCAPE=1 "
-        f"DEEPAGENTS_CLI_EXTERNAL_EVENT_SOCKET_PATH={shlex.quote(EVENT_SOCKET)} "
-        f"DEEPAGENTS_CLI_COMPETITION_WAIT_FOR_START={int(WAIT_FOR_CONTROLLER)} "
-        "DEEPAGENTS_CLI_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER="
-        f"{shlex.quote(STARTUP_SUBHEADER)}\n"
-    )
+    # Keep the pasted iTerm command short; long export lines can be truncated or
+    # leave the shell waiting for more input on some player laptops.
+    await top.async_send_text(f". {shlex.quote(os.environ['VIBE_ENV_FILE'])}\n")
     await top.async_send_text(
         "(\n"
         "  while true; do\n"
@@ -274,7 +317,7 @@ async def main(connection):
     if WAIT_FOR_CONTROLLER:
         deepagents_cmd = "deepagents -y"
     else:
-        deepagents_cmd = f"deepagents -y --skill web-vibe -m {shlex.quote(PROMPT)}"
+        deepagents_cmd = 'deepagents -y --skill web-vibe -m "$(cat "$VIBE_PROMPT_FILE")"'
     cli_cmd = f"{startup_cmd} && {deepagents_cmd}"
     await top.async_send_text(cli_cmd + "\n")
 
@@ -290,13 +333,10 @@ async def main(connection):
             raise RuntimeError("iterm2 did not return a relay tab with sessions")
         relay = relay_tab.sessions[0]
         await relay.async_set_name(f"vibe-relay-{PORT}")
+        await relay.async_send_text(f". {shlex.quote(os.environ['VIBE_ENV_FILE'])}\n")
         await relay.async_send_text(
             "export "
-            f"VIBE_PORT={shlex.quote(PORT)} "
-            f"VIBE_DIR={shlex.quote(DIR)} "
-            f"VIBE_EVENT_SOCKET={shlex.quote(EVENT_SOCKET)} "
             f"VIBE_PLAYER_TOKEN={shlex.quote(os.environ.get('VIBE_PLAYER_TOKEN', ''))} "
-            "VIBE_OPEN_ON_CLEAR=1 "
             f"VIBE_RELAY_HOST={shlex.quote(os.environ['VIBE_RELAY_HOST'])} "
             f"VIBE_RELAY_PORT={shlex.quote(os.environ['VIBE_RELAY_PORT'])}\n"
         )

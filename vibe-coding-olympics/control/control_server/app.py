@@ -3580,6 +3580,7 @@ _OVERLAY_HTML = """<!doctype html>
     padding: 2.5%;
     background: var(--paper);
     border: var(--line) solid var(--ink);
+    z-index: 4;
   }
   .score-card.left { left: 7%; }
   .score-card.right { right: 7%; }
@@ -3651,6 +3652,39 @@ _OVERLAY_HTML = """<!doctype html>
     opacity: 0;
   }
   .winner.visible { opacity: 1; }
+  .confetti-layer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 50%;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 3;
+  }
+  .confetti-layer.left { left: 0; }
+  .confetti-layer.right { right: 0; }
+  .confetti-piece {
+    position: absolute;
+    top: -8%;
+    left: var(--x);
+    width: var(--w);
+    height: calc(var(--w) * 1.65);
+    background: var(--c);
+    transform: rotate(var(--r));
+    animation: confetti-fall var(--d) ease-in forwards;
+    animation-delay: var(--delay);
+  }
+  @keyframes confetti-fall {
+    0% {
+      opacity: 0;
+      transform: translate3d(0, -10%, 0) rotate(var(--r));
+    }
+    8% { opacity: 1; }
+    100% {
+      opacity: 0;
+      transform: translate3d(var(--drift), 118vh, 0) rotate(calc(var(--r) + 720deg));
+    }
+  }
   .results-card {
     position: absolute;
     left: 14%;
@@ -4086,6 +4120,39 @@ function animateBar(element, width, delay) {
   }, delay);
 }
 
+function totalScoreRevealDelay(entries) {
+  if (entries.length === 0) return 0;
+  return entries.length * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
+}
+
+function addConfetti(side) {
+  const layer = document.createElement('div');
+  layer.className = `confetti-layer ${side}`;
+  const colors = ['#000000', '#ffffff', '#868cfe', '#82c9fe', '#ed92ff', '#d5c3f7'];
+  for (let i = 0; i < 54; i += 1) {
+    const piece = document.createElement('span');
+    piece.className = 'confetti-piece';
+    piece.style.setProperty('--x', `${(i * 37) % 96}%`);
+    piece.style.setProperty('--w', `${0.34 + ((i * 11) % 9) / 100}vw`);
+    piece.style.setProperty('--c', colors[i % colors.length]);
+    piece.style.setProperty('--r', `${(i * 29) % 180}deg`);
+    piece.style.setProperty('--d', `${2300 + ((i * 97) % 1200)}ms`);
+    piece.style.setProperty('--delay', `${(i * 83) % 900}ms`);
+    piece.style.setProperty('--drift', `${((i % 9) - 4) * 1.2}vw`);
+    layer.appendChild(piece);
+  }
+  els.scoreWrap.appendChild(layer);
+}
+
+function revealWinners(winners, delay) {
+  window.setTimeout(() => {
+    for (const winner of winners) {
+      winner.element.classList.add('visible');
+      addConfetti(winner.side);
+    }
+  }, delay);
+}
+
 function renderAxisRows(card, entry, playerIndex) {
   const axes = entry.axes || {};
   const rows = SCORE_AXIS_ORDER.filter((axis) => axes[axis] !== null && axes[axis] !== undefined);
@@ -4127,6 +4194,7 @@ function renderScoreboard() {
   if (scoreboardSignature === nextSignature && els.scoreWrap.childElementCount > 0) return;
   scoreboardSignature = nextSignature;
   const winnerScore = Math.max(...entries.map((entry) => entry.score), -1);
+  const winners = [];
   els.scoreWrap.replaceChildren();
   entries.forEach((entry, index) => {
     const playerDelay = index * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
@@ -4145,14 +4213,17 @@ function renderScoreboard() {
     track.appendChild(fill);
     const winner = document.createElement('div');
     winner.className = 'winner';
-    winner.classList.toggle('visible', entry.score === winnerScore && winnerScore > 0);
     winner.textContent = 'Winner';
+    if (entry.score === winnerScore && winnerScore > 0) {
+      winners.push({ element: winner, side: index === 0 ? 'left' : 'right' });
+    }
     card.append(name, score, track, winner);
     renderAxisRows(card, entry, index);
     els.scoreWrap.appendChild(card);
     animateBar(fill, entry.score * 10, playerDelay);
     animateNumber(score, entry.score, 2, playerDelay);
   });
+  revealWinners(winners, totalScoreRevealDelay(entries));
   if (entries.length === 0) {
     const card = document.createElement('div');
     card.className = 'score-card left';

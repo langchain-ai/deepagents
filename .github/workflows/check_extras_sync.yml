@@ -10,10 +10,12 @@ on:
   pull_request:
     paths:
       - "libs/cli/pyproject.toml"
+      - "libs/code/pyproject.toml"
   push:
     branches: [main]
     paths:
       - "libs/cli/pyproject.toml"
+      - "libs/code/pyproject.toml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,4 +40,6 @@ jobs:
           enable-cache: "false"
 
       - name: "🔍 Check extras sync"
-        run: python .github/scripts/check_extras_sync.py libs/cli/pyproject.toml
+        run: |
+          python .github/scripts/check_extras_sync.py libs/cli/pyproject.toml
+          python .github/scripts/check_extras_sync.py libs/code/pyproject.toml

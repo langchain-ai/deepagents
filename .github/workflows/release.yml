@@ -22,7 +22,8 @@ on:
       package:
         required: true
         type: choice
-        description: "Package to release (⚠️ release-please by default; manual is
+        description:
+          "Package to release (⚠️ release-please by default; manual is
           exception-only — see .github/RELEASING.md) (ignored when override is
           set)"
         options:
@@ -49,7 +50,8 @@ on:
         required: false
         type: string
         default: ""
-        description: "SHA on main whose pyproject.toml declares the input version.
+        description:
+          "SHA on main whose pyproject.toml declares the input version.
           Typically the release-please PR's squash-merge commit. May also be a
           pre-publish hotfix commit on top of it. Look up the release-please
           merge with: gh pr view <release-pr-number> --json mergeCommit --jq
@@ -59,14 +61,16 @@ on:
         required: false
         type: boolean
         default: false
-        description: "Release from a non-main branch (danger!) - Only use for backports
+        description:
+          "Release from a non-main branch (danger!) - Only use for backports
           and hotfixes"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean
         default: false
-        description: "(CLI only) Skip SDK pin validation (danger!) - Only use when
-          intentionally pinning an older SDK"
+        description:
+          "(deepagents-cli / deepagents-code only) Skip SDK pin validation
+          (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
   PYTHON_VERSION: "3.11"
@@ -698,32 +702,45 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Verify CLI pins latest SDK version
-        if: needs.build.outputs.pkg-name == 'deepagents-cli' &&
-          !inputs.dangerous-skip-sdk-pin-check
+      - name: Verify package pins latest SDK version
+        if: |
+          (needs.build.outputs.pkg-name == 'deepagents-cli'
+            || needs.build.outputs.pkg-name == 'deepagents-code')
+          && !inputs.dangerous-skip-sdk-pin-check
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
+          case "$PKG_NAME" in
+            deepagents-cli) PKG_PYPROJECT="libs/cli/pyproject.toml" ;;
+            deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
+            *)
+              echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"
+              exit 1
+              ;;
+          esac
+
           SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [ -z "$SDK_VERSION" ]; then
             echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
             exit 1
           fi
 
-          CLI_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' libs/cli/pyproject.toml | head -1)
-          if [ -z "$CLI_SDK_PIN" ]; then
-            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
+          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
+          if [ -z "$PKG_SDK_PIN" ]; then
+            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
             exit 1
           fi
 
-          if [ "$SDK_VERSION" != "$CLI_SDK_PIN" ]; then
-            echo "::error::CLI SDK pin does not match SDK version!"
+          if [ "$SDK_VERSION" != "$PKG_SDK_PIN" ]; then
+            echo "::error::${PKG_NAME} SDK pin does not match SDK version!"
             echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
-            echo "CLI SDK pin (libs/cli/pyproject.toml): $CLI_SDK_PIN"
+            echo "${PKG_NAME} SDK pin (${PKG_PYPROJECT}): $PKG_SDK_PIN"
             echo ""
-            echo "Update the deepagents dependency in libs/cli/pyproject.toml to deepagents==$SDK_VERSION"
+            echo "Update the deepagents dependency in ${PKG_PYPROJECT} to deepagents==$SDK_VERSION"
             echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
             exit 1
           else
-            echo "CLI SDK pin matches SDK version: $SDK_VERSION"
+            echo "${PKG_NAME} SDK pin matches SDK version: $SDK_VERSION"
           fi
 
       - name: Import dist package
@@ -747,8 +764,10 @@ jobs:
         run: uv sync --group test
         working-directory: ${{ env.WORKING_DIR }}
 
-      - name: Install sandbox provider extras (CLI only)
-        if: needs.setup.outputs.package == 'deepagents-cli'
+      - name: Install sandbox provider extras
+        if: |
+          needs.setup.outputs.package == 'deepagents-cli'
+          || needs.setup.outputs.package == 'deepagents-code'
         run: uv sync --group test --extra all-sandboxes
         working-directory: ${{ env.WORKING_DIR }}
 

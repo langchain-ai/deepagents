@@ -13,7 +13,7 @@ build-frontends:
 	cp -R $(FRONTEND_SRC)/dist/. $(FRONTEND_DEST)/; \
 	echo "Frontend built: $(FRONTEND_DEST)"
 
-BENCH_PACKAGES := libs/deepagents libs/cli
+BENCH_PACKAGES := libs/deepagents libs/code
 
 bench-all:
 	@set -e; \

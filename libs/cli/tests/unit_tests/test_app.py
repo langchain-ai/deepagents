@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import logging
 import os
 import signal
 import time
@@ -4354,67 +4355,60 @@ class TestFetchThreadHistoryData:
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "Hi there!"
 
-    async def test_server_mode_falls_back_to_checkpointer(self) -> None:
-        """When the server returns empty state, read SQLite checkpointer directly."""
+    async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:
+        """Server-mode history reads should fetch state through the remote server."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         from deepagents_cli.remote_client import RemoteAgent
-        from deepagents_cli.widgets.message_store import MessageData, MessageType
+        from deepagents_cli.widgets.message_store import MessageType
 
-        # Server returns empty state (fresh restart, thread not loaded)
-        empty_state = MagicMock()
-        empty_state.values = {}
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                HumanMessage(content="hello", id="h1"),
+                AIMessage(content="world", id="a1"),
+            ]
+        }
 
-        # spec=RemoteAgent so _remote_agent() isinstance check passes
         mock_agent = MagicMock(spec=RemoteAgent)
-        mock_agent.aget_state = AsyncMock(return_value=empty_state)
+        mock_agent.aensure_thread = AsyncMock()
+        mock_agent.aget_state = AsyncMock(return_value=state)
 
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        payload = await app._fetch_thread_history_data("t-1")
 
-        # Patch the checkpointer fallback to return messages
-        checkpointer_msgs = [
-            HumanMessage(content="hello", id="h1"),
-            AIMessage(content="world", id="a1"),
-        ]
-        with patch.object(
-            DeepAgentsApp,
-            "_read_channel_values_from_checkpointer",
-            return_value={"messages": checkpointer_msgs},
-        ):
-            payload = await app._fetch_thread_history_data("t-1")
-
+        mock_agent.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "t-1"}}
+        )
         assert len(payload.messages) == 2
         assert payload.messages[0].type == MessageType.USER
         assert payload.messages[0].content == "hello"
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "world"
 
-    async def test_server_mode_fallback_includes_context_tokens(self) -> None:
-        """Server-mode fallback should merge `_context_tokens` from the checkpointer."""
+    async def test_server_mode_state_includes_context_tokens(self) -> None:
+        """Server-mode history reads should preserve `_context_tokens` from state."""
         from langchain_core.messages import HumanMessage
 
         from deepagents_cli.remote_client import RemoteAgent
         from deepagents_cli.widgets.message_store import MessageType
 
-        empty_state = MagicMock()
-        empty_state.values = {}
-
-        mock_agent = MagicMock(spec=RemoteAgent)
-        mock_agent.aget_state = AsyncMock(return_value=empty_state)
-
-        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
-
-        checkpointer_data = {
+        state = MagicMock()
+        state.values = {
             "messages": [HumanMessage(content="hi", id="h1")],
             "_context_tokens": 5000,
         }
-        with patch.object(
-            DeepAgentsApp,
-            "_read_channel_values_from_checkpointer",
-            return_value=checkpointer_data,
-        ):
-            payload = await app._fetch_thread_history_data("t-1")
 
+        mock_agent = MagicMock(spec=RemoteAgent)
+        mock_agent.aensure_thread = AsyncMock()
+        mock_agent.aget_state = AsyncMock(return_value=state)
+
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+        payload = await app._fetch_thread_history_data("t-1")
+
+        mock_agent.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "t-1"}}
+        )
         assert payload.context_tokens == 5000
         assert len(payload.messages) == 1
         assert payload.messages[0].type == MessageType.USER
@@ -4446,6 +4440,132 @@ class TestRemoteAgent:
         app = DeepAgentsApp()
         app._agent = MagicMock(spec=[])
         assert app._remote_agent() is None
+
+
+class TestTerminalBackgroundSync:
+    """Tests for syncing Textual theme background to terminal background."""
+
+    def test_initial_theme_sync_sets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app = DeepAgentsApp()
+        entry = theme.get_registry()[app.theme]
+
+        assert calls[-1] == entry.colors.background
+
+    def test_sync_terminal_background_uses_active_theme(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape, theme
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+        app = DeepAgentsApp()
+        calls.clear()
+
+        app.theme = "langchain-light"
+        app.sync_terminal_background()
+
+        assert calls == [theme.LIGHT_COLORS.background]
+
+    def test_sync_terminal_background_uses_custom_theme_entry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from textual.theme import Theme as TextualTheme
+
+        from deepagents_cli import terminal_escape, theme
+
+        app = DeepAgentsApp()
+        calls: list[str] = []
+        entry = theme.ThemeEntry(
+            label="Custom Test",
+            dark=True,
+            colors=theme.DARK_COLORS,
+            custom=True,
+        )
+        c = entry.colors
+        app.register_theme(
+            TextualTheme(
+                name="custom-test",
+                primary=c.primary,
+                secondary=c.secondary,
+                accent=c.accent,
+                foreground=c.foreground,
+                background=c.background,
+                surface=c.surface,
+                panel=c.panel,
+                warning=c.warning,
+                error=c.error,
+                success=c.success,
+                dark=entry.dark,
+            )
+        )
+        monkeypatch.setattr(theme, "get_registry", lambda: {"custom-test": entry})
+        monkeypatch.setattr(
+            theme,
+            "get_theme_colors",
+            MagicMock(side_effect=AssertionError("custom themes use entry colors")),
+        )
+        monkeypatch.setattr(
+            terminal_escape,
+            "set_terminal_background",
+            lambda color: calls.append(color) or True,
+        )
+
+        app.theme = "custom-test"
+        app.sync_terminal_background()
+
+        assert calls == [theme.DARK_COLORS.background]
+
+    def test_sync_terminal_background_swallows_terminal_errors(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        app = DeepAgentsApp()
+
+        def _raise(_color: str) -> bool:
+            msg = "terminal unavailable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "set_terminal_background", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_cli.app"):
+            app.sync_terminal_background()
+
+        assert "set_terminal_background raised unexpectedly" in caplog.text
+
+    def test_exit_resets_terminal_background(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_cli import terminal_escape
+
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            terminal_escape,
+            "reset_terminal_background",
+            lambda: calls.append(True) or True,
+        )
+        app = DeepAgentsApp()
+
+        with patch.object(App, "exit") as app_exit:
+            app.exit()
+
+        assert calls == [True]
+        app_exit.assert_called_once()
 
 
 class TestSlashCommandBypass:
@@ -7650,6 +7770,105 @@ class TestPrewarmAwait:
         # don't crash the Toast renderer (see CLAUDE.md guidance).
         for notify_call in warning_calls:
             assert notify_call.kwargs.get("markup") is False
+
+    async def test_discover_skills_awaits_prewarm_before_thread_offload(
+        self,
+    ) -> None:
+        """Locks the call-order invariant that prevents an import deadlock.
+
+        Skill discovery and prewarm import overlapping parts of the Deep Agents
+        graph in separate workers. A regression that drops the
+        `await _await_prewarm_imports()` re-introduces the production crash;
+        this is the only test that catches that ordering contract.
+        """
+        call_order: list[str] = []
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        async def record_prewarm() -> None:
+            call_order.append("prewarm")
+            await asyncio.sleep(0)
+
+        def record_discover() -> tuple[list[Any], list[Any]]:
+            call_order.append("discover")
+            return [], []
+
+        with (
+            patch.object(app, "_await_prewarm_imports", side_effect=record_prewarm),
+            patch.object(
+                app, "_discover_skills_and_roots", side_effect=record_discover
+            ),
+        ):
+            await app._discover_skills()
+
+        assert call_order == ["prewarm", "discover"], (
+            f"prewarm must precede skill discovery thread; got {call_order}"
+        )
+
+    async def test_discover_skills_prewarm_failure_warns_with_debug_hint(
+        self,
+    ) -> None:
+        """A prewarm failure should use the discovery failure toast path."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.object(
+                app,
+                "_await_prewarm_imports",
+                AsyncMock(side_effect=RuntimeError("prewarm failed")),
+            ),
+            patch.object(app, "_discover_skills_and_roots") as discover_mock,
+            patch.object(app, "notify") as notify_mock,
+        ):
+            ok = await app._discover_skills()
+
+        assert ok is False
+        discover_mock.assert_not_called()
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
+        assert "RuntimeError" in message
+        assert "DEEPAGENTS_CLI_DEBUG=1" in message
+        assert notify_mock.call_args.kwargs["severity"] == "warning"
+        assert notify_mock.call_args.kwargs["markup"] is False
+
+    async def test_start_server_waits_for_skill_discovery_import_gate(
+        self,
+    ) -> None:
+        """Startup model creation must not import during skill discovery."""
+        from deepagents_cli import config as cli_config
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
+        app._server_kwargs = None
+        app._mcp_preload_kwargs = None
+        app._resume_thread_intent = None
+        app._assistant_id = None
+
+        await app._deepagents_import_lock.acquire()
+
+        def fake_create_model(**_: Any) -> MagicMock:
+            result = MagicMock()
+            result.apply_to_settings = MagicMock()
+            result.provider = "anthropic"
+            result.model_name = "claude-opus-4-7"
+            return result
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(
+                cli_config, "create_model", side_effect=fake_create_model
+            ) as create_model_mock,
+            patch("deepagents_cli.model_config.save_recent_model"),
+            patch.object(app, "post_message"),
+        ):
+            task = asyncio.create_task(app._start_server_background())
+            await asyncio.sleep(0)
+            assert create_model_mock.call_count == 0
+            app._deepagents_import_lock.release()
+            with contextlib.suppress(Exception):
+                await task
+
+        create_model_mock.assert_called_once()
 
 
 class TestHeaderAndTitle:

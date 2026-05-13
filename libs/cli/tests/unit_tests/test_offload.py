@@ -906,8 +906,8 @@ class TestOffloadRouting:
 class TestOffloadRemoteFallback:
     """Verify `/offload` handles resumed remote threads."""
 
-    async def test_resumed_remote_thread_uses_checkpointer_state(self) -> None:
-        """Should offload using checkpoint fallback when remote state is empty."""
+    async def test_resumed_remote_thread_uses_server_state(self) -> None:
+        """Should offload using state returned by the remote server."""
         from deepagents_cli.remote_client import RemoteAgent
 
         app = DeepAgentsApp()
@@ -924,11 +924,14 @@ class TestOffloadRemoteFallback:
                 "file_path": None,
             }
 
-            empty_state = MagicMock()
-            empty_state.values = {}
+            state = MagicMock()
+            state.values = {
+                "messages": messages,
+                "_summarization_event": prior_event,
+            }
 
             app._agent = MagicMock(spec=RemoteAgent)
-            app._agent.aget_state = AsyncMock(return_value=empty_state)
+            app._agent.aget_state = AsyncMock(return_value=state)
             app._agent.aensure_thread = AsyncMock()
             app._agent.aupdate_state = AsyncMock()
             app._backend = MagicMock()
@@ -942,27 +945,14 @@ class TestOffloadRemoteFallback:
                 messages_kept=12,
             )
 
-            with (
-                patch.object(
-                    DeepAgentsApp,
-                    "_read_channel_values_from_checkpointer",
-                    return_value={
-                        "messages": messages,
-                        "_summarization_event": prior_event,
-                    },
-                ) as checkpointer_mock,
-                patch(
-                    _PERFORM_OFFLOAD_PATH,
-                    new_callable=AsyncMock,
-                    return_value=result,
-                ) as mock_perform,
-            ):
+            with patch(
+                _PERFORM_OFFLOAD_PATH,
+                new_callable=AsyncMock,
+                return_value=result,
+            ) as mock_perform:
                 await app._handle_offload()
                 await pilot.pause()
 
-            checkpointer_mock.assert_awaited_once_with("test-thread")
-
-            # Verify perform_offload was called with the fallback state
             kwargs = mock_perform.call_args.kwargs
             assert kwargs["messages"] == messages
             assert kwargs["prior_event"] is prior_event
@@ -1070,7 +1060,9 @@ class TestOffloadRemoteStateNormalization:
 
             passed_event = mock_mw._apply_event_to_messages.call_args[0][1]
             assert isinstance(passed_event["summary_message"], BaseMessage)
-            app._agent.aensure_thread.assert_not_called()
+            app._agent.aensure_thread.assert_awaited_once_with(
+                {"configurable": {"thread_id": "test-thread"}}
+            )
             app._agent.aupdate_state.assert_not_called()
 
 

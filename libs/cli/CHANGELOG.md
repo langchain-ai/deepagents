@@ -1,5 +1,30 @@
 # Deep Agents CLI Changelog
 
+From 0.1.0 onward, `deepagents-cli` only contains `deploy`, `dev`, and `init`.
+The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
+
+## [0.0.59](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.58...deepagents-cli==0.0.59) (2026-05-12)
+
+### Bug Fixes
+
+* Prevent import deadlock during skill discovery and prewarm ([#3385](https://github.com/langchain-ai/deepagents/issues/3385)) ([0bf8dd1](https://github.com/langchain-ai/deepagents/commit/0bf8dd1cfd680bd4d27ce19295f96c720f525787))
+
+## [0.0.58](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.57...deepagents-cli==0.0.58) (2026-05-12)
+
+### Features
+
+* Pin v0.6 and fix import race ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
+## [0.0.57](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.56...deepagents-cli==0.0.57) (2026-05-12)
+
+### Features
+
+* OSC 9;4 progress & escape helper ([#3347](https://github.com/langchain-ai/deepagents/issues/3347)) ([75d60cd](https://github.com/langchain-ai/deepagents/commit/75d60cd82f559b2944b78a348d16b0a10a00d663))
+
+### Bug Fixes
+
+* Suppress LangSmith trace for `_context_tokens` state writes ([#3317](https://github.com/langchain-ai/deepagents/issues/3317)) ([63db13e](https://github.com/langchain-ai/deepagents/commit/63db13ee262d19a1a87fbe4df1271a2e958deed6))
+
 ## [0.0.56](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.55...deepagents-cli==0.0.56) (2026-05-11)
 
 ### Features

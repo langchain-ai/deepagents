@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -20,6 +20,14 @@ from deepagents_cli import theme
 from deepagents_cli.config import get_glyphs, is_ascii_mode
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class _TerminalBackgroundSyncApp(Protocol):
+    """App protocol for terminal background sync after theme preview changes."""
+
+    def sync_terminal_background(self) -> None:
+        """Sync the terminal background to the active theme."""
 
 
 class ThemeSelectorScreen(ModalScreen[str | None]):
@@ -103,6 +111,11 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         self._terminal_default = terminal_default
         self._show_keys = False
 
+    def _sync_terminal_background(self) -> None:
+        """Ask the app to sync terminal background after preview changes."""
+        if isinstance(self.app, _TerminalBackgroundSyncApp):
+            self.app.sync_terminal_background()
+
     def _format_option(self, name: str, entry: theme.ThemeEntry) -> str:
         """Render the option text for a theme entry.
 
@@ -172,6 +185,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
         if name is not None and name in theme.get_registry():
             try:
                 self.app.theme = name
+                self._sync_terminal_background()
                 # refresh_css only repaints the active (modal) screen's layout;
                 # force the screen beneath us to repaint so the user sees the
                 # preview through the transparent scrim.
@@ -182,6 +196,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
                 logger.warning("Failed to preview theme '%s'", name, exc_info=True)
                 try:
                     self.app.theme = self._original_theme
+                    self._sync_terminal_background()
                 except Exception:
                     logger.warning(
                         "Failed to restore original theme '%s'",
@@ -205,6 +220,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         """Restore the original theme and dismiss."""
         self.app.theme = self._original_theme
+        self._sync_terminal_background()
         self.dismiss(None)
 
     def action_cursor_down(self) -> None:

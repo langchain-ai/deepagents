@@ -13,6 +13,8 @@ from deepagents_cli.terminal_escape import (
     TerminalProgressState,
     _validate_progress,
     clear_terminal_progress,
+    reset_terminal_background,
+    set_terminal_background,
     set_terminal_progress,
     write_osc,
     write_terminal_escape,
@@ -21,8 +23,9 @@ from deepagents_cli.terminal_escape import (
 
 @pytest.fixture(autouse=True)
 def _reset_active_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Reset the module-level progress sentinel between tests."""
+    """Reset module-level terminal state sentinels between tests."""
     monkeypatch.setattr(terminal_escape, "_progress_active", False)
+    monkeypatch.setattr(terminal_escape, "_terminal_background_active", False)
     monkeypatch.setattr(terminal_escape, "_atexit_registered", False)
     monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
 
@@ -262,8 +265,59 @@ class TestSetTerminalProgress:
         assert terminal_escape._progress_active is False
 
 
+class TestTerminalBackground:
+    """Tests for `OSC 11` / `OSC 111` terminal background helpers."""
+
+    def test_set_background_writes_osc_11_with_st(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        assert set_terminal_background("#11121D") is True
+        assert fake.getvalue() == "\x1b]11;#11121D\x1b\\"
+        assert terminal_escape._terminal_background_active is True
+
+    def test_reset_background_writes_osc_111_with_st(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", True)
+        assert reset_terminal_background() is True
+        assert fake.getvalue() == "\x1b]111\x1b\\"
+        assert terminal_escape._terminal_background_active is False
+
+    def test_empty_background_is_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        assert set_terminal_background("") is False
+        assert fake.getvalue() == ""
+        assert terminal_escape._terminal_background_active is False
+
+    def test_set_background_registers_atexit_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        registered: list[object] = []
+        monkeypatch.setattr("atexit.register", lambda fn: registered.append(fn) or fn)
+        set_terminal_background("#11121D")
+        set_terminal_background("#F5F5F7")
+        assert registered == [terminal_escape._atexit_clear]
+
+    def test_background_respects_terminal_escape_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(terminal_escape.NO_TERMINAL_ESCAPE, "1")
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        assert set_terminal_background("#11121D") is False
+        assert fake.getvalue() == ""
+        assert terminal_escape._terminal_background_active is False
+
+
 class TestAtexitClear:
-    """`_atexit_clear` should only emit a clear when progress was set."""
+    """`_atexit_clear` should only emit clears for active terminal state."""
 
     def test_emits_clear_when_active(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeTTY()
@@ -282,3 +336,42 @@ class TestAtexitClear:
         monkeypatch.setattr(terminal_escape, "_progress_active", False)
         terminal_escape._atexit_clear()
         assert called == []
+
+    def test_emits_background_reset_when_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", True)
+        terminal_escape._atexit_clear()
+        assert fake.getvalue() == "\x1b]111\x1b\\"
+
+    def test_emits_progress_and_background_clear_when_both_active(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setattr(terminal_escape, "_progress_active", True)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", True)
+        terminal_escape._atexit_clear()
+        assert fake.getvalue() == "\x1b]9;4;0;0\a\x1b]111\x1b\\"
+
+    def test_background_reset_runs_even_when_progress_clear_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called: list[bool] = []
+
+        def _raise() -> bool:
+            msg = "progress clear failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(terminal_escape, "clear_terminal_progress", _raise)
+        monkeypatch.setattr(
+            terminal_escape,
+            "reset_terminal_background",
+            lambda: called.append(True) or True,
+        )
+        monkeypatch.setattr(terminal_escape, "_progress_active", True)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", True)
+        terminal_escape._atexit_clear()
+        assert called == [True]

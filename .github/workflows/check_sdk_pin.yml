@@ -1,7 +1,9 @@
-# Advisory check: posts a comment on CLI release PRs when the deepagents SDK
-# pin drifts from the actual SDK version. Does not block merge — the release
-# workflow enforces the pin at publish time. Removes the comment once resolved.
-# See also: release.yml "Verify CLI pins latest SDK version" step (hard gate).
+# Advisory check: posts a comment on CLI/Code release PRs when the deepagents
+# SDK pin drifts from the actual SDK version. Does not block merge — the
+# release workflow enforces the pin at publish time. Removes the comment
+# once resolved.
+# See also: release.yml "Verify package pins latest SDK version" step (hard
+# gate).
 
 name: "🔗 Check SDK Pin"
 
@@ -10,6 +12,7 @@ on:
     paths:
       - "libs/deepagents/pyproject.toml"
       - "libs/cli/pyproject.toml"
+      - "libs/code/pyproject.toml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,14 +24,42 @@ permissions:
 
 jobs:
   check-sdk-pin:
-    if: startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-cli')
+    if: |
+      startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-cli')
+      || startsWith(github.head_ref, 'release-please--branches--main--components--deepagents-code')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Compare SDK version to CLI pin
+      - name: Resolve target package from release-please branch
+        id: pkg
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            release-please--branches--main--components--deepagents-cli*)
+              echo "name=deepagents-cli" >> "$GITHUB_OUTPUT"
+              echo "label=CLI" >> "$GITHUB_OUTPUT"
+              echo "pyproject=libs/cli/pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "lockdir=libs/cli" >> "$GITHUB_OUTPUT"
+              ;;
+            release-please--branches--main--components--deepagents-code*)
+              echo "name=deepagents-code" >> "$GITHUB_OUTPUT"
+              echo "label=Code" >> "$GITHUB_OUTPUT"
+              echo "pyproject=libs/code/pyproject.toml" >> "$GITHUB_OUTPUT"
+              echo "lockdir=libs/code" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unexpected head_ref: $HEAD_REF"
+              exit 1
+              ;;
+          esac
+
+      - name: Compare SDK version to package pin
         id: check
+        env:
+          PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
         run: |
           SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [[ -z "$SDK_VERSION" ]]; then
@@ -36,26 +67,41 @@ jobs:
             exit 1
           fi
 
-          CLI_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' libs/cli/pyproject.toml | head -1)
-          if [[ -z "$CLI_SDK_PIN" ]]; then
-            echo "::error file=libs/cli/pyproject.toml::Failed to extract CLI SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
+          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
+          if [[ -z "$PKG_SDK_PIN" ]]; then
+            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
             exit 1
           fi
 
           echo "sdk_version=$SDK_VERSION" >> "$GITHUB_OUTPUT"
-          echo "cli_pin=$CLI_SDK_PIN" >> "$GITHUB_OUTPUT"
-          echo "match=$( [ "$SDK_VERSION" = "$CLI_SDK_PIN" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          echo "pkg_pin=$PKG_SDK_PIN" >> "$GITHUB_OUTPUT"
+          echo "match=$( [ "$SDK_VERSION" = "$PKG_SDK_PIN" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
 
       - name: Manage PR comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
-          CLI_PIN: ${{ steps.check.outputs.cli_pin }}
+          PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_MATCH: ${{ steps.check.outputs.match }}
+          PKG_NAME: ${{ steps.pkg.outputs.name }}
+          PKG_LABEL: ${{ steps.pkg.outputs.label }}
+          PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
+          PKG_LOCKDIR: ${{ steps.pkg.outputs.lockdir }}
         with:
           script: |
             // Hidden HTML marker to identify comments posted by this workflow.
-            const marker = '<!-- sdk-pin-check -->';
+            // Scoped per-package so CLI and Code release PRs don't clobber each other.
+            const pkgName = process.env.PKG_NAME;
+            const pkgLabel = process.env.PKG_LABEL;
+            const pkgPyproject = process.env.PKG_PYPROJECT;
+            const pkgLockdir = process.env.PKG_LOCKDIR;
+            const marker = `<!-- sdk-pin-check:${pkgName} -->`;
+            // Legacy unscoped marker — only ever used for deepagents-cli runs
+            // before per-package scoping was introduced. Still matched on
+            // CLI runs so existing comments on open release PRs at the time
+            // of rollout get updated/deleted instead of orphaned.
+            const legacyMarker = '<!-- sdk-pin-check -->';
+            const acceptLegacy = pkgName === 'deepagents-cli';
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
 
@@ -63,16 +109,21 @@ jobs:
               github.rest.issues.listComments,
               { owner, repo, issue_number: prNumber, per_page: 100 },
             );
-            const existing = comments.find(c => c.body?.includes(marker));
+            const existing = comments.find(c => {
+              const body = c.body ?? '';
+              if (body.includes(marker)) return true;
+              if (acceptLegacy && body.includes(legacyMarker)) return true;
+              return false;
+            });
 
             const match = process.env.PIN_MATCH === 'true';
             const sdkVersion = process.env.SDK_VERSION;
-            const cliPin = process.env.CLI_PIN;
+            const pkgPin = process.env.PKG_PIN;
 
-            if (!sdkVersion || !cliPin) {
+            if (!sdkVersion || !pkgPin) {
               core.setFailed(
-                `Version extraction returned empty values. SDK: "${sdkVersion}", CLI pin: "${cliPin}". ` +
-                'Check that libs/deepagents/pyproject.toml and libs/cli/pyproject.toml have the expected format.'
+                `Version extraction returned empty values. SDK: "${sdkVersion}", ${pkgLabel} pin: "${pkgPin}". ` +
+                `Check that libs/deepagents/pyproject.toml and ${pkgPyproject} have the expected format.`
               );
               return;
             }
@@ -101,16 +152,16 @@ jobs:
               const body = [
                 marker,
                 '> [!WARNING]',
-                '> **SDK pin mismatch** — the CLI release workflow will fail at the "Verify CLI pins latest SDK version" step until this is resolved.',
+                `> **SDK pin mismatch** — the ${pkgLabel} release workflow will fail at the "Verify package pins latest SDK version" step until this is resolved.`,
                 '>',
                 '> | | Version |',
                 '> |---|---|',
                 `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
-                `> | CLI pin (\`libs/cli/pyproject.toml\`) | \`${cliPin}\` |`,
+                `> | ${pkgLabel} pin (\`${pkgPyproject}\`) | \`${pkgPin}\` |`,
                 '>',
-                `> **To fix:** update \`libs/cli/pyproject.toml\` to pin \`deepagents==${sdkVersion}\`, then run \`cd libs/cli && uv lock\` and commit the lockfile update.`,
+                `> **To fix:** update \`${pkgPyproject}\` to pin \`deepagents==${sdkVersion}\`, then run \`cd ${pkgLockdir} && uv lock\` and commit the lockfile update.`,
                 '>',
-                '> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with `dangerous-skip-sdk-pin-check` enabled. Ensure the CLI does not contain any code that depends on functionality introduced in the newer SDK version — otherwise the published CLI will fail at runtime.',
+                `> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled. Ensure the ${pkgLabel} does not contain any code that depends on functionality introduced in the newer SDK version — otherwise the published package will fail at runtime.`,
                 '>',
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-cli-sdk-pin-mismatch) for the full recovery procedure.',
               ].join('\n');
@@ -134,9 +185,9 @@ jobs:
               } catch (error) {
                 core.warning(
                   `Could not post/update PR comment (status ${error.status}): ${error.message}. ` +
-                  `The mismatch still exists: CLI pins deepagents==${cliPin} but SDK is ${sdkVersion}.`
+                  `The mismatch still exists: ${pkgLabel} pins deepagents==${pkgPin} but SDK is ${sdkVersion}.`
                 );
               }
               // Always emit annotation regardless of comment success.
-              core.warning(`CLI pins deepagents==${cliPin} but SDK is ${sdkVersion}`);
+              core.warning(`${pkgLabel} pins deepagents==${pkgPin} but SDK is ${sdkVersion}`);
             }

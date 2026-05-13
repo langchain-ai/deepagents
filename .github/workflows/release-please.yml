@@ -62,7 +62,6 @@ jobs:
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
-      repl-release: ${{ steps.check-releases.outputs.repl-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
       pr: ${{ steps.release.outputs.pr }}
       prs: ${{ steps.release.outputs.prs }}
@@ -77,7 +76,7 @@ jobs:
       # release-please always updates CHANGELOG.md when merging a release PR, and
       # the commit message matches pull-request-title-pattern in release-please-config.json:
       #   "release(${component}): ${version}"
-      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs, langchain-repl
+      # Components: deepagents-cli, deepagents, deepagents-acp, deepagents-code, langchain-daytona, langchain-modal, langchain-runloop, langchain-quickjs
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 2
@@ -207,13 +206,6 @@ jobs:
             echo "QuickJS release detected: $COMMIT_MSG"
           else
             echo "quickjs-release=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          if echo "$CHANGED" | grep -q "^libs/repl/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-repl\):"; then
-            echo "repl-release=true" >> "$GITHUB_OUTPUT"
-            echo "REPL release detected: $COMMIT_MSG"
-          else
-            echo "repl-release=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Update uv.lock files when release-please creates/updates a PR
@@ -354,8 +346,7 @@ jobs:
       needs.release-please.outputs.daytona-release == 'true' ||
       needs.release-please.outputs.modal-release == 'true' ||
       needs.release-please.outputs.runloop-release == 'true' ||
-      needs.release-please.outputs.quickjs-release == 'true' ||
-      needs.release-please.outputs.repl-release == 'true'
+      needs.release-please.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
@@ -373,7 +364,6 @@ jobs:
       MODAL_RELEASE: ${{ needs.release-please.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.release-please.outputs.runloop-release }}
       QUICKJS_RELEASE: ${{ needs.release-please.outputs.quickjs-release }}
-      REPL_RELEASE: ${{ needs.release-please.outputs.repl-release }}
     steps:
       - name: Dispatch release workflows
         # Best-effort: each package dispatch is independent. If one fails (transient
@@ -444,7 +434,6 @@ jobs:
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
-          REPL_RELEASE="${REPL_RELEASE:-false}";       assert_bool REPL_RELEASE    "$REPL_RELEASE"
 
           # Banner: log + step summary. The step summary renders at the top of the
           # run page, so operators see the link before scrolling through step logs.
@@ -473,8 +462,6 @@ jobs:
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
-          if [ "$REPL_RELEASE" = "true" ];    then dispatch langchain-repl;      fi
-
           # Append per-package status to the step summary so operators see at a
           # glance which packages were queued vs. which need a manual retry.
           {

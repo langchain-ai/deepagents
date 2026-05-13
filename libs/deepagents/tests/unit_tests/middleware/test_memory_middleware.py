@@ -812,11 +812,12 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
-    # Verify memory was loaded from state
-    checkpoint = agent.checkpointer.get(config)
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["files"]
-    assert "memory_contents" in checkpoint["channel_values"]
-    assert "/user/.deepagents/AGENTS.md" in checkpoint["channel_values"]["memory_contents"]
+    # Verify memory was loaded. Use get_state() — UntrackedValue channels are never
+    # written to checkpoint["channel_values"], so inspect reconstructed state instead.
+    state_values = agent.get_state(config).values
+    assert "/user/.deepagents/AGENTS.md" in state_values["files"]
+    assert "memory_contents" in state_values
+    assert "/user/.deepagents/AGENTS.md" in state_values["memory_contents"]
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

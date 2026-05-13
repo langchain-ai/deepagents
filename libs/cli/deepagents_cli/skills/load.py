@@ -123,7 +123,11 @@ def list_skills(
                     }
                 extended = cast("ExtendedSkillMetadata", {**skill, **extra})
                 all_skills[skill["name"]] = extended
-        except (OSError, KeyError, TypeError):
+        except Exception:
+            # Degrade gracefully — one malformed/inaccessible source must not
+            # block discovery of others, so catch broadly and log instead.
+            # WARNING (not ERROR) because a half-written SKILL.md from a user is
+            # an expected condition, not a code defect.
             logger.warning(
                 "Could not load skills from %s",
                 skill_dir,

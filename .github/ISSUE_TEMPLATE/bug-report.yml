@@ -47,10 +47,10 @@ body:
       options:
         - label: deepagents (SDK)
         - label: cli
+        - label: code
         - label: acp
         - label: evals
         - label: harbor
-        - label: repl
         - label: daytona
         - label: modal
         - label: quickjs
@@ -118,6 +118,7 @@ body:
         Python: 3.x.x
         deepagents: 0.x.y
         deepagents-cli: 0.x.y
+        deepagents-code: 0.x.y
   - type: markdown
     attributes:
       value: |

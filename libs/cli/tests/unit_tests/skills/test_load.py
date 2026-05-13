@@ -719,6 +719,40 @@ class TestListSkillsBuiltIn:
         assert len(skills) == 1
         assert skills[0]["name"] == "user-skill"
 
+    def test_unexpected_source_error_does_not_break_others(
+        self, tmp_path: Path
+    ) -> None:
+        """Any per-source discovery error should preserve remaining sources."""
+        user_dir = tmp_path / "user_skills"
+        _create_skill(user_dir / "user-skill", "user-skill", "A user skill")
+
+        built_in_dir = tmp_path / "built_in_skills"
+        built_in_dir.mkdir()
+
+        original_list = __import__(
+            "deepagents.middleware.skills", fromlist=["_list_skills"]
+        )._list_skills
+
+        call_count = 0
+
+        def patched_list(backend: object, source_path: str) -> list[object]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                msg = "simulated parser edge case"
+                raise ValueError(msg)
+            return original_list(backend=backend, source_path=source_path)
+
+        with patch("deepagents_cli.skills.load.list_skills_from_backend", patched_list):
+            skills = list_skills(
+                built_in_skills_dir=built_in_dir,
+                user_skills_dir=user_dir,
+                project_skills_dir=None,
+            )
+
+        assert len(skills) == 1
+        assert skills[0]["name"] == "user-skill"
+
 
 class TestListSkillsClaudeDirectories:
     """Test `list_skills` with experimental Claude skills directories."""

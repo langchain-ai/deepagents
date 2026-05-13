@@ -65,12 +65,10 @@
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
-    "langchain-repl": "repl",
     "langchain-runloop": "runloop",
     "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
     "quickjs": "quickjs",
-    "repl": "repl",
     "runloop": "runloop",
     "sdk": "deepagents"
   },
@@ -119,11 +117,6 @@
     {
       "label": "quickjs",
       "prefix": "libs/partners/quickjs/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "repl",
-      "prefix": "libs/repl/",
       "skipExcludedFiles": true
     },
     {

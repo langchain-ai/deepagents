@@ -494,6 +494,31 @@ def _smoke_scores(
     }
 
 
+def _smoke_eval_results(scores: dict[str, float]) -> list[dict[str, Any]]:
+    """Return fake per-axis eval results for overlay scoreboard smoke tests."""
+    axes = [
+        "color",
+        "typography",
+        "layout",
+        "content_completeness",
+        "creativity",
+        "interpretation_quality",
+        "accessibility",
+    ]
+    return [
+        {
+            "name": name,
+            "obs_score": score,
+            "overall": score / 10,
+            "axes": {
+                axis: max(0.0, min(1.0, (score / 10) - (index * 0.035)))
+                for index, axis in enumerate(axes)
+            },
+        }
+        for name, score in scores.items()
+    ]
+
+
 def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
     """Store and return a fake overlay state for smoke tests."""
     global _overlay_smoke_state
@@ -507,6 +532,7 @@ def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
     )
     remaining_secs = min(remaining_secs, duration_secs) if duration_secs else 0.0
     now = time.monotonic()
+    scores = _smoke_scores(contestants, req.scores)
     _overlay_smoke_state = {
         "phase": req.phase,
         "mode": req.mode,
@@ -514,7 +540,8 @@ def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
         "prompt": req.prompt
         or "Build a bold event landing page for a time-traveling taco truck.",
         "contestants": contestants,
-        "scores": _smoke_scores(contestants, req.scores),
+        "scores": scores,
+        "eval_results": _smoke_eval_results(scores),
         "duration_secs": duration_secs,
         "timer_anchor_monotonic": now,
         "timer_anchor_remaining_secs": remaining_secs,
@@ -552,6 +579,7 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
         )
 
     scores = dict(smoke["scores"]) if phase == "scoreboard" else {}
+    eval_results = list(smoke["eval_results"]) if phase == "scoreboard" else []
     timer = {
         "running": running,
         "duration_secs": duration_secs,
@@ -578,7 +606,7 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
             "duration_warning": None,
         },
         "eval": {
-            "results": [],
+            "results": eval_results,
         },
         "overlay_smoke": {
             "active": True,
@@ -3368,35 +3396,86 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .idle-card {
     position: absolute;
-    left: 8%;
-    right: 8%;
+    left: 13.5%;
+    right: 13.5%;
     top: 25%;
-    min-height: 36%;
+    min-height: 30%;
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 2.4vh;
-    padding: 5%;
+    gap: 2.1vh;
+    padding: 4.4% 5.2%;
     background: var(--ink);
     color: var(--paper);
     clip-path: polygon(2.5% 0, 97.5% 0, 100% 50%, 97.5% 100%, 2.5% 100%, 0 50%);
+    text-align: center;
+    z-index: 4;
   }
   .idle-title {
-    font-size: min(5.8vw, 10.31vh);
-    line-height: 0.92;
+    font-size: min(5.1vw, 9.07vh);
+    line-height: 0.9;
     font-weight: 700;
     text-transform: uppercase;
   }
   .idle-subhead {
-    font-size: min(1.85vw, 3.29vh);
+    font-size: min(1.65vw, 2.93vh);
     font-weight: 500;
+    line-height: 1.15;
+    text-transform: uppercase;
+  }
+  .idle-ready-grid {
+    position: absolute;
+    left: 12%;
+    right: 12%;
+    bottom: 10.5%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2.1vw;
+    z-index: 4;
+  }
+  .idle-player {
+    min-width: 0;
+    height: 13.5vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 1.05vh;
+    padding: 0 1.6vw;
+    border: var(--line) solid var(--ink);
+    background: var(--paper);
+  }
+  .idle-player.left {
+    background-image: var(--blue-name-gradient);
+  }
+  .idle-player.right {
+    align-items: flex-end;
+    background-image: var(--pink-name-gradient);
+    text-align: right;
+  }
+  .idle-player-label {
+    overflow: hidden;
+    font-size: min(1vw, 1.78vh);
+    font-weight: 700;
+    line-height: 1;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .idle-player-name {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: min(2.4vw, 4.27vh);
+    font-weight: 700;
+    line-height: 1;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
   }
   .score-card {
     position: absolute;
-    top: 24%;
+    top: 17%;
     width: 38%;
-    height: 48%;
-    padding: 3%;
+    min-height: 68%;
+    padding: 2.5%;
     background: var(--paper);
     border: var(--line) solid var(--ink);
   }
@@ -3406,20 +3485,20 @@ _OVERLAY_HTML = """<!doctype html>
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: min(3.1vw, 5.51vh);
+    font-size: min(2.35vw, 4.18vh);
     font-weight: 700;
     text-transform: uppercase;
   }
   .score-num {
-    margin-top: 8%;
+    margin-top: 4%;
     font-family: "IBM Plex Mono", "Aeonik Mono", ui-monospace, monospace;
-    font-size: min(7.5vw, 13.33vh);
+    font-size: min(5.5vw, 9.78vh);
     line-height: 0.95;
     font-weight: 700;
   }
   .score-track {
-    height: 6%;
-    margin-top: 8%;
+    height: 2.4vh;
+    margin-top: 4%;
     border: var(--line) solid var(--ink);
     background: transparent;
   }
@@ -3427,16 +3506,77 @@ _OVERLAY_HTML = """<!doctype html>
     height: 100%;
     width: 0%;
     background: var(--ink);
-    transition: width 900ms ease;
+    transition: width 1200ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: var(--score-delay, 0ms);
+  }
+  .score-axes {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(42%, 1.4fr) 4.2ch;
+    gap: 1vh 0.7vw;
+    margin-top: 5%;
+    align-items: center;
+    font-size: min(0.95vw, 1.69vh);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .score-axis-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .score-axis-bar {
+    height: 1.35vh;
+    min-height: 8px;
+    border: var(--line) solid var(--ink);
+    background: transparent;
+  }
+  .score-axis-fill {
+    display: block;
+    width: 0%;
+    height: 100%;
+    background: var(--ink);
+    transition: width 1000ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition-delay: var(--axis-delay, 0ms);
+  }
+  .score-axis-value {
+    text-align: right;
   }
   .winner {
-    margin-top: 5%;
+    margin-top: 4%;
     font-size: min(1.45vw, 2.58vh);
     font-weight: 700;
     text-transform: uppercase;
     opacity: 0;
   }
   .winner.visible { opacity: 1; }
+  .results-card {
+    position: absolute;
+    left: 14%;
+    right: 14%;
+    top: 27%;
+    min-height: 36%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3vh;
+    padding: 4%;
+    background: var(--ink);
+    color: var(--paper);
+    clip-path: polygon(2.5% 0, 97.5% 0, 100% 50%, 97.5% 100%, 2.5% 100%, 0 50%);
+    text-align: center;
+    text-transform: uppercase;
+  }
+  .results-title {
+    font-size: min(3.4vw, 6.04vh);
+    font-weight: 700;
+    line-height: 1;
+  }
+  .results-count {
+    font-family: "IBM Plex Mono", "Aeonik Mono", ui-monospace, monospace;
+    font-size: min(8vw, 14.22vh);
+    font-weight: 700;
+    line-height: 0.85;
+  }
 </style>
 </head>
 <body>
@@ -3444,9 +3584,20 @@ _OVERLAY_HTML = """<!doctype html>
   <section class="view active" id="idle-view">
     <div class="stage">
       <div class="full-backdrop"></div>
+      <div class="chip event-chip">Deep Agents: PVP Speedrun</div>
       <div class="idle-card">
-        <div class="idle-title">Deep Agents: PVP Speedrun</div>
+        <div class="idle-title">vibe speedrun</div>
         <div class="idle-subhead" id="idle-subhead">Waiting for players</div>
+      </div>
+      <div class="idle-ready-grid">
+        <div class="idle-player left">
+          <div class="idle-player-label">Player 1</div>
+          <div class="idle-player-name" id="idle-p1">Awaiting</div>
+        </div>
+        <div class="idle-player right">
+          <div class="idle-player-label">Player 2</div>
+          <div class="idle-player-name" id="idle-p2">Awaiting</div>
+        </div>
       </div>
     </div>
   </section>
@@ -3530,6 +3681,16 @@ _OVERLAY_HTML = """<!doctype html>
     </div>
   </section>
 
+  <section class="view" id="results-transition-view">
+    <div class="stage">
+      <div class="full-backdrop"></div>
+      <div class="results-card">
+        <div class="results-title">Are you ready for results?</div>
+        <div class="results-count" id="results-count">3</div>
+      </div>
+    </div>
+  </section>
+
   <div class="status" id="status">Disconnected</div>
 </div>
 
@@ -3539,6 +3700,7 @@ const state = {
   prompt: '',
   contestants: [],
   scores: {},
+  evalResults: [],
   timer: null,
   lastTimerWarningId: '',
   lastFetch: 0,
@@ -3553,12 +3715,21 @@ let focusIndex = defaultFocusIndex;
 let activeView = '';
 let renderedOverlayMode = '';
 let renderedFocusIndex = -1;
+let previousPhase = '';
+let resultsTransitionUntil = 0;
+let scoreboardSignature = '';
+const RESULTS_COUNTDOWN_MS = 10000;
+const SCORE_REVEAL_STEP_MS = 650;
 
 const els = {
   idleView: document.getElementById('idle-view'),
   codingView: document.getElementById('coding-view'),
   scoreboardView: document.getElementById('scoreboard-view'),
+  resultsTransitionView: document.getElementById('results-transition-view'),
+  resultsCount: document.getElementById('results-count'),
   idleSubhead: document.getElementById('idle-subhead'),
+  idleP1: document.getElementById('idle-p1'),
+  idleP2: document.getElementById('idle-p2'),
   splitP1Name: document.getElementById('split-p1-name'),
   splitP2Name: document.getElementById('split-p2-name'),
   splitClock: document.getElementById('split-clock'),
@@ -3576,6 +3747,7 @@ function active(view) {
   els.idleView.classList.toggle('active', view === 'idle');
   els.codingView.classList.toggle('active', view === 'coding');
   els.scoreboardView.classList.toggle('active', view === 'scoreboard');
+  els.resultsTransitionView.classList.toggle('active', view === 'results-transition');
   activeView = view;
 }
 
@@ -3690,9 +3862,11 @@ function currentTimerWarning() {
 function renderIdle() {
   active('idle');
   const names = state.contestants.filter(Boolean).map((name) => displayName(name));
-  els.idleSubhead.textContent = names.length
+  updateText(els.idleSubhead, names.length
     ? `Ready: ${names.join(' vs ')}`
-    : 'Waiting for players';
+    : 'Waiting for players');
+  updateText(els.idleP1, displayName(state.contestants[0], 'Awaiting'));
+  updateText(els.idleP2, displayName(state.contestants[1], 'Awaiting'));
 }
 
 function renderCoding() {
@@ -3729,22 +3903,131 @@ function updateText(element, value) {
   if (element.textContent !== value) element.textContent = value;
 }
 
+const SCORE_AXIS_LABELS = {
+  color: 'Color',
+  typography: 'Type',
+  layout: 'Layout',
+  content_completeness: 'Content',
+  creativity: 'Creative',
+  interpretation_quality: 'Prompt',
+  accessibility: 'Access',
+};
+
+const SCORE_AXIS_ORDER = [
+  'color',
+  'typography',
+  'layout',
+  'content_completeness',
+  'creativity',
+  'interpretation_quality',
+  'accessibility',
+];
+
+function evalResultByName() {
+  const out = new Map();
+  for (const entry of state.evalResults || []) {
+    const name = text(entry && entry.name, '');
+    if (name) out.set(name, entry);
+  }
+  return out;
+}
+
 function scoreEntries() {
   const names = state.contestants.length
     ? state.contestants
     : Object.keys(state.scores);
+  const evalByName = evalResultByName();
   return names.slice(0, 2).map((name) => ({
     name,
     score: Number(state.scores[name] || 0),
+    axes: (evalByName.get(name) && evalByName.get(name).axes) || {},
   }));
 }
 
+function renderResultsTransition() {
+  active('results-transition');
+  const remaining = Math.max(0, resultsTransitionUntil - Date.now());
+  const count = Math.max(1, Math.ceil(remaining / 1000));
+  updateText(els.resultsCount, String(count));
+  if (remaining > 0) {
+    window.setTimeout(render, 100);
+  }
+}
+
+function scoreSignature(entries) {
+  return JSON.stringify(entries.map((entry) => [entry.name, entry.score, entry.axes]));
+}
+
+function animateNumber(element, target, decimals, delay) {
+  const safeTarget = Math.max(0, Number.isFinite(target) ? target : 0);
+  element.textContent = (0).toFixed(decimals);
+  window.setTimeout(() => {
+    const started = performance.now();
+    const duration = 1000;
+    function tick(now) {
+      const progress = Math.min(1, (now - started) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      element.textContent = (safeTarget * eased).toFixed(decimals);
+      if (progress < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }, delay);
+}
+
+function animateBar(element, width, delay) {
+  const safeWidth = Math.max(0, Math.min(100, Number.isFinite(width) ? width : 0));
+  element.style.width = '0%';
+  window.setTimeout(() => {
+    requestAnimationFrame(() => {
+      element.style.width = `${safeWidth}%`;
+    });
+  }, delay);
+}
+
+function renderAxisRows(card, entry, playerIndex) {
+  const axes = entry.axes || {};
+  const rows = SCORE_AXIS_ORDER.filter((axis) => axes[axis] !== null && axes[axis] !== undefined);
+  if (rows.length === 0) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'score-axes';
+  const playerDelay = playerIndex * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
+  rows.forEach((axis, axisIndex) => {
+    const raw = Number(axes[axis] || 0);
+    const value = Math.max(0, Math.min(1, Number.isFinite(raw) ? raw : 0));
+    const label = document.createElement('div');
+    label.className = 'score-axis-name';
+    label.textContent = SCORE_AXIS_LABELS[axis] || axis.replace(/_/g, ' ');
+    const bar = document.createElement('div');
+    bar.className = 'score-axis-bar';
+    const fill = document.createElement('span');
+    fill.className = 'score-axis-fill';
+    bar.appendChild(fill);
+    const num = document.createElement('div');
+    num.className = 'score-axis-value';
+    num.textContent = '0.0';
+    wrap.append(label, bar, num);
+    const delay = playerDelay + (axisIndex + 1) * SCORE_REVEAL_STEP_MS;
+    animateBar(fill, value * 100, delay);
+    animateNumber(num, value * 10, 1, delay);
+  });
+  card.appendChild(wrap);
+}
+
 function renderScoreboard() {
+  if (Date.now() < resultsTransitionUntil) {
+    renderResultsTransition();
+    return;
+  }
   active('scoreboard');
   const entries = scoreEntries();
+  const nextSignature = scoreSignature(entries);
+  if (scoreboardSignature === nextSignature && els.scoreWrap.childElementCount > 0) return;
+  scoreboardSignature = nextSignature;
   const winnerScore = Math.max(...entries.map((entry) => entry.score), -1);
   els.scoreWrap.replaceChildren();
   entries.forEach((entry, index) => {
+    const playerDelay = index * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
     const card = document.createElement('div');
     card.className = `score-card ${index === 0 ? 'left' : 'right'}`;
     const name = document.createElement('div');
@@ -3752,7 +4035,7 @@ function renderScoreboard() {
     name.textContent = displayName(entry.name, 'Player');
     const score = document.createElement('div');
     score.className = 'score-num';
-    score.textContent = entry.score.toFixed(2);
+    score.textContent = '0.00';
     const track = document.createElement('div');
     track.className = 'score-track';
     const fill = document.createElement('div');
@@ -3763,10 +4046,10 @@ function renderScoreboard() {
     winner.classList.toggle('visible', entry.score === winnerScore && winnerScore > 0);
     winner.textContent = 'Winner';
     card.append(name, score, track, winner);
+    renderAxisRows(card, entry, index);
     els.scoreWrap.appendChild(card);
-    requestAnimationFrame(() => {
-      fill.style.width = `${Math.max(0, Math.min(100, entry.score * 10))}%`;
-    });
+    animateBar(fill, entry.score * 10, playerDelay);
+    animateNumber(score, entry.score, 2, playerDelay);
   });
   if (entries.length === 0) {
     const card = document.createElement('div');
@@ -3803,12 +4086,23 @@ async function refreshState() {
 
 function applyState(payload) {
   syncOverlayMode(payload);
+  previousPhase = state.phase;
   state.phase = payload.phase || 'idle';
+  if (state.phase === 'scoreboard' && previousPhase === 'coding') {
+    resultsTransitionUntil = Date.now() + RESULTS_COUNTDOWN_MS;
+    scoreboardSignature = '';
+  } else if (state.phase !== 'scoreboard') {
+    resultsTransitionUntil = 0;
+    scoreboardSignature = '';
+  }
   state.prompt = payload.prompt || (payload.round && payload.round.prompt) || '';
   state.contestants = Array.isArray(payload.contestants) && payload.contestants.length
     ? payload.contestants
     : ((payload.round && payload.round.contestants) || []);
   state.scores = payload.scores || {};
+  state.evalResults = (payload.eval && Array.isArray(payload.eval.results))
+    ? payload.eval.results
+    : [];
   state.timer = payload.timer || null;
   state.lastFetch = Date.now();
   state.connected = !payload.obs_error;

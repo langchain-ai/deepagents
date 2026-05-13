@@ -1,0 +1,11 @@
+[project]
+name = "memory-backed-agent"
+version = "0.1.0"
+description = "One-file deployment example for a Context Hub memory-backed deep agent"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.6.1",
+    "langchain-anthropic>=1.4.3",
+    "langgraph-cli[inmem]>=0.4.24",
+    "langsmith>=0.4.39",
+]

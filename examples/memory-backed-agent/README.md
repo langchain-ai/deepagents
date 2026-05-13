@@ -45,10 +45,13 @@ Optional:
 ## Run
 
 ```bash
-cd examples/memory-backed-agent
+# From repo root, install this example's environment
+uv sync --project examples/memory-backed-agent
 
 # Deploy + auto-wire issues board
-uv run python deploy_memory_backed_agent.py
+uv run --project examples/memory-backed-agent \
+  python examples/memory-backed-agent/deploy_memory_backed_agent.py \
+  --agent-name my-agent
 ```
 
 ## What the wiring does

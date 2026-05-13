@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -17,9 +18,20 @@ if TYPE_CHECKING:
 
 DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
 DEFAULT_PROJECT_NAME = "my-agent"
+AGENT_NAME_ENV = "DEEPAGENT_AGENT_NAME"
 DEFAULT_ENDPOINT = "https://api.smith.langchain.com"
 SUCCESS_CODES = {200, 201}
 HTTP_CONFLICT = 409
+DEPLOY_DEPENDENCIES = [
+    ".",
+    "deepagents",
+    "langchain-anthropic",
+]
+
+
+def resolve_agent_name() -> str:
+    """Return agent name from env or default."""
+    return os.getenv(AGENT_NAME_ENV, DEFAULT_PROJECT_NAME)
 
 
 def langsmith_endpoint() -> str:
@@ -53,7 +65,7 @@ def build_agent() -> CompiledStateGraph:
     backend = CompositeBackend(
         default=StateBackend(),
         routes={
-            "/memories/": ContextHubBackend(DEFAULT_PROJECT_NAME),
+            "/memories/": ContextHubBackend(resolve_agent_name()),
         },
     )
 
@@ -71,14 +83,17 @@ except RuntimeError:
     agent = None
 
 
-def deploy_graph(*, script_path: Path, project_name: str) -> None:
+def deploy_graph(*, script_path: Path, agent_name: str) -> None:
     """Deploy this file as a langgraph graph."""
     if shutil.which("langgraph") is None:
-        msg = "`langgraph` CLI not found. Install with: pip install 'langgraph-cli[inmem]'"
+        msg = (
+            "`langgraph` CLI not found. Install example dependencies first with:\n"
+            "uv sync --project examples/memory-backed-agent"
+        )
         raise RuntimeError(msg)
 
     config = {
-        "dependencies": ["."],
+        "dependencies": DEPLOY_DEPENDENCIES,
         "graphs": {
             "agent": f"./{script_path.name}:agent",
         },
@@ -88,6 +103,7 @@ def deploy_graph(*, script_path: Path, project_name: str) -> None:
         mode="w",
         suffix=".json",
         prefix="langgraph-config-",
+        dir=script_path.parent,
         delete=False,
         encoding="utf-8",
     ) as handle:
@@ -100,14 +116,15 @@ def deploy_graph(*, script_path: Path, project_name: str) -> None:
         "-c",
         str(config_path),
         "--name",
-        project_name,
+        agent_name,
         "--verbose",
     ]
 
     env = os.environ.copy()
     env["LANGGRAPH_CLI_ANALYTICS_SOURCE"] = "deepagents"
+    env[AGENT_NAME_ENV] = agent_name
 
-    print(f"Deploying graph with name: {project_name}")
+    print(f"Deploying graph with name: {agent_name}")
     print("Running:", " ".join(cmd))
 
     try:
@@ -117,6 +134,50 @@ def deploy_graph(*, script_path: Path, project_name: str) -> None:
             raise RuntimeError(msg)
     finally:
         config_path.unlink(missing_ok=True)
+
+
+def ensure_context_hub_repo_exists(*, repo_handle: str, api_key: str, endpoint: str) -> None:
+    """Ensure a Context Hub repo exists for the issues-board handle."""
+    try:
+        from langsmith import Client
+        from langsmith.schemas import FileEntry
+        from langsmith.utils import LangSmithNotFoundError
+    except ImportError as exc:
+        msg = "Missing dependency `langsmith`. Install it with `uv add langsmith`."
+        raise RuntimeError(msg) from exc
+
+    identifier = f"-/{repo_handle}"
+    client = Client(api_url=endpoint, api_key=api_key)
+
+    try:
+        client.pull_agent(identifier)
+        print(f"Context Hub repo exists: {identifier}")
+        return
+    except LangSmithNotFoundError:
+        pass
+    except Exception as exc:
+        msg = f"Failed checking Context Hub repo {identifier}: {exc}"
+        raise RuntimeError(msg) from exc
+
+    try:
+        client.push_agent(
+            identifier,
+            files={
+                "README.md": FileEntry(
+                    type="file",
+                    content=(
+                        f"# {repo_handle}\n\n"
+                        "Initialized by deploy_memory_backed_agent.py for "
+                        "memory-backed agent deployment."
+                    ),
+                )
+            },
+        )
+    except Exception as exc:
+        msg = f"Failed creating Context Hub repo {identifier}: {exc}"
+        raise RuntimeError(msg) from exc
+
+    print(f"Created Context Hub repo: {identifier}")
 
 
 def session_id_for_project(*, project_name: str, api_key: str, endpoint: str) -> str:
@@ -216,17 +277,44 @@ def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, repo_ha
     raise RuntimeError(msg)
 
 
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Deploy this Context Hub-backed deep agent and auto-wire a LangSmith "
+            "issues board to the same Context Hub repo handle."
+        )
+    )
+    parser.add_argument(
+        "--agent-name",
+        default=DEFAULT_PROJECT_NAME,
+        help=(
+            "Agent/deployment name (default: my-agent). Used for deploy name, "
+            "Context Hub `/memories/` repo handle, and issues board wiring."
+        ),
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     """Run deploy + issues-board wiring flow."""
-    project_name = DEFAULT_PROJECT_NAME
+    args = parse_args()
+    agent_name = args.agent_name
+    os.environ[AGENT_NAME_ENV] = agent_name
     endpoint = langsmith_endpoint()
     api_key = langsmith_api_key()
 
     script_path = Path(__file__).resolve()
-    deploy_graph(script_path=script_path, project_name=project_name)
+    deploy_graph(script_path=script_path, agent_name=agent_name)
+
+    ensure_context_hub_repo_exists(
+        repo_handle=agent_name,
+        api_key=api_key,
+        endpoint=endpoint,
+    )
 
     session_id = session_id_for_project(
-        project_name=project_name,
+        project_name=agent_name,
         api_key=api_key,
         endpoint=endpoint,
     )
@@ -234,7 +322,7 @@ def main() -> None:
         session_id=session_id,
         api_key=api_key,
         endpoint=endpoint,
-        repo_handle=project_name,
+        repo_handle=agent_name,
     )
 
 

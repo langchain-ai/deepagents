@@ -220,6 +220,43 @@ class TestReadyPlayers(unittest.TestCase):
         )
         set_scene.assert_awaited_once_with("p1 focus")
 
+    def test_camera_scene_publishes_overlay_transition_state(self) -> None:
+        client = TestClient(app_mod.create_app())
+        queue = app_mod._state_events.subscribe()
+        app_mod._overlay_smoke_state = {
+            "phase": "coding",
+            "mode": "split",
+            "focus_player": 1,
+        }
+
+        try:
+            with (
+                patch(
+                    "control_server.app._get_obs_state",
+                    new=AsyncMock(return_value={"phase": "coding"}),
+                ),
+                patch(
+                    "control_server.app._set_obs_scene",
+                    new=AsyncMock(return_value={"scene": "p2 focus"}),
+                ),
+            ):
+                response = client.post(
+                    "/api/camera/scene",
+                    json={"scene": "p2 focus"},
+                )
+            line = queue.get_nowait()
+        finally:
+            app_mod._state_events.unsubscribe(queue)
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(line.removeprefix("data: "))
+        self.assertEqual(payload["phase"], "coding")
+        self.assertFalse(payload["overlay_smoke"]["active"])
+        self.assertEqual(
+            payload["overlay_layout"],
+            {"mode": "focus", "focus_player": 2},
+        )
+
     def test_camera_fallback_does_not_change_overlay_layout(self) -> None:
         client = TestClient(app_mod.create_app())
         app_mod._overlay_layout_state.update({"mode": "focus", "focus_player": 2})

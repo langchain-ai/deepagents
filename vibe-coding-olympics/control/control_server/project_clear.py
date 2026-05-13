@@ -14,31 +14,23 @@ BLANK_INDEX_HTML = """<!doctype html>
   </head>
   <body>
     <main id="app" aria-label="Site placeholder">
-      <section class="stage" aria-labelledby="ready-title">
-        <div class="signal" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </div>
-        <p class="eyebrow">LangChain x Interrupt 2026</p>
+      <section class="top-band" aria-labelledby="ready-title">
+        <div class="tag">LangChain x Interrupt 2026</div>
         <h1 id="ready-title">Site will be built here...</h1>
-        <p class="lede">A fresh Vite canvas is online and waiting for the next prompt.</p>
-        <div class="terminal" aria-hidden="true">
-          <div class="terminal-bar">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <div class="terminal-body">
-            <p><b>$</b> create-vibe-site --round live</p>
-            <p><b>></b> compiling ideas</p>
-            <p><b>></b> preview ready at localhost</p>
-          </div>
+        <p>Awaiting the next live prompt</p>
+        <div class="timer">00:00</div>
+      </section>
+      <section class="board" aria-hidden="true">
+        <div class="panel panel-a">
+          <div class="panel-head"></div>
         </div>
-        <div class="status" aria-label="Ready status">
-          <span class="pulse"></span>
-          ready for build
+        <div class="panel panel-b">
+          <div class="panel-head"></div>
         </div>
+        <div class="strip strip-left"></div>
+        <div class="strip strip-right"></div>
+        <div class="arrow arrow-left"></div>
+        <div class="arrow arrow-right"></div>
       </section>
     </main>
     <script type="module" src="/src/main.js"></script>

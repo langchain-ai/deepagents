@@ -3919,6 +3919,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/camera/scene")
     async def camera_scene(req: CameraSceneRequest) -> dict[str, Any]:
+        _clear_overlay_smoke()
         obs = await _set_obs_scene(req.scene)
         _sync_overlay_layout_for_scene(req.scene)
         await _publish_state_update()

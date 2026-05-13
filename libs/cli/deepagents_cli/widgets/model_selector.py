@@ -42,13 +42,23 @@ logger = logging.getLogger(__name__)
 
 _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
-        "anthropic:claude-opus-4-6",
+        "anthropic:claude-sonnet-4-6",
         "anthropic:claude-opus-4-7",
+        "baseten:deepseek-ai/DeepSeek-V4-Pro",
         "baseten:moonshotai/Kimi-K2.6",
+        "baseten:zai-org/GLM-5",
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        "fireworks:accounts/fireworks/models/kimi-k2p6",
+        "fireworks:accounts/fireworks/models/minimax-m2p7",
+        "fireworks:accounts/fireworks/models/qwen3p6-plus",
+        "fireworks:accounts/fireworks/models/glm-5p1",
         "google_genai:gemini-3.1-pro-preview",
+        "google_genai:gemini-3-flash-preview",
+        "openai:gpt-5.4-mini",
         "openai:gpt-5.4",
         "openai:gpt-5.5",
         "openrouter:deepseek/deepseek-v4-pro",
+        "openrouter:deepseek/deepseek-v4-flash",
         "openrouter:minimax/minimax-m2.7",
         "openrouter:z-ai/glm-5.1",
     }

@@ -1198,6 +1198,119 @@ class TestGetAvailableModels:
         assert "claude-haiku-4-5" in models["anthropic"]
         assert "claude-instant" not in models["anthropic"]
 
+    def test_baseten_includes_hardcoded_models_when_package_installed(
+        self, tmp_path: Path
+    ) -> None:
+        """Baseten includes known models missing from stale upstream profiles."""
+        config_path = tmp_path / "config.toml"
+        fake_profiles = {
+            "deepseek-ai/DeepSeek-V3.2": {"tool_calling": True},
+        }
+        fake_registry = {
+            "baseten": ("langchain_baseten", "ChatBaseten", None),
+        }
+
+        with (
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value=fake_registry,
+            ),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models["baseten"] == [
+            "deepseek-ai/DeepSeek-V3.2",
+            "deepseek-ai/DeepSeek-V4-Pro",
+            "moonshotai/Kimi-K2.6",
+        ]
+
+    def test_baseten_hardcoded_models_require_installed_package(
+        self, tmp_path: Path
+    ) -> None:
+        """Baseten hardcoded models are not shown when package import fails."""
+        config_path = tmp_path / "config.toml"
+        fake_registry = {
+            "baseten": ("langchain_baseten", "ChatBaseten", None),
+        }
+
+        with (
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value=fake_registry,
+            ),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "baseten" not in models
+
+    def test_fireworks_includes_hardcoded_models_when_package_installed(
+        self, tmp_path: Path
+    ) -> None:
+        """Fireworks includes known models missing from stale upstream profiles."""
+        config_path = tmp_path / "config.toml"
+        fake_profiles = {
+            "accounts/fireworks/models/llama-v3p1-70b-instruct": {"tool_calling": True},
+        }
+        fake_registry = {
+            "fireworks": ("langchain_fireworks", "ChatFireworks", None),
+        }
+
+        with (
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value=fake_registry,
+            ),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                return_value=fake_profiles,
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert models["fireworks"] == [
+            "accounts/fireworks/models/llama-v3p1-70b-instruct",
+            "accounts/fireworks/models/deepseek-v4-pro",
+            "accounts/fireworks/models/kimi-k2p6",
+            "accounts/fireworks/models/minimax-m2p7",
+            "accounts/fireworks/models/qwen3p6-plus",
+            "accounts/fireworks/models/glm-5p1",
+        ]
+
+    def test_fireworks_hardcoded_models_require_installed_package(
+        self, tmp_path: Path
+    ) -> None:
+        """Fireworks hardcoded models are not shown when package import fails."""
+        config_path = tmp_path / "config.toml"
+        fake_registry = {
+            "fireworks": ("langchain_fireworks", "ChatFireworks", None),
+        }
+
+        with (
+            patch(
+                "deepagents_cli.model_config._get_builtin_providers",
+                return_value=fake_registry,
+            ),
+            patch(
+                "deepagents_cli.model_config._load_provider_profiles",
+                side_effect=ImportError("not installed"),
+            ),
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+        ):
+            models = get_available_models()
+
+        assert "fireworks" not in models
+
     def test_logs_debug_on_import_error(self, caplog):
         """Logs debug message when provider package is not installed."""
         with (

@@ -2019,6 +2019,17 @@ class TestCreateModelForwardsProviderProfile:
         assert call_kwargs.get("use_responses_api") is True
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_openai_gpt_5_5_gets_low_reasoning(self, mock_init: Mock) -> None:
+        """`openai:gpt-5.5` inherits low reasoning from the SDK profile."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model("openai:gpt-5.5")
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("use_responses_api") is True
+        assert call_kwargs.get("reasoning") == {"effort": "low"}
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_model_params_override_profile_default(self, mock_init: Mock) -> None:
         """`--model-params` (`extra_kwargs`) wins over profile defaults."""
         mock_init.return_value = _make_init_chat_model_mock()
@@ -2030,6 +2041,19 @@ class TestCreateModelForwardsProviderProfile:
 
         _, call_kwargs = mock_init.call_args
         assert call_kwargs.get("use_responses_api") is False
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_model_params_override_gpt_5_5_reasoning(self, mock_init: Mock) -> None:
+        """`--model-params` (`extra_kwargs`) wins over model-specific defaults."""
+        mock_init.return_value = _make_init_chat_model_mock()
+
+        create_model(
+            "openai:gpt-5.5",
+            extra_kwargs={"reasoning": {"effort": "medium"}},
+        )
+
+        _, call_kwargs = mock_init.call_args
+        assert call_kwargs.get("reasoning") == {"effort": "medium"}
 
     @patch("langchain.chat_models.init_chat_model")
     def test_config_toml_opt_out_wins_over_profile(

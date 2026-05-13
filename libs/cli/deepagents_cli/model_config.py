@@ -499,6 +499,21 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
 
+HARDCODED_PROVIDER_MODELS: dict[str, tuple[str, ...]] = {
+    "baseten": (
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "moonshotai/Kimi-K2.6",
+    ),
+    "fireworks": (
+        "accounts/fireworks/models/deepseek-v4-pro",
+        "accounts/fireworks/models/kimi-k2p6",
+        "accounts/fireworks/models/minimax-m2p7",
+        "accounts/fireworks/models/qwen3p6-plus",
+        "accounts/fireworks/models/glm-5p1",
+    ),
+}
+"""Provider models known to exist but missing from stale upstream profiles."""
+
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
 
@@ -676,6 +691,22 @@ def _profile_module_from_class_path(class_path: str) -> str | None:
     return f"{package_root}.data._profiles"
 
 
+def _with_hardcoded_provider_models(provider: str, models: list[str]) -> list[str]:
+    """Merge known provider models that may be missing from upstream profiles.
+
+    Args:
+        provider: Provider name from the LangChain registry or config.
+        models: Models discovered from upstream profile data.
+
+    Returns:
+        Model list with provider-specific hardcoded additions appended once.
+    """
+    extra = HARDCODED_PROVIDER_MODELS.get(provider)
+    if extra is None:
+        return models
+    return list(dict.fromkeys([*models, *extra]))
+
+
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
@@ -738,6 +769,7 @@ def get_available_models() -> dict[str, list[str]]:
         ]
 
         models.sort()
+        models = _with_hardcoded_provider_models(provider, models)
         if models:
             available[provider] = models
 

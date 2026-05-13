@@ -89,6 +89,18 @@ class TestResolveModel:
         mock.assert_called_once_with("openai:gpt-5", use_responses_api=True)
         assert result is mock.return_value
 
+    def test_openai_gpt_5_5_uses_low_reasoning(self) -> None:
+        with patch("deepagents._models.init_chat_model") as mock:
+            mock.return_value = MagicMock(spec=BaseChatModel)
+            result = resolve_model("openai:gpt-5.5")
+
+        mock.assert_called_once_with(
+            "openai:gpt-5.5",
+            use_responses_api=True,
+            reasoning={"effort": "low"},
+        )
+        assert result is mock.return_value
+
     def test_openrouter_prefix_sets_attribution(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
@@ -1025,6 +1037,13 @@ class TestBuiltInProfiles:
     def test_openai_provider_profile_sets_responses_api(self) -> None:
         profile = get_provider_profile("openai:gpt-5")
         assert profile.init_kwargs == {"use_responses_api": True}
+
+    def test_openai_gpt_5_5_provider_profile_sets_low_reasoning(self) -> None:
+        profile = get_provider_profile("openai:gpt-5.5")
+        assert profile.init_kwargs == {
+            "use_responses_api": True,
+            "reasoning": {"effort": "low"},
+        }
 
     def test_openrouter_provider_profile_has_pre_init_and_factory(self) -> None:
         profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")

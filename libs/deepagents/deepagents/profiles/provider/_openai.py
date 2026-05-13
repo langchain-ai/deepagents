@@ -1,8 +1,9 @@
-"""Built-in OpenAI provider profile.
+"""Built-in OpenAI provider profiles.
 
 Enables the OpenAI Responses API by default for all `openai:*` models via
-`use_responses_api=True`. Users may layer additional kwargs on top
-via `register_provider_profile("openai", ...)`.
+`use_responses_api=True`. Model-specific profiles layer additional defaults
+for individual OpenAI models. Users may layer additional kwargs on top via
+`register_provider_profile("openai", ...)` or exact model keys.
 
 Registered directly by `_ensure_builtin_profiles_loaded` during the
 first profile-registry access. Not exposed as an
@@ -17,8 +18,12 @@ from deepagents.profiles.provider.provider_profiles import (
 
 
 def register() -> None:
-    """Register the built-in OpenAI provider profile."""
+    """Register the built-in OpenAI provider profiles."""
     _register_provider_profile_impl(
         "openai",
         ProviderProfile(init_kwargs={"use_responses_api": True}),
+    )
+    _register_provider_profile_impl(
+        "openai:gpt-5.5",
+        ProviderProfile(init_kwargs={"reasoning": {"effort": "low"}}),
     )

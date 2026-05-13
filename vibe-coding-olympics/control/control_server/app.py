@@ -3572,6 +3572,28 @@ _OVERLAY_HTML = """<!doctype html>
     text-transform: uppercase;
     white-space: nowrap;
   }
+  .idle-prize-chip {
+    right: 14.7%;
+    top: 60%;
+    width: 19%;
+    height: 5.5%;
+    background: var(--ink);
+    color: var(--paper);
+    font-size: min(1.32vw, 2.35vh);
+    font-weight: 700;
+    transform: rotate(-4deg) scale(1);
+    animation: idle-prize-pulse 1300ms ease-in-out infinite;
+    z-index: 5;
+  }
+  @keyframes idle-prize-pulse {
+    0%,
+    100% {
+      transform: rotate(-4deg) scale(1);
+    }
+    50% {
+      transform: rotate(-4deg) scale(1.06);
+    }
+  }
   .score-card {
     position: absolute;
     top: 17%;
@@ -3763,6 +3785,7 @@ _OVERLAY_HTML = """<!doctype html>
         <div class="idle-title">Deep Agents PvP Vibe Coding Speedrun</div>
         <div class="idle-subhead" id="idle-subhead">Waiting for players</div>
       </div>
+      <div class="chip idle-prize-chip">Win a T-shirt!</div>
       <div class="idle-ready-grid">
         <div class="idle-player left">
           <div class="idle-player-label">Player 1</div>

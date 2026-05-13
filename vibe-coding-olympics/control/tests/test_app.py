@@ -74,6 +74,7 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("right: 2.2%", response.text)
         self.assertIn("LangChain Interrupt 2026", response.text)
         self.assertIn("Deep Agents PvP Vibe Coding Speedrun", response.text)
+        self.assertIn("Win a T-shirt!", response.text)
         self.assertIn("Deep Agents: PVP Speedrun", response.text)
         self.assertIn('class="idle-ready-grid"', response.text)
         self.assertIn('id="idle-p1">Awaiting</div>', response.text)

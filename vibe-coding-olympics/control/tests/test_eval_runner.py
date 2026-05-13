@@ -50,6 +50,27 @@ class TestEvalRunner(unittest.TestCase):
         self.assertEqual(sanitized["interpretation_quality"], 0.6)
         self.assertNotIn("junk_axis", sanitized)
 
+    def test_sanitize_axes_accepts_display_scale_scores(self) -> None:
+        raw = {
+            "color": 8,
+            "typography": "7.5",
+            "layout": 10,
+            "content_completeness": 6,
+            "creativity": 5,
+            "interpretation_quality": 9,
+            "accessibility": 8,
+        }
+
+        sanitized = eval_runner._sanitize_axes(raw)  # noqa: SLF001
+
+        self.assertEqual(sanitized["color"], 0.8)
+        self.assertEqual(sanitized["typography"], 0.75)
+        self.assertEqual(sanitized["layout"], 1.0)
+        self.assertEqual(sanitized["content_completeness"], 0.6)
+        self.assertEqual(sanitized["creativity"], 0.5)
+        self.assertEqual(sanitized["interpretation_quality"], 0.9)
+        self.assertEqual(sanitized["accessibility"], 0.8)
+
     def test_eval_result_rejects_fallback_without_reason(self) -> None:
         with self.assertRaises(ValueError):
             eval_runner.EvalResult(

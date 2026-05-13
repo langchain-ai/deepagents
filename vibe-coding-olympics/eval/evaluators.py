@@ -34,11 +34,11 @@ _ROLE_PREAMBLE = (
 _SCORE_INSTRUCTION = (
     "Return a JSON object with one numeric score for each axis. "
     "Each score must be from 0.0 (absent or broken) to 1.0 "
-    "(exceptional for a 5-minute build). Use the full scale: a coherent but "
-    "basic working page should usually land around 0.35 to 0.60, a strong "
-    "5-minute page around 0.65 to 0.85, and reserve 0.0 for axes with no "
-    "meaningful evidence. Use decimal values; do not round small positive "
-    "scores down to 0.0."
+    "(exceptional for a 5-minute build). Be generous for live-show scoring: "
+    "a coherent but basic working page should usually land around 0.55 to "
+    "0.75, a strong 5-minute page around 0.75 to 0.95, and reserve scores "
+    "below 0.25 for absent, broken, or irrelevant work. Use decimal values; "
+    "do not round small positive scores down to 0.0."
 )
 
 _RUBRIC = """Evaluate these axes independently:
@@ -174,6 +174,8 @@ def _coerce_score(value: object) -> float | None:
         score = float(value)
     except (TypeError, ValueError):
         return None
+    if score > 1.0:
+        score /= 10.0
     return max(0.0, min(1.0, score))
 
 

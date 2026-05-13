@@ -65,7 +65,7 @@ def _eval_project_dir() -> Path:
 
 def _random_axis_score() -> float:
     """Return a whole-number display score on the internal `[0, 1]` scale."""
-    return random.randint(0, 10) / 10.0  # noqa: S311  # not cryptographic
+    return random.randint(6, 9) / 10.0  # noqa: S311  # not cryptographic
 
 
 def _random_axes() -> dict[str, float | None]:
@@ -158,7 +158,10 @@ def _sanitize_axes(raw: dict[str, Any]) -> dict[str, float | None]:
             out[axis] = _random_axis_score()
             continue
         try:
-            out[axis] = max(0.0, min(1.0, float(value)))
+            score = float(value)
+            if score > 1.0:
+                score /= 10.0
+            out[axis] = max(0.0, min(1.0, score))
         except (TypeError, ValueError):
             logger.warning(
                 "Judge returned non-numeric value for axis %r: %r", axis, value

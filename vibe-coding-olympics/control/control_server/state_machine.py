@@ -173,36 +173,36 @@ class StateMachine:
 
     async def _enter_idle(self) -> None:
         """Clear round state and switch OBS to the configured idle scene."""
-        self._snapshot = Snapshot(phase=Phase.IDLE)
         cfg = self._config
         await self._compositor.set_scene(cfg.scenes[Phase.IDLE])
         if cfg.text_prompt is not None:
             await self._compositor.set_text(cfg.text_prompt, "")
         await self._write_contestant_slots([], None)
+        self._snapshot = Snapshot(phase=Phase.IDLE)
 
     async def _enter_ready(self, payload: dict[str, Any]) -> None:
         """Render ready player names while waiting in the idle phase."""
         contestants = self._contestants_from_payload(payload)
-        self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
         cfg = self._config
         await self._compositor.set_scene(cfg.scenes[Phase.IDLE])
         await self._write_contestant_slots(contestants, None)
+        self._snapshot = Snapshot(phase=Phase.IDLE, contestants=contestants)
 
     async def _enter_coding(self, payload: dict[str, Any]) -> None:
         """Switch to the coding scene and write round metadata."""
         prompt = str(payload.get("prompt", ""))
         contestants = self._contestants_from_payload(payload)
 
-        self._snapshot = Snapshot(
-            phase=Phase.CODING,
-            prompt=prompt,
-            contestants=contestants,
-        )
         cfg = self._config
         await self._compositor.set_scene(cfg.scenes[Phase.CODING])
         if cfg.text_prompt is not None:
             await self._compositor.set_text(cfg.text_prompt, prompt)
         await self._write_contestant_slots(contestants, None)
+        self._snapshot = Snapshot(
+            phase=Phase.CODING,
+            prompt=prompt,
+            contestants=contestants,
+        )
 
     async def _enter_scoreboard(self, payload: dict[str, Any]) -> None:
         """Switch to the scoreboard scene and render per-slot scores."""
@@ -215,12 +215,12 @@ class StateMachine:
         except (TypeError, ValueError) as exc:
             msg = "payload `scores` values must be numeric"
             raise InvalidTransitionError(msg) from exc
+        cfg = self._config
+        await self._compositor.set_scene(cfg.scenes[Phase.SCOREBOARD])
+        await self._write_contestant_slots(self._snapshot.contestants, scores)
         self._snapshot = Snapshot(
             phase=Phase.SCOREBOARD,
             prompt=self._snapshot.prompt,
             contestants=self._snapshot.contestants,
             scores=scores,
         )
-        cfg = self._config
-        await self._compositor.set_scene(cfg.scenes[Phase.SCOREBOARD])
-        await self._write_contestant_slots(self._snapshot.contestants, scores)

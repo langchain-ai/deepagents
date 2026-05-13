@@ -44,6 +44,20 @@ class FakeCompositor:
         return None
 
 
+class FailingSceneCompositor(FakeCompositor):
+    """Raises when switching to the configured scene."""
+
+    def __init__(self, scene: str) -> None:
+        super().__init__()
+        self.scene = scene
+
+    async def set_scene(self, name: str) -> None:
+        await super().set_scene(name)
+        if name == self.scene:
+            msg = f"failed to switch to {name}"
+            raise ConnectionError(msg)
+
+
 @pytest.fixture
 def config() -> StateConfig:
     return StateConfig(
@@ -151,6 +165,30 @@ def test_start_from_coding_still_rejected(config: StateConfig) -> None:
     _run(machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A"]}))
     with pytest.raises(InvalidTransitionError):
         _run(machine.dispatch(Event.START, {"prompt": "r2", "contestants": ["B"]}))
+
+
+def test_failed_start_keeps_previous_phase(config: StateConfig) -> None:
+    machine = StateMachine(FailingSceneCompositor("Coding"), config)
+
+    with pytest.raises(ConnectionError, match="failed to switch to Coding"):
+        _run(machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A"]}))
+
+    assert machine.snapshot.phase is Phase.IDLE
+    assert machine.snapshot.prompt is None
+    assert machine.snapshot.contestants == []
+
+
+def test_failed_scoreboard_publish_keeps_coding_phase(config: StateConfig) -> None:
+    machine = StateMachine(FailingSceneCompositor("Scoreboard"), config)
+    _run(machine.dispatch(Event.START, {"prompt": "r1", "contestants": ["A", "B"]}))
+
+    with pytest.raises(ConnectionError, match="failed to switch to Scoreboard"):
+        _run(machine.dispatch(Event.END, {"scores": {"A": 8.0, "B": 7.0}}))
+
+    assert machine.snapshot.phase is Phase.CODING
+    assert machine.snapshot.prompt == "r1"
+    assert machine.snapshot.contestants == ["A", "B"]
+    assert machine.snapshot.scores == {}
 
 
 def test_reset_is_always_legal(config: StateConfig) -> None:

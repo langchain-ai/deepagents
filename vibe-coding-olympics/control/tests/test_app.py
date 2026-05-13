@@ -399,6 +399,35 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(response.json()["duration_secs"], 120.0)
         self.assertEqual(response.json()["round_num"], 1)
 
+    def test_round_start_accepts_duration_override(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
+        app_mod._model_ready_ports.update({"3001", "3002"})
+        forward = AsyncMock(return_value={"phase": "coding"})
+        timer_start = AsyncMock()
+
+        with (
+            patch("control_server.app._forward", forward),
+            patch(
+                "control_server.player_dispatch.send_prompt_to_players",
+                new=AsyncMock(return_value=["3001", "3002"]),
+            ),
+            patch.object(app_mod._round_timer, "start", new=timer_start),
+        ):
+            response = client.post(
+                "/api/round/start",
+                json={
+                    "prompt": "build something",
+                    "contestants": ["Alice", "Bob"],
+                    "duration_secs": 90,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        timer_start.assert_awaited_once()
+        self.assertEqual(timer_start.await_args.args[0], 90.0)
+        self.assertEqual(response.json()["duration_secs"], 90.0)
+
     def test_round_end_early_runs_judge_without_forwarding_scores(self) -> None:
         from control_server import eval_runner
 
@@ -729,6 +758,10 @@ class TestReadyPlayers(unittest.TestCase):
             'id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>',
             response.text,
         )
+        self.assertIn('id="round-duration"', response.text)
+        self.assertIn('value="5:00"', response.text)
+        self.assertIn("function roundDurationValue", response.text)
+        self.assertIn("duration_secs: durationSecs", response.text)
         self.assertIn('id="btn-open-override"', response.text)
         self.assertIn('id="override-modal"', response.text)
         self.assertIn('class="modal-header"', response.text)

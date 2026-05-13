@@ -83,8 +83,10 @@ def _round_duration_config() -> tuple[float, str | None]:
     return value, None
 
 
-def _round_duration_secs() -> float:
-    """Round length in seconds. Override with `VIBE_ROUND_SECONDS`."""
+def _round_duration_secs(override_secs: float | None = None) -> float:
+    """Round length in seconds, optionally overridden by the controller."""
+    if override_secs is not None:
+        return override_secs
     duration, _ = _round_duration_config()
     return duration
 
@@ -181,6 +183,7 @@ DEFAULT_PROMPTS = (
 class StartRequest(BaseModel):
     prompt: str | None = None
     contestants: list[str] = Field(default_factory=list)
+    duration_secs: Annotated[float | None, Field(gt=0)] = None
 
     @field_validator("prompt")
     @classmethod
@@ -901,9 +904,12 @@ async def _publish_round_scores(scores: dict[str, float]) -> dict[str, Any]:
     return state
 
 
-async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
+async def _start_round_timer(
+    prompt: str, contestants: list[str], duration_secs: float | None = None
+) -> None:
     """Arm the server-authoritative timer for a freshly started round."""
     global _round_counter
+    duration = _round_duration_secs(duration_secs)
     _round_counter += 1
     _round_context.clear()
     _last_eval_results.clear()
@@ -914,7 +920,7 @@ async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
             "round_num": _round_counter,
             "ports": _round_player_ports(),
             "started_at": time.time(),
-            "duration_secs": _round_duration_secs(),
+            "duration_secs": duration,
             "start_delay_secs": _PLAYER_LAUNCH_COUNTDOWN_SECS,
         }
     )
@@ -928,7 +934,7 @@ async def _start_round_timer(prompt: str, contestants: list[str]) -> None:
             logger.exception("Auto-eval on timer expiry failed.")
 
     await _round_timer.start(
-        _round_duration_secs(),
+        duration,
         _on_expire,
         start_delay_secs=_PLAYER_LAUNCH_COUNTDOWN_SECS,
     )
@@ -1423,6 +1429,15 @@ _INDEX_HTML = """<!doctype html>
     width: 1rem;
     height: 1rem;
   }
+  .round-settings-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, 9rem);
+    gap: 0.75rem;
+    align-items: end;
+  }
+  .duration-field input {
+    font-variant-numeric: tabular-nums;
+  }
   .prompt-add-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1478,6 +1493,7 @@ _INDEX_HTML = """<!doctype html>
     .round-row {
       grid-template-columns: 1fr;
     }
+    .round-settings-row,
     .smoke-actions,
     .smoke-command-actions,
     .smoke-layout-actions {
@@ -1499,9 +1515,14 @@ _INDEX_HTML = """<!doctype html>
       <div class="player-slot empty" id="c2">Waiting for CLI player</div>
     </label>
   </div>
-  <label>Prompt
-    <input id="prompt" type="text" placeholder="(leave blank to draw random prompt automatically)">
-  </label>
+  <div class="round-settings-row">
+    <label>Prompt
+      <input id="prompt" type="text" placeholder="(leave blank to draw random prompt automatically)">
+    </label>
+    <label class="duration-field">Round length
+      <input id="round-duration" type="text" inputmode="numeric" value="5:00" placeholder="mm:ss" aria-label="Round length in minutes and seconds">
+    </label>
+  </div>
   <div class="action-line">
     <button id="btn-start" aria-disabled="true">Start</button>
     <button class="secondary" id="btn-draw-prompt">Draw prompt</button>
@@ -1766,6 +1787,26 @@ function promptValue(options = {}) {
   }
   return prompt;
 }
+function parseRoundDuration(value) {
+  const match = String(value || '').trim().match(/^(\\d+):([0-5]\\d)$/);
+  if (!match) return null;
+  const minutes = Number(match[1]);
+  const seconds = Number(match[2]);
+  const total = minutes * 60 + seconds;
+  return total > 0 ? total : null;
+}
+function roundDurationValue() {
+  const input = document.getElementById('round-duration');
+  const durationSecs = parseRoundDuration(input.value);
+  if (durationSecs === null) {
+    input.setCustomValidity('Use mm:ss, e.g. 5:00.');
+    input.reportValidity();
+    log('round length must use mm:ss', true);
+    return null;
+  }
+  input.setCustomValidity('');
+  return durationSecs;
+}
 function clearPromptInput() {
   const input = document.getElementById('prompt');
   input.value = '';
@@ -1773,6 +1814,11 @@ function clearPromptInput() {
 }
 document.getElementById('prompt').addEventListener('input', (event) => {
   if (event.target.value.trim()) event.target.setCustomValidity('');
+});
+document.getElementById('round-duration').addEventListener('input', (event) => {
+  if (parseRoundDuration(event.target.value) !== null) {
+    event.target.setCustomValidity('');
+  }
 });
 
 let lastReadyNames = [];
@@ -2230,6 +2276,8 @@ async function drawPrompt() {
 document.getElementById('btn-start').onclick = async () => {
   hideRoundStarted();
   const prompt = promptValue({ allowBlank: true });
+  const durationSecs = roundDurationValue();
+  if (durationSecs === null) return;
   await refreshPlayers();
   const c1 = playerName('c1');
   const c2 = playerName('c2');
@@ -2241,7 +2289,7 @@ document.getElementById('btn-start').onclick = async () => {
     return;
   }
   if (contestants.length === 0) { log('at least one player is required', true); return; }
-  const body = { contestants };
+  const body = { contestants, duration_secs: durationSecs };
   if (prompt !== null) body.prompt = prompt;
   const result = await api('/api/round/start', body);
   if (result.ok) {
@@ -3731,7 +3779,7 @@ def create_app() -> FastAPI:
         sent = await player_dispatch.send_prompt_to_players(
             _round_player_ports(), prompt
         )
-        await _start_round_timer(prompt, contestants)
+        await _start_round_timer(prompt, contestants, req.duration_secs)
         await _publish_state_update()
         return {
             "state": state,

@@ -111,7 +111,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `/api/eval/publish` | POST | `{scores?: {name: float}}` | Publishes host-approved scores to the scoreboard. Empty `scores` accepts the pending judge scores. |
 | `/api/overlay-smoke` | POST/DELETE | `{phase, prompt?, contestants?, scores?, duration_secs?, remaining_secs?, mode?, focus_player?}` | Enables or clears controller-only overlay smoke state without starting a real round |
 | `/api/obs/scene` | POST | `{scene: str}` | Asks the OBS runner to switch directly to an OBS scene without changing game-state phase |
-| `/api/round/start` | POST | `{prompt?, contestants[]}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
+| `/api/round/start` | POST | `{prompt?, contestants[], duration_secs?}` | Fires `start` on the FSM, draws from the prompt pool when `prompt` is blank, sends the prompt to player CLIs, and arms the server-authoritative round timer after the CLI launch countdown |
 | `/api/round/end` | POST | `{}` | Cancels the timer, sends `times-up` to player CLI(s), runs the LLM judge, and stores results on the control server for host approval |
 | `/api/round/end-early` | POST | `{}` | Requires OBS `coding`, sends `times-up` to player CLI(s), runs the judge, and stores results on the control server for host approval |
 | `/api/round/override-end` | POST | `{scores: {name: float}}` | Smoke-test bypass: cancels the timer and stores the supplied scores without invoking the judge |
@@ -149,7 +149,7 @@ In normal event flow, run `../play.sh <port>` once per player computer at the st
 | `VIBE_LAUNCH_RELAY` | `1` | Whether `play.sh` should launch the player relay tab |
 | `VIBE_RELAY_HOST` | `0.0.0.0` | Bind host for the player relay launched by `play.sh` |
 | `VIBE_RELAY_PORT` | `9771` | Bind port for the player relay launched by `play.sh` |
-| `VIBE_ROUND_SECONDS` | `300` | Player coding time in seconds; starts after the CLI launch countdown and triggers the judge on expiry |
+| `VIBE_ROUND_SECONDS` | `300` | Fallback player coding time when `/api/round/start` omits `duration_secs`; starts after the CLI launch countdown and triggers the judge on expiry |
 | `VIBE_OVERLAY_INLINE_FEEDS` | _(unset)_ | Set to `1`, `true`, `yes`, or `on` to restore the legacy `/overlay` mode that embeds local NDI bridge iframes from `127.0.0.1:8889`. Leave unset for the production graphics-only overlay. |
 | `VIBE_EVAL_DIR` | _(bundled `vibe-coding-olympics/eval`)_ | Override path to the eval workspace, useful for local development |
 | `VIBE_EVAL_RESULTS_DIR` | system temp dir | Parent directory for `round-N-<name>.json` files written by the judge |

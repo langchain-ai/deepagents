@@ -1,6 +1,6 @@
 # Wiki Runner
 
-A script-first DeepAgents example that builds a persistent wiki and syncs it through `langsmith hub` commands.
+A script-first Deep Agents example that builds a persistent wiki and syncs it through `langsmith hub` commands.
 
 ## How it works
 

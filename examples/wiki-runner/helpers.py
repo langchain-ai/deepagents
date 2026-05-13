@@ -136,7 +136,7 @@ def _hub_identifier(owner: str | None, repo: str) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(
-        description="Wiki runner (DeepAgents + LangSmith Hub CLI)"
+        description="Wiki runner (Deep Agents + LangSmith Hub CLI)"
     )
     parser.add_argument(
         "--mode", required=True, choices=["init", "ingest", "query", "lint"]

@@ -738,6 +738,9 @@ class TestReadyPlayers(unittest.TestCase):
         app_mod._connected_ports.update({"3001": seen_at, "3002": seen_at})
         app_mod._ready_players.update({"3001": "Alice", "3002": "Bob"})
         app_mod._model_ready_ports.update({"3001", "3002"})
+        app_mod._last_eval_results.append({"name": "Alice", "axes": {}})
+        app_mod._round_context["pending_scores"] = {"Alice": 7.0}
+        app_mod._round_context["published_scores"] = {"Bob": 8.0}
         forward = AsyncMock(return_value={"phase": "idle"})
 
         with (
@@ -757,6 +760,8 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertEqual(set(app_mod._connected_ports), {"3001", "3002"})
         self.assertEqual(app_mod._ready_players, {})
         self.assertEqual(app_mod._model_ready_ports, set())
+        self.assertEqual(app_mod._last_eval_results, [])
+        self.assertEqual(app_mod._round_context, {})
         clear_players.assert_awaited_once_with(None)
         forward.assert_awaited_once_with("reset", {})
 

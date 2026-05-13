@@ -3928,6 +3928,8 @@ def create_app() -> FastAPI:
         ports = _resolve_ports(target)
         cleared = await player_dispatch.clear_players(ports)
         _clear_player_readiness(ports)
+        await _round_timer.reset()
+        _reset_round_state()
         obs_state: dict[str, Any] | None = None
         obs_error: str | None = None
         try:

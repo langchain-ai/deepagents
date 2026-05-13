@@ -3646,12 +3646,50 @@ _OVERLAY_HTML = """<!doctype html>
   }
   .winner {
     margin-top: 4%;
-    font-size: min(1.45vw, 2.58vh);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0.8vh 1.1vw;
+    background: var(--ink);
+    color: var(--paper);
+    clip-path: polygon(8% 0, 92% 0, 100% 50%, 92% 100%, 8% 100%, 0 50%);
+    font-size: min(2vw, 3.56vh);
     font-weight: 700;
+    line-height: 1;
     text-transform: uppercase;
     opacity: 0;
+    transform: scale(0.82);
   }
-  .winner.visible { opacity: 1; }
+  .winner.visible {
+    opacity: 1;
+    animation: winner-pop 900ms cubic-bezier(0.2, 1.4, 0.35, 1) both,
+      winner-pulse 1300ms ease-in-out 900ms 2;
+  }
+  @keyframes winner-pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.82);
+    }
+    70% {
+      opacity: 1;
+      transform: scale(1.12);
+    }
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @keyframes winner-pulse {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.06);
+    }
+  }
   .confetti-layer {
     position: absolute;
     top: 0;
@@ -3671,7 +3709,7 @@ _OVERLAY_HTML = """<!doctype html>
     height: calc(var(--w) * 1.65);
     background: var(--c);
     transform: rotate(var(--r));
-    animation: confetti-fall var(--d) ease-in forwards;
+    animation: confetti-fall var(--d) linear infinite;
     animation-delay: var(--delay);
   }
   @keyframes confetti-fall {
@@ -3855,7 +3893,10 @@ let previousPhase = '';
 let resultsTransitionUntil = 0;
 let scoreboardSignature = '';
 const RESULTS_COUNTDOWN_MS = 10000;
-const SCORE_REVEAL_STEP_MS = 650;
+const INITIAL_SCORE_REVEAL_DELAY_MS = 1000;
+const SCORE_REVEAL_STEP_MS = 950;
+const INTER_PLAYER_REVEAL_DELAY_MS = 2000;
+const COMPOSITE_SCORE_ANIMATION_MS = 1200;
 
 const els = {
   idleView: document.getElementById('idle-view'),
@@ -4122,7 +4163,19 @@ function animateBar(element, width, delay) {
 
 function totalScoreRevealDelay(entries) {
   if (entries.length === 0) return 0;
-  return entries.length * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
+  return compositeScoreRevealDelay(entries.length - 1) + COMPOSITE_SCORE_ANIMATION_MS;
+}
+
+function playerScoreRevealDelay(playerIndex) {
+  return (
+    INITIAL_SCORE_REVEAL_DELAY_MS
+    + playerIndex * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS
+    + playerIndex * INTER_PLAYER_REVEAL_DELAY_MS
+  );
+}
+
+function compositeScoreRevealDelay(playerIndex) {
+  return playerScoreRevealDelay(playerIndex) + (SCORE_AXIS_ORDER.length + 1) * SCORE_REVEAL_STEP_MS;
 }
 
 function addConfetti(side) {
@@ -4136,8 +4189,8 @@ function addConfetti(side) {
     piece.style.setProperty('--w', `${0.34 + ((i * 11) % 9) / 100}vw`);
     piece.style.setProperty('--c', colors[i % colors.length]);
     piece.style.setProperty('--r', `${(i * 29) % 180}deg`);
-    piece.style.setProperty('--d', `${2300 + ((i * 97) % 1200)}ms`);
-    piece.style.setProperty('--delay', `${(i * 83) % 900}ms`);
+    piece.style.setProperty('--d', `${5200 + ((i * 97) % 1800)}ms`);
+    piece.style.setProperty('--delay', `${(i * 83) % 2600}ms`);
     piece.style.setProperty('--drift', `${((i % 9) - 4) * 1.2}vw`);
     layer.appendChild(piece);
   }
@@ -4160,7 +4213,7 @@ function renderAxisRows(card, entry, playerIndex) {
 
   const wrap = document.createElement('div');
   wrap.className = 'score-axes';
-  const playerDelay = playerIndex * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
+  const playerDelay = playerScoreRevealDelay(playerIndex);
   rows.forEach((axis, axisIndex) => {
     const raw = Number(axes[axis] || 0);
     const value = Math.max(0, Math.min(1, Number.isFinite(raw) ? raw : 0));
@@ -4176,7 +4229,7 @@ function renderAxisRows(card, entry, playerIndex) {
     num.className = 'score-axis-value';
     num.textContent = '0.0';
     wrap.append(label, bar, num);
-    const delay = playerDelay + (axisIndex + 1) * SCORE_REVEAL_STEP_MS;
+    const delay = playerDelay + axisIndex * SCORE_REVEAL_STEP_MS;
     animateBar(fill, value * 100, delay);
     animateNumber(num, value * 10, 1, delay);
   });
@@ -4197,7 +4250,7 @@ function renderScoreboard() {
   const winners = [];
   els.scoreWrap.replaceChildren();
   entries.forEach((entry, index) => {
-    const playerDelay = index * (SCORE_AXIS_ORDER.length + 2) * SCORE_REVEAL_STEP_MS;
+    const compositeDelay = compositeScoreRevealDelay(index);
     const card = document.createElement('div');
     card.className = `score-card ${index === 0 ? 'left' : 'right'}`;
     const name = document.createElement('div');
@@ -4220,8 +4273,8 @@ function renderScoreboard() {
     card.append(name, score, track, winner);
     renderAxisRows(card, entry, index);
     els.scoreWrap.appendChild(card);
-    animateBar(fill, entry.score * 10, playerDelay);
-    animateNumber(score, entry.score, 2, playerDelay);
+    animateBar(fill, entry.score * 10, compositeDelay);
+    animateNumber(score, entry.score, 2, compositeDelay);
   });
   revealWinners(winners, totalScoreRevealDelay(entries));
   if (entries.length === 0) {

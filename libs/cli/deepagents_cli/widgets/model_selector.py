@@ -351,13 +351,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             yield Static("", classes="model-detail-footer", id="model-detail-footer")
 
             # Help text
-            esc_label = "Esc skip setup" if self._curated else "Esc cancel"
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Ctrl+S set default"
-                f" {glyphs.bullet} {esc_label}"
             )
+            if not self._curated:
+                help_text = f"{help_text} {glyphs.bullet} Esc cancel"
             yield Static(help_text, classes="model-selector-help")
 
     @staticmethod
@@ -1159,18 +1159,26 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message."""
         glyphs = get_glyphs()
-        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Ctrl+S set default"
-            f" {glyphs.bullet} {esc_label}"
         )
+        if not self._curated:
+            help_text = f"{help_text} {glyphs.bullet} Esc cancel"
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(help_text)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""
+        if self._curated:
+            self.notify(
+                "Choose a model to start.",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+            return
         self._dismiss_with_result(None)
 
     def _dismiss_with_result(self, result: tuple[str, str] | None) -> None:

@@ -159,6 +159,9 @@ _COMPETITION_START_COUNTDOWN_SECONDS = 5
 _VIBE_SERVER_RESET_TIMEOUT_SECONDS = 20.0
 """Maximum seconds to wait for the web-vibe dev server to restart."""
 
+_VIBE_CONTROL_RESET_TIMEOUT_SECONDS = 5.0
+"""Maximum seconds to wait for the vibe control reset endpoint."""
+
 _UPDATE_RECHECK_INTERVAL_SECONDS = 60 * 60
 """How often long-running TUI sessions quietly re-check for CLI updates."""
 
@@ -1016,6 +1019,13 @@ class DeepAgentsApp(App):
             "ctrl+n",
             "open_notifications",
             "Notifications",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+r",
+            "force_reset_round",
+            "Reset Round",
             show=False,
             priority=True,
         ),
@@ -4091,6 +4101,21 @@ class DeepAgentsApp(App):
         task.add_done_callback(_finalize_launch_init)
         return task
 
+    async def _restart_launch_init_task(self) -> asyncio.Task[None]:
+        """Cancel any active launch setup and start it from the name prompt.
+
+        Returns:
+            The newly started launch initialization task.
+        """
+        task = self._launch_init_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._launch_init_task = None
+        self._launch_init_running = False
+        return self._ensure_launch_init_task()
+
     async def _run_launch_init_sequence(
         self,
         *,
@@ -5026,7 +5051,10 @@ class DeepAgentsApp(App):
                         prefix="Started new thread",
                         thread_id=new_thread_id,
                     )
-            self._ensure_launch_init_task()
+            if cmd == "/force-clear":
+                await self._restart_launch_init_task()
+            else:
+                self._ensure_launch_init_task()
         elif cmd == "/copy":
             await self._mount_message(UserMessage(command))
             # Reverse-scan for the newest assistant message that has finished
@@ -7194,6 +7222,45 @@ class DeepAgentsApp(App):
             lines = edited.split("\n")
             chat_input._text_area.move_cursor((len(lines) - 1, len(lines[-1])))
         chat_input.focus_input()
+
+    async def action_force_reset_round(self) -> None:
+        """Ask vibe-control to reset all player rounds."""
+        control_api = os.environ.get("VIBE_CONTROL_API", "").strip()
+        if not control_api:
+            self.notify(
+                "Round reset is only available when VIBE_CONTROL_API is set.",
+                severity="warning",
+                timeout=4,
+                markup=False,
+            )
+            return
+
+        try:
+            await self._request_control_reset_round_all(control_api)
+        except Exception as exc:
+            logger.warning("Failed to request vibe-control round reset", exc_info=True)
+            self.notify(
+                f"Could not reset round: {exc}",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+    @staticmethod
+    async def _request_control_reset_round_all(control_api: str) -> None:
+        """Call the same endpoint as vibe-control's Reset round all button.
+
+        Args:
+            control_api: Base URL for the vibe-control HTTP API.
+        """
+        import httpx
+
+        url = f"{control_api.rstrip('/')}/api/players/clear"
+        async with httpx.AsyncClient(
+            timeout=_VIBE_CONTROL_RESET_TIMEOUT_SECONDS,
+        ) as client:
+            response = await client.post(url, json={"all": True})
+            response.raise_for_status()
 
     def on_paste(self, event: Paste) -> None:
         """Route unfocused paste events to chat input for drag/drop reliability."""

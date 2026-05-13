@@ -162,6 +162,25 @@ class TestModelSelectorEscapeKey:
             # The interrupt action should NOT have been called because modal was open
             assert app.interrupt_called is False
 
+    async def test_escape_does_not_dismiss_curated_selector(self) -> None:
+        """Launch/init model selection requires choosing a model."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+
+            def handle_result(result: tuple[str, str] | None) -> None:
+                app.result = result
+                app.dismissed = True
+
+            app.push_screen(screen, handle_result)
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.dismissed is False
+            assert app.screen is screen
+
 
 class TestModelSelectorChrome:
     """Tests for model selector title chrome."""
@@ -178,8 +197,8 @@ class TestModelSelectorChrome:
 
             assert "Choose a Model" in str(title.content)
 
-    async def test_curated_selector_help_uses_skip_setup(self) -> None:
-        """Curated launch-init selection should label Escape as setup skip."""
+    async def test_curated_selector_help_requires_selection(self) -> None:
+        """Curated launch-init selection should not advertise Escape skip."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(curated=True)
@@ -188,7 +207,7 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Esc skip setup" in str(help_text.content)
+            assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_standard_selector_help_uses_cancel(self) -> None:

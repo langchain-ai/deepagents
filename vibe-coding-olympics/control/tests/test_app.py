@@ -794,6 +794,8 @@ class TestReadyPlayers(unittest.TestCase):
             "clock.textContent = timer && timer.duration_secs ? '00:00'",
             response.text,
         )
+        self.assertIn("meta.textContent = 'running'", response.text)
+        self.assertIn("await refreshState({ quiet: true });", response.text)
         self.assertNotIn('id="btn-reset"', response.text)
         self.assertNotIn("Reset to Idle", response.text)
         self.assertIn('id="btn-open-override"', response.text)

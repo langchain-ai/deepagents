@@ -1898,10 +1898,18 @@ function renderTimer(timer) {
     bar.max = 1;
     return;
   }
-  clock.textContent = formatClock(timer.remaining_secs);
-  meta.textContent = `of ${formatClock(timer.duration_secs)}`;
-  bar.max = timer.duration_secs || 1;
-  bar.value = Math.max(0, (timer.duration_secs || 0) - (timer.remaining_secs || 0));
+  const durationSecs = Number(timer.duration_secs);
+  const remainingSecs = Number(timer.remaining_secs);
+  clock.textContent = formatClock(remainingSecs);
+  if (!Number.isFinite(durationSecs) || durationSecs <= 0) {
+    meta.textContent = 'running';
+    bar.value = 0;
+    bar.max = 1;
+    return;
+  }
+  meta.textContent = `of ${formatClock(durationSecs)}`;
+  bar.max = durationSecs;
+  bar.value = Math.max(0, durationSecs - (remainingSecs || 0));
 }
 function setPublishError(message) {
   document.getElementById('publish-error').textContent = message;
@@ -2290,7 +2298,7 @@ document.getElementById('btn-start').onclick = async () => {
   if (prompt !== null) body.prompt = prompt;
   const result = await api('/api/round/start', body);
   if (result.ok) {
-    if (result.json && result.json.state) renderState(result.json.state);
+    await refreshState({ quiet: true });
     if (result.json && result.json.prompt) {
       document.getElementById('prompt').value = result.json.prompt;
     }
@@ -2618,9 +2626,9 @@ document.getElementById('btn-list').onclick = async () => {
 };
 document.getElementById('btn-times-up').onclick = () => api('/api/players/times-up', { all: true });
 document.getElementById('btn-clear').onclick = () => {
-  api('/api/players/clear', { all: true }).then((result) => {
-    if (result.ok && result.json && result.json.obs) {
-      renderState(result.json.obs);
+  api('/api/players/clear', { all: true }).then(async (result) => {
+    if (result.ok) {
+      await refreshState({ quiet: true });
       clearPromptInput();
     }
   });

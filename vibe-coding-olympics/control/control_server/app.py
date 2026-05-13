@@ -370,6 +370,7 @@ class OverlaySmokeRequest(BaseModel):
     remaining_secs: Annotated[float | None, Field(ge=0)] = None
     mode: str = "split"
     focus_player: Annotated[int, Field(ge=1, le=2)] = 1
+    score_wait_overlay: bool = False
 
     @field_validator("phase")
     @classmethod
@@ -560,6 +561,7 @@ def _set_overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:
         "phase": req.phase,
         "mode": req.mode,
         "focus_player": req.focus_player,
+        "score_wait_overlay": req.score_wait_overlay,
         "prompt": req.prompt
         or "Build a bold event landing page for a time-traveling taco truck.",
         "contestants": contestants,
@@ -615,6 +617,7 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
         "prompt": smoke["prompt"],
         "contestants": list(smoke["contestants"]),
         "scores": scores,
+        "score_wait_overlay": bool(smoke["score_wait_overlay"]),
         "obs_error": None,
         "timer": timer,
         "round": {
@@ -627,6 +630,8 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
             "obs_error": None,
             "times_up_error": None,
             "duration_warning": None,
+            "eval_processing": False,
+            "score_wait_overlay": bool(smoke["score_wait_overlay"]),
         },
         "eval": {
             "results": eval_results,
@@ -635,6 +640,7 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
             "active": True,
             "mode": smoke["mode"],
             "focus_player": smoke["focus_player"],
+            "score_wait_overlay": bool(smoke["score_wait_overlay"]),
         },
         "overlay_layout": {
             "mode": smoke["mode"],
@@ -779,6 +785,7 @@ async def _api_state() -> dict[str, Any]:
             "started_at": snapshot.started_at,
             "warning": _timer_warning_payload(snapshot.warning),
         },
+        "score_wait_overlay": bool(_round_context.get("score_wait_overlay")),
         "round": {
             "prompt": _round_context.get("prompt"),
             "round_num": _round_context.get("round_num"),
@@ -792,6 +799,8 @@ async def _api_state() -> dict[str, Any]:
             "obs_error": _round_context.get("obs_error"),
             "times_up_error": _round_context.get("times_up_error"),
             "duration_warning": duration_warning,
+            "eval_processing": bool(_round_context.get("eval_processing")),
+            "score_wait_overlay": bool(_round_context.get("score_wait_overlay")),
         },
         "eval": {
             "results": list(_last_eval_results),
@@ -906,71 +915,80 @@ async def _run_round_eval(*, reason: str) -> list[dict[str, Any]]:
         if not _round_context:
             logger.info("Skipping eval (%s): no round context.", reason)
             return []
+        _round_context["last_reason"] = reason
+        _round_context["eval_processing"] = True
+        if reason == "timer":
+            _round_context["timer_completed_at"] = time.time()
+        await _publish_state_update()
         prompt = str(_round_context.get("prompt") or "")
         round_num = int(_round_context.get("round_num") or 0)
         targets = _round_player_targets()
-        if not targets:
-            logger.info("Skipping eval (%s): no round players.", reason)
-            return []
-
-        workdir = _eval_workdir()
-        workdir.mkdir(parents=True, exist_ok=True)
-        round_dir = workdir / f"round-{round_num}"
-
-        ports = [t["port"] for t in targets]
         try:
-            await player_dispatch.times_up_players(ports or None)
-        except Exception as exc:
-            logger.exception("Failed to send times-up to players before eval.")
-            _round_context["times_up_error"] = repr(exc)
-        else:
-            _round_context.pop("times_up_error", None)
+            if not targets:
+                logger.info("Skipping eval (%s): no round players.", reason)
+                return []
 
-        raw_results = await asyncio.gather(
-            *[
-                _evaluate_one(
-                    target,
-                    prompt=prompt,
-                    round_num=round_num,
-                    # Isolate per-player so two players with the same
-                    # sanitized site name cannot overwrite each other's
-                    # judge JSON within a single round.
-                    work_dir=round_dir / target["port"],
-                )
-                for target in targets
-            ],
-            return_exceptions=True,
-        )
+            workdir = _eval_workdir()
+            workdir.mkdir(parents=True, exist_ok=True)
+            round_dir = workdir / f"round-{round_num}"
 
-        per_site: list[dict[str, Any]] = []
-        for target, item in zip(targets, raw_results, strict=True):
-            if isinstance(item, BaseException):
-                logger.exception(
-                    "Eval task crashed for %s (port %s)",
-                    target["name"],
-                    target["port"],
-                    exc_info=item,
-                )
-                synthetic = eval_runner.EvalResult.fallback_for(
-                    site_name=target["name"],
-                    url=target["url"],
-                    prompt=prompt,
-                    round_num=round_num,
-                    reason=f"eval crashed: {item!r}",
-                )
-                per_site.append(_eval_to_payload(synthetic, port=target["port"]))
+            ports = [t["port"] for t in targets]
+            try:
+                await player_dispatch.times_up_players(ports or None)
+            except Exception as exc:
+                logger.exception("Failed to send times-up to players before eval.")
+                _round_context["times_up_error"] = repr(exc)
             else:
-                per_site.append(item)
+                _round_context.pop("times_up_error", None)
 
-        _last_eval_results.clear()
-        _last_eval_results.extend(per_site)
-        _round_context["last_reason"] = reason
-        _round_context["pending_scores"] = _scores_from_eval_results(per_site)
-        _round_context.pop("published_scores", None)
-        _round_context["obs_state"] = None
-        _round_context["obs_error"] = None
-        _round_context["completed_at"] = time.time()
-        return per_site
+            raw_results = await asyncio.gather(
+                *[
+                    _evaluate_one(
+                        target,
+                        prompt=prompt,
+                        round_num=round_num,
+                        # Isolate per-player so two players with the same
+                        # sanitized site name cannot overwrite each other's
+                        # judge JSON within a single round.
+                        work_dir=round_dir / target["port"],
+                    )
+                    for target in targets
+                ],
+                return_exceptions=True,
+            )
+
+            per_site: list[dict[str, Any]] = []
+            for target, item in zip(targets, raw_results, strict=True):
+                if isinstance(item, BaseException):
+                    logger.exception(
+                        "Eval task crashed for %s (port %s)",
+                        target["name"],
+                        target["port"],
+                        exc_info=item,
+                    )
+                    synthetic = eval_runner.EvalResult.fallback_for(
+                        site_name=target["name"],
+                        url=target["url"],
+                        prompt=prompt,
+                        round_num=round_num,
+                        reason=f"eval crashed: {item!r}",
+                    )
+                    per_site.append(_eval_to_payload(synthetic, port=target["port"]))
+                else:
+                    per_site.append(item)
+
+            _last_eval_results.clear()
+            _last_eval_results.extend(per_site)
+            _round_context["pending_scores"] = _scores_from_eval_results(per_site)
+            _round_context.pop("published_scores", None)
+            _round_context["obs_state"] = None
+            _round_context["obs_error"] = None
+            _round_context["completed_at"] = time.time()
+            return per_site
+        finally:
+            if _round_context.get("last_reason") == reason:
+                _round_context["eval_processing"] = False
+                await _publish_state_update()
 
 
 async def _publish_round_scores(scores: dict[str, float]) -> dict[str, Any]:
@@ -986,6 +1004,7 @@ async def _publish_round_scores(scores: dict[str, float]) -> dict[str, Any]:
         raise
     _round_context["published_scores"] = dict(scores)
     _round_context.pop("pending_scores", None)
+    _round_context.pop("score_wait_overlay", None)
     _round_context["obs_state"] = state
     _round_context["obs_error"] = None
     _round_context["completed_at"] = _round_context.get("completed_at") or time.time()
@@ -1201,6 +1220,15 @@ _INDEX_HTML = """<!doctype html>
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+  .score-wait-summary {
+    margin: 0.75rem 0 0;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid #1d4ed8;
+    border-radius: 6px;
+    background: #0f172a;
+    color: #bfdbfe;
+    font-size: 0.88rem;
   }
   .port-note { color: #707070; font-size: 0.8rem; }
   .inline-error { color: #fca5a5; font-size: 0.85rem; }
@@ -1487,6 +1515,16 @@ _INDEX_HTML = """<!doctype html>
     padding: 0.12rem 0.45rem;
     white-space: nowrap;
   }
+  .edit-score-preview {
+    display: none;
+    border: 1px solid #334155;
+    border-radius: 999px;
+    color: #bae6fd;
+    font-size: 0.72rem;
+    padding: 0.12rem 0.45rem;
+    white-space: nowrap;
+  }
+  .eval-card.editing .edit-score-preview { display: inline-block; }
   .eval-meta {
     display: flex;
     flex-wrap: wrap;
@@ -1523,6 +1561,7 @@ _INDEX_HTML = """<!doctype html>
   .eval-card.editing .score-edit { display: block; }
   #override-modal,
   #eval-modal,
+  #timer-complete-modal,
   #prompt-pool-modal,
   #smoke-modal {
     border: 1px solid #2a2a2a;
@@ -1535,6 +1574,7 @@ _INDEX_HTML = """<!doctype html>
   }
   #override-modal::backdrop,
   #eval-modal::backdrop,
+  #timer-complete-modal::backdrop,
   #prompt-pool-modal::backdrop,
   #smoke-modal::backdrop { background: rgba(0, 0, 0, 0.55); }
   #eval-modal {
@@ -1792,6 +1832,27 @@ _INDEX_HTML = """<!doctype html>
   </form>
 </dialog>
 
+<dialog id="timer-complete-modal">
+  <form method="dialog" id="timer-complete-form">
+    <div class="modal-header">
+      <h2>Timer complete</h2>
+      <button type="button" class="icon-button" id="btn-timer-complete-close" aria-label="Close timer complete">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </button>
+    </div>
+    <p class="muted">
+      The judge is running. Move the broadcast to the score wait screen while results are calculated.
+    </p>
+    <div class="score-wait-summary" id="score-wait-summary">Calculating scores…</div>
+    <div class="action-line">
+      <button type="button" id="btn-show-score-waiting">Show score wait screen</button>
+    </div>
+    <span class="inline-error" id="score-wait-error" role="alert"></span>
+  </form>
+</dialog>
+
 <dialog id="eval-modal">
   <form method="dialog" id="eval-form">
     <div class="modal-header">
@@ -1859,6 +1920,7 @@ _INDEX_HTML = """<!doctype html>
     <div class="smoke-actions">
       <button type="button" id="btn-smoke-idle">Idle</button>
       <button type="button" id="btn-smoke-coding">Coding</button>
+      <button type="button" id="btn-smoke-calculating">Calculating</button>
       <button type="button" id="btn-smoke-scoreboard">Scores</button>
       <button type="button" id="btn-smoke-warning-150">2:30 flash</button>
       <button type="button" id="btn-smoke-warning-60">1:00 flash</button>
@@ -2049,9 +2111,13 @@ let latestPendingScores = {};
 let latestContestants = [];
 let latestEvalModalSignature = '';
 let dismissedEvalModalSignature = '';
+let latestRenderedEvalSignature = '';
 let scoreEditMode = false;
 let scoreEditDraft = {};
 let evalProcessing = false;
+let showProcessingEvalModal = false;
+let latestRoundState = {};
+let dismissedTimerCompleteRound = '';
 const PLAYER_SLOT_PORTS = ['3001', '3002'];
 function setStartError(message) {
   document.getElementById('start-error').textContent = message;
@@ -2077,6 +2143,7 @@ function renderSmokeActive(active) {
 function renderState(state) {
   if (!state) return;
   if (state.phase) renderPhase(state.phase);
+  latestRoundState = state.round || {};
   const smokeActive = Boolean(state.overlay_smoke && state.overlay_smoke.active);
   renderSmokeActive(smokeActive);
   if (smokeActive) {
@@ -2093,10 +2160,12 @@ function renderState(state) {
     ? scoreEntries.map(([name, score]) => `${displayName(name)}: ${score}`).join(', ')
     : 'none';
   renderTimer(state.timer);
+  renderEvalProcessingState(Boolean(latestRoundState.eval_processing));
   renderEval(
     (state.eval && state.eval.results) || [],
     (state.eval && state.eval.pending_scores) || {},
   );
+  maybeOpenTimerCompleteModal(state);
 }
 const AXIS_LABELS = {
   color: 'Color',
@@ -2178,6 +2247,20 @@ function evalModalSignature(results, pendingScores) {
   ]);
   return JSON.stringify({ pending, results: resultSummary });
 }
+function evalRenderSignature(results, pendingScores) {
+  const pending = Object.entries(pendingScores || {}).sort(([left], [right]) => (
+    left.localeCompare(right)
+  ));
+  const resultSummary = (results || []).map((entry) => [
+    entry.name || '',
+    Number(entry.overall || 0),
+    Number(entry.obs_score || 0),
+    Boolean(entry.fallback),
+    entry.fallback_reason || '',
+    entry.axes || {},
+  ]);
+  return JSON.stringify({ pending, results: resultSummary });
+}
 function closeEvalModal() {
   const modal = document.getElementById('eval-modal');
   dismissedEvalModalSignature = latestEvalModalSignature;
@@ -2194,7 +2277,7 @@ function maybeOpenEvalModal(results, pendingScores) {
   const modal = document.getElementById('eval-modal');
   const hasResults = Boolean(results && results.length);
   const hasPending = Object.keys(pendingScores || {}).length > 0;
-  if (evalProcessing) {
+  if (evalProcessing && showProcessingEvalModal) {
     openEvalModal();
     return;
   }
@@ -2207,6 +2290,44 @@ function maybeOpenEvalModal(results, pendingScores) {
   latestEvalModalSignature = evalModalSignature(results, pendingScores);
   if (modal.open || latestEvalModalSignature === dismissedEvalModalSignature) return;
   openEvalModal();
+}
+function timerCompleteRoundKey(round) {
+  if (!round) return '';
+  const roundNum = round.round_num === null || round.round_num === undefined
+    ? ''
+    : String(round.round_num);
+  return roundNum || String(round.started_at || '');
+}
+function closeTimerCompleteModal() {
+  const modal = document.getElementById('timer-complete-modal');
+  dismissedTimerCompleteRound = timerCompleteRoundKey(latestRoundState);
+  if (typeof modal.close === 'function') modal.close();
+  else modal.removeAttribute('open');
+}
+function openTimerCompleteModal() {
+  const modal = document.getElementById('timer-complete-modal');
+  if (modal.open) return;
+  if (typeof modal.showModal === 'function') modal.showModal();
+  else modal.setAttribute('open', '');
+}
+function maybeOpenTimerCompleteModal(state) {
+  const modal = document.getElementById('timer-complete-modal');
+  const round = (state && state.round) || {};
+  const roundKey = timerCompleteRoundKey(round);
+  const shouldOpen = state.phase === 'coding'
+    && round.last_reason === 'timer'
+    && Boolean(round.eval_processing)
+    && !round.score_wait_overlay
+    && roundKey
+    && dismissedTimerCompleteRound !== roundKey;
+  if (shouldOpen) {
+    openTimerCompleteModal();
+    return;
+  }
+  if (modal.open && (!round.eval_processing || round.score_wait_overlay || state.phase !== 'coding')) {
+    if (typeof modal.close === 'function') modal.close();
+    else modal.removeAttribute('open');
+  }
 }
 function placeholderEvalEntries() {
   const names = latestContestants.filter(Boolean).slice(0, 2);
@@ -2249,6 +2370,9 @@ function scoreInputId(index) {
 }
 function axisInputId(index, axis) {
   return `axis-edit-${index}-${axis}`;
+}
+function scorePreviewId(index) {
+  return `score-preview-${index}`;
 }
 function clampScore(value) {
   return Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 0;
@@ -2313,6 +2437,18 @@ function aggregateAxisScores(axes) {
   }
   return total > 0 ? (weighted / total) * 10 : 0;
 }
+function updateScorePreview(index, entry) {
+  const preview = document.getElementById(scorePreviewId(index));
+  if (!preview) return;
+  let value = 0;
+  if (scoreEditMode && entryHasAxisScores(entry)) {
+    value = aggregateAxisScores(collectAxisScores(index, entry));
+  } else {
+    const input = document.getElementById(scoreInputId(index));
+    value = input ? clampScore(parseFloat(input.value)) : pendingScoreFor(entry, latestPendingScores);
+  }
+  preview.textContent = `edited ${value.toFixed(2)} / 10`;
+}
 function entryHasAxisScores(entry) {
   return Boolean(entry.axes && Object.values(entry.axes).some((value) => (
     value !== null && value !== undefined
@@ -2361,10 +2497,19 @@ async function publishScores(payload) {
 }
 function renderEval(results, pendingScores = {}) {
   const container = document.getElementById('eval-results');
+  const nextSignature = evalRenderSignature(results, pendingScores);
+  if (scoreEditMode && container.childElementCount > 0 && nextSignature === latestRenderedEvalSignature) {
+    latestEvalResults = results || [];
+    latestPendingScores = pendingScores || {};
+    renderEvalActions(latestEvalResults, latestPendingScores);
+    maybeOpenEvalModal(latestEvalResults, latestPendingScores);
+    return;
+  }
   captureScoreEditDraft();
   container.replaceChildren();
   latestEvalResults = results || [];
   latestPendingScores = pendingScores || {};
+  latestRenderedEvalSignature = nextSignature;
   renderEvalActions(latestEvalResults, latestPendingScores);
   if (!results || results.length === 0) {
     renderEvalPlaceholder(container);
@@ -2395,13 +2540,18 @@ function renderEval(results, pendingScores = {}) {
     editable.addEventListener('input', () => {
       const draft = ensureScoreEditDraft(entry);
       if (draft) draft.score = editable.value;
+      updateScorePreview(index, entry);
     });
+    const preview = document.createElement('span');
+    preview.className = 'edit-score-preview';
+    preview.id = scorePreviewId(index);
     const score = document.createElement('span');
     score.className = 'eval-score-pill';
     score.textContent = `${pendingScoreFor(entry, latestPendingScores).toFixed(2)} / 10`;
     if (!scoreEditMode || !entryHasAxisScores(entry)) {
       header.appendChild(editable);
     }
+    header.appendChild(preview);
     header.appendChild(score);
     card.appendChild(header);
 
@@ -2457,6 +2607,7 @@ function renderEval(results, pendingScores = {}) {
       editableAxis.addEventListener('input', () => {
         const draft = ensureScoreEditDraft(entry);
         if (draft) draft.axes[axis] = editableAxis.value;
+        updateScorePreview(index, entry);
       });
       const valueCell = document.createElement('div');
       valueCell.append(num, editableAxis);
@@ -2472,17 +2623,23 @@ function renderEval(results, pendingScores = {}) {
     }
 
     container.appendChild(card);
+    updateScorePreview(index, entry);
   }
   maybeOpenEvalModal(latestEvalResults, latestPendingScores);
 }
 function setEvalProcessing(active) {
+  showProcessingEvalModal = Boolean(active);
+  renderEvalProcessingState(active);
+  renderEval(latestEvalResults, latestPendingScores);
+}
+function renderEvalProcessingState(active) {
   evalProcessing = Boolean(active);
+  if (!evalProcessing) showProcessingEvalModal = false;
   const button = document.getElementById('btn-end-early');
   button.classList.toggle('processing', evalProcessing);
   button.textContent = evalProcessing ? 'Processing scores' : 'End early (trigger judge)';
   button.setAttribute('aria-disabled', String(currentPhase !== 'coding' || evalProcessing));
   document.getElementById('judge-processing').classList.toggle('visible', evalProcessing);
-  renderEval(latestEvalResults, latestPendingScores);
 }
 function showRoundStarted() {
   const badge = document.getElementById('round-started');
@@ -2748,6 +2905,7 @@ document.getElementById('btn-edit-scores').onclick = () => {
   if (Object.keys(latestPendingScores || {}).length === 0) return;
   scoreEditMode = true;
   scoreEditDraft = {};
+  latestRenderedEvalSignature = '';
   setPublishError('');
   renderEval(latestEvalResults, latestPendingScores);
 };
@@ -2765,6 +2923,26 @@ document.getElementById('btn-eval-close').onclick = closeEvalModal;
 document.getElementById('eval-modal').addEventListener('close', () => {
   dismissedEvalModalSignature = latestEvalModalSignature;
 });
+document.getElementById('btn-timer-complete-close').onclick = closeTimerCompleteModal;
+document.getElementById('timer-complete-modal').addEventListener('close', () => {
+  dismissedTimerCompleteRound = timerCompleteRoundKey(latestRoundState);
+});
+document.getElementById('btn-show-score-waiting').onclick = async () => {
+  document.getElementById('score-wait-error').textContent = '';
+  const result = await api('/api/round/show-score-waiting', {});
+  if (result.ok) {
+    const modal = document.getElementById('timer-complete-modal');
+    if (typeof modal.close === 'function') modal.close();
+    else modal.removeAttribute('open');
+    if (result.json && result.json.state) renderState(result.json.state);
+    await refreshState({ quiet: true });
+    return;
+  }
+  const message = result.json && result.json.detail
+    ? String(result.json.detail)
+    : result.text;
+  document.getElementById('score-wait-error').textContent = message;
+};
 
 const overrideModal = document.getElementById('override-modal');
 function openOverrideModal() {
@@ -2947,6 +3125,9 @@ document.getElementById('btn-smoke-cancel').onclick = closeSmokeModal;
 document.getElementById('btn-smoke-idle').onclick = () => setOverlaySmoke('idle');
 document.getElementById('btn-smoke-coding').onclick = () => (
   setOverlaySmoke('coding', { remaining_secs: 300 })
+);
+document.getElementById('btn-smoke-calculating').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 0, score_wait_overlay: true })
 );
 document.getElementById('btn-smoke-scoreboard').onclick = () => setOverlaySmoke('scoreboard');
 document.getElementById('btn-smoke-warning-150').onclick = () => (
@@ -3902,6 +4083,26 @@ _OVERLAY_HTML = """<!doctype html>
     font-weight: 700;
     line-height: 0.85;
   }
+  .results-card.calculating .results-title {
+    font-size: min(4.4vw, 7.82vh);
+  }
+  .results-card.calculating .results-count {
+    min-height: 0.85em;
+    font-size: min(4.9vw, 8.7vh);
+    white-space: nowrap;
+  }
+  .results-card.calculating .results-count::after {
+    content: ".";
+    display: inline-block;
+    width: 3.8ch;
+    text-align: left;
+    animation: calculating-dots 1200ms steps(1, end) infinite;
+  }
+  @keyframes calculating-dots {
+    0% { content: "."; }
+    33% { content: ".."; }
+    66% { content: "..."; }
+  }
 </style>
 </head>
 <body>
@@ -4010,8 +4211,8 @@ _OVERLAY_HTML = """<!doctype html>
   <section class="view" id="results-transition-view">
     <div class="stage">
       <div class="full-backdrop"></div>
-      <div class="results-card">
-        <div class="results-title">Are you ready for results?</div>
+      <div class="results-card" id="results-card">
+        <div class="results-title" id="results-title">Are you ready for results?</div>
         <div class="results-count" id="results-count">3</div>
       </div>
     </div>
@@ -4028,6 +4229,7 @@ const state = {
   scores: {},
   evalResults: [],
   timer: null,
+  scoreWaitOverlay: false,
   lastTimerWarningId: '',
   lastFetch: 0,
   connected: true,
@@ -4043,6 +4245,7 @@ let renderedOverlayMode = '';
 let renderedFocusIndex = -1;
 let previousPhase = '';
 let resultsTransitionUntil = 0;
+let transitionRenderTimer = null;
 let scoreboardSignature = '';
 const RESULTS_COUNTDOWN_MS = 10000;
 const INITIAL_SCORE_REVEAL_DELAY_MS = 1000;
@@ -4055,6 +4258,8 @@ const els = {
   codingView: document.getElementById('coding-view'),
   scoreboardView: document.getElementById('scoreboard-view'),
   resultsTransitionView: document.getElementById('results-transition-view'),
+  resultsCard: document.getElementById('results-card'),
+  resultsTitle: document.getElementById('results-title'),
   resultsCount: document.getElementById('results-count'),
   idleSubhead: document.getElementById('idle-subhead'),
   idleP1: document.getElementById('idle-p1'),
@@ -4232,6 +4437,20 @@ function updateText(element, value) {
   if (element.textContent !== value) element.textContent = value;
 }
 
+function scheduleTransitionRender(delay) {
+  if (transitionRenderTimer !== null) return;
+  transitionRenderTimer = window.setTimeout(() => {
+    transitionRenderTimer = null;
+    render();
+  }, delay);
+}
+
+function clearTransitionRender() {
+  if (transitionRenderTimer === null) return;
+  window.clearTimeout(transitionRenderTimer);
+  transitionRenderTimer = null;
+}
+
 const SCORE_AXIS_LABELS = {
   color: 'Color',
   typography: 'Type',
@@ -4275,12 +4494,24 @@ function scoreEntries() {
 
 function renderResultsTransition() {
   active('results-transition');
+  els.resultsCard.classList.remove('calculating');
+  updateText(els.resultsTitle, 'Are you ready for results?');
   const remaining = Math.max(0, resultsTransitionUntil - Date.now());
   const count = Math.max(1, Math.ceil(remaining / 1000));
   updateText(els.resultsCount, String(count));
   if (remaining > 0) {
-    window.setTimeout(render, 100);
+    scheduleTransitionRender(100);
+  } else {
+    clearTransitionRender();
   }
+}
+
+function renderScoreWaitTransition() {
+  clearTransitionRender();
+  active('results-transition');
+  els.resultsCard.classList.add('calculating');
+  updateText(els.resultsTitle, 'Please stand by');
+  updateText(els.resultsCount, 'Calculating scores');
 }
 
 function scoreSignature(entries) {
@@ -4393,6 +4624,7 @@ function renderScoreboard() {
     renderResultsTransition();
     return;
   }
+  clearTransitionRender();
   active('scoreboard');
   const entries = scoreEntries();
   const nextSignature = scoreSignature(entries);
@@ -4442,11 +4674,15 @@ function renderScoreboard() {
 
 function render() {
   els.status.classList.toggle('visible', !state.connected);
-  if (state.phase === 'coding') {
+  if (state.scoreWaitOverlay) {
+    renderScoreWaitTransition();
+  } else if (state.phase === 'coding') {
+    clearTransitionRender();
     renderCoding();
   } else if (state.phase === 'scoreboard') {
     renderScoreboard();
   } else {
+    clearTransitionRender();
     renderIdle();
   }
 }
@@ -4482,6 +4718,11 @@ function applyState(payload) {
     ? payload.eval.results
     : [];
   state.timer = payload.timer || null;
+  state.scoreWaitOverlay = Boolean(
+    payload.score_wait_overlay
+    || (payload.round && payload.round.score_wait_overlay)
+    || (payload.overlay_smoke && payload.overlay_smoke.score_wait_overlay)
+  );
   state.lastFetch = Date.now();
   state.connected = !payload.obs_error;
   syncTimerWarning();
@@ -4505,7 +4746,7 @@ refreshState();
 connectStateEvents();
 setInterval(refreshState, 5000);
 setInterval(() => {
-  if (state.phase === 'coding') renderCoding();
+  if (state.phase === 'coding' && !state.scoreWaitOverlay) renderCoding();
 }, 100);
 </script>
 </body>
@@ -4625,6 +4866,16 @@ def create_app() -> FastAPI:
         state = await _publish_round_scores(scores)
         await _publish_state_update()
         return {"state": state, "scores": scores}
+
+    @app.post("/api/round/show-score-waiting")
+    async def show_score_waiting() -> dict[str, Any]:
+        if not _round_context:
+            msg = "No round is available."
+            raise HTTPException(status_code=409, detail=msg)
+        _clear_overlay_smoke()
+        _round_context["score_wait_overlay"] = True
+        await _publish_state_update()
+        return {"state": await _api_state()}
 
     @app.post("/api/overlay-smoke")
     async def overlay_smoke(req: OverlaySmokeRequest) -> dict[str, Any]:

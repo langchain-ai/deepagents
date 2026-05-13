@@ -61,6 +61,9 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("/static/fonts/aeonik-mono/aeonikmono-regular.woff2", response.text)
         self.assertIn("defaultOverlayMode = params.get('mode')", response.text)
         self.assertIn("function syncOverlayMode", response.text)
+        self.assertIn("function renderScoreWaitTransition", response.text)
+        self.assertIn("Calculating scores", response.text)
+        self.assertIn("state.phase === 'coding' && !state.scoreWaitOverlay", response.text)
         self.assertIn("fetch('/api/state'", response.text)
         self.assertIn(">Player 1</div>", response.text)
         self.assertIn("function playerName", response.text)
@@ -616,6 +619,7 @@ class TestReadyPlayers(unittest.TestCase):
     def test_publish_eval_scores_forwards_host_approved_scores(self) -> None:
         client = TestClient(app_mod.create_app())
         app_mod._round_context["pending_scores"] = {"Alice": 5.0, "Bob": 6.0}
+        app_mod._round_context["score_wait_overlay"] = True
         forward = AsyncMock(return_value={"phase": "scoreboard"})
 
         with patch("control_server.app._forward", forward):
@@ -631,10 +635,28 @@ class TestReadyPlayers(unittest.TestCase):
             {"scores": {"Alice": 7.25, "Bob": 6.5}},
         )
         self.assertNotIn("pending_scores", app_mod._round_context)
+        self.assertNotIn("score_wait_overlay", app_mod._round_context)
         self.assertEqual(
             app_mod._round_context["published_scores"],
             {"Alice": 7.25, "Bob": 6.5},
         )
+
+    def test_show_score_waiting_marks_round_for_overlay(self) -> None:
+        client = TestClient(app_mod.create_app())
+        app_mod._round_context["prompt"] = "Build a website"
+        app_mod._round_context["contestants"] = ["Alice", "Bob"]
+        app_mod._overlay_smoke_state = {"active": True}
+
+        with patch(
+            "control_server.app._get_obs_state",
+            new=AsyncMock(return_value={"phase": "coding"}),
+        ):
+            response = client.post("/api/round/show-score-waiting", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(app_mod._round_context["score_wait_overlay"])
+        self.assertIsNone(app_mod._overlay_smoke_state)
+        self.assertTrue(response.json()["state"]["round"]["score_wait_overlay"])
 
     def test_publish_eval_scores_uses_pending_scores_by_default(self) -> None:
         client = TestClient(app_mod.create_app())
@@ -979,12 +1001,20 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn('id="eval-results"', response.text)
         self.assertIn('id="eval-modal"', response.text)
         self.assertIn('id="btn-eval-close"', response.text)
+        self.assertIn('id="timer-complete-modal"', response.text)
+        self.assertIn('id="btn-show-score-waiting"', response.text)
+        self.assertIn("/api/round/show-score-waiting", response.text)
+        self.assertIn('id="btn-smoke-calculating"', response.text)
+        self.assertIn("score_wait_overlay: true", response.text)
         self.assertIn('id="judge-processing"', response.text)
         self.assertIn("function setEvalProcessing", response.text)
         self.assertIn("LLM judge is processing scores", response.text)
         self.assertIn("button.classList.toggle('processing', evalProcessing)", response.text)
         self.assertIn("const AXIS_WEIGHTS", response.text)
         self.assertIn("function collectEditedScorePayload", response.text)
+        self.assertIn("function evalRenderSignature", response.text)
+        self.assertIn("scorePreviewId", response.text)
+        self.assertIn("edit-score-preview", response.text)
         self.assertIn("axis-score-edit", response.text)
         self.assertIn("Waiting for judge results", response.text)
         self.assertNotIn("No results yet.", response.text)
@@ -1368,6 +1398,26 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertEqual(state["eval"]["results"][0]["name"], "Alice")
         self.assertIn("color", state["eval"]["results"][0]["axes"])
         self.assertFalse(state["timer"]["running"])
+
+    def test_overlay_smoke_can_show_score_waiting(self) -> None:
+        client = TestClient(app_mod.create_app())
+
+        response = client.post(
+            "/api/overlay-smoke",
+            json={
+                "phase": "coding",
+                "contestants": ["Alice", "Bob"],
+                "score_wait_overlay": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["phase"], "coding")
+        self.assertFalse(state["round"]["eval_processing"])
+        self.assertTrue(state["round"]["score_wait_overlay"])
+        self.assertTrue(state["score_wait_overlay"])
+        self.assertTrue(state["overlay_smoke"]["score_wait_overlay"])
 
     def test_overlay_smoke_clear_restores_live_state(self) -> None:
         client = TestClient(app_mod.create_app())

@@ -8626,7 +8626,7 @@ class TestTimesUpState:
         restart.assert_not_awaited()
 
     def test_ctrl_r_is_bound_to_force_reset_round(self) -> None:
-        """Ctrl+R should request the same reset as the control UI button."""
+        """Ctrl+R should request a local player reset."""
         binding = next(
             b
             for b in DeepAgentsApp.BINDINGS
@@ -8636,61 +8636,18 @@ class TestTimesUpState:
         assert binding.action == "force_reset_round"
         assert binding.priority is True
 
-    async def test_force_reset_round_posts_to_control_api(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The reset action should call vibe-control's Reset round all endpoint."""
-        monkeypatch.setenv("VIBE_CONTROL_API", "http://control/")
+    async def test_force_reset_round_submits_local_force_clear(self) -> None:
+        """The reset action should only reset the current CLI."""
         app = DeepAgentsApp()
 
-        with patch.object(
-            app,
-            "_request_control_reset_round_all",
-            new_callable=AsyncMock,
-        ) as reset:
+        with patch.object(app, "_submit_input", new_callable=AsyncMock) as submit:
             await app.action_force_reset_round()
 
-        reset.assert_awaited_once_with("http://control/")
-
-    async def test_force_reset_round_warns_without_control_api(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Normal CLI sessions should not try to contact vibe-control."""
-        monkeypatch.delenv("VIBE_CONTROL_API", raising=False)
-        app = DeepAgentsApp()
-
-        with (
-            patch.object(
-                app,
-                "_request_control_reset_round_all",
-                new_callable=AsyncMock,
-            ) as reset,
-            patch.object(app, "notify") as notify,
-        ):
-            await app.action_force_reset_round()
-
-        reset.assert_not_awaited()
-        notify.assert_called_once()
-
-    async def test_control_reset_request_uses_players_clear_endpoint(self) -> None:
-        """The helper should mirror the Reset round all button's HTTP call."""
-        response = MagicMock()
-        client = AsyncMock()
-        client.post.return_value = response
-        context = AsyncMock()
-        context.__aenter__.return_value = client
-
-        with patch("httpx.AsyncClient", return_value=context) as async_client:
-            await DeepAgentsApp._request_control_reset_round_all("http://control/")
-
-        async_client.assert_called_once_with(timeout=5.0)
-        client.post.assert_awaited_once_with(
-            "http://control/api/players/clear",
-            json={"all": True},
+        submit.assert_awaited_once_with(
+            "/force-clear",
+            "command",
+            force_bypass=True,
         )
-        response.raise_for_status.assert_called_once_with()
 
 
 class TestExternalBypassFieldHonored:

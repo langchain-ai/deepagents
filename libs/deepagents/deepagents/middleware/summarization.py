@@ -76,6 +76,11 @@ from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
+from deepagents.middleware._message_eviction import (
+    _aoffload_tool_message_content,
+    _extract_text_from_message,
+    _offload_tool_message_content,
+)
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -315,6 +320,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
+        self._large_tool_results_prefix = f"{_root}/large_tool_results"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
@@ -753,6 +759,76 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
+    def _derive_overflow_clip_threshold_tokens(self) -> int:
+        """Derive token threshold for tail-ToolMessage clipping from `keep`.
+
+        Returns the keep token budget. If `keep` is message-based (no token
+        info), falls back to 5_000 -- equivalent to the previous 20_000-char
+        floor under a `chars / 4` approximation.
+        """
+        kind, value = self._lc_helper.keep
+        if kind == "tokens":
+            return int(value)
+        if kind == "fraction":
+            max_input = self._get_profile_limits()
+            if max_input is None:
+                return 5_000
+            return int(max_input * value)
+        return 5_000
+
+    @staticmethod
+    def _find_tail_tool_message_batch(
+        messages: list[AnyMessage],
+    ) -> tuple[int, list[ToolMessage]] | None:
+        """Return `(start_index, batch)` if `messages` ends with consecutive ToolMessages."""
+        if not messages or not isinstance(messages[-1], ToolMessage):
+            return None
+        i = len(messages) - 1
+        while i >= 0 and isinstance(messages[i], ToolMessage):
+            i -= 1
+        start = i + 1
+        return start, [cast("ToolMessage", m) for m in messages[start:]]
+
+    def _clip_overflow_tail(
+        self,
+        preserved_messages: list[AnyMessage],
+        backend: BackendProtocol,
+    ) -> list[AnyMessage]:
+        """Offload the trailing ToolMessage batch when it's large enough to matter.
+
+        Engages only when `preserved_messages` ends with consecutive ToolMessages
+        whose combined token count reaches `_derive_overflow_clip_threshold_tokens()`.
+        Each large TM is written under `large_tool_results/{tool_call_id}` and
+        replaced in-place by an offload-pointer ToolMessage. Returns
+        `preserved_messages` unchanged when no clipping applies.
+        """
+        found = self._find_tail_tool_message_batch(preserved_messages)
+        if found is None:
+            return preserved_messages
+        start, tail = found
+        if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
+            return preserved_messages
+        clipped = [_offload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix) or m for m in tail]
+        return [*preserved_messages[:start], *clipped]
+
+    async def _aclip_overflow_tail(
+        self,
+        preserved_messages: list[AnyMessage],
+        backend: BackendProtocol,
+    ) -> list[AnyMessage]:
+        """Async variant of `_clip_overflow_tail`. Offloads each tail TM concurrently."""
+        found = self._find_tail_tool_message_batch(preserved_messages)
+        if found is None:
+            return preserved_messages
+        start, tail = found
+        if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
+            return preserved_messages
+        results = await asyncio.gather(
+            *(_aoffload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix) for m in tail)
+        )
+        clipped = [r or m for r, m in zip(results, tail, strict=True)]
+        return [*preserved_messages[:start], *clipped]
+
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -957,11 +1033,12 @@ A condensed summary follows:
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_triggered = False
         if not should_summarize:
             try:
                 return handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                pass
+                overflow_triggered = True
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
@@ -972,9 +1049,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._get_backend(request.state, request.runtime)
+        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        if overflow_triggered:
+            preserved_messages = self._clip_overflow_tail(preserved_messages, backend)
+
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
@@ -1061,11 +1142,12 @@ A condensed summary follows:
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_triggered = False
         if not should_summarize:
             try:
                 return await handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                pass
+                overflow_triggered = True
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
@@ -1076,9 +1158,13 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._get_backend(request.state, request.runtime)
+        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        if overflow_triggered:
+            preserved_messages = await self._aclip_overflow_tail(preserved_messages, backend)
+
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
         file_path, summary = await asyncio.gather(
             self._aoffload_to_backend(backend, messages_to_summarize),
             self._acreate_summary(messages_to_summarize),

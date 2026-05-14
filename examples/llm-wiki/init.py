@@ -130,7 +130,7 @@ def ensure_internal_repo_default(config: RunnerConfig, deps: CliDeps) -> None:
 
     payload = helpers._parse_cli_json_output(result)
     if payload is None:
-        msg = "Unable to verify repo source from `/api/v1/repos/{owner}/{repo}` output."
+        msg = "Unable to verify repo source from repos API response."
         raise helpers.WikiError(msg)
 
     source = extract_repo_source(payload)
@@ -169,14 +169,14 @@ def verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
         if api_payload is None:
             msg = (
                 "Unable to verify repo source from `hub get --format json` output. "
-                "Fallback `/api/v1/repos/{owner}/{repo}` response was not valid JSON."
+                "Fallback repos API response was not valid JSON."
             )
             raise helpers.WikiError(msg)
         source = extract_repo_source(api_payload)
         if source is None:
             msg = (
                 "Unable to verify repo source from `hub get --format json` output. "
-                "Fallback `/api/v1/repos/{owner}/{repo}` output also lacked source metadata."
+                "Fallback repos API response also lacked source metadata."
             )
             raise helpers.WikiError(msg)
 

@@ -8,9 +8,6 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "agent-client-protocol"
 version = "0.8.0"
@@ -970,7 +967,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -988,7 +985,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
-    { name = "langsmith", specifier = ">=0.8.0" },
+    { name = "langsmith", specifier = ">=0.8.3" },
     { name = "wcmatch" },
 ]
 provides-extras = ["quickjs"]
@@ -1028,7 +1025,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.57"
+version = "0.0.59"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1193,7 +1190,7 @@ requires-dist = [
     { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
-    { name = "langchain", specifier = ">=1.3.0a2,<2.0.0" },
+    { name = "langchain", specifier = ">=1.3.0,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.2" },
     { name = "langchain-anthropic", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.4.3,<2.0.0" },
@@ -1222,8 +1219,8 @@ requires-dist = [
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<2.0.0" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.2.2,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.2.0a7,<2.0.0" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0a1,<4.0.0" },
+    { name = "langgraph", specifier = ">=1.2.0,<2.0.0" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.24,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.28.1,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.3.13,<1.0.0" },
@@ -2621,7 +2618,7 @@ wheels = [
 
 [[package]]
 name = "langchain-classic"
-version = "1.0.1"
+version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
@@ -2632,9 +2629,9 @@ dependencies = [
     { name = "requests" },
     { name = "sqlalchemy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7c/4b/bd03518418ece4c13192a504449b58c28afee915dc4a6f4b02622458cb1b/langchain_classic-1.0.1.tar.gz", hash = "sha256:40a499684df36b005a1213735dc7f8dca8f5eb67978d6ec763e7a49780864fdc", size = 10516020, upload-time = "2025-12-23T22:55:22.615Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9b/78/84b5065816f348c39fefa4316f209f0135e8410216340a953bec17d9e4e4/langchain_classic-1.0.7.tar.gz", hash = "sha256:debbec8065e69b95108d2652e8d5c44f4516e19aa8d716c02ed2211c3aee099d", size = 10554118, upload-time = "2026-05-07T15:46:56.8Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/0f/eab87f017d7fe28e8c11fff614f4cdbfae32baadb77d0f79e9f922af1df2/langchain_classic-1.0.1-py3-none-any.whl", hash = "sha256:131d83a02bb80044c68fedc1ab4ae885d5b8f8c2c742d8ab9e7534ad9cda8e80", size = 1040666, upload-time = "2025-12-23T22:55:21.025Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/78/2d9980d028ff0523eea503a77c200e2ff252a3a75eb6e7842bcf5f9c979b/langchain_classic-1.0.7-py3-none-any.whl", hash = "sha256:d9d9be38f7aa534ed0259c2410432e34a1f80b1d491e686749bb55af56479be3", size = 1041386, upload-time = "2026-05-07T15:46:54.845Z" },
 ]
 
 [[package]]
@@ -2698,7 +2695,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "../partners/daytona" }
 dependencies = [
     { name = "daytona" },
@@ -2879,7 +2876,7 @@ wheels = [
 
 [[package]]
 name = "langchain-modal"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "../partners/modal" }
 dependencies = [
     { name = "deepagents" },
@@ -2987,7 +2984,7 @@ wheels = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },
@@ -3153,16 +3150,16 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint-sqlite"
-version = "3.1.0a1"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "langgraph-checkpoint" },
     { name = "sqlite-vec" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/5a/fe93459d60b15af1df028cd9c8401eac75e9458846224c9729802373bfac/langgraph_checkpoint_sqlite-3.1.0a1.tar.gz", hash = "sha256:4c788836de6ceb2516707e3d62fc63f7478a4f7a8d02e32d9a87c7b91ab00bd6", size = 147374, upload-time = "2026-05-05T19:35:13.113Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/ea/83917c2369acf8a10a894d4247655fd063c07924ba5bc4e83c85d2eaeded/langgraph_checkpoint_sqlite-3.1.0.tar.gz", hash = "sha256:f926916ebc1b985d802cc9c820026036e84db9d910d62c97b57e4ba64f67d5ae", size = 147902, upload-time = "2026-05-12T03:34:52.503Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/33/ea7e36a6d931ac597ad8a658cf58bb4f6d77aa346eeb6a6cd87b310a925a/langgraph_checkpoint_sqlite-3.1.0a1-py3-none-any.whl", hash = "sha256:e7f0ced8eaf2d04a32c29a2c70bd49fd1273dfd90602f2b0c509acd7813d46f5", size = 38609, upload-time = "2026-05-05T19:35:12.072Z" },
+    { url = "https://files.pythonhosted.org/packages/97/07/b342811a16327900af2747c752ea19676172fcddf9b592cc384031076623/langgraph_checkpoint_sqlite-3.1.0-py3-none-any.whl", hash = "sha256:cc9b40df0076feae8a9ad42ae713621b148b00ac23adc09dc1dc66090a46e5ad", size = 38587, upload-time = "2026-05-12T03:34:51.231Z" },
 ]
 
 [[package]]
@@ -4979,11 +4976,11 @@ wheels = [
 
 [[package]]
 name = "python-multipart"
-version = "0.0.26"
+version = "0.0.28"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/88/71/b145a380824a960ebd60e1014256dbb7d2253f2316ff2d73dfd8928ec2c3/python_multipart-0.0.26.tar.gz", hash = "sha256:08fadc45918cd615e26846437f50c5d6d23304da32c341f289a617127b081f17", size = 43501, upload-time = "2026-04-10T14:09:59.473Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/54/a85eb421fbdd5007bc5af39d0f4ed9fa609e0fedbfdc2adcf0b34526870e/python_multipart-0.0.28.tar.gz", hash = "sha256:8550da197eac0f7ab748961fc9509b999fa2662ea25cef857f05249f6893c0f8", size = 45314, upload-time = "2026-05-10T11:05:16.596Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/22/f1925cdda983ab66fc8ec6ec8014b959262747e58bdca26a4e3d1da29d56/python_multipart-0.0.26-py3-none-any.whl", hash = "sha256:c0b169f8c4484c13b0dcf2ef0ec3a4adb255c4b7d18d8e420477d2b1dd03f185", size = 28847, upload-time = "2026-04-10T14:09:58.131Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/a2/43bbc5860b5034e2af4ef99a0e04d726ff329c43e192ef3abaa8d7ecfce5/python_multipart-0.0.28-py3-none-any.whl", hash = "sha256:10faac07eb966c3f48dc415f9dee46c04cb10d58d30a35677db8027c825ed9b6", size = 29438, upload-time = "2026-05-10T11:05:15.052Z" },
 ]
 
 [[package]]

@@ -2,9 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <4.0"
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 constraints = [{ name = "urllib3", specifier = ">=2.6.3" }]
 
@@ -423,7 +420,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -441,7 +438,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
-    { name = "langsmith", specifier = ">=0.8.0" },
+    { name = "langsmith", specifier = ">=0.8.3" },
     { name = "wcmatch" },
 ]
 provides-extras = ["quickjs"]

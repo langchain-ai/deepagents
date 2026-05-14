@@ -46,7 +46,6 @@ dependencies = [
     "nltk>=3.9.0",
     "openevals>=0.2.0",
     "tiktoken>=0.8.0",
-    "langchain-repl",
     "langchain-quickjs",
 ]
 
@@ -103,8 +102,8 @@ required-environments = [
 override-dependencies = [
     "openai>=1.109.1,<2.0.0",
     "e2b==2.4.3",
-    # CVE-2026-24486: path traversal vulnerability in < 0.0.22
-    "python-multipart>=0.0.22",
+    # CVE-2026-42561: DoS via unbounded multipart part headers in < 0.0.27
+    "python-multipart>=0.0.27",
     # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
     "protobuf>=6.33.5",
 ]
@@ -113,7 +112,6 @@ override-dependencies = [
 deepagents-cli = { path = "../cli" }
 deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
-langchain-repl = { path = "../repl", editable = true }
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../cli"]

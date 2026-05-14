@@ -14,15 +14,12 @@ required-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
 ]
 
-[options]
-prerelease-mode = "allow"
-
 [manifest]
 overrides = [
     { name = "e2b", specifier = "==2.4.3" },
     { name = "openai", specifier = ">=1.109.1,<2.0.0" },
     { name = "protobuf", specifier = ">=6.33.5" },
-    { name = "python-multipart", specifier = ">=0.0.22" },
+    { name = "python-multipart", specifier = ">=0.0.27" },
 ]
 
 [[package]]
@@ -476,7 +473,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -494,7 +491,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.4.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
-    { name = "langsmith", specifier = ">=0.8.0" },
+    { name = "langsmith", specifier = ">=0.8.3" },
     { name = "wcmatch" },
 ]
 provides-extras = ["quickjs"]
@@ -534,7 +531,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-cli"
-version = "0.0.57"
+version = "0.0.59"
 source = { directory = "../cli" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -577,7 +574,7 @@ requires-dist = [
     { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-cli", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertexai", "xai"], marker = "extra == 'all-providers'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
-    { name = "langchain", specifier = ">=1.3.0a2,<2.0.0" },
+    { name = "langchain", specifier = ">=1.3.0,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.2" },
     { name = "langchain-anthropic", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.4.3,<2.0.0" },
@@ -606,8 +603,8 @@ requires-dist = [
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
     { name = "langchain-together", marker = "extra == 'together'", specifier = ">=0.4.0,<2.0.0" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.2.2,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.2.0a7,<2.0.0" },
-    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0a1,<4.0.0" },
+    { name = "langgraph", specifier = ">=1.2.0,<2.0.0" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.24,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.28.1,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.3.13,<1.0.0" },
@@ -673,7 +670,6 @@ dependencies = [
     { name = "langchain-openai", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-openrouter", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-quickjs", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "langchain-repl", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langchain-xai", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langsmith", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "modal", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -720,7 +716,6 @@ requires-dist = [
     { name = "langchain-openai", specifier = ">=1.2.1,<1.3.0" },
     { name = "langchain-openrouter", specifier = ">=0.2.3,<0.3.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
-    { name = "langchain-repl", editable = "../repl" },
     { name = "langchain-xai", specifier = ">=1.2.2,<1.3.0" },
     { name = "langsmith", specifier = ">=0.8.1,<0.9.0" },
     { name = "matplotlib", marker = "extra == 'charts'", specifier = ">=3.9.0" },
@@ -1661,34 +1656,6 @@ test = [
 ]
 
 [[package]]
-name = "langchain-repl"
-version = "0.0.1"
-source = { editable = "../repl" }
-dependencies = [
-    { name = "deepagents", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "deepagents", editable = "../deepagents" }]
-
-[package.metadata.requires-dev]
-test = [
-    { name = "build" },
-    { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-codspeed", specifier = ">=4.4.0,<5.0.0" },
-    { name = "pytest-cov" },
-    { name = "pytest-socket" },
-    { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
-    { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
-    { name = "pytest-xdist" },
-    { name = "ruff", specifier = ">=0.13.1,<0.16.0" },
-    { name = "twine" },
-    { name = "ty", specifier = ">=0.0.1,<1.0.0" },
-]
-
-[[package]]
 name = "langchain-xai"
 version = "1.2.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1776,16 +1743,16 @@ wheels = [
 
 [[package]]
 name = "langgraph-checkpoint-sqlite"
-version = "3.1.0a1"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "langgraph-checkpoint", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "sqlite-vec", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/5a/fe93459d60b15af1df028cd9c8401eac75e9458846224c9729802373bfac/langgraph_checkpoint_sqlite-3.1.0a1.tar.gz", hash = "sha256:4c788836de6ceb2516707e3d62fc63f7478a4f7a8d02e32d9a87c7b91ab00bd6", size = 147374, upload-time = "2026-05-05T19:35:13.113Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/ea/83917c2369acf8a10a894d4247655fd063c07924ba5bc4e83c85d2eaeded/langgraph_checkpoint_sqlite-3.1.0.tar.gz", hash = "sha256:f926916ebc1b985d802cc9c820026036e84db9d910d62c97b57e4ba64f67d5ae", size = 147902, upload-time = "2026-05-12T03:34:52.503Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/33/ea7e36a6d931ac597ad8a658cf58bb4f6d77aa346eeb6a6cd87b310a925a/langgraph_checkpoint_sqlite-3.1.0a1-py3-none-any.whl", hash = "sha256:e7f0ced8eaf2d04a32c29a2c70bd49fd1273dfd90602f2b0c509acd7813d46f5", size = 38609, upload-time = "2026-05-05T19:35:12.072Z" },
+    { url = "https://files.pythonhosted.org/packages/97/07/b342811a16327900af2747c752ea19676172fcddf9b592cc384031076623/langgraph_checkpoint_sqlite-3.1.0-py3-none-any.whl", hash = "sha256:cc9b40df0076feae8a9ad42ae713621b148b00ac23adc09dc1dc66090a46e5ad", size = 38587, upload-time = "2026-05-12T03:34:51.231Z" },
 ]
 
 [[package]]
@@ -1856,7 +1823,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.8.1"
+version = "0.8.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1869,9 +1836,9 @@ dependencies = [
     { name = "xxhash", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "zstandard", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/f1/717e01ab46dd397f4ed19bb230c045b5e80ec2c0eedb42941b2b68d07032/langsmith-0.8.1.tar.gz", hash = "sha256:63171ca4fccd6a3209539a7fef4d0e7edc6437d142f6740a6a383bee911bd17e", size = 4457870, upload-time = "2026-05-05T20:08:58.716Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/8a/1e8ea5e8bab2a65fa95bd36229ef38e8723ec46e430e20ca2d953487a7f1/langsmith-0.8.3.tar.gz", hash = "sha256:767ff7a8d136ed42926bf99059ac631dc6883542d6e3104b32e71c7625e1fa05", size = 4460330, upload-time = "2026-05-07T19:56:56.18Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/2c/279ad7b6acff0704fa66ee52e4f66669fe948df6502bd5982b53d3612c06/langsmith-0.8.1-py3-none-any.whl", hash = "sha256:8809f43d44d53ac3f21127f61fff7f8bbc23e64f164c29d2df8c475ec41be6c3", size = 397537, upload-time = "2026-05-05T20:08:56.808Z" },
+    { url = "https://files.pythonhosted.org/packages/98/a9/51e644c1f1dbc3dd7d22dfd6412eab206d538c81e024e4f287373544bdcb/langsmith-0.8.3-py3-none-any.whl", hash = "sha256:b2e40e308222fa0beb2dccee3b4b30bfee9062d7a4f20a3e3e93df3c51a08ab4", size = 399048, upload-time = "2026-05-07T19:56:53.994Z" },
 ]
 
 [package.optional-dependencies]
@@ -2745,11 +2712,11 @@ wheels = [
 
 [[package]]
 name = "python-multipart"
-version = "0.0.26"
+version = "0.0.28"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/88/71/b145a380824a960ebd60e1014256dbb7d2253f2316ff2d73dfd8928ec2c3/python_multipart-0.0.26.tar.gz", hash = "sha256:08fadc45918cd615e26846437f50c5d6d23304da32c341f289a617127b081f17", size = 43501, upload-time = "2026-04-10T14:09:59.473Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/82/54/a85eb421fbdd5007bc5af39d0f4ed9fa609e0fedbfdc2adcf0b34526870e/python_multipart-0.0.28.tar.gz", hash = "sha256:8550da197eac0f7ab748961fc9509b999fa2662ea25cef857f05249f6893c0f8", size = 45314, upload-time = "2026-05-10T11:05:16.596Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/22/f1925cdda983ab66fc8ec6ec8014b959262747e58bdca26a4e3d1da29d56/python_multipart-0.0.26-py3-none-any.whl", hash = "sha256:c0b169f8c4484c13b0dcf2ef0ec3a4adb255c4b7d18d8e420477d2b1dd03f185", size = 28847, upload-time = "2026-04-10T14:09:58.131Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/a2/43bbc5860b5034e2af4ef99a0e04d726ff329c43e192ef3abaa8d7ecfce5/python_multipart-0.0.28-py3-none-any.whl", hash = "sha256:10faac07eb966c3f48dc415f9dee46c04cb10d58d30a35677db8027c825ed9b6", size = 29438, upload-time = "2026-05-10T11:05:15.052Z" },
 ]
 
 [[package]]

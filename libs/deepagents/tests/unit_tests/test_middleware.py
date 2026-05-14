@@ -31,15 +31,17 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     update_file_data,
 )
+from deepagents.middleware._message_eviction import (
+    _build_evicted_content,
+    _create_content_preview,
+    _extract_text_from_message,
+)
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     NUM_CHARS_PER_TOKEN,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
-    _build_evicted_content,
-    _create_content_preview,
-    _extract_text_from_message,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware

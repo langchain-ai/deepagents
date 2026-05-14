@@ -1922,6 +1922,7 @@ _INDEX_HTML = """<!doctype html>
     <div class="smoke-actions">
       <button type="button" id="btn-smoke-idle">Idle</button>
       <button type="button" id="btn-smoke-coding">Coding</button>
+      <button type="button" id="btn-smoke-times-up">Times up</button>
       <button type="button" id="btn-smoke-calculating">Calculating</button>
       <button type="button" id="btn-smoke-scoreboard">Scores</button>
       <button type="button" id="btn-smoke-warning-150">2:30 flash</button>
@@ -3128,6 +3129,9 @@ document.getElementById('btn-smoke-idle').onclick = () => setOverlaySmoke('idle'
 document.getElementById('btn-smoke-coding').onclick = () => (
   setOverlaySmoke('coding', { remaining_secs: 300 })
 );
+document.getElementById('btn-smoke-times-up').onclick = () => (
+  setOverlaySmoke('coding', { remaining_secs: 0 })
+);
 document.getElementById('btn-smoke-calculating').onclick = () => (
   setOverlaySmoke('coding', { remaining_secs: 0, score_wait_overlay: true })
 );
@@ -4298,6 +4302,7 @@ const state = {
   scores: {},
   evalResults: [],
   timer: null,
+  round: {},
   scoreWaitOverlay: false,
   lastTimerWarningId: '',
   lastFetch: 0,
@@ -4610,6 +4615,29 @@ function renderScoreWaitTransition() {
   updateText(els.resultsCount, 'Calculating scores');
 }
 
+function timerHasEndedInCoding() {
+  if (state.phase !== 'coding' || state.scoreWaitOverlay) return false;
+  const round = state.round || {};
+  if (round.last_reason === 'timer') return true;
+  const timer = state.timer;
+  return Boolean(
+    timer
+    && Number(timer.duration_secs || 0) > 0
+    && currentStartDelayRemaining() <= 0
+    && currentRemaining() <= 0
+  );
+}
+
+function renderTimesUpTransition() {
+  clearTransitionRender();
+  active('results-transition');
+  els.resultsCard.classList.add('calculating');
+  updateText(els.resultsTitle, 'Times up');
+  updateText(els.resultsCount, state.round && state.round.eval_processing
+    ? 'Calculating scores'
+    : 'Scores pending');
+}
+
 function scoreSignature(entries) {
   return JSON.stringify(entries.map((entry) => [entry.name, entry.score, entry.axes]));
 }
@@ -4772,6 +4800,8 @@ function render() {
   els.status.classList.toggle('visible', !state.connected);
   if (state.scoreWaitOverlay) {
     renderScoreWaitTransition();
+  } else if (timerHasEndedInCoding()) {
+    renderTimesUpTransition();
   } else if (state.phase === 'coding') {
     clearTransitionRender();
     renderCoding();
@@ -4814,6 +4844,7 @@ function applyState(payload) {
     ? payload.eval.results
     : [];
   state.timer = payload.timer || null;
+  state.round = payload.round || {};
   state.scoreWaitOverlay = Boolean(
     payload.score_wait_overlay
     || (payload.round && payload.round.score_wait_overlay)
@@ -4842,7 +4873,7 @@ refreshState();
 connectStateEvents();
 setInterval(refreshState, 5000);
 setInterval(() => {
-  if (state.phase === 'coding' && !state.scoreWaitOverlay) renderCoding();
+  if (state.phase === 'coding' && !state.scoreWaitOverlay) render();
 }, 100);
 </script>
 </body>

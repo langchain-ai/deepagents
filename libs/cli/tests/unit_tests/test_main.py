@@ -332,6 +332,21 @@ class TestCheckOptionalTools:
 
         assert missing == []
 
+    def test_managed_rg_still_requires_validation(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Treat the managed binary as missing so `ensure_ripgrep` validates it."""
+        managed = tmp_path / "bin" / "rg"
+        monkeypatch.setattr(
+            "deepagents_cli.managed_tools.managed_rg_path",
+            lambda: managed,
+        )
+
+        with patch("deepagents_cli.main.shutil.which", return_value=str(managed)):
+            missing = check_optional_tools()
+
+        assert missing == ["ripgrep"]
+
     def test_warning_suppressed_via_config(self, tmp_path: Path) -> None:
         """Returns empty list when ripgrep warning is suppressed in config."""
         config_path = tmp_path / "config.toml"

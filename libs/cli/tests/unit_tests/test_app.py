@@ -6773,6 +6773,10 @@ class TestNotificationCenterIntegration:
                 return_value="brew install ripgrep",
             ),
             patch(
+                "deepagents_cli.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "deepagents_cli.update_check.is_update_check_enabled",
                 return_value=False,
             ),
@@ -6811,6 +6815,10 @@ class TestNotificationCenterIntegration:
                 return_value="brew install ripgrep",
             ),
             patch(
+                "deepagents_cli.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "deepagents_cli.update_check.is_update_check_enabled",
                 return_value=True,
             ),
@@ -6846,6 +6854,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_cli.main._ripgrep_install_hint",
                 return_value="brew install ripgrep",
+            ),
+            patch(
+                "deepagents_cli.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
             patch(
                 "deepagents_cli.update_check.is_update_check_enabled",
@@ -7231,6 +7243,12 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_cli.update_check.is_update_check_enabled",
                 return_value=True,
+            ),
+            # Simulate offline / download failure so the missing-dep
+            # notification path still fires.
+            patch(
+                "deepagents_cli.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
             ),
             # Force TimeoutError immediately instead of waiting 5 seconds.
             patch(

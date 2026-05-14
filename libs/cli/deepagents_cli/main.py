@@ -222,6 +222,19 @@ def _ripgrep_install_hint() -> str:
     return _RIPGREP_URL
 
 
+def _is_managed_ripgrep_path(path: str | None) -> bool:
+    """Return whether `path` points at the managed `rg` binary."""
+    if path is None:
+        return False
+
+    from deepagents_cli.managed_tools import managed_rg_path
+
+    managed = managed_rg_path()
+    return os.path.normcase(str(Path(path).resolve())) == os.path.normcase(
+        str(managed.resolve())
+    )
+
+
 def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
@@ -239,7 +252,10 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     from deepagents_cli.model_config import is_warning_suppressed
 
     missing: list[str] = []
-    if shutil.which("rg") is None and not is_warning_suppressed("ripgrep", config_path):
+    rg_path = shutil.which("rg")
+    if (
+        rg_path is None or _is_managed_ripgrep_path(rg_path)
+    ) and not is_warning_suppressed("ripgrep", config_path):
         missing.append("ripgrep")
 
     from deepagents_cli.config import settings
@@ -2060,12 +2076,56 @@ def cli_main() -> None:
             else:
                 try:
                     warn_console = _Console(stderr=True)
-                    for tool in check_optional_tools():
+                    missing_tools = check_optional_tools()
+                    if "ripgrep" in missing_tools:
+                        from deepagents_cli.managed_tools import (
+                            ChecksumMismatchError,
+                            ensure_ripgrep,
+                            prepend_managed_bin_to_path,
+                        )
+
+                        warn_console.print("Installing ripgrep...")
+                        try:
+                            installed = asyncio.run(ensure_ripgrep())
+                        except ChecksumMismatchError:
+                            logger.exception(
+                                "ripgrep auto-install aborted: SHA-256 mismatch "
+                                "on downloaded archive"
+                            )
+                            warn_console.print(
+                                "[bold red]Error:[/bold red] ripgrep auto-install "
+                                "aborted: downloaded archive failed SHA-256 "
+                                "verification. Refusing to install."
+                            )
+                            installed = None
+                        except Exception:
+                            logger.warning(
+                                "ripgrep auto-install failed unexpectedly",
+                                exc_info=True,
+                            )
+                            warn_console.print(
+                                "[yellow]Warning:[/yellow] ripgrep auto-install "
+                                "failed unexpectedly — see logs."
+                            )
+                            installed = None
+                        if installed is not None:
+                            prepend_managed_bin_to_path()
+                            missing_tools = [
+                                tool for tool in missing_tools if tool != "ripgrep"
+                            ]
+                    for tool in missing_tools:
                         warn_console.print(
                             f"[yellow]Warning:[/yellow] {format_tool_warning_cli(tool)}"
                         )
                 except Exception:
-                    logger.debug("Failed to check for optional tools", exc_info=True)
+                    # The inner block already handles known failure modes
+                    # (ChecksumMismatchError / ensure_ripgrep exceptions /
+                    # OSError from check_optional_tools). Anything reaching
+                    # here is an unexpected programming error worth surfacing
+                    # at WARNING so it shows in logs, not silently at DEBUG.
+                    logger.warning(
+                        "Optional-tools check failed unexpectedly", exc_info=True
+                    )
             # Validate sandbox provider deps before spawning server subprocess
             if args.sandbox and args.sandbox not in {"none", "langsmith"}:
                 from deepagents_cli.integrations.sandbox_factory import (

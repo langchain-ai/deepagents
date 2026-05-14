@@ -49,6 +49,10 @@ The fastest way to start using Deep Agents. `deepagents-cli` is a pre-built codi
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## ⚙️ Environment
+
+- `DEEPAGENTS_CLI_OFFLINE=1` — skip network downloads of managed tools. On first run the CLI fetches a pinned `ripgrep` release into `~/.deepagents/bin/` so the agent's grep tool is fast out of the box; setting this disables that fetch and falls back to a slower Python regex search.
+
 ## 📖 Resources
 
 - **[CLI Documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview)**

@@ -57,6 +57,19 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
         assert parsed_args.shell_allow_list is None
 
 
+def test_parse_args_does_not_prepend_managed_bin(
+    monkeypatch: pytest.MonkeyPatch, mock_argv: MockArgvType
+) -> None:
+    """PATH is only changed after the managed ripgrep binary is validated."""
+    path = f"/usr/bin{os.pathsep}/bin"
+    monkeypatch.setenv("PATH", path)
+
+    with mock_argv():
+        parse_args()
+
+    assert os.environ["PATH"] == path
+
+
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv(

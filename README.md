@@ -120,6 +120,7 @@ See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli
 ## Additional resources
 
 - **[Examples](examples/)** — Working agents and patterns
+- **[Open SWE](https://github.com/langchain-ai/open-swe)** — Open-source asynchronous coding agent built on Deep Agents and LangGraph
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
 

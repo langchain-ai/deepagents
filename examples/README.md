@@ -29,6 +29,7 @@
 | [llm-wiki](llm-wiki/) | Script-first LLM wiki using `create_deep_agent` + `langsmith hub init/pull/push` for Context Hub sync |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
 | [better-harness](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness using the `better-harness` research artifact |
+| [open-swe](https://github.com/langchain-ai/open-swe) | Open-source asynchronous coding agent built on Deep Agents and LangGraph (lives in its own repo) |
 
 Each example has its own `README` with setup instructions.
 

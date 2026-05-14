@@ -19,7 +19,6 @@
 Read more:
 
 - [Open SWE: An Open-Source Framework for Internal Coding Agents](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/) — the current architecture and how it composes on Deep Agents
-- [Introducing Open SWE: An Open-Source Asynchronous Coding Agent](https://blog.langchain.com/introducing-open-swe-an-open-source-asynchronous-coding-agent/) — original launch post
 
 ### More examples
 

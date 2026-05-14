@@ -14,7 +14,7 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.channels.delta import DeltaChannel
@@ -3578,3 +3578,48 @@ class TestDeltaChannels:
         state = agent.get_state(config)
         files = state.values.get("files", {})
         assert any("hello.txt" in k for k in files)
+
+
+def test_invalid_tool_call_patched_on_next_turn() -> None:
+    # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
+    # will be produced because agents only route on ``tool_calls``).
+    # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_truncated",
+                            "name": "search",
+                            "args": '{"query": "weath',
+                            "error": "Unterminated string at line 1 column 17",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+    config: dict = {"configurable": {"thread_id": "patch-invalid-tool-calls"}}
+
+    agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
+    result = agent.invoke({"messages": [HumanMessage(content="Try again")]}, config)
+
+    # The second model call must see the dangling invalid_tool_call paired with a ToolMessage.
+    second_call_inputs = fake_model.call_history[1]["messages"]
+    synthetic = next(
+        (m for m in second_call_inputs if isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated"),
+        None,
+    )
+    assert synthetic is not None, "PatchToolCallsMiddleware did not inject a ToolMessage for invalid_tool_calls"
+    assert "could not be executed" in synthetic.content
+    assert "malformed or truncated" in synthetic.content
+    assert synthetic.name == "search"
+
+    # Final state must also expose the patched ToolMessage.
+    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])

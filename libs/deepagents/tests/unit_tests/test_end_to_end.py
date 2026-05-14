@@ -3626,141 +3626,175 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
 
 
-class _OverflowOnceModel(FakeChatModelWithHistory):
-    """Fake model that raises `ContextOverflowError` on its first `_generate` call.
+_OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000
 
-    Subsequent calls consume from the `messages` iterator as normal. Used to
-    exercise the summarization-fallback path triggered by provider over-budget
-    rejections.
+
+class _OverflowOnLargeInputModel(FakeChatModelWithHistory):
+    """Raises `ContextOverflowError` on any call whose input exceeds the char threshold.
+
+    Calls below the threshold pass through to the iterator (initial agent call,
+    summary-generation calls, post-clip retry). Raising on every over-threshold
+    call -- including the retry -- gives tests a built-in correctness check:
+    if clipping fails to reduce input below the threshold, the retry raises
+    and the test fails visibly.
     """
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs: Any):  # type: ignore[override]
-        is_first = not self.call_history
-        if is_first:
-            # Record the failed call so tests can inspect what we tried to send,
-            # then mimic a provider rejecting the request as too large.
-            self.call_history.append({"messages": messages, "kwargs": {"stop": stop, "run_manager": run_manager, **kwargs}, "tools": self.tools})
+        total_chars = sum(len(m.content) for m in messages if isinstance(m.content, str))
+        if total_chars > _OVERFLOW_INPUT_CHAR_THRESHOLD:
+            self.call_history.append(
+                {"messages": messages, "kwargs": {"stop": stop, "run_manager": run_manager, **kwargs}, "tools": self.tools, "raised": True}
+            )
             msg = "simulated overflow"
             raise ContextOverflowError(msg)
         return super()._generate(messages, stop, run_manager, **kwargs)
 
 
-def _make_read_file_tail_conversation(per_tm_chars: int, n_tools: int = 4) -> list[Any]:
-    """Build [Human, AI(n_tools read_file calls), n_tools x ToolMessage(per_tm_chars)]."""
+def _make_parallel_tool_tail(
+    tool_name: str,
+    per_tm_chars: int,
+    n_tools: int = 4,
+    args_builder: Callable[[int], dict[str, Any]] | None = None,
+) -> list[Any]:
+    """Build [Human, AI(n_tools `tool_name` calls), n_tools x ToolMessage(per_tm_chars)].
+
+    Args:
+        tool_name: The tool name to use in each emitted tool_call.
+        per_tm_chars: Char length of each ToolMessage's content (all 'x').
+        n_tools: Number of parallel tool calls in the AI message.
+        args_builder: Optional `i -> args dict` mapper. Defaults to an empty args dict.
+    """
     tool_call_ids = [f"tc_{i}" for i in range(n_tools)]
+    args_fn = args_builder if args_builder is not None else (lambda _i: {})
     ai_msg = AIMessage(
         content="",
-        tool_calls=[{"id": tcid, "name": "read_file", "args": {"path": f"/f_{i}"}, "type": "tool_call"} for i, tcid in enumerate(tool_call_ids)],
+        tool_calls=[{"id": tcid, "name": tool_name, "args": args_fn(i), "type": "tool_call"} for i, tcid in enumerate(tool_call_ids)],
     )
-    tool_msgs = [ToolMessage(content="x" * per_tm_chars, tool_call_id=tcid, name="read_file") for tcid in tool_call_ids]
+    tool_msgs = [ToolMessage(content="x" * per_tm_chars, tool_call_id=tcid, name=tool_name) for tcid in tool_call_ids]
     return [HumanMessage(content="query"), ai_msg, *tool_msgs]
 
 
-def test_summarization_clips_tail_tool_messages_on_overflow() -> None:
-    """On `ContextOverflowError` with a large trailing TM batch, each TM is offloaded.
+def test_summarization_clips_read_file_batch_on_overflow() -> None:
+    """End-to-end: 4 parallel real `read_file` calls hit pre-populated big files in state, then the clip path slices each.
 
-    Reproduces the failure mode where the model rejects an oversized request
-    after a `read_file`-heavy turn. The fallback summarization path should:
+    Pre-populates `state["files"]` with 4 large files, has the fake model emit
+    4 parallel `read_file` tool_calls, lets the real `read_file` tool execute
+    against `StateBackend`, then triggers the overflow path and verifies:
 
-    1. Detect the trailing ToolMessage batch in `preserved_messages`
-    2. Recognize its total chars exceed the keep-derived threshold
-    3. Offload each TM's content to `/large_tool_results/{tool_call_id}`
-    4. Replace each preserved TM with a clipped pointer message so the retry
-       call sees a tiny preview, not the original 100k chars.
+    - Each TM in state ends up as the read_file-specific slice (head + path
+      pointer to the original file).
+    - No `/large_tool_results/` files are written -- read_file's full content
+      already lives on the backend at the agent-passed path.
+    - The original files in state are untouched.
     """
-    fake_model = _OverflowOnceModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
-    fake_model.call_history = []  # don't share class-level list across instances
+    big_content = "\n".join(f"line {i}: " + "x" * 200 for i in range(120))  # ~25k chars, multi-line
+    initial_files = {f"/big_{i}.txt": {**create_file_data(big_content)} for i in range(4)}
+
+    fake_model = _OverflowOnLargeInputModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"id": f"tc_{i}", "name": "read_file", "args": {"file_path": f"/big_{i}.txt"}, "type": "tool_call"} for i in range(4)
+                    ],
+                ),
+                AIMessage(content="summary text"),
+                AIMessage(content="final response"),
+            ]
+        )
+    )
+    fake_model.call_history = []
+    fake_model.profile = {"max_input_tokens": 200_000}
+
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "real-read-file-clip-test"}}
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="read the files")], "files": initial_files},
+        config,
+    )
+
+    assert result["messages"][-1].content == "final response"
+
+    # Each ToolMessage in state should be the read_file-specific slice replacement.
+    state_tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(state_tool_msgs) == 4
+    for i, tm in enumerate(state_tool_msgs):
+        assert "Tool result too large" not in tm.content
+        assert f"/big_{i}.txt" in tm.content
+        assert "Output was truncated due to context window size limits" in tm.content
+        assert "Use read_file with offset and limit" in tm.content
+        # Sliced content is smaller than the original file.
+        assert len(tm.content) < len(big_content)
+
+    # No per-TM offload files were written -- read_file's full content is at the original path.
+    state = agent.get_state(config)
+    files = state.values.get("files", {})
+    assert not any(k.startswith("/large_tool_results/") for k in files)
+    # Original files are still intact.
+    for i in range(4):
+        assert f"/big_{i}.txt" in files
+
+
+def test_summarization_clips_ls_batch_on_overflow() -> None:
+    """On overflow with 4 parallel `ls` results, each TM is evicted via the generic offload.
+
+    `ls` isn't read_file, so the tail-clip path falls through to
+    `_offload_tool_message_content`: full content written under
+    `/large_tool_results/{tcid}` and the message replaced with a
+    `TOO_LARGE_TOOL_MSG` stub.
+    """
+    fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
+    fake_model.call_history = []
     fake_model.profile = {"max_input_tokens": 200_000}
 
     agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
 
-    # 4 x 25_000 chars = 100_000 chars in the tail; threshold = keep_tokens (20_000) * 4 = 80_000.
-    input_messages = _make_read_file_tail_conversation(per_tm_chars=25_000, n_tools=4)
-    config = {"configurable": {"thread_id": "clip-overflow-test"}}
+    input_messages = _make_parallel_tool_tail(
+        tool_name="ls",
+        per_tm_chars=25_000,
+        n_tools=4,
+        args_builder=lambda i: {"path": f"/dir_{i}"},
+    )
+    config = {"configurable": {"thread_id": "clip-ls-test"}}
     result = agent.invoke({"messages": input_messages}, config)
 
-    # 3 model calls: failed-overflow → summary → retry
     assert len(fake_model.call_history) == 3
-    assert result["messages"][-1].content == "final response"
-
-    # The retry must have seen clipped TMs (not the 25_000-char originals).
-    retry_messages = fake_model.call_history[2]["messages"]
-    retry_tool_msgs = [m for m in retry_messages if isinstance(m, ToolMessage)]
-    assert len(retry_tool_msgs) == 4
-    for tm in retry_tool_msgs:
-        assert "Tool result too large" in tm.content
-        assert "/large_tool_results/" in tm.content
-        assert len(tm.content) < 5_000  # nowhere near 25_000
-
-    # State["messages"] should have the originals atomically replaced (via
-    # `Overwrite`) by the clipped TMs -- not the 25_000-char originals.
     state_tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
     assert len(state_tool_msgs) == 4
     for tm in state_tool_msgs:
         assert "Tool result too large" in tm.content
+        assert "/large_tool_results/" in tm.content
 
-    # Per-TM files persisted to state under /large_tool_results/.
     state = agent.get_state(config)
     files = state.values.get("files", {})
     for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
 
 
-def test_summarization_skips_clip_when_tail_is_small() -> None:
-    """A small trailing TM batch below the threshold is left intact on overflow.
+def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
+    """On overflow with 4 parallel calls to an arbitrary user tool, each TM is evicted.
 
-    The conversation has a large prefix so the summarization fallback's cutoff
-    is non-zero (otherwise the middleware short-circuits before clipping is
-    considered), but the trailing TM batch is well under the keep-derived
-    char threshold and must not be offloaded.
+    Same expected behavior as the `ls` test -- any non-read_file tool name routes
+    through the generic offload path.
     """
-    fake_model = _OverflowOnceModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
+    fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
     fake_model.call_history = []
     fake_model.profile = {"max_input_tokens": 200_000}
 
     agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
 
-    # Large HumanMessage forces cutoff > 0; tail TMs total 400 chars (< 80_000 threshold).
-    big_prefix = HumanMessage(content="x" * (NUM_CHARS_PER_TOKEN * 25_000))
-    tail = _make_read_file_tail_conversation(per_tm_chars=100, n_tools=4)
-    input_messages = [big_prefix, *tail]
-    config = {"configurable": {"thread_id": "clip-small-tail-test"}}
-    agent.invoke({"messages": input_messages}, config)
+    input_messages = _make_parallel_tool_tail(
+        tool_name="vendor_lookup",
+        per_tm_chars=25_000,
+        n_tools=4,
+        args_builder=lambda i: {"vendor_id": f"v_{i}"},
+    )
+    config = {"configurable": {"thread_id": "clip-vanilla-test"}}
+    _ = agent.invoke({"messages": input_messages}, config)
 
-    # 3 calls: failed overflow → summary → retry.
-    assert len(fake_model.call_history) == 3
-    retry_messages = fake_model.call_history[2]["messages"]
-    retry_tool_msgs = [m for m in retry_messages if isinstance(m, ToolMessage)]
-    assert len(retry_tool_msgs) == 4
-    for tm in retry_tool_msgs:
-        assert "Tool result too large" not in tm.content
-        assert len(tm.content) == 100
-
-    # No per-TM offload files written.
     state = agent.get_state(config)
     files = state.values.get("files", {})
-    assert not any(k.startswith("/large_tool_results/") for k in files)
-
-
-def test_summarization_skips_clip_on_normal_trigger_path() -> None:
-    """Normal trigger-based summarization (no overflow) must not clip tail TMs."""
-    fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
-    fake_model.call_history = []
-    fake_model.profile = {"max_input_tokens": 200_000}
-
-    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
-
-    # Big enough conversation to trip the trigger threshold (170_000 tokens ≈ 680_000 chars approx).
-    # Use one large HumanMessage and a tail batch of TMs that on their own exceed the clip threshold,
-    # to confirm clipping does NOT engage when the trigger fires naturally.
-    big_chars = NUM_CHARS_PER_TOKEN * 180_000  # 720_000 chars ≈ 180k tokens, above 170k trigger
-    pre = [HumanMessage(content="x" * big_chars), AIMessage(content="ack")]
-    tail = _make_read_file_tail_conversation(per_tm_chars=25_000, n_tools=4)
-    input_messages = [*pre, *tail]
-    config = {"configurable": {"thread_id": "normal-trigger-test"}}
-    agent.invoke({"messages": input_messages}, config)
-
-    # No per-TM offload files written even though the tail itself would qualify.
-    state = agent.get_state(config)
-    files = state.values.get("files", {})
-    assert not any(k.startswith("/large_tool_results/") for k in files)
+    for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
+        assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"

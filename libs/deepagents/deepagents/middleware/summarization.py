@@ -789,6 +789,71 @@ A condensed summary follows:
         start = i + 1
         return start, [cast("ToolMessage", m) for m in messages[start:]]
 
+    @staticmethod
+    def _build_tool_call_index(messages: list[AnyMessage]) -> dict[str, dict[str, Any]]:
+        """Map `tool_call_id` -> tool_call dict for all AIMessage tool_calls in `messages`."""
+        index: dict[str, dict[str, Any]] = {}
+        for m in messages:
+            if isinstance(m, AIMessage):
+                for tc in m.tool_calls or []:
+                    tcid = tc.get("id")
+                    if tcid:
+                        index[tcid] = cast("dict[str, Any]", tc)
+        return index
+
+    @staticmethod
+    def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
+        """Slice a `read_file` ToolMessage's content to ~4k head chars and append a path-pointer notice.
+
+        `read_file` results don't need a fresh `/large_tool_results/{tcid}` write -- the
+        full file is already on the backend at `original_path`, and the agent can
+        recover with `read_file(file_path=original_path, offset=N, limit=K)`. The
+        truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
+        agent encounters a consistent format whether the tool truncated itself
+        or the middleware did.
+        """
+        content = _extract_text_from_message(msg)
+        notice = (
+            f"\n\n[Output was truncated due to context window size limits. "
+            f"The full content is at {original_path}. "
+            f"Use read_file with offset and limit parameters to retrieve specific portions. "
+            f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
+        )
+        return msg.model_copy(update={"content": content[:4_000] + notice})
+
+    @staticmethod
+    def _read_file_original_path(msg: ToolMessage, tc_index: dict[str, dict[str, Any]]) -> str | None:
+        """Return the `file_path` arg from the matching read_file tool_call, or `None`."""
+        tc = tc_index.get(msg.tool_call_id) if msg.tool_call_id else None
+        if not tc or tc.get("name") != "read_file":
+            return None
+        path = tc.get("args", {}).get("file_path")
+        return path if isinstance(path, str) and path else None
+
+    def _clip_one_tail_message(
+        self,
+        msg: ToolMessage,
+        tc_index: dict[str, dict[str, Any]],
+        backend: BackendProtocol,
+    ) -> ToolMessage | None:
+        """Apply the appropriate per-TM clip: read_file slice vs generic eviction."""
+        original_path = self._read_file_original_path(msg, tc_index)
+        if original_path is not None:
+            return self._slice_read_file_tm(msg, original_path)
+        return _offload_tool_message_content(msg, _extract_text_from_message(msg), backend, self._large_tool_results_prefix)
+
+    async def _aclip_one_tail_message(
+        self,
+        msg: ToolMessage,
+        tc_index: dict[str, dict[str, Any]],
+        backend: BackendProtocol,
+    ) -> ToolMessage | None:
+        """Async variant of `_clip_one_tail_message`."""
+        original_path = self._read_file_original_path(msg, tc_index)
+        if original_path is not None:
+            return self._slice_read_file_tm(msg, original_path)
+        return await _aoffload_tool_message_content(msg, _extract_text_from_message(msg), backend, self._large_tool_results_prefix)
+
     def _clip_overflow_tail(
         self,
         preserved_messages: list[AnyMessage],
@@ -813,10 +878,11 @@ A condensed summary follows:
         start, tail = found
         if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
             return preserved_messages, []
+        tc_index = self._build_tool_call_index(preserved_messages)
         new_tail: list[AnyMessage] = []
         any_clipped = False
         for m in tail:
-            r = _offload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix)
+            r = self._clip_one_tail_message(m, tc_index, backend)
             if r is not None:
                 if r.id is None:
                     r = r.model_copy(update={"id": str(uuid.uuid4())})
@@ -840,9 +906,8 @@ A condensed summary follows:
         start, tail = found
         if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
             return preserved_messages, []
-        results = await asyncio.gather(
-            *(_aoffload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix) for m in tail)
-        )
+        tc_index = self._build_tool_call_index(preserved_messages)
+        results = await asyncio.gather(*(self._aclip_one_tail_message(m, tc_index, backend) for m in tail))
         new_tail: list[AnyMessage] = []
         any_clipped = False
         for r, m in zip(results, tail, strict=True):

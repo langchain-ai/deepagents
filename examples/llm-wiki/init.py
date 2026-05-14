@@ -76,6 +76,22 @@ def _repo_api_path(owner: str | None, repo: str) -> str:
     return f"/api/v1/repos/{quote(owner_segment, safe='')}/{quote(repo, safe='')}"
 
 
+def _owner_repo_from_hub_identifier(hub_identifier: str) -> tuple[str | None, str]:
+    """Parse a hub identifier into owner/repo components."""
+    if hub_identifier.startswith("-/"):
+        repo = hub_identifier[2:]
+        if not repo:
+            msg = f"Invalid hub identifier {hub_identifier!r}; missing repo handle."
+            raise helpers.WikiError(msg)
+        return None, repo
+
+    owner, sep, repo = hub_identifier.partition("/")
+    if sep == "" or not owner or not repo:
+        msg = f"Invalid hub identifier {hub_identifier!r}; expected OWNER/REPO or -/REPO."
+        raise helpers.WikiError(msg)
+    return owner, repo
+
+
 def ensure_internal_repo_default(config: RunnerConfig, deps: CliDeps) -> None:
     """Ensure the hub repo exists with `source=internal` before first push."""
     repo_path = _repo_api_path(config.owner, config.repo)
@@ -145,11 +161,24 @@ def verify_internal_repo_source(hub_identifier: str, deps: CliDeps) -> None:
 
     source = extract_repo_source(payload)
     if source is None:
-        msg = (
-            "Unable to verify repo source from `hub get --format json` output. "
-            "Expected source metadata with value `internal`."
+        owner, repo = _owner_repo_from_hub_identifier(hub_identifier)
+        api_result = deps.run_langsmith_cli(
+            ["api", _repo_api_path(owner, repo), "--format", "json"]
         )
-        raise helpers.WikiError(msg)
+        api_payload = helpers._parse_cli_json_output(api_result)
+        if api_payload is None:
+            msg = (
+                "Unable to verify repo source from `hub get --format json` output. "
+                "Fallback `/api/v1/repos/{owner}/{repo}` response was not valid JSON."
+            )
+            raise helpers.WikiError(msg)
+        source = extract_repo_source(api_payload)
+        if source is None:
+            msg = (
+                "Unable to verify repo source from `hub get --format json` output. "
+                "Fallback `/api/v1/repos/{owner}/{repo}` output also lacked source metadata."
+            )
+            raise helpers.WikiError(msg)
 
     if source.lower() != "internal":
         msg = (

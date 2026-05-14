@@ -303,10 +303,19 @@ def test_verify_internal_repo_source_fails_when_not_internal() -> None:
 
 
 def test_verify_internal_repo_source_fails_on_missing_source_field() -> None:
-    """Reject init flows when hub metadata omits source information."""
+    """Reject init flows when both hub and API metadata omit source information."""
+    calls: list[list[str]] = []
 
     def fake_run_langsmith_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
-        assert args[:2] == ["hub", "get"]
+        calls.append(args)
+        if args[:2] == ["hub", "get"]:
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout='{"full_name": "langchain-ai/ada"}',
+                stderr="",
+            )
+        assert args[:2] == ["api", "/api/v1/repos/-/ada"]
         return subprocess.CompletedProcess(
             args=args,
             returncode=0,
@@ -316,8 +325,11 @@ def test_verify_internal_repo_source_fails_on_missing_source_field() -> None:
 
     deps = _make_deps(fake_run_langsmith_cli)
 
-    with pytest.raises(helpers.WikiError, match="Expected source metadata"):
+    with pytest.raises(helpers.WikiError, match="also lacked source metadata"):
         helpers._verify_internal_repo_source("-/ada", deps)
+
+    assert calls[0][:2] == ["hub", "get"]
+    assert calls[1][:2] == ["api", "/api/v1/repos/-/ada"]
 
 
 def test_run_init_ensures_internal_source_via_api(tmp_path: Path) -> None:

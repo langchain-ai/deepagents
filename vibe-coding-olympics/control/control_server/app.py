@@ -611,6 +611,7 @@ def _overlay_smoke_api_state() -> dict[str, Any] | None:
         "remaining_secs": remaining_secs,
         "started_at": smoke["timer_started_at"] if phase == "coding" else None,
         "warning": _timer_warning_payload(warning),
+        "start_delay_remaining_secs": 0.0,
     }
     return {
         "phase": phase,
@@ -784,6 +785,7 @@ async def _api_state() -> dict[str, Any]:
             "remaining_secs": snapshot.remaining_secs,
             "started_at": snapshot.started_at,
             "warning": _timer_warning_payload(snapshot.warning),
+            "start_delay_remaining_secs": snapshot.start_delay_remaining_secs,
         },
         "score_wait_overlay": bool(_round_context.get("score_wait_overlay")),
         "round": {
@@ -1793,7 +1795,7 @@ _INDEX_HTML = """<!doctype html>
       <span class="judge-spinner" aria-hidden="true"></span>
       <span>LLM judge is processing scores…</span>
     </div>
-    <button class="secondary" id="btn-clear">Prepare next round</button>
+    <button class="secondary" id="btn-clear">Prepare next round (reset)</button>
     <span class="inline-error" id="end-error" role="alert"></span>
   </section>
 </div>
@@ -3544,6 +3546,62 @@ _OVERLAY_HTML = """<!doctype html>
   .timer-chip.timer-warning {
     animation: timer-warning-flash 900ms ease-in-out 3;
   }
+  .launch-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 8vh 10vw;
+    background:
+      linear-gradient(90deg, rgba(216, 239, 255, 0.96), rgba(245, 216, 255, 0.96));
+    border: var(--line) solid var(--ink);
+    z-index: 12;
+  }
+  .launch-overlay.visible {
+    display: flex;
+  }
+  .launch-card {
+    width: min(76vw, 138vh);
+    min-height: 54vh;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    align-items: center;
+    gap: 3.2vh;
+    padding: 5vh 5vw;
+    background: var(--paper);
+    border: calc(var(--line) * 1.5) solid var(--ink);
+    text-align: center;
+  }
+  .launch-label {
+    font-size: min(2.25vw, 4vh);
+    font-weight: 700;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+  .launch-count {
+    font-family: "IBM Plex Mono", "Aeonik Mono", ui-monospace, monospace;
+    font-size: min(16vw, 28vh);
+    font-weight: 700;
+    line-height: 0.78;
+  }
+  .launch-prompt {
+    display: grid;
+    gap: 1.2vh;
+    min-width: 0;
+  }
+  .launch-prompt-label {
+    font-size: min(1.45vw, 2.58vh);
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .launch-prompt-text {
+    max-height: 3.9em;
+    overflow: hidden;
+    font-size: min(2.45vw, 4.36vh);
+    font-weight: 700;
+    line-height: 1.3;
+  }
   @keyframes timer-warning-flash {
     0%,
     100% {
@@ -4198,6 +4256,17 @@ _OVERLAY_HTML = """<!doctype html>
         <div class="pane-label right" id="focus-code-label">Deep Agents Code</div>
       </div>
     </div>
+
+    <div class="launch-overlay" id="launch-overlay">
+      <div class="launch-card">
+        <div class="launch-label">Round starts in</div>
+        <div class="launch-count" id="launch-count">5</div>
+        <div class="launch-prompt">
+          <div class="launch-prompt-label">Prompt</div>
+          <div class="launch-prompt-text" id="launch-prompt">Waiting for prompt</div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="view" id="scoreboard-view">
@@ -4272,6 +4341,9 @@ const els = {
   focusClock: document.getElementById('focus-clock'),
   focusPrompt: document.getElementById('focus-prompt'),
   focusPreviewLabel: document.getElementById('focus-preview-label'),
+  launchOverlay: document.getElementById('launch-overlay'),
+  launchCount: document.getElementById('launch-count'),
+  launchPrompt: document.getElementById('launch-prompt'),
   scoreWrap: document.getElementById('score-wrap'),
   status: document.getElementById('status'),
 };
@@ -4336,7 +4408,30 @@ function currentRemaining() {
   const timer = state.timer;
   if (!timer || !timer.running) return timer ? timer.remaining_secs : NaN;
   const elapsed = (Date.now() - state.lastFetch) / 1000;
-  return Math.max(0, Number(timer.remaining_secs || 0) - elapsed);
+  const delayRemainingAtFetch = Math.max(
+    0,
+    Number(timer.start_delay_remaining_secs || 0),
+  );
+  const consumed = Math.max(0, elapsed - delayRemainingAtFetch);
+  return Math.max(0, Number(timer.remaining_secs || 0) - consumed);
+}
+
+function currentStartDelayRemaining() {
+  const timer = state.timer;
+  if (!timer || !timer.running) return 0;
+  const delay = Number(timer.start_delay_remaining_secs || 0);
+  if (!Number.isFinite(delay) || delay <= 0) return 0;
+  const elapsed = (Date.now() - state.lastFetch) / 1000;
+  return Math.max(0, delay - elapsed);
+}
+
+function renderLaunchOverlay(prompt) {
+  const remaining = currentStartDelayRemaining();
+  const visible = state.phase === 'coding' && remaining > 0;
+  els.launchOverlay.classList.toggle('visible', visible);
+  if (!visible) return;
+  updateText(els.launchCount, String(Math.max(1, Math.ceil(remaining))));
+  updateText(els.launchPrompt, prompt);
 }
 
 let timerWarningClearHandle = null;
@@ -4430,6 +4525,7 @@ function renderCoding() {
   updateText(els.focusPrompt, prompt);
   updateText(els.focusClock, clock);
   updateText(els.focusPreviewLabel, 'Live Preview');
+  renderLaunchOverlay(prompt);
   syncTimerWarning();
 }
 

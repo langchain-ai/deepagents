@@ -298,16 +298,30 @@ class LaunchCountdownScreen(ModalScreen[None]):
         text-align: center;
         margin-top: 1;
     }
+
+    LaunchCountdownScreen .launch-countdown-prompt-label {
+        color: $text-muted;
+        text-align: center;
+        margin-top: 1;
+    }
+
+    LaunchCountdownScreen .launch-countdown-prompt {
+        color: $text;
+        text-style: bold;
+        text-align: center;
+    }
     """
 
-    def __init__(self, seconds: int) -> None:
+    def __init__(self, seconds: int, *, prompt: str = "") -> None:
         """Create the countdown screen.
 
         Args:
             seconds: Initial countdown value.
+            prompt: Controller-provided prompt to show before the round starts.
         """
         super().__init__()
         self._seconds = seconds
+        self._prompt = prompt.strip()
 
     def compose(self) -> ComposeResult:
         """Compose the countdown screen.
@@ -325,9 +339,18 @@ class LaunchCountdownScreen(ModalScreen[None]):
                 id="launch-countdown-value",
             )
             yield Static(
-                "The prompt and timer will appear at the top of your screen.",
+                "The timer will appear at the top of your screen.",
                 classes="launch-countdown-copy",
             )
+            if self._prompt:
+                yield Static(
+                    "Prompt",
+                    classes="launch-countdown-prompt-label",
+                )
+                yield Static(
+                    self._prompt,
+                    classes="launch-countdown-prompt",
+                )
 
     def on_mount(self) -> None:
         """Apply ASCII border styling when requested."""

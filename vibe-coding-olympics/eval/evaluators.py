@@ -33,12 +33,13 @@ _ROLE_PREAMBLE = (
 
 _SCORE_INSTRUCTION = (
     "Return a JSON object with one numeric score for each axis. "
-    "Each score must be from 0.0 (absent or broken) to 1.0 "
-    "(exceptional for a 5-minute build). Be generous for live-show scoring: "
-    "a coherent but basic working page should usually land around 0.55 to "
-    "0.75, a strong 5-minute page around 0.75 to 0.95, and reserve scores "
-    "below 0.25 for absent, broken, or irrelevant work. Use decimal values; "
-    "do not round small positive scores down to 0.0."
+    "Each score must be on the visible scoreboard scale from 0.0 to 10.0. "
+    "Be generous for live-show scoring, not design-award judging: a complete, "
+    "coherent working page should usually land around 7.0 to 8.0, a strong "
+    "5-minute page around 8.0 to 9.7, and reserve scores below 4.0 for absent, "
+    "broken, or irrelevant work. Penalize weak work, but do not turn minor "
+    "imperfections into failing scores. Use decimal values when useful; do not "
+    "round small positive scores down to 0.0."
 )
 
 _RUBRIC = """Evaluate these axes independently:
@@ -98,7 +99,7 @@ _OUTPUT_PROPERTIES: dict[str, Any] = {
     **{
         axis: {
             "type": "number",
-            "description": f"Continuous score for `{axis}` from 0.0 to 1.0.",
+            "description": f"Visible scoreboard score for `{axis}` from 0.0 to 10.0.",
         }
         for axis in LLM_AXES
     },
@@ -169,7 +170,7 @@ def _make_message(
 
 
 def _coerce_score(value: object) -> float | None:
-    """Convert one model-produced score to the expected unit interval."""
+    """Convert one model-produced score to the internal unit interval."""
     try:
         score = float(value)
     except (TypeError, ValueError):

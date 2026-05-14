@@ -35,7 +35,7 @@ class TestRoundTimer(unittest.TestCase):
         self.assertEqual(asyncio.run(scenario()), 1)
 
     def test_start_delay_does_not_consume_visible_round_time(self) -> None:
-        async def scenario() -> tuple[float, int]:
+        async def scenario() -> tuple[float, float, float, int]:
             calls = 0
 
             async def on_expire() -> None:
@@ -44,15 +44,25 @@ class TestRoundTimer(unittest.TestCase):
 
             timer = RoundTimer()
             await timer.start(0.05, on_expire, start_delay_secs=0.1)
-            remaining = timer.snapshot().remaining_secs
+            snap = timer.snapshot()
             await asyncio.sleep(0.07)
+            delayed_snap = timer.snapshot()
             delayed_calls = calls
             await asyncio.sleep(0.15)
-            return remaining, delayed_calls
+            return (
+                snap.remaining_secs,
+                snap.start_delay_remaining_secs,
+                delayed_snap.start_delay_remaining_secs,
+                delayed_calls,
+            )
 
-        remaining, delayed_calls = asyncio.run(scenario())
+        remaining, delay_remaining, delayed_delay_remaining, delayed_calls = (
+            asyncio.run(scenario())
+        )
         self.assertLessEqual(remaining, 0.05)
         self.assertGreater(remaining, 0.0)
+        self.assertGreater(delay_remaining, 0.0)
+        self.assertLess(delayed_delay_remaining, delay_remaining)
         self.assertEqual(delayed_calls, 0)
 
     def test_cancel_prevents_callback(self) -> None:
@@ -222,6 +232,7 @@ class TestTimerSnapshot(unittest.TestCase):
         self.assertEqual(snap.duration_secs, 60.0)
         self.assertEqual(snap.remaining_secs, 0.0)
         self.assertIsNone(snap.started_at)
+        self.assertEqual(snap.start_delay_remaining_secs, 0.0)
 
     def test_active_factory_marks_snapshot_running(self) -> None:
         snap = TimerSnapshot.active(
@@ -230,6 +241,7 @@ class TestTimerSnapshot(unittest.TestCase):
         self.assertTrue(snap.running)
         self.assertEqual(snap.remaining_secs, 42.0)
         self.assertEqual(snap.started_at, 100.0)
+        self.assertEqual(snap.start_delay_remaining_secs, 0.0)
         self.assertEqual(snap.warning.threshold_secs, 60)
 
     def test_rejects_running_without_started_at(self) -> None:

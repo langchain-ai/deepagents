@@ -8747,7 +8747,7 @@ class TestCompetitionPromptHeader:
             await app._start_competition_from_event(event)
 
         assert app.title == "Prompt: A website for a taco truck"
-        countdown.assert_awaited_once_with()
+        countdown.assert_awaited_once_with(prompt="A website for a taco truck")
         start_timer.assert_awaited_once_with(app._TIMER_DEFAULT_MINUTES)
         submit.assert_awaited_once_with(event.payload, "command")
 
@@ -8764,9 +8764,11 @@ class TestCompetitionPromptHeader:
             patch.object(app, "push_screen") as push_screen,
             patch("deepagents_cli.app.asyncio.sleep", new_callable=AsyncMock) as sleep,
         ):
-            await app._run_competition_start_countdown()
+            await app._run_competition_start_countdown(
+                prompt="A website for a taco truck"
+            )
 
-        screen_cls.assert_called_once_with(2)
+        screen_cls.assert_called_once_with(2, prompt="A website for a taco truck")
         push_screen.assert_called_once_with(screen)
         assert screen.set_seconds.call_args_list == [call(2), call(1)]
         assert sleep.await_args_list == [call(1), call(1)]

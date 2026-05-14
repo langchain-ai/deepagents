@@ -139,6 +139,10 @@ class TestReadyPlayers(unittest.TestCase):
         self.assertIn("function applyState(payload)", response.text)
         self.assertIn("setInterval(refreshState, 5000)", response.text)
         self.assertIn("function currentTimerWarning()", response.text)
+        self.assertIn('id="launch-overlay"', response.text)
+        self.assertIn('id="launch-prompt">Waiting for prompt</div>', response.text)
+        self.assertIn("function renderLaunchOverlay(prompt)", response.text)
+        self.assertIn("currentStartDelayRemaining()", response.text)
         self.assertIn("const layout = payload.overlay_layout;", response.text)
         self.assertIn("if (activeView === view) return;", response.text)
         self.assertIn("function updateText(element, value)", response.text)
@@ -975,7 +979,7 @@ class TestReadyPlayers(unittest.TestCase):
             'id="btn-end-early" aria-disabled="true">End early (trigger judge)</button>',
             response.text,
         )
-        self.assertIn('id="btn-clear">Prepare next round</button>', response.text)
+        self.assertIn('id="btn-clear">Prepare next round (reset)</button>', response.text)
         self.assertLess(
             response.text.index('id="btn-clear"'),
             response.text.index("Debug controls"),
@@ -1276,6 +1280,7 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
         self.assertEqual(body["timer"]["duration_secs"], 0.0)
         self.assertIsNone(body["timer"]["started_at"])
         self.assertIsNone(body["timer"]["warning"])
+        self.assertEqual(body["timer"]["start_delay_remaining_secs"], 0.0)
         self.assertEqual(body["eval"]["results"], [])
         self.assertIsNone(body["obs_error"])
         self.assertEqual(body["phase"], "idle")
@@ -1332,6 +1337,7 @@ class TestStateExposesTimerAndEval(unittest.TestCase):
             response = client.get("/api/state")
         body = response.json()
         self.assertEqual(body["timer"]["started_at"], 123.0)
+        self.assertEqual(body["timer"]["start_delay_remaining_secs"], 0.0)
         self.assertEqual(
             body["timer"]["warning"],
             {"threshold_secs": 60, "message": "1 minute left"},

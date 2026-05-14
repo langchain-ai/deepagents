@@ -71,6 +71,7 @@ class TimerSnapshot:
     remaining_secs: float
     started_at: float | None
     warning: TimerWarning | None = None
+    start_delay_remaining_secs: float = 0.0
 
     def __post_init__(self) -> None:
         """Reject internally inconsistent snapshots."""
@@ -85,6 +86,9 @@ class TimerSnapshot:
             raise ValueError(msg)
         if self.duration_secs < 0 or self.remaining_secs < 0:
             msg = "duration_secs and remaining_secs must be non-negative"
+            raise ValueError(msg)
+        if self.start_delay_remaining_secs < 0:
+            msg = "start_delay_remaining_secs must be non-negative"
             raise ValueError(msg)
 
     @classmethod
@@ -104,6 +108,7 @@ class TimerSnapshot:
         duration_secs: float,
         remaining_secs: float,
         started_at: float,
+        start_delay_remaining_secs: float = 0.0,
     ) -> TimerSnapshot:
         """Return a snapshot for a running countdown."""
         return cls(
@@ -115,6 +120,7 @@ class TimerSnapshot:
                 duration_secs=duration_secs,
                 remaining_secs=remaining_secs,
             ),
+            start_delay_remaining_secs=start_delay_remaining_secs,
         )
 
 
@@ -158,12 +164,15 @@ class RoundTimer:
         active = self._active
         if active is None or active.task.done():
             return TimerSnapshot.idle(duration_secs=self._last_duration_secs)
-        elapsed = max(0.0, time.monotonic() - active.started_at)
+        now = time.monotonic()
+        elapsed = max(0.0, now - active.started_at)
+        delay_remaining = max(0.0, active.started_at - now)
         remaining = max(0.0, active.duration_secs - elapsed)
         return TimerSnapshot.active(
             duration_secs=active.duration_secs,
             remaining_secs=remaining,
             started_at=active.started_at,
+            start_delay_remaining_secs=delay_remaining,
         )
 
     async def start(

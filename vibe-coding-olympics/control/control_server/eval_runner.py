@@ -65,7 +65,7 @@ def _eval_project_dir() -> Path:
 
 def _random_axis_score() -> float:
     """Return a whole-number display score on the internal `[0, 1]` scale."""
-    return random.randint(6, 9) / 10.0  # noqa: S311  # not cryptographic
+    return random.randint(8, 9) / 10.0  # noqa: S311  # not cryptographic
 
 
 def _random_axes() -> dict[str, float | None]:

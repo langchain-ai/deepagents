@@ -40,9 +40,14 @@ class LaunchNameTestApp(App[None]):
         """Open the launch waiting screen."""
         self.push_screen(LaunchWaitingScreen(ready_to_start=ready_to_start))
 
-    def show_countdown_screen(self, seconds: int) -> LaunchCountdownScreen:
+    def show_countdown_screen(
+        self,
+        seconds: int,
+        *,
+        prompt: str = "",
+    ) -> LaunchCountdownScreen:
         """Open the launch countdown screen."""
-        screen = LaunchCountdownScreen(seconds)
+        screen = LaunchCountdownScreen(seconds, prompt=prompt)
         self.push_screen(screen)
         return screen
 
@@ -160,15 +165,26 @@ class TestLaunchCountdownScreen:
             value = app.screen.query_one("#launch-countdown-value", Static)
             assert str(value.render()) == "5..."
             copy = app.screen.query_one(".launch-countdown-copy", Static)
-            assert (
-                str(copy.render())
-                == "The prompt and timer will appear at the top of your screen."
-            )
+            expected = "The timer will appear at the top of your screen."
+            assert str(copy.render()) == expected
 
             screen.set_seconds(4)
             await pilot.pause()
 
             assert str(value.render()) == "4..."
+
+    async def test_countdown_shows_prompt_when_available(self) -> None:
+        """The modal should expose the round prompt during countdown."""
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_countdown_screen(
+                5,
+                prompt="A website for a taco truck",
+            )
+            await pilot.pause()
+
+            prompt = app.screen.query_one(".launch-countdown-prompt", Static)
+            assert str(prompt.render()) == "A website for a taco truck"
 
 
 class TestNormalizeName:

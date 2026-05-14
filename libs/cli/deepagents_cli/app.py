@@ -4323,8 +4323,8 @@ class DeepAgentsApp(App):
 
     async def _start_competition_from_event(self, event: ExternalEvent) -> None:
         """Start timer and submit the controller-provided prompt event."""
-        self._set_competition_prompt_title(event.payload)
-        await self._run_competition_start_countdown()
+        prompt = self._set_competition_prompt_title(event.payload)
+        await self._run_competition_start_countdown(prompt=prompt)
         if self._startup_cmd:
             cmd = self._startup_cmd
             self._startup_cmd = None
@@ -4336,11 +4336,14 @@ class DeepAgentsApp(App):
         mode: InputMode = "command" if event.kind == "command" else "normal"
         await self._submit_input(event.payload, mode)
 
-    async def _run_competition_start_countdown(self) -> None:
+    async def _run_competition_start_countdown(self, *, prompt: str = "") -> None:
         """Show the controller-start countdown before beginning the round."""
         from deepagents_cli.widgets.launch_init import LaunchCountdownScreen
 
-        screen = LaunchCountdownScreen(_COMPETITION_START_COUNTDOWN_SECONDS)
+        screen = LaunchCountdownScreen(
+            _COMPETITION_START_COUNTDOWN_SECONDS,
+            prompt=prompt,
+        )
         self.push_screen(screen)
         try:
             for seconds in range(
@@ -4362,15 +4365,19 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, LaunchWaitingScreen):
             self.screen.mark_ready_to_start()
 
-    def _set_competition_prompt_title(self, payload: str) -> None:
+    def _set_competition_prompt_title(self, payload: str) -> str:
         """Render the controller-provided prompt in the header title.
 
         Args:
             payload: External event payload sent by the controller.
+
+        Returns:
+            Prompt text extracted from the payload, if present.
         """
         prompt = self._extract_competition_prompt(payload)
         if prompt:
             self.title = f"Prompt: {prompt}"
+        return prompt
 
     @staticmethod
     def _extract_competition_prompt(payload: str) -> str:

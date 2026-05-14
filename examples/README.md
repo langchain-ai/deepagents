@@ -14,7 +14,7 @@
 
 ### Featured: Open SWE
 
-[**Open SWE**](https://github.com/langchain-ai/open-swe) is the flagship Deep Agents example — an open-source, async coding agent for your org's internal workflows. It's composed on `create_deep_agent`, runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end. Open SWE lives in its own repo so it can move quickly and stay deployable as a standalone product.
+[**Open SWE**](https://github.com/langchain-ai/open-swe) is a flagship example of an open-source, async coding agent for your org's internal workflows. We use it heavily! It's composed on `create_deep_agent`, runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end. Open SWE lives in its own repo so it can move quickly and stay deployable as a standalone product.
 
 Read more:
 

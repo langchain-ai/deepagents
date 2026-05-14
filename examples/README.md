@@ -12,6 +12,17 @@
   Agents, patterns, and applications you can build with Deep Agents.
 </p>
 
+### Featured: Open SWE
+
+[**Open SWE**](https://github.com/langchain-ai/open-swe) is the flagship Deep Agents example — an open-source, async coding agent for your org's internal workflows. It's composed on `create_deep_agent`, runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end. Open SWE lives in its own repo so it can move quickly and stay deployable as a standalone product.
+
+Read more:
+
+- [Open SWE: An Open-Source Framework for Internal Coding Agents](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/) — the current architecture and how it composes on Deep Agents
+- [Introducing Open SWE: An Open-Source Asynchronous Coding Agent](https://blog.langchain.com/introducing-open-swe-an-open-source-asynchronous-coding-agent/) — original launch post
+
+### More examples
+
 | Example | Description |
 |---------|-------------|
 | [deep_research](deep_research/) | Multi-step web research agent using Tavily for URL discovery, parallel sub-agents, and strategic reflection |
@@ -29,7 +40,6 @@
 | [llm-wiki](llm-wiki/) | Script-first LLM wiki using `create_deep_agent` + `langsmith hub init/pull/push` for Context Hub sync |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
 | [better-harness](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness using the `better-harness` research artifact |
-| [open-swe](https://github.com/langchain-ai/open-swe) | Open-source asynchronous coding agent built on Deep Agents and LangGraph (lives in its own repo) |
 
 Each example has its own `README` with setup instructions.
 

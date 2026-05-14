@@ -119,8 +119,8 @@ See the [CLI documentation](https://docs.langchain.com/oss/python/deepagents/cli
 
 ## Additional resources
 
-- **[Examples](examples/)** — Working agents and patterns
-- **[Open SWE](https://github.com/langchain-ai/open-swe)** — Open-source asynchronous coding agent built on Deep Agents and LangGraph
+- **[Open SWE](https://github.com/langchain-ai/open-swe)** — Flagship Deep Agents example: an open-source, async coding agent composed on `create_deep_agent`, with isolated cloud sandboxes and Slack / Linear / GitHub triggers. Read the launch posts on the LangChain blog: [Open SWE: An Open-Source Framework for Internal Coding Agents](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/) and [Introducing Open SWE](https://blog.langchain.com/introducing-open-swe-an-open-source-asynchronous-coding-agent/).
+- **[Examples](examples/)** — More working agents and patterns
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) – Learn how to contribute to LangChain projects and find good first issues.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) – Our community guidelines and standards for participation.
 

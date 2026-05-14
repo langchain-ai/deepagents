@@ -12,7 +12,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ContextT, ModelRe
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -168,7 +168,10 @@ class CompiledSubAgent(TypedDict):
     """
 
 
-DEFAULT_SUBAGENT_PROMPT = "In order to complete the objective that the user asks of you, you have access to a number of standard tools."
+DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
+
+The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
+response contains the complete answer."""
 
 # State keys that are excluded when passing state to subagents and when returning
 # updates from subagents.
@@ -430,8 +433,17 @@ def _build_task_tool(  # noqa: C901, PLR0915
             else:
                 content = json.dumps(structured)
         else:
-            # Strip trailing whitespace to prevent API errors with Anthropic
-            content = result["messages"][-1].text.rstrip() if result["messages"][-1].text else ""
+            # Walk back to the last AIMessage with non-empty text. Anthropic
+            # occasionally emits a trailing empty `end_turn` AIMessage after a
+            # successful final tool call, which would otherwise be forwarded
+            # as an empty ToolMessage.
+            content = ""
+            for msg in reversed(result["messages"]):
+                if isinstance(msg, AIMessage):
+                    text = msg.text.rstrip() if msg.text else ""
+                    if text:
+                        content = text
+                        break
 
         return Command(
             update={

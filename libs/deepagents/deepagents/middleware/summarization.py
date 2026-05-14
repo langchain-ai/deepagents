@@ -70,7 +70,7 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
@@ -793,41 +793,69 @@ A condensed summary follows:
         self,
         preserved_messages: list[AnyMessage],
         backend: BackendProtocol,
-    ) -> list[AnyMessage]:
+    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
         """Offload the trailing ToolMessage batch when it's large enough to matter.
 
         Engages only when `preserved_messages` ends with consecutive ToolMessages
         whose combined token count reaches `_derive_overflow_clip_threshold_tokens()`.
         Each large TM is written under `large_tool_results/{tool_call_id}` and
-        replaced in-place by an offload-pointer ToolMessage. Returns
-        `preserved_messages` unchanged when no clipping applies.
+        replaced in-place by an offload-pointer ToolMessage.
+
+        Returns `(modified preserved_messages, replacement TMs to persist in
+        state)`. Replacements carry the original ids so the `add_messages`
+        reducer overwrites the originals when the caller propagates them via
+        a `Command` update. The replacements list omits any TM whose backend
+        write failed (those keep their originals in both lists).
         """
         found = self._find_tail_tool_message_batch(preserved_messages)
         if found is None:
-            return preserved_messages
+            return preserved_messages, []
         start, tail = found
         if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
-            return preserved_messages
-        clipped = [_offload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix) or m for m in tail]
-        return [*preserved_messages[:start], *clipped]
+            return preserved_messages, []
+        new_tail: list[AnyMessage] = []
+        any_clipped = False
+        for m in tail:
+            r = _offload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix)
+            if r is not None:
+                if r.id is None:
+                    r = r.model_copy(update={"id": str(uuid.uuid4())})
+                new_tail.append(r)
+                any_clipped = True
+            else:
+                new_tail.append(m)
+        if not any_clipped:
+            return preserved_messages, []
+        return [*preserved_messages[:start], *new_tail], new_tail
 
     async def _aclip_overflow_tail(
         self,
         preserved_messages: list[AnyMessage],
         backend: BackendProtocol,
-    ) -> list[AnyMessage]:
+    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
         """Async variant of `_clip_overflow_tail`. Offloads each tail TM concurrently."""
         found = self._find_tail_tool_message_batch(preserved_messages)
         if found is None:
-            return preserved_messages
+            return preserved_messages, []
         start, tail = found
         if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
-            return preserved_messages
+            return preserved_messages, []
         results = await asyncio.gather(
             *(_aoffload_tool_message_content(m, _extract_text_from_message(m), backend, self._large_tool_results_prefix) for m in tail)
         )
-        clipped = [r or m for r, m in zip(results, tail, strict=True)]
-        return [*preserved_messages[:start], *clipped]
+        new_tail: list[AnyMessage] = []
+        any_clipped = False
+        for r, m in zip(results, tail, strict=True):
+            if r is not None:
+                if r.id is None:
+                    r = r.model_copy(update={"id": str(uuid.uuid4())})  # noqa: PLW2901
+                new_tail.append(r)
+                any_clipped = True
+            else:
+                new_tail.append(m)
+        if not any_clipped:
+            return preserved_messages, []
+        return [*preserved_messages[:start], *new_tail], new_tail
 
     def _offload_to_backend(
         self,
@@ -1051,8 +1079,9 @@ A condensed summary follows:
 
         backend = self._get_backend(request.state, request.runtime)
         # On overflow, offload the large preserved tail TM batch to per-TM files.
+        new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
-            preserved_messages = self._clip_overflow_tail(preserved_messages, backend)
+            preserved_messages, new_state_tail = self._clip_overflow_tail(preserved_messages, backend)
 
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
@@ -1082,10 +1111,20 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
+        # Persist the clipped tail into state via Overwrite. Match the
+        # pattern from filesystem.py: atomically replace the messages channel
+        # so the clipped TMs survive DeltaChannel replay (append + reducer
+        # id-matching is broken until langchain-core auto-assigns ids upstream).
+        update: dict[str, Any] = {"_summarization_event": new_event}
+        if new_state_tail:
+            state_messages = list(request.state.get("messages", []))
+            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
+            update["messages"] = Overwrite(new_state_messages)
+
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
     async def awrap_model_call(
@@ -1160,8 +1199,9 @@ A condensed summary follows:
 
         backend = self._get_backend(request.state, request.runtime)
         # On overflow, offload the large preserved tail TM batch to per-TM files.
+        new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
-            preserved_messages = await self._aclip_overflow_tail(preserved_messages, backend)
+            preserved_messages, new_state_tail = await self._aclip_overflow_tail(preserved_messages, backend)
 
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
@@ -1191,10 +1231,20 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
+        # Persist the clipped tail into state via Overwrite. Match the
+        # pattern from filesystem.py: atomically replace the messages channel
+        # so the clipped TMs survive DeltaChannel replay (append + reducer
+        # id-matching is broken until langchain-core auto-assigns ids upstream).
+        update: dict[str, Any] = {"_summarization_event": new_event}
+        if new_state_tail:
+            state_messages = list(request.state.get("messages", []))
+            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
+            update["messages"] = Overwrite(new_state_messages)
+
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
 

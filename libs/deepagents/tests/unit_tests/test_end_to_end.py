@@ -3692,12 +3692,18 @@ def test_summarization_clips_tail_tool_messages_on_overflow() -> None:
         assert "/large_tool_results/" in tm.content
         assert len(tm.content) < 5_000  # nowhere near 25_000
 
+    # State["messages"] should have the originals atomically replaced (via
+    # `Overwrite`) by the clipped TMs -- not the 25_000-char originals.
+    state_tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(state_tool_msgs) == 4
+    for tm in state_tool_msgs:
+        assert "Tool result too large" in tm.content
+
     # Per-TM files persisted to state under /large_tool_results/.
     state = agent.get_state(config)
     files = state.values.get("files", {})
     for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
         assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
-    import pdb; pdb.set_trace()
 
 
 def test_summarization_skips_clip_when_tail_is_small() -> None:

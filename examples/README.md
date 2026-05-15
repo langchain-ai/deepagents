@@ -29,6 +29,7 @@ Read more:
 | [deploy-content-writer](deploy-content-writer/) | `deepagents deploy` example: content writing agent with per-user memory and Supabase auth |
 | [deploy-mcp-docs-agent](deploy-mcp-docs-agent/) | `deepagents deploy` example: docs research agent that uses MCP tools to search LangChain documentation |
 | [deploy-gtm-agent](deploy-gtm-agent/) | `deepagents deploy` example: GTM strategy agent coordinating sync and async subagents |
+| [memory-backed-agent](memory-backed-agent/) | Deployable graph using `CompositeBackend` + `ContextHubBackend` for `/memories/`, plus issue-board auto-wiring to Context Hub |
 | [async-subagent-server](async-subagent-server/) | Self-hosted Agent Protocol server exposing a Deep Agents researcher as an async subagent, with a supervisor REPL |
 | [nvidia_deep_agent](nvidia_deep_agent/) | Multi-model agent with NVIDIA Nemotron Super for research and GPU-accelerated code execution via RAPIDS |
 | [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |

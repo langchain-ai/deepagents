@@ -1,0 +1,373 @@
+"""Deploy a memory-backed deep agent and wire its LangSmith issues board."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
+
+DEFAULT_MODEL = "anthropic:claude-sonnet-4-6"
+DEFAULT_PROJECT_NAME = "my-agent"
+AGENT_NAME_ENV = "DEEPAGENT_AGENT_NAME"
+DEFAULT_ENDPOINT = "https://api.smith.langchain.com"
+SUCCESS_CODES = {200, 201}
+HTTP_CONFLICT = 409
+HTTP_NOT_FOUND = 404
+DEPLOY_DEPENDENCIES = [
+    ".",
+    "deepagents",
+    "langchain-anthropic",
+]
+
+
+def resolve_agent_name() -> str:
+    """Return agent name from env or default."""
+    return os.getenv(AGENT_NAME_ENV, DEFAULT_PROJECT_NAME)
+
+
+def langsmith_endpoint() -> str:
+    """Return LangSmith API endpoint from env or default."""
+    endpoint = os.getenv("LANGSMITH_ENDPOINT") or os.getenv("LANGCHAIN_ENDPOINT")
+    return (endpoint or DEFAULT_ENDPOINT).rstrip("/")
+
+
+def langsmith_api_key() -> str:
+    """Return LangSmith API key from env variables."""
+    api_key = os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
+    if not api_key:
+        msg = "Missing LANGSMITH_API_KEY (or LANGCHAIN_API_KEY)."
+        raise RuntimeError(msg)
+    return api_key
+
+
+def build_agent() -> CompiledStateGraph:
+    """Build a deep agent with durable `/memories/` in Context Hub."""
+    try:
+        from langchain.chat_models import init_chat_model
+        from deepagents import create_deep_agent
+        from deepagents.backends import CompositeBackend, ContextHubBackend, StateBackend
+    except ImportError as exc:
+        msg = (
+            "Missing runtime deps for graph construction. Install deepagents graph "
+            "dependencies before deploying/running the graph."
+        )
+        raise RuntimeError(msg) from exc
+
+    backend = CompositeBackend(
+        default=StateBackend(),
+        routes={
+            "/memories/": ContextHubBackend(resolve_agent_name()),
+        },
+    )
+
+    return create_deep_agent(
+        model=init_chat_model(model=os.getenv("DEEPAGENT_MODEL", DEFAULT_MODEL), temperature=0),
+        backend=backend,
+    )
+
+
+try:
+    # Required for langgraph module import resolution.
+    agent = build_agent()
+except RuntimeError:
+    # Allows import in lightweight environments missing graph deps.
+    agent = None
+
+
+def deploy_graph(*, script_path: Path, agent_name: str) -> None:
+    """Deploy this file as a langgraph graph."""
+    if shutil.which("langgraph") is None:
+        msg = (
+            "`langgraph` CLI not found. Install example dependencies first with:\n"
+            "uv sync --project examples/memory-backed-agent"
+        )
+        raise RuntimeError(msg)
+
+    config = {
+        "dependencies": DEPLOY_DEPENDENCIES,
+        "graphs": {
+            "agent": f"./{script_path.name}:agent",
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".json",
+        prefix="langgraph-config-",
+        dir=script_path.parent,
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        json.dump(config, handle)
+        config_path = Path(handle.name)
+
+    cmd = [
+        "langgraph",
+        "deploy",
+        "-c",
+        str(config_path),
+        "--name",
+        agent_name,
+        "--verbose",
+    ]
+
+    env = os.environ.copy()
+    env["LANGGRAPH_CLI_ANALYTICS_SOURCE"] = "deepagents"
+    env[AGENT_NAME_ENV] = agent_name
+
+    print(f"Deploying graph with name: {agent_name}")
+    print("Running:", " ".join(cmd))
+
+    try:
+        result = subprocess.run(cmd, check=False, env=env, cwd=script_path.parent)
+        if result.returncode != 0:
+            msg = f"`langgraph deploy` failed with exit code {result.returncode}"
+            raise RuntimeError(msg)
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
+def ensure_context_hub_repo_exists(*, repo_handle: str, api_key: str, endpoint: str) -> None:
+    """Ensure a Context Hub repo exists for the issues-board handle."""
+    try:
+        from langsmith import Client
+        from langsmith.schemas import FileEntry
+        from langsmith.utils import LangSmithNotFoundError
+    except ImportError as exc:
+        msg = "Missing dependency `langsmith`. Install it with `uv add langsmith`."
+        raise RuntimeError(msg) from exc
+
+    identifier = f"-/{repo_handle}"
+    client = Client(api_url=endpoint, api_key=api_key)
+
+    repo_exists = False
+    try:
+        client.pull_agent(identifier)
+        repo_exists = True
+    except LangSmithNotFoundError:
+        repo_exists = False
+    except Exception as exc:
+        msg = f"Failed checking Context Hub repo {identifier}: {exc}"
+        raise RuntimeError(msg) from exc
+
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    tenant_id = os.getenv("LANGSMITH_TENANT_ID")
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+
+    if repo_exists:
+        repo_status, repo_body = request_json(
+            method="GET",
+            url=f"{endpoint}/repos/langchain-ai/{repo_handle}",
+            headers=headers,
+        )
+        if repo_status in SUCCESS_CODES:
+            source = json.loads(repo_body).get("repo", {}).get("source")
+            if source != "internal":
+                print(
+                    "Context Hub repo exists but `source` is not `internal`; "
+                    "this can hide it from internal-only Context views."
+                )
+        elif repo_status != HTTP_NOT_FOUND:
+            print(f"Warning: Failed checking repo metadata (HTTP {repo_status}).")
+
+        print(f"Context Hub repo exists: {identifier}")
+        return
+
+    create_repo_status, create_repo_body = request_json(
+        method="POST",
+        url=f"{endpoint}/repos/",
+        headers=headers,
+        payload={
+            "repo_handle": repo_handle,
+            "repo_type": "agent",
+            "is_public": False,
+            "source": "internal",
+        },
+    )
+    if create_repo_status not in SUCCESS_CODES and create_repo_status != HTTP_CONFLICT:
+        msg = f"Failed creating Context Hub repo metadata (HTTP {create_repo_status}): {create_repo_body[:300]}"
+        raise RuntimeError(msg)
+
+    try:
+        client.push_agent(
+            identifier,
+            files={
+                "README.md": FileEntry(
+                    type="file",
+                    content=(
+                        f"{repo_handle}\n\n"
+                        "Initialized by deploy_memory_backed_agent.py for "
+                        "memory-backed agent deployment."
+                    ),
+                )
+            },
+        )
+    except Exception as exc:
+        msg = f"Failed creating Context Hub repo {identifier}: {exc}"
+        raise RuntimeError(msg) from exc
+
+    print(f"Created Context Hub repo: {identifier}")
+
+
+def session_id_for_project(*, project_name: str, api_key: str, endpoint: str) -> str:
+    """Resolve LangSmith tracing project/session id by project name."""
+    try:
+        from langsmith import Client
+        from langsmith.utils import LangSmithNotFoundError
+    except ImportError as exc:
+        msg = "Missing dependency `langsmith`. Install it with `uv add langsmith`."
+        raise RuntimeError(msg) from exc
+
+    client = Client(api_url=endpoint, api_key=api_key)
+    try:
+        project = client.read_project(project_name=project_name)
+    except LangSmithNotFoundError as exc:
+        msg = (
+            "Could not resolve tracing project after deploy. "
+            f"Project name: {project_name!r}. Original error: {exc}"
+        )
+        raise RuntimeError(msg) from exc
+
+    return str(project.id)
+
+
+def request_json(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any] | None = None,
+) -> tuple[int, str]:
+    """Send JSON request and return `(status_code, body_text)`."""
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = Request(url=url, data=body, headers=headers, method=method)
+
+    try:
+        with urlopen(request, timeout=20) as response:  # noqa: S310
+            status = response.getcode()
+            text = response.read().decode("utf-8", errors="replace")
+            return status, text
+    except HTTPError as exc:
+        text = exc.read().decode("utf-8", errors="replace")
+        return exc.code, text
+    except URLError as exc:
+        msg = f"HTTP request failed for {method} {url}: {exc}"
+        raise RuntimeError(msg) from exc
+
+
+def upsert_issues_board(*, session_id: str, api_key: str, endpoint: str, repo_handle: str) -> None:
+    """Create-or-patch LangSmith issues board for this deployed project."""
+    url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
+
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    tenant_id = os.getenv("LANGSMITH_TENANT_ID")
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+
+    create_payload = {
+        "cron_schedule": "0 */6 * * *",
+        "heavy_model": "anthropic:issues-agent-heavy",
+        "light_model": "anthropic:issues-agent-light",
+        "context_hub_repo_handle": repo_handle,
+    }
+
+    create_status, create_text = request_json(
+        method="POST",
+        url=url,
+        headers=headers,
+        payload=create_payload,
+    )
+
+    if create_status in SUCCESS_CODES:
+        print(f"Issues board wired for tracing project {session_id} ({repo_handle}).")
+        return
+
+    if create_status == HTTP_CONFLICT:
+        patch_status, patch_text = request_json(
+            method="PATCH",
+            url=url,
+            headers=headers,
+            payload={"context_hub_repo_handle": repo_handle},
+        )
+        if patch_status in SUCCESS_CODES:
+            print(f"Issues board existed; updated context hub handle to {repo_handle}.")
+            return
+
+        msg = (
+            "Failed to patch existing issues board config. "
+            f"HTTP {patch_status}: {patch_text[:300]}"
+        )
+        raise RuntimeError(msg)
+
+    msg = f"Failed to create issues board config. HTTP {create_status}: {create_text[:300]}"
+    raise RuntimeError(msg)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Deploy this Context Hub-backed deep agent and auto-wire a LangSmith "
+            "issues board to the same Context Hub repo handle."
+        )
+    )
+    parser.add_argument(
+        "--agent-name",
+        default=DEFAULT_PROJECT_NAME,
+        help=(
+            "Agent/deployment name (default: my-agent). Used for deploy name, "
+            "Context Hub `/memories/` repo handle, and issues board wiring."
+        ),
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Run deploy + issues-board wiring flow."""
+    args = parse_args()
+    agent_name = args.agent_name
+    os.environ[AGENT_NAME_ENV] = agent_name
+    endpoint = langsmith_endpoint()
+    api_key = langsmith_api_key()
+
+    script_path = Path(__file__).resolve()
+    deploy_graph(script_path=script_path, agent_name=agent_name)
+
+    ensure_context_hub_repo_exists(
+        repo_handle=agent_name,
+        api_key=api_key,
+        endpoint=endpoint,
+    )
+
+    session_id = session_id_for_project(
+        project_name=agent_name,
+        api_key=api_key,
+        endpoint=endpoint,
+    )
+    upsert_issues_board(
+        session_id=session_id,
+        api_key=api_key,
+        endpoint=endpoint,
+        repo_handle=agent_name,
+    )
+
+
+if __name__ == "__main__":
+    main()

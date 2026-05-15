@@ -66,23 +66,8 @@ The agent can plan, read/write files, and manage its own context. Add your own t
 > [!TIP]
 > For developing, debugging, and deploying AI agents and LLM applications, see [LangSmith](https://docs.langchain.com/langsmith/home).
 
-## Deep Agents Code
-
-A pre-built coding Deep Agent in your terminal — similar to Claude Code or Cursor — powered by any LLM.
-
-```bash
-curl -LsSf https://langch.in/dcode | bash
-```
-
-**Highlights:**
-
-- **Interactive TUI** — rich terminal interface with streaming responses
-- **Conversation resume** — pick up where you left off across sessions
-- **Web search** — ground responses in live information
-- **Headless mode** — run non-interactively for scripting and CI
-- Plus all SDK features out of the box — persistent memory, custom skills, and human-in-the-loop approval
-
-See the [Deep Agents Code documentation](https://docs.langchain.com/oss/python/deepagents/cli/overview) for the full feature set.
+> [!NOTE]
+> **Deep Agents Code** — a pre-built coding agent in your terminal, similar to Claude Code or Cursor, powered by any LLM. Install with `curl -LsSf https://langch.in/dcode | bash`. See the [documentation](https://docs.langchain.com/oss/python/deepagents/code/overview) for the full feature set.
 
 ## FAQ
 

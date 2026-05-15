@@ -1,47 +1,105 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="../.github/images/logo-light.svg">
-    <source media="(prefers-color-scheme: dark)" srcset="../.github/images/logo-dark.svg">
-    <img alt="Deep Agents" src="../.github/images/logo-dark.svg" height="40"/>
-  </picture>
-</p>
+<div align="center">
+  <a href="https://docs.langchain.com/oss/python/deepagents/overview#deep-agents-overview">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="../.github/images/logo-dark.svg">
+      <source media="(prefers-color-scheme: light)" srcset="../.github/images/logo-light.svg">
+      <img alt="Deep Agents Logo" src="../.github/images/logo-dark.svg" width="50%">
+    </picture>
+  </a>
+</div>
 
 <h3 align="center">Examples</h3>
 
-<p align="center">
-  Agents, patterns, and applications you can build with Deep Agents.
-</p>
+<p align="center"><em>Real agents and patterns built on Deep Agents.</em></p>
 
-### Featured: Open SWE
+## Featured
 
-[**Open SWE**](https://github.com/langchain-ai/open-swe) is a flagship example of an open-source, async coding agent for your org's internal workflows. We use it heavily! It's composed on `create_deep_agent`, runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end. Open SWE lives in its own repo so it can move quickly and stay deployable as a standalone product.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-Read more:
+### Deep Agents Code
 
-- [Open SWE: An Open-Source Framework for Internal Coding Agents](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/) — the current architecture and how it composes on Deep Agents
+A pre-built coding Deep Agent in your terminal — similar to Claude Code or Codex — powered by any LLM. Includes an interactive TUI, web search, remote sandboxes, persistent memory, custom skills, and human-in-the-loop approval.
+
+```bash
+curl -LsSf https://langch.in/dcode | bash
+```
+
+<sub>[Source](../libs/code/) · [Docs](https://docs.langchain.com/oss/python/deepagents/cli/overview)</sub>
+
+</td>
+<td width="50%" valign="top">
+
+### Open SWE
+
+An open-source, async coding agent for your org's internal workflows. Runs each task in an isolated cloud sandbox, integrates with Slack, Linear, and GitHub, and ships PRs end-to-end.
+
+```bash
+@open-swe fix this user-reported bug plz!
+```
+
+<sub>[Repository](https://github.com/langchain-ai/open-swe) · [Blog post](https://blog.langchain.com/open-swe-an-open-source-framework-for-internal-coding-agents/)</sub>
+
+</td>
+</tr>
+</table>
+
+## In the wild
+
+Production agents powered by the LangChain stack:
+
+| Project | Description |
+|---|---|
+| [**LangSmith Fleet**](https://www.langchain.com/langsmith/fleet) | No-code platform for building AI agents from templates; connect your accounts and let the agent handle routine work |
+| [**Chat LangChain**](https://chat.langchain.com/) | Documentation assistant that answers questions about LangChain, LangGraph, and LangSmith ([source](https://github.com/langchain-ai/chat-langchain)) |
+
+## All examples
+
+### Research
 
 | Example | Description |
-|---------|-------------|
-| [deep_research](deep_research/) | Multi-step web research agent using Tavily for URL discovery, parallel sub-agents, and strategic reflection |
-| [content-builder-agent](content-builder-agent/) | Content writing agent that demonstrates memory (`AGENTS.md`), skills, and subagents for blog posts, LinkedIn posts, and tweets with generated images |
-| [text-to-sql-agent](text-to-sql-agent/) | Natural language to SQL agent with planning, skill-based workflows, and the Chinook demo database |
-| [deploy-coding-agent](deploy-coding-agent/) | `deepagents deploy` example: autonomous coding agent with a LangSmith sandbox for code execution |
-| [deploy-content-writer](deploy-content-writer/) | `deepagents deploy` example: content writing agent with per-user memory and Supabase auth |
-| [deploy-mcp-docs-agent](deploy-mcp-docs-agent/) | `deepagents deploy` example: docs research agent that uses MCP tools to search LangChain documentation |
-| [deploy-gtm-agent](deploy-gtm-agent/) | `deepagents deploy` example: GTM strategy agent coordinating sync and async subagents |
-| [async-subagent-server](async-subagent-server/) | Self-hosted Agent Protocol server exposing a Deep Agents researcher as an async subagent, with a supervisor REPL |
-| [nvidia_deep_agent](nvidia_deep_agent/) | Multi-model agent with NVIDIA Nemotron Super for research and GPU-accelerated code execution via RAPIDS |
-| [ralph_mode](ralph_mode/) | Autonomous looping pattern that runs with fresh context each iteration, using the filesystem for persistence |
-| [rlm_agent](rlm_agent/) | `create_rlm_agent` helper: wraps `create_deep_agent` with a recursive REPL + PTC subagent chain for parallel fan-out across levels |
-| [repl_swarm](repl_swarm/) | Skill-module example: a `swarm` skill (TypeScript) dispatches subagents in parallel from inside the QuickJS REPL |
-| [llm-wiki](llm-wiki/) | Script-first LLM wiki using `create_deep_agent` + `langsmith hub init/pull/push` for Context Hub sync |
-| [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
-| [better-harness](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness using the `better-harness` research artifact |
+|---|---|
+| [**Deep Research**](deep_research/) | Multi-step web research with Tavily, parallel sub-agents, and strategic reflection |
+| [**MCP Docs Agent**](deploy-mcp-docs-agent/) | Docs research agent using MCP tools over LangChain documentation |
+
+### Coding
+
+| Example | Description |
+|---|---|
+| [**Coding Agent**](deploy-coding-agent/) | Autonomous coding agent in a LangSmith sandbox |
+| [**Nemotron Research Agent**](nvidia_deep_agent/) | NVIDIA Nemotron Super for research + GPU-accelerated execution via RAPIDS |
+
+### Content
+
+| Example | Description |
+|---|---|
+| [**Content Builder**](content-builder-agent/) | Blog posts, LinkedIn posts, and tweets with memory (`AGENTS.md`), skills, and subagents |
+| [**Text-to-SQL**](text-to-sql-agent/) | Natural language to SQL with planning and skill-based workflows on the Chinook demo database |
+| [**LLM Wiki**](llm-wiki/) | Script-first LLM wiki synced via `langsmith hub init/pull/push` |
+
+### Deployable services
+
+| Example | Description |
+|---|---|
+| [**Content Writer**](deploy-content-writer/) | Content writer with per-user memory and Supabase auth |
+| [**GTM Strategist**](deploy-gtm-agent/) | GTM strategy agent coordinating sync and async subagents |
+| [**Async Subagent Server**](async-subagent-server/) | Self-hosted Agent Protocol server exposing a researcher as an async subagent |
+
+### Advanced patterns
+
+| Example | Description |
+|---|---|
+| [**Ralph Loop**](ralph_mode/) | Autonomous looping with fresh context each iteration, using the filesystem for persistence |
+| [**RLM Agent**](rlm_agent/) | `create_rlm_agent` helper: recursive REPL + PTC subagent chain for parallel fan-out |
+| [**REPL Swarm**](repl_swarm/) | TypeScript `swarm` skill dispatching subagents in parallel from QuickJS |
+| [**Agents as Folders**](downloading_agents/) | Download a zip, unzip, and run |
+| [**Better Harness**](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness |
 
 Each example has its own `README` with setup instructions.
 
 <details>
-<summary><h2>Contributing an Example</h2></summary>
+<summary><h2>Contributing an example</h2></summary>
 
 See the [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) for general contribution guidelines.
 

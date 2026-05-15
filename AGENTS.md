@@ -326,7 +326,7 @@ make -C libs/deepagents bench
 make -C libs/cli bench
 
 # All benched packages in one go:
-make bench-all
+make -C libs bench-all
 
 # Existing `benchmark` target (no CodSpeed instrumentation, faster, suitable
 # for ad-hoc local tuning with pytest-benchmark):

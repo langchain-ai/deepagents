@@ -1,0 +1,27 @@
+[project]
+name = "pi-profile"
+version = "0.1.0"
+description = "Pi-style HarnessProfile factory for Deep Agents"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.5.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.2",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pi_profile*"]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

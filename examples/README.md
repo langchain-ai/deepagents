@@ -37,6 +37,7 @@ Read more:
 | [llm-wiki](llm-wiki/) | Script-first LLM wiki using `create_deep_agent` + `langsmith hub init/pull/push` for Context Hub sync |
 | [downloading_agents](downloading_agents/) | Shows how agents are just folders—download a zip, unzip, and run |
 | [better-harness](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness using the `better-harness` research artifact |
+| [pi-profile](pi-profile/) | Callable `HarnessProfile` factory that ports the [Pi coding agent](https://pi.dev/)'s minimal prompt and tool-description style to a provider/model of your choice |
 
 Each example has its own `README` with setup instructions.
 

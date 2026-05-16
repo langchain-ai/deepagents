@@ -81,6 +81,8 @@ jobs:
         with:
           script: |
             // Hidden HTML marker to identify comments posted by this workflow.
+            // Scoped per-package so each release PR gets its own comment if
+            // additional packages are added to this check.
             const pkgName = process.env.PKG_NAME;
             const pkgLabel = process.env.PKG_LABEL;
             const pkgPyproject = process.env.PKG_PYPROJECT;

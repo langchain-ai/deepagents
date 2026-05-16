@@ -45,7 +45,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> **(Code only)** `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
 
 ### Version Bumping
 
@@ -310,7 +310,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
-   - (Code only): leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
 5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
 

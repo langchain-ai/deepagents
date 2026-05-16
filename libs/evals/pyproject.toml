@@ -20,7 +20,7 @@ dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.5.7",
     "langchain>=1.2.17",
-    "deepagents-cli",
+    "deepagents-code",
     # Harbor runtime
     "harbor>=0.6.4,<0.7.0",
     # LangSmith for observability
@@ -109,12 +109,12 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-deepagents-cli = { path = "../cli" }
+deepagents-code = { path = "../code" }
 deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 
 [tool.ty.environment]
-extra-paths = ["../deepagents", "../cli"]
+extra-paths = ["../deepagents", "../code"]
 
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/

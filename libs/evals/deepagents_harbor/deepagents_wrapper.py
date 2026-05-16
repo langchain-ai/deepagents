@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
-from deepagents_cli.agent import create_cli_agent
+from deepagents_code.agent import create_cli_agent
 from dotenv import load_dotenv
 from harbor.agents.base import BaseAgent
 from harbor.models.trajectories import (
@@ -108,7 +108,7 @@ class DeepAgentsWrapper(BaseAgent):
             temperature: Temperature setting for the model.
             verbose: Enable verbose output.
             use_cli_agent: If `True`, use `create_cli_agent` from
-                `deepagents-cli` (default). If `False`, use
+                `deepagents-code` (default). If `False`, use
                 `create_deep_agent` from the SDK.
             openrouter_provider: Pin OpenRouter routing to one or more
                 providers. Accepts a single name (e.g. `"MiniMax"`) or a

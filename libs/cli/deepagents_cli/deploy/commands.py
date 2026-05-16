@@ -46,6 +46,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: init_parser.print_help()),
+        help="show this help message and exit",
     )
     init_parser.add_argument(
         "--force",
@@ -63,6 +64,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: dev_parser.print_help()),
+        help="show this help message and exit",
     )
     dev_parser.add_argument(
         "--config",
@@ -93,6 +95,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: deploy_parser.print_help()),
+        help="show this help message and exit",
     )
     deploy_parser.add_argument(
         "--config",

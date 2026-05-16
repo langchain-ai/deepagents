@@ -69,7 +69,7 @@ on:
         type: boolean
         default: false
         description:
-          "(deepagents-cli / deepagents-code only) Skip SDK pin validation
+          "(deepagents-code only) Skip SDK pin validation
           (danger!) - Only use when intentionally pinning an older SDK"
 
 env:
@@ -704,14 +704,12 @@ jobs:
 
       - name: Verify package pins latest SDK version
         if: |
-          (needs.build.outputs.pkg-name == 'deepagents-cli'
-            || needs.build.outputs.pkg-name == 'deepagents-code')
+          needs.build.outputs.pkg-name == 'deepagents-code'
           && !inputs.dangerous-skip-sdk-pin-check
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
           case "$PKG_NAME" in
-            deepagents-cli) PKG_PYPROJECT="libs/cli/pyproject.toml" ;;
             deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
             *)
               echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"

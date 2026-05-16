@@ -79,7 +79,7 @@ class TestErrorMessageMarkupSafety:
         """Pre-built `Content` with `link` spans passes through to render output."""
         from textual.style import Style as TStyle
 
-        url = "https://docs.langchain.com/oss/python/deepagents/cli/providers"
+        url = "https://docs.langchain.com/oss/python/deepagents/code/providers"
         body = Content.assemble(
             "see ",
             (url, TStyle(underline=True, link=url)),

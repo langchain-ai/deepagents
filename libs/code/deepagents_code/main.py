@@ -1521,7 +1521,7 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
     from rich.console import Console as _Console
 
     docs_url = (
-        "https://docs.langchain.com/oss/python/deepagents/cli/"
+        "https://docs.langchain.com/oss/python/deepagents/code/"
         "mcp-tools#project-level-trust"
     )
     prompt_console = _Console(stderr=True)

@@ -1034,7 +1034,7 @@ class TestCheckMcpProjectTrustPrompt:
         captured = capsys.readouterr()
         flattened = captured.err.replace("\n", "")
         assert (
-            "https://docs.langchain.com/oss/python/deepagents/cli/"
+            "https://docs.langchain.com/oss/python/deepagents/code/"
             "mcp-tools#project-level-trust" in flattened
         )
         assert "Learn more:" in captured.err

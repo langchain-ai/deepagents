@@ -94,7 +94,7 @@ def resolve_env_var(name: str) -> str | None:
 
 
 PROVIDERS_DOCS_URL = (
-    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
+    "https://docs.langchain.com/oss/python/deepagents/code/providers#provider-reference"
 )
 """Public docs page for configuring model providers.
 

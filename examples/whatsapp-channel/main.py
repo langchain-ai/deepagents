@@ -37,12 +37,6 @@ load_dotenv()
 
 _MEDIA_ATTACH_INSTRUCTIONS = (
     "You are running as a WhatsApp assistant. "
-    "CRITICAL: Do NOT send any text response until your task is fully complete. "
-    "Any text you output is immediately delivered to the user as a final message — "
-    "there is no way to continue working after sending text. "
-    "Use tools silently until the work is done, then respond once with your complete answer. "
-    "Do NOT send progress updates or interim messages mid-task. "
-    "\n\n"
     "To attach an image or video in your reply, include "
     "`![short description](/absolute/path/to/file)` in your final message. "
     "The path must be a local file you have already saved (for example, "
@@ -51,6 +45,26 @@ _MEDIA_ATTACH_INSTRUCTIONS = (
     "(MP4, MOV, WebM, 3GP). MP4 with H.264/AAC is most reliable for video. "
     "Size limit: 16 MB per file."
 )
+
+# Hermes-style execution mandate — forces the model to use tools rather than
+# describing what it *would* do. Appended to every system prompt so the agent
+# keeps working until the task is actually complete, not just until it has a
+# plan.
+_ACTION_MANDATE = (
+    "\n\n"
+    "CRITICAL EXECUTION RULES:\n"
+    "1. You MUST use your tools to take action — do not describe what you would "
+    "do or plan to do without actually doing it. When you say you will perform an "
+    "action, you MUST immediately make the corresponding tool call in the same "
+    "response.\n"
+    "2. Never end your turn with a promise of future action — execute it now.\n"
+    "3. Keep working until the task is actually complete. Do not stop with a "
+    "summary of what you plan to do next time.\n"
+    "4. Verify your work before declaring success. If a tool call failed, try "
+    "again with corrected inputs or a different approach.\n"
+)
+
+_SYSTEM_PROMPT = _ACTION_MANDATE + "\n\n" + _MEDIA_ATTACH_INSTRUCTIONS
 
 _VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".3gp", ".m4v"})
 
@@ -91,10 +105,223 @@ def _build_status_text(actions: list[dict], *, done: bool = False) -> str:
 
     lines = [header, ""]
     for action in actions:
-        mark = ">" if action["status"] == "done" else "..."
-        lines.append(f"{mark} {action['description']}")
+        prefix = ">" if action["status"] == "done" else "..."
+        lines.append(f"{prefix} {action['description']}")
 
     return "\n".join(lines)
+
+
+def _extract_response_text(final_output: dict | None) -> str:
+    """Extract the final AIMessage text from an agent output dict.
+
+    Walks messages in reverse to find the last non-empty AI text block.
+    Mirrors the cron runner's extraction logic.
+    """
+    if not final_output:
+        return ""
+    response_messages = final_output.get("messages", [])
+    for msg in reversed(response_messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            if isinstance(msg.content, str):
+                return msg.content
+            if isinstance(msg.content, list):
+                for block in reversed(msg.content):
+                    if isinstance(block, str):
+                        return block
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return block["text"]
+    return ""
+
+
+async def _stream_agent_run(
+    agent,
+    history: list,
+    *,
+    recursion_limit: int,
+    adapter: WhatsAppAdapter,
+    chat_id: str,
+    status_msg_id: str | None,
+) -> tuple[list[dict], dict | None]:
+    """Run the agent once via ``astream_events``, with inner retry logic.
+
+    Retries up to 3 times on parse errors or context overflow. Returns the
+    accumulated ``actions`` list and the ``final_output`` dict (if any).
+    """
+    _MAX_RETRIES = 3
+    last_edit_time = 0.0
+
+    for attempt in range(_MAX_RETRIES):
+        actions: list[dict] = []
+        root_run_id: str | None = None
+        final_output: dict | None = None
+
+        try:
+            async for ev in agent.astream_events(
+                {"messages": history},
+                version="v2",
+                config={"recursion_limit": recursion_limit},
+            ):
+                kind = ev["event"]
+                run_id = ev.get("run_id")
+
+                if root_run_id is None and kind == "on_chain_start":
+                    root_run_id = run_id
+
+                elif kind == "on_tool_start":
+                    tool_input = ev.get("data", {}).get("input", {})
+                    desc = _describe_action(ev.get("name", "tool"), tool_input)
+                    actions.append({
+                        "run_id": run_id,
+                        "description": desc,
+                        "status": "running",
+                    })
+                    now = time.monotonic()
+                    if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
+                        await adapter.edit_message(
+                            chat_id, status_msg_id,
+                            _build_status_text(actions),
+                        )
+                        last_edit_time = now
+
+                elif kind == "on_tool_end":
+                    tool_run_id = ev.get("run_id")
+                    for a in actions:
+                        if a.get("run_id") == tool_run_id and a["status"] == "running":
+                            a["status"] = "done"
+                            break
+                    now = time.monotonic()
+                    if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
+                        await adapter.edit_message(
+                            chat_id, status_msg_id,
+                            _build_status_text(actions),
+                        )
+                        last_edit_time = now
+
+                elif kind == "on_chain_end" and run_id == root_run_id:
+                    final_output = ev.get("data", {}).get("output", {})
+
+            return actions, final_output  # success — exit retry loop
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            err_str = str(exc)
+            status_code = getattr(exc, "status_code", None)
+
+            is_context_overflow = (
+                status_code in (413, 400)
+                and (
+                    "exceed_context_size_error" in err_str
+                    or "exceeds the available context size" in err_str
+                )
+                or status_code == 413
+            )
+            if is_context_overflow:
+                if attempt + 1 < _MAX_RETRIES and len(history) > 2:
+                    keep = max(2, len(history) // 2)
+                    logger.warning(
+                        "[whatsapp] Context overflow (attempt %d/%d), trimming history (%d → %d messages)",
+                        attempt + 1, _MAX_RETRIES, len(history), keep,
+                    )
+                    del history[1:-keep]
+                    continue
+                # No more retries or too few messages to trim — fall through.
+
+            if "Failed to parse" in err_str or "tool_call" in err_str.lower():
+                logger.warning(
+                    "[whatsapp] Model parse error (attempt %d/%d), retrying: %s",
+                    attempt + 1, _MAX_RETRIES, exc,
+                )
+                if attempt + 1 < _MAX_RETRIES:
+                    await asyncio.sleep(1)
+                    continue
+
+            raise  # unhandled — let the caller deal with it
+
+    # Should not reach here, but return empty state just in case.
+    return [], None
+
+
+_CONTINUATION_NUDGE = (
+    "Your action budget was exhausted mid-task. Continue working and complete "
+    "the task. If you have already finished, provide your final answer now. "
+    "Do not describe what you plan to do — execute it."
+)
+
+_FORCE_SUMMARY_PROMPT = (
+    "You ran out of actions. Provide a concise summary of everything you have "
+    "accomplished so far. Do not call any more tools — just summarize your work."
+)
+
+
+async def run_until_complete(
+    agent,
+    history: list,
+    *,
+    recursion_limit: int,
+    adapter: WhatsAppAdapter,
+    chat_id: str,
+    status_msg_id: str | None,
+) -> tuple[list[dict], dict | None, str]:
+    """Keep invoking the agent until it produces a non-empty text response.
+
+    Hermes-style main loop: each invocation streams events for live status
+    updates. If the agent exhausts its recursion budget without producing
+    text (e.g. it spent every turn on tool calls), we append a continuation
+    nudge and retry. After all nudges are exhausted, a final ``_force_summary``
+    call demands a text summary with no further tools.
+
+    Returns ``(actions, final_output, response_text)``.
+    """
+    MAX_CONTINUATION_NUDGES = 3
+    actions: list[dict] = []
+
+    for nudge in range(MAX_CONTINUATION_NUDGES):
+        actions, final_output = await _stream_agent_run(
+            agent,
+            history,
+            recursion_limit=recursion_limit,
+            adapter=adapter,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+        )
+
+        response_text = _extract_response_text(final_output)
+        if response_text:
+            return actions, final_output, response_text
+
+        # No text — the agent likely hit its recursion budget with only tool calls.
+        logger.warning(
+            "Agent returned no text for chat %s (nudge %d/%d). Adding continuation prompt.",
+            chat_id,
+            nudge + 1,
+            MAX_CONTINUATION_NUDGES,
+        )
+        history.append(HumanMessage(content=_CONTINUATION_NUDGE))
+
+    # All nudges exhausted — force a summary as a final grace call.
+    logger.info(
+        "Continuation nudges exhausted for chat %s. Running grace summary.",
+        chat_id,
+    )
+    history.append(HumanMessage(content=_FORCE_SUMMARY_PROMPT))
+    try:
+        summary_actions, summary_output = await _stream_agent_run(
+            agent,
+            history,
+            recursion_limit=recursion_limit,
+            adapter=adapter,
+            chat_id=chat_id,
+            status_msg_id=status_msg_id,
+        )
+        return summary_actions, summary_output, _extract_response_text(summary_output)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Grace summary failed for chat %s", chat_id)
+        return actions, final_output, ""
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -275,7 +502,7 @@ async def main() -> None:
         ],
         skills=skill_sources or None,
         memory=memory_sources,
-        system_prompt=_MEDIA_ATTACH_INSTRUCTIONS,
+        system_prompt=_SYSTEM_PROMPT,
         middleware=[create_summarization_tool_middleware(model, backend)],
     )
 
@@ -418,123 +645,19 @@ async def main() -> None:
                     status_result.message_id if status_result.success else None
                 )
 
-                # Stream agent execution so we can surface tool actions.
-                # Retry up to 3 times on model parse errors (e.g. malformed
-                # tool call responses from OpenAI-compat endpoints).
-                _MAX_RETRIES = 3
-                actions: list[dict] = []
-                last_edit_time = 0.0
-                root_run_id: str | None = None
-                final_output: dict | None = None
-
-                for _attempt in range(_MAX_RETRIES):
-                  try:
-                    actions = []
-                    root_run_id = None
-                    final_output = None
-
-                    async for ev in agent.astream_events(
-                        {"messages": history},
-                        version="v2",
-                        config={"recursion_limit": recursion_limit},
-                    ):
-                        kind = ev["event"]
-                        run_id = ev.get("run_id")
-
-                        # Capture the root run so we can grab its output later
-                        if root_run_id is None and kind == "on_chain_start":
-                            root_run_id = run_id
-
-                        elif kind == "on_tool_start":
-                            tool_input = ev.get("data", {}).get("input", {})
-                            desc = _describe_action(
-                                ev.get("name", "tool"), tool_input,
-                            )
-                            actions.append({
-                                "run_id": run_id,
-                                "description": desc,
-                                "status": "running",
-                            })
-
-                            # Throttled status edit
-                            now = time.monotonic()
-                            if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
-                                await adapter.edit_message(
-                                    chat_id, status_msg_id,
-                                    _build_status_text(actions),
-                                )
-                                last_edit_time = now
-
-                        elif kind == "on_tool_end":
-                            # Mark the matching action as done (by run_id)
-                            tool_run_id = ev.get("run_id")
-                            for a in actions:
-                                if a.get("run_id") == tool_run_id and a["status"] == "running":
-                                    a["status"] = "done"
-                                    break
-
-                            now = time.monotonic()
-                            if status_msg_id and now - last_edit_time >= _EDIT_THROTTLE_SECS:
-                                await adapter.edit_message(
-                                    chat_id, status_msg_id,
-                                    _build_status_text(actions),
-                                )
-                                last_edit_time = now
-
-                        elif kind == "on_chain_end" and run_id == root_run_id:
-                            final_output = ev.get("data", {}).get("output", {})
-
-                    break  # success — exit retry loop
-
-                  except asyncio.CancelledError:
-                    raise
-                  except Exception as _retry_exc:
-                    _err = str(_retry_exc)
-                    _status = getattr(_retry_exc, "status_code", None)
-                    if _status in (413, 400) and ("exceed_context_size_error" in _err or "exceeds the available context size" in _err) or _status == 413:
-                        if _attempt + 1 < _MAX_RETRIES and len(history) > 2:
-                            logger.warning(
-                                "[whatsapp] Context overflow (attempt %d/%d), trimming history (%d → %d messages)",
-                                _attempt + 1, _MAX_RETRIES, len(history), max(2, len(history) // 2),
-                            )
-                            keep = max(2, len(history) // 2)
-                            del history[1:-keep]  # keep first (oldest) human msg + last `keep` messages
-                            continue
-                    if "Failed to parse" in _err or "tool_call" in _err.lower():
-                        logger.warning(
-                            "[whatsapp] Model parse error (attempt %d/%d), retrying: %s",
-                            _attempt + 1, _MAX_RETRIES, _retry_exc,
-                        )
-                        if _attempt + 1 < _MAX_RETRIES:
-                            await asyncio.sleep(1)
-                            continue
-                    raise
+                # --- Agent execution: continuation loop ---
+                actions, final_output, response_text = await run_until_complete(
+                    agent,
+                    history,
+                    recursion_limit=recursion_limit,
+                    adapter=adapter,
+                    chat_id=chat_id,
+                    status_msg_id=status_msg_id,
+                )
 
                 # Mark every remaining action as done
                 for a in actions:
                     a["status"] = "done"
-
-                # ---- Extract the agent's final response text ----
-                response_text = ""
-                if final_output:
-                    response_messages = final_output.get("messages", [])
-                    for msg in reversed(response_messages):
-                        if isinstance(msg, AIMessage) and msg.content:
-                            if isinstance(msg.content, str):
-                                response_text = msg.content
-                            elif isinstance(msg.content, list):
-                                for block in reversed(msg.content):
-                                    if isinstance(block, str):
-                                        response_text = block
-                                        break
-                                    elif (
-                                        isinstance(block, dict)
-                                        and block.get("type") == "text"
-                                    ):
-                                        response_text = block["text"]
-                                        break
-                            if response_text:
-                                break
 
                 # ---- Deliver the response ----
                 if response_text:

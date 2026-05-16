@@ -116,6 +116,7 @@ Available subagent types:
 An `eval` tool is available. It runs JavaScript in a persistent REPL.
 - State (variables, functions) persists across tool calls and across multiple turns for this conversation thread.
 - Top-level `await` works; Promises resolve before the call returns.
+- The final expression must not be an unresolved Promise. End with `await <expr>` or assign the awaited value to a variable — a bare `(async () => { ... })();` at the end surfaces as `[object]`, not the resolved value.
 - Sandboxed: no filesystem, no stdlib, no network, no real clock, no `fetch`, no `require`.
 - Timeout: 5.0s per call. Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.

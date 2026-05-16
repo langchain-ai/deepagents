@@ -352,6 +352,55 @@ def test_function_return_falls_back_to_handle_description(repl: _ThreadREPL) -> 
 
 
 # ---------------------------------------------------------------------------
+# Final-expression Promise unwrapping (issue #3424)
+# ---------------------------------------------------------------------------
+
+
+def test_async_iife_returning_promise_is_unwrapped(repl: _ThreadREPL) -> None:
+    """Issue #3424: a final expression that is a Promise (e.g. a bare async
+    IIFE) must surface its resolved value instead of the Promise object.
+    """
+    outcome = repl.eval_sync(
+        "(async () => { const v = await Promise.resolve(456); return v; })();"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result_kind is None
+    assert outcome.result == "456"
+
+
+def test_top_level_promise_expression_is_unwrapped(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("Promise.resolve(7)")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "7"
+
+
+def test_top_level_await_still_works(repl: _ThreadREPL) -> None:
+    """Regression guard: the existing top-level-await path is unaffected."""
+    outcome = repl.eval_sync("const v1 = await Promise.resolve(123); v1;")
+    assert outcome.error_type is None
+    assert outcome.result_kind is None
+    assert outcome.result == "123"
+
+
+def test_rejected_promise_surfaces_as_jserror(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("(async () => { throw new Error('iife-rejection'); })();")
+    assert outcome.result is None
+    assert outcome.error_type == "Error"
+    assert "iife-rejection" in (outcome.error_message or "")
+
+
+def test_unwrapping_does_not_double_user_side_effects(repl: _ThreadREPL) -> None:
+    """The user program (and its console.log side effects) must run exactly
+    once even when the final expression is a Promise that needs unwrapping.
+    """
+    outcome = repl.eval_sync("(async () => { console.log('hit'); return 1; })();")
+    assert outcome.error_type is None
+    assert outcome.result == "1"
+    assert outcome.stdout.count("hit") == 1
+
+
+# ---------------------------------------------------------------------------
 # Truncation
 # ---------------------------------------------------------------------------
 

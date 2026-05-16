@@ -75,6 +75,23 @@ def test_parse_file_mentions_warns_for_nonexistent_file(
     assert "nonexistent.py" in mock_console.print.call_args[0][0]
 
 
+def test_parse_file_mentions_skips_deepagentsignored_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Ensure ignored files are not attached through `@` mentions."""
+    (tmp_path / ".deepagentsignore").write_text("secret.txt\n", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("token", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    mock_console = mocker.patch("deepagents_code.input.console")
+
+    _, files = parse_file_mentions("@secret.txt")
+
+    assert files == []
+    mock_console.print.assert_called_once()
+    assert "ignored by .deepagentsignore" in mock_console.print.call_args[0][0]
+
+
 def test_parse_file_mentions_ignores_directories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
 ) -> None:

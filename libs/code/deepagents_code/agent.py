@@ -62,6 +62,11 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
+from deepagents_code.deepagentsignore import (
+    DeepagentsIgnore,
+    IgnoringBackend,
+    IgnoringSandboxBackend,
+)
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -1192,9 +1197,17 @@ def create_cli_agent(
                 inherit_env=True,
                 env=shell_env,
             )
+            backend = IgnoringSandboxBackend(
+                backend,
+                DeepagentsIgnore.from_project(root_dir),
+            )
         else:
             # No shell access - use plain FilesystemBackend
             backend = FilesystemBackend(root_dir=root_dir)
+            backend = IgnoringBackend(
+                backend,
+                DeepagentsIgnore.from_project(root_dir),
+            )
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)

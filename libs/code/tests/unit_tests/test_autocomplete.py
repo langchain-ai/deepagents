@@ -15,6 +15,7 @@ from deepagents_code.widgets.autocomplete import (
     SlashCommandController,
     _fuzzy_score,
     _fuzzy_search,
+    _get_project_files,
     _is_dotpath,
     _path_depth,
 )
@@ -132,6 +133,25 @@ class TestFuzzySearch:
         results = _fuzzy_search("utils", sample_files, limit=10)
         assert len(results) >= 2
         assert any("utils.py" in r for r in results)
+
+
+def test_get_project_files_respects_deepagentsignore(tmp_path):
+    """Project file collection should omit `.deepagentsignore` matches."""
+    (tmp_path / ".deepagentsignore").write_text(
+        "secret.txt\nnode_modules/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "visible.txt").write_text("visible", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("secret", encoding="utf-8")
+    vendor = tmp_path / "node_modules"
+    vendor.mkdir()
+    (vendor / "pkg.js").write_text("pkg", encoding="utf-8")
+
+    files = _get_project_files(tmp_path)
+
+    assert "visible.txt" in files
+    assert "secret.txt" not in files
+    assert "node_modules/pkg.js" not in files
 
 
 class TestHelperFunctions:

@@ -17,6 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from deepagents_code.deepagentsignore import DeepagentsIgnore
 from deepagents_code.project_utils import find_project_root
 
 
@@ -323,6 +324,7 @@ def _get_project_files(root: Path) -> list[str]:
     Returns:
         List of relative file paths from project root.
     """
+    ignore = DeepagentsIgnore.from_project(root)
     git_path = _get_git_executable()
     if git_path:
         try:
@@ -337,7 +339,7 @@ def _get_project_files(root: Path) -> list[str]:
             )
             if result.returncode == 0:
                 files = result.stdout.strip().split("\n")
-                return [f for f in files if f]  # Filter empty strings
+                return ignore.filter_project_files([f for f in files if f])
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
@@ -354,7 +356,7 @@ def _get_project_files(root: Path) -> list[str]:
                 break
     except OSError:
         pass
-    return files
+    return ignore.filter_project_files(files)
 
 
 def _fuzzy_score(query: str, candidate: str) -> float:

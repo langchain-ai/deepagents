@@ -58,13 +58,26 @@ _ACTION_MANDATE = (
     "action, you MUST immediately make the corresponding tool call in the same "
     "response.\n"
     "2. Never end your turn with a promise of future action — execute it now.\n"
-    "3. Keep working until the task is actually complete. Do not stop with a "
-    "summary of what you plan to do next time.\n"
+    "3. When a read-only tool (list_jobs, web_search, fetch_url, http_request "
+    "for reading) returns the information the user asked for, respond with that "
+    "information immediately. Do not make additional tool calls unless the user "
+    "asked you to do something with the results.\n"
     "4. Verify your work before declaring success. If a tool call failed, try "
     "again with corrected inputs or a different approach.\n"
 )
 
-_SYSTEM_PROMPT = _ACTION_MANDATE + "\n\n" + _MEDIA_ATTACH_INSTRUCTIONS
+# Reinforce that text output = final delivery. The agent should batch all tool
+# calls first, then respond once. The continuation loop in run_until_complete()
+# provides safety-net retries if the model runs out of recursion budget, but the
+# prompt should still encourage single-turn completion.
+_FINALITY_RULE = (
+    "\n"
+    "IMPORTANT: Any text you output is delivered to the user as your final "
+    "response. Complete all tool calls before producing text. Do not send "
+    "interim updates or progress messages — respond once when the work is done.\n"
+)
+
+_SYSTEM_PROMPT = _ACTION_MANDATE + _FINALITY_RULE + "\n" + _MEDIA_ATTACH_INSTRUCTIONS
 
 _VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".3gp", ".m4v"})
 

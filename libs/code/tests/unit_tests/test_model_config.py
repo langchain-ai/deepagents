@@ -84,7 +84,7 @@ class TestModelSpec:
         spec = ModelSpec.try_parse("openai:gpt-5.5")
         assert spec is not None
         assert spec.provider == "openai"
-        assert spec.model == "gpt-4o"
+        assert spec.model == "gpt-5.5"
 
     def test_try_parse_returns_none_on_failure(self) -> None:
         """try_parse() returns None for invalid input."""
@@ -98,7 +98,7 @@ class TestModelSpec:
 
     def test_equality(self) -> None:
         """ModelSpec instances with same values are equal."""
-        spec1 = ModelSpec(provider="openai", model="gpt-4o")
+        spec1 = ModelSpec(provider="openai", model="gpt-5.5")
         spec2 = ModelSpec.parse("openai:gpt-5.5")
         assert spec1 == spec2
 

@@ -891,7 +891,7 @@ class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
     async def test_bare_model_name_auto_detects_provider(self) -> None:
-        """Bare model name like 'gpt-4o' auto-detects provider and switches."""
+        """Bare model name like 'gpt-5.5' auto-detects provider and switches."""
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # type: ignore[method-assign]
         app._agent = _make_remote_agent()
@@ -917,11 +917,11 @@ class TestModelSwitchBareModelName:
             ) as mock_save,
             patch.object(AppMessage, "__init__", capture_init),
         ):
-            await app._switch_model("gpt-4o")
+            await app._switch_model("gpt-5.5")
 
         mock_save.assert_called_once_with("openai:gpt-5.5")
         assert app._model_override == "openai:gpt-5.5"
-        assert settings.model_name == "gpt-4o"
+        assert settings.model_name == "gpt-5.5"
         assert settings.model_provider == "openai"
         assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
 

@@ -414,7 +414,7 @@ class TestModelLabelPrefixStripping:
         async with StatusBarApp().run_test() as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "openai"
-            label.model = "gpt-4o"
+            label.model = "gpt-5.5"
             await pilot.pause()
             rendered = str(label.render())
             assert "openai:gpt-5.5" in rendered

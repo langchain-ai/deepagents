@@ -60,11 +60,11 @@ def test_shell_allow_list_not_specified(mock_argv: MockArgvType) -> None:
 def test_shell_allow_list_combined_with_other_args(mock_argv: MockArgvType) -> None:
     """Test that shell-allow-list works with other arguments."""
     with mock_argv(
-        "--shell-allow-list", "ls,cat", "--model", "gpt-4o", "--auto-approve"
+        "--shell-allow-list", "ls,cat", "--model", "gpt-5.5", "--auto-approve"
     ):
         parsed_args = parse_args()
         assert parsed_args.shell_allow_list == "ls,cat"
-        assert parsed_args.model == "gpt-4o"
+        assert parsed_args.model == "gpt-5.5"
         assert parsed_args.auto_approve is True
 
 
@@ -385,12 +385,12 @@ class TestModelParamsArgument:
         """Test --model-params works alongside --model."""
         with mock_argv(
             "--model",
-            "gpt-4o",
+            "gpt-5.5",
             "--model-params",
             '{"temperature": 0.5, "max_tokens": 2048}',
         ):
             parsed = parse_args()
-            assert parsed.model == "gpt-4o"
+            assert parsed.model == "gpt-5.5"
             assert parsed.model_params == '{"temperature": 0.5, "max_tokens": 2048}'
 
 
@@ -413,12 +413,12 @@ class TestProfileOverrideArgument:
         """--profile-override works alongside --model."""
         with mock_argv(
             "--model",
-            "gpt-4o",
+            "gpt-5.5",
             "--profile-override",
             '{"max_input_tokens": 4096}',
         ):
             parsed = parse_args()
-            assert parsed.model == "gpt-4o"
+            assert parsed.model == "gpt-5.5"
             assert parsed.profile_override == '{"max_input_tokens": 4096}'
 
     def test_invalid_json_exits(self) -> None:

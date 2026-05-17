@@ -81,10 +81,10 @@ class TestModelSpec:
 
     def test_try_parse_returns_spec_on_success(self) -> None:
         """try_parse() returns ModelSpec for valid input."""
-        spec = ModelSpec.try_parse("openai:gpt-4o")
+        spec = ModelSpec.try_parse("openai:gpt-5.5")
         assert spec is not None
         assert spec.provider == "openai"
-        assert spec.model == "gpt-4o"
+        assert spec.model == "gpt-5.5"
 
     def test_try_parse_returns_none_on_failure(self) -> None:
         """try_parse() returns None for invalid input."""
@@ -98,20 +98,20 @@ class TestModelSpec:
 
     def test_equality(self) -> None:
         """ModelSpec instances with same values are equal."""
-        spec1 = ModelSpec(provider="openai", model="gpt-4o")
-        spec2 = ModelSpec.parse("openai:gpt-4o")
+        spec1 = ModelSpec(provider="openai", model="gpt-5.5")
+        spec2 = ModelSpec.parse("openai:gpt-5.5")
         assert spec1 == spec2
 
     def test_immutable(self) -> None:
         """ModelSpec is immutable (frozen dataclass)."""
-        spec = ModelSpec(provider="openai", model="gpt-4o")
+        spec = ModelSpec(provider="openai", model="gpt-5.5")
         with pytest.raises(AttributeError):
             spec.provider = "anthropic"  # type: ignore[misc]
 
     def test_validates_empty_provider(self) -> None:
         """ModelSpec raises on empty provider."""
         with pytest.raises(ValueError, match="Provider cannot be empty"):
-            ModelSpec(provider="", model="gpt-4o")
+            ModelSpec(provider="", model="gpt-5.5")
 
     def test_validates_empty_model(self) -> None:
         """ModelSpec raises on empty model."""
@@ -720,7 +720,7 @@ models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 api_key_env = "ANTHROPIC_API_KEY"
 
 [models.providers.openai]
-models = ["gpt-4o"]
+models = ["gpt-5.5"]
 api_key_env = "OPENAI_API_KEY"
 """)
         config = ModelConfig.load(config_path)
@@ -794,14 +794,14 @@ class TestModelConfigGetAllModels:
 models = ["claude-sonnet-4-5", "claude-haiku-4-5"]
 
 [models.providers.openai]
-models = ["gpt-4o"]
+models = ["gpt-5.5"]
 """)
         config = ModelConfig.load(config_path)
         models = config.get_all_models()
 
         assert ("claude-sonnet-4-5", "anthropic") in models
         assert ("claude-haiku-4-5", "anthropic") in models
-        assert ("gpt-4o", "openai") in models
+        assert ("gpt-5.5", "openai") in models
 
 
 class TestModelConfigGetProviderForModel:

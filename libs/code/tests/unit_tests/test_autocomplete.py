@@ -310,7 +310,7 @@ class TestSlashCommandController:
         mock_view.render_completion_suggestions.assert_called()
         mock_view.reset_mock()
 
-        controller.on_text_changed("/model gpt-4o", 13)
+        controller.on_text_changed("/model gpt-5.5", 13)
         mock_view.render_completion_suggestions.assert_not_called()
 
     def test_bare_slash_space_dismisses(self, controller, mock_view):

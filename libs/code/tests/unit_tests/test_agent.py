@@ -365,8 +365,8 @@ class TestBuildModelIdentitySection:
         assert build_model_identity_section(None) == ""
 
     def test_basic_name_only(self) -> None:
-        result = build_model_identity_section("gpt-4o")
-        assert "You are running as model `gpt-4o`." in result
+        result = build_model_identity_section("gpt-5.5")
+        assert "You are running as model `gpt-5.5`." in result
         assert "may not be available" not in result
 
     def test_unsupported_single(self) -> None:

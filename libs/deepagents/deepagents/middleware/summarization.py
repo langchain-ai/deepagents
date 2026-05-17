@@ -29,7 +29,7 @@ from deepagents.backends import FilesystemBackend
 backend = FilesystemBackend(root_dir="/data")
 
 summ = SummarizationMiddleware(
-    model="gpt-4o-mini",
+    model="gpt-5.4-mini",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),
@@ -277,7 +277,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             from deepagents.backends import StateBackend
 
             middleware = SummarizationMiddleware(
-                model="gpt-4o-mini",
+                model="gpt-5.4-mini",
                 backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
@@ -1302,7 +1302,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             SummarizationToolMiddleware,
         )
 
-        summ = SummarizationMiddleware(model="gpt-4o-mini", backend=backend)
+        summ = SummarizationMiddleware(model="gpt-5.4-mini", backend=backend)
         tool_mw = SummarizationToolMiddleware(summ)
 
         agent = create_deep_agent(middleware=[summ, tool_mw])

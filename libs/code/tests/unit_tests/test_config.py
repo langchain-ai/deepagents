@@ -766,7 +766,7 @@ class TestCreateModelProfileExtraction:
         mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
         mock_init_chat_model.return_value = mock_model
 
-        result = create_model("openai:gpt-4o")
+        result = create_model("openai:gpt-5.5")
         assert result.unsupported_modalities == frozenset()
 
     @patch("langchain.chat_models.init_chat_model")
@@ -2087,7 +2087,7 @@ use_responses_api = false
         assert exact_kwargs.get("temperature") == pytest.approx(0.42)
 
         mock_init.reset_mock()
-        create_model("openai:gpt-4o")
+        create_model("openai:gpt-5.5")
         _, other_kwargs = mock_init.call_args
         assert "temperature" not in other_kwargs
 
@@ -2483,7 +2483,7 @@ class TestCreateModelEdgeCaseParsing:
         self, mock_init_chat_model: Mock, mock_default: Mock
     ) -> None:
         """Empty string falls through to _get_default_model_spec."""
-        mock_default.return_value = "openai:gpt-4o"
+        mock_default.return_value = "openai:gpt-5.5"
         mock_model = Mock()
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
@@ -2611,7 +2611,7 @@ class TestDetectProvider:
     @pytest.mark.parametrize(
         ("model_name", "expected"),
         [
-            ("gpt-4o", "openai"),
+            ("gpt-5.5", "openai"),
             ("gpt-5.2", "openai"),
             ("o1-preview", "openai"),
             ("o3-mini", "openai"),
@@ -2674,7 +2674,7 @@ class TestDetectProvider:
         settings.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
-            assert detect_provider("GPT-4o") == "openai"
+            assert detect_provider("gpt-5.5") == "openai"
         finally:
             settings.anthropic_api_key = None
 

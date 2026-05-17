@@ -62,6 +62,9 @@ class MessageEvent:
     media_urls: list[str] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
     raw_message: dict[str, Any] = field(default_factory=dict)
+    # Alternative chat ID from msg.from (e.g. "1234567890@c.us") when
+    # chat_id is in @lid format. Used for matching legacy job origins.
+    chat_id_from: str | None = None
 
 
 @dataclass
@@ -1158,4 +1161,5 @@ class WhatsAppAdapter:
             media_urls=media_urls,
             media_types=media_types,
             raw_message=data,
+            chat_id_from=data.get("chatIdFrom"),
         )

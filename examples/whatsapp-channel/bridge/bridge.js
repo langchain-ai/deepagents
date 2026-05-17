@@ -184,6 +184,12 @@ client.on("message_create", async (msg) => {
   const entry = {
     messageId: (msg.id && msg.id._serialized) || null,
     chatId: chatIdSerialized,
+    // WhatsApp migrated from @c.us → @s.whatsapp.net → @lid. The @lid format
+    // uses a completely different numeric ID than the phone number, so stored
+    // job origins (e.g. "1234567890@c.us") won't match chatId
+    // ("9876543210@lid"). msg.from still carries the old format, which
+    // lets us match against legacy job records.
+    chatIdFrom: msg.from,
     chatName: (chat && chat.name) || chatIdSerialized,
     senderId: msg.author || msg.from,
     senderName:

@@ -62,6 +62,9 @@ _ACTION_MANDATE = (
     "for reading) returns the information the user asked for, respond with that "
     "information immediately. Do not make additional tool calls unless the user "
     "asked you to do something with the results.\n"
+    "3b. When a write tool (create_job, edit_job, remove_job) succeeds, confirm "
+    "the result to the user immediately. Do not keep calling tools after the "
+    "requested change is done.\n"
     "4. Verify your work before declaring success. If a tool call failed, try "
     "again with corrected inputs or a different approach.\n"
 )
@@ -641,8 +644,13 @@ async def main() -> None:
             # Append user message (multimodal content if inbound photo)
             history.append(HumanMessage(content=_build_inbound_content(event)))
 
+            # Use chat_id_from (msg.from, e.g. "1234567890@c.us") for cron
+            # origin matching when available — it preserves the phone-number
+            # format stored in legacy job records. Fall back to chat_id
+            # ("9876543210@lid") if not present.
+            origin_chat_id = event.chat_id_from or chat_id
             origin_ctx.set({
-                "chat_id": chat_id,
+                "chat_id": origin_chat_id,
                 "message_id": event.message_id,
             })
 

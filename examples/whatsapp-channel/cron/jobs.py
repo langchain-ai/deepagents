@@ -21,6 +21,27 @@ _DURATION_RE = re.compile(
 _UNIT_TO_MINUTES = {"m": 1, "h": 60, "d": 1440}
 
 
+def _normalize_chat_id(chat_id: str | None) -> str:
+    """Normalize WhatsApp chat IDs so @c.us and @s.whatsapp.net match.
+
+    whatsapp-web.js migrated from @c.us to @s.whatsapp.net for individual
+    chats. Jobs created with the old domain would never match messages
+    arriving with the new domain (and vice versa). This function collapses
+    both to the bare phone number so comparisons are domain-agnostic.
+    """
+    if not chat_id:
+        return ""
+    chat_id = str(chat_id).strip()
+    # Handle group IDs (120363...@g.us) — leave as-is
+    if chat_id.endswith("@g.us") or chat_id.endswith("@g.us"):
+        return chat_id
+    # For individual chats, strip the domain suffix (@c.us or @s.whatsapp.net)
+    for suffix in ("@s.whatsapp.net", "@c.us"):
+        if chat_id.endswith(suffix):
+            return chat_id[: -len(suffix)]
+    return chat_id
+
+
 def parse_duration(s: str) -> int:
     """Parse a duration string like ``"30m"`` / ``"2h"`` / ``"1d"`` into minutes.
 
@@ -236,11 +257,28 @@ def create_job(
 
 
 def list_jobs_for_chat(jobs_path: Path, chat_id: str) -> list[dict[str, Any]]:
-    """Return all jobs whose ``origin.chat_id`` matches *chat_id*."""
-    return [
-        j for j in load_jobs(jobs_path)
-        if j.get("origin", {}).get("chat_id") == chat_id
+    """Return all jobs whose ``origin.chat_id`` matches *chat_id*.
+
+    Compares normalized chat IDs so ``@c.us`` and ``@s.whatsapp.net`` match.
+    """
+    normalized = _normalize_chat_id(chat_id)
+    all_jobs = load_jobs(jobs_path)
+    results = [
+        j for j in all_jobs
+        if _normalize_chat_id(j.get("origin", {}).get("chat_id")) == normalized
     ]
+    if not results and all_jobs:
+        other_ids = {
+            j.get("origin", {}).get("chat_id")
+            for j in all_jobs
+            if j.get("origin", {}).get("chat_id")
+        }
+        logger.warning(
+            "cron: list_jobs_for_chat found %d total jobs but 0 matched chat_id=%r. "
+            "Other origin chat_ids: %s",
+            len(all_jobs), chat_id, other_ids,
+        )
+    return results
 
 
 def get_job(jobs_path: Path, job_id: str) -> dict[str, Any] | None:
@@ -278,7 +316,9 @@ def update_job(
         if job.get("id") != job_id:
             continue
         if job.get("origin", {}).get("chat_id") != chat_id:
-            return None
+            # Also try normalized comparison for @c.us ↔ @s.whatsapp.net
+            if _normalize_chat_id(job.get("origin", {}).get("chat_id")) != _normalize_chat_id(chat_id):
+                return None
 
         if name is not None:
             cleaned = name.strip()
@@ -310,7 +350,11 @@ def remove_job(jobs_path: Path, job_id: str, *, chat_id: str) -> bool:
     """
     jobs = load_jobs(jobs_path)
     for i, j in enumerate(jobs):
-        if j.get("id") == job_id and j.get("origin", {}).get("chat_id") == chat_id:
+        if j.get("id") == job_id and (
+            j.get("origin", {}).get("chat_id") == chat_id
+            or _normalize_chat_id(j.get("origin", {}).get("chat_id"))
+            == _normalize_chat_id(chat_id)
+        ):
             jobs.pop(i)
             save_jobs(jobs_path, jobs)
             return True

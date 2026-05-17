@@ -772,6 +772,35 @@ def test_sandbox_grep_quotes_include_glob() -> None:
     assert "--include='x'\"'\"' ; echo injected ; #' -e needle /test" in sandbox.last_command
 
 
+def test_sandbox_grep_returns_error_when_exec_fails() -> None:
+    """Test that grep returns ``GrepResult(error=...)`` when ``execute`` fails.
+
+    When the sandbox runtime fails to start the command (e.g. Docker exec
+    chdir error, missing binary, container died mid-exec) the runtime
+    returns an error message via ``ExecuteResponse.output`` and a non-zero
+    ``exit_code``. That message commonly contains ``:`` characters, which
+    the parser previously mistook for ``path:line:text`` rows and crashed
+    on ``int(parts[1])``. See issue #3441.
+    """
+    sandbox = MockSandbox()
+    oci_error = (
+        "OCI runtime exec failed: exec failed: unable to start container "
+        'process: chdir to cwd ("/does-not-exist"): no such file or '
+        "directory: unknown"
+    )
+
+    def failing_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        return ExecuteResponse(output=oci_error, exit_code=126, truncated=False)
+
+    sandbox.execute = failing_execute
+
+    result = sandbox.grep("needle", path="/test")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert oci_error in result.error
+
+
 # -- upload/download failure tests --------------------------------------------
 
 

@@ -792,6 +792,18 @@ except PermissionError:
         result = self.execute(cmd)
 
         output = result.output.rstrip()
+        # ``|| true`` in the command above masks shell-level grep failures
+        # (e.g. exit code 1 when there are no matches), so a non-zero
+        # ``exit_code`` reaching this point indicates a runtime-layer failure
+        # — the shell never started (chdir error, missing binary, container
+        # died mid-exec). In that case ``output`` is the runtime's error
+        # message; surface it via ``GrepResult.error`` instead of trying to
+        # parse it as ``path:line:text`` rows.
+        if result.exit_code is not None and result.exit_code != 0:
+            return GrepResult(
+                matches=None,
+                error=output or f"grep exec failed with exit code {result.exit_code}",
+            )
         if not output:
             return GrepResult(matches=[])
 

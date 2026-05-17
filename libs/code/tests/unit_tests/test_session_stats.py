@@ -72,34 +72,34 @@ class TestSessionStats:
 
     def test_record_request_increments_totals(self) -> None:
         stats = SessionStats()
-        stats.record_request("gpt-4o", 100, 50)
+        stats.record_request("gpt-5.5", 100, 50)
         assert stats.request_count == 1
         assert stats.input_tokens == 100
         assert stats.output_tokens == 50
 
     def test_record_request_accumulates(self) -> None:
         stats = SessionStats()
-        stats.record_request("gpt-4o", 100, 50)
-        stats.record_request("gpt-4o", 200, 75)
+        stats.record_request("gpt-5.5", 100, 50)
+        stats.record_request("gpt-5.5", 200, 75)
         assert stats.request_count == 2
         assert stats.input_tokens == 300
         assert stats.output_tokens == 125
 
     def test_record_request_populates_per_model(self) -> None:
         stats = SessionStats()
-        stats.record_request("gpt-4o", 100, 50)
-        assert "gpt-4o" in stats.per_model
-        model = stats.per_model["gpt-4o"]
+        stats.record_request("gpt-5.5", 100, 50)
+        assert "gpt-5.5" in stats.per_model
+        model = stats.per_model["gpt-5.5"]
         assert model.request_count == 1
         assert model.input_tokens == 100
         assert model.output_tokens == 50
 
     def test_record_request_multiple_models(self) -> None:
         stats = SessionStats()
-        stats.record_request("gpt-4o", 100, 50)
+        stats.record_request("gpt-5.5", 100, 50)
         stats.record_request("claude-sonnet-4-5", 200, 75)
         assert len(stats.per_model) == 2
-        assert stats.per_model["gpt-4o"].input_tokens == 100
+        assert stats.per_model["gpt-5.5"].input_tokens == 100
         assert stats.per_model["claude-sonnet-4-5"].input_tokens == 200
         assert stats.request_count == 2
         assert stats.input_tokens == 300
@@ -132,15 +132,15 @@ class TestSessionStats:
 
     def test_merge_combines_per_model(self) -> None:
         a = SessionStats()
-        a.record_request("gpt-4o", 100, 50)
+        a.record_request("gpt-5.5", 100, 50)
 
         b = SessionStats()
-        b.record_request("gpt-4o", 200, 75)
+        b.record_request("gpt-5.5", 200, 75)
         b.record_request("claude-sonnet-4-5", 300, 100)
 
         a.merge(b)
-        assert a.per_model["gpt-4o"].input_tokens == 300
-        assert a.per_model["gpt-4o"].request_count == 2
+        assert a.per_model["gpt-5.5"].input_tokens == 300
+        assert a.per_model["gpt-5.5"].request_count == 2
         assert a.per_model["claude-sonnet-4-5"].input_tokens == 300
 
     def test_merge_empty_into_populated(self) -> None:

@@ -158,7 +158,7 @@ class TestModelSwap:
 
     def test_different_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
 
         captured: list[ModelRequest] = []
@@ -172,7 +172,7 @@ class TestModelSwap:
 
     async def test_async_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
 
         captured: list[ModelRequest] = []
@@ -230,7 +230,7 @@ class TestAnthropicSettingsStripped:
     """
 
     def test_cache_control_stripped_on_swap(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -275,7 +275,7 @@ class TestAnthropicSettingsStripped:
         }
 
     def test_other_settings_preserved_on_swap(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -299,7 +299,7 @@ class TestAnthropicSettingsStripped:
         assert captured[0].model_settings == {"max_tokens": 2048}
 
     async def test_async_cache_control_stripped(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -324,7 +324,7 @@ class TestAnthropicSettingsStripped:
 
     def test_swap_with_model_params_and_cache_control(self) -> None:
         """Stripping operates on the merged settings, not the original."""
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(
@@ -354,7 +354,7 @@ class TestAnthropicSettingsStripped:
         }
 
     def test_only_cache_control_results_in_empty_settings(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -385,7 +385,7 @@ class TestIsAnthropicModel:
         assert _is_anthropic_model(model) is True
 
     def test_returns_false_for_non_anthropic(self) -> None:
-        assert _is_anthropic_model(_make_model("gpt-4o")) is False
+        assert _is_anthropic_model(_make_model("gpt-5.5")) is False
 
     def test_returns_false_for_plain_object(self) -> None:
         assert _is_anthropic_model(object()) is False
@@ -431,7 +431,7 @@ class TestModelParams:
         assert captured[0].model_settings == {"max_tokens": 2048, "temperature": 0.5}
 
     def test_params_with_model_swap(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(
@@ -474,9 +474,9 @@ class TestModelIdentityPatch:
     )
 
     def test_identity_replaced_on_swap(self) -> None:
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         result = _make_model_result(
-            override, model_name="gpt-4o", provider="openai", context_limit=128_000
+            override, model_name="gpt-5.5", provider="openai", context_limit=128_000
         )
         request = _make_request(
             _make_model("claude-opus-4-6"),
@@ -491,7 +491,7 @@ class TestModelIdentityPatch:
 
         prompt = captured[0].system_prompt
         assert prompt is not None
-        assert "`gpt-4o`" in prompt
+        assert "`gpt-5.5`" in prompt
         assert "(provider: openai)" in prompt
         assert "128,000 tokens" in prompt
         assert "`claude-opus-4-6`" not in prompt
@@ -503,8 +503,8 @@ class TestModelIdentityPatch:
     def test_no_identity_section_left_unchanged(self) -> None:
         """Prompt without identity section is not modified."""
         bare_prompt = "You are a helpful assistant.\n\n### Skills Directory\n"
-        override = _make_model("gpt-4o")
-        result = _make_model_result(override, model_name="gpt-4o", provider="openai")
+        override = _make_model("gpt-5.5")
+        result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
         request = _make_request(
             _make_model("claude-opus-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -520,7 +520,7 @@ class TestModelIdentityPatch:
 
     def test_no_system_prompt_skips_patch(self) -> None:
         """When system_prompt is None, no patching is attempted."""
-        override = _make_model("gpt-4o")
+        override = _make_model("gpt-5.5")
         request = _make_request(
             _make_model("claude-opus-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -538,8 +538,8 @@ class TestModelIdentityPatch:
         prompt = (
             "Preamble.\n\n### Model Identity\n\nYou are running as model `old`.\n\n"
         )
-        override = _make_model("gpt-4o")
-        result = _make_model_result(override, model_name="gpt-4o", provider="openai")
+        override = _make_model("gpt-5.5")
+        result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
         request = _make_request(
             _make_model("old"),
             context=CLIContext(model="openai:gpt-5.5"),
@@ -553,13 +553,13 @@ class TestModelIdentityPatch:
 
         patched = captured[0].system_prompt
         assert patched is not None
-        assert "`gpt-4o`" in patched
+        assert "`gpt-5.5`" in patched
         assert "`old`" not in patched
         assert "Preamble." in patched
 
     def test_identity_without_context_limit(self) -> None:
-        result = build_model_identity_section("gpt-4o", provider="openai")
-        assert "`gpt-4o`" in result
+        result = build_model_identity_section("gpt-5.5", provider="openai")
+        assert "`gpt-5.5`" in result
         assert "(provider: openai)" in result
         assert "context window" not in result
 

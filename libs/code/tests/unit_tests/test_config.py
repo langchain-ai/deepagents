@@ -2611,7 +2611,7 @@ class TestDetectProvider:
     @pytest.mark.parametrize(
         ("model_name", "expected"),
         [
-            ("gpt-4o", "openai"),
+            ("gpt-5.5", "openai"),
             ("gpt-5.2", "openai"),
             ("o1-preview", "openai"),
             ("o3-mini", "openai"),
@@ -2674,7 +2674,7 @@ class TestDetectProvider:
         settings.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
-            assert detect_provider("GPT-4o") == "openai"
+            assert detect_provider("gpt-5.5") == "openai"
         finally:
             settings.anthropic_api_key = None
 

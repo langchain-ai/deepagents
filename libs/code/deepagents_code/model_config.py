@@ -296,7 +296,7 @@ class ModelSpec:
     """The provider name (e.g., `'anthropic'`, `'openai'`)."""
 
     model: str
-    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-4o'`)."""
+    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-5.5'`)."""
 
     def __post_init__(self) -> None:
         """Validate the model spec after initialization.

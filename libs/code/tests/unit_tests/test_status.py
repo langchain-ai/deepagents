@@ -417,7 +417,7 @@ class TestModelLabelPrefixStripping:
             label.model = "gpt-4o"
             await pilot.pause()
             rendered = str(label.render())
-            assert "openai:gpt-4o" in rendered
+            assert "openai:gpt-5.5" in rendered
 
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""

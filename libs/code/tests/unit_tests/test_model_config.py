@@ -81,7 +81,7 @@ class TestModelSpec:
 
     def test_try_parse_returns_spec_on_success(self) -> None:
         """try_parse() returns ModelSpec for valid input."""
-        spec = ModelSpec.try_parse("openai:gpt-4o")
+        spec = ModelSpec.try_parse("openai:gpt-5.5")
         assert spec is not None
         assert spec.provider == "openai"
         assert spec.model == "gpt-4o"
@@ -99,7 +99,7 @@ class TestModelSpec:
     def test_equality(self) -> None:
         """ModelSpec instances with same values are equal."""
         spec1 = ModelSpec(provider="openai", model="gpt-4o")
-        spec2 = ModelSpec.parse("openai:gpt-4o")
+        spec2 = ModelSpec.parse("openai:gpt-5.5")
         assert spec1 == spec2
 
     def test_immutable(self) -> None:

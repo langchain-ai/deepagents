@@ -2277,7 +2277,7 @@ def create_model(
 
     Examples:
         >>> model = create_model("anthropic:claude-sonnet-4-5")
-        >>> model = create_model("openai:gpt-4o")
+        >>> model = create_model("openai:gpt-5.5")
         >>> model = create_model("gpt-4o")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """

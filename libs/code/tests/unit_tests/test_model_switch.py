@@ -83,7 +83,7 @@ def mock_create_model() -> Iterator[Mock]:
         "anthropic:claude-sonnet-4-5": 200_000,
         "fireworks:llama-v3p1-70b": 131_072,
         "ollama:llama3": 8_192,
-        "openai:gpt-4o": 128_000,
+        "openai:gpt-5.5": 128_000,
     }
 
     def fake_create_model(
@@ -919,11 +919,11 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-4o")
 
-        mock_save.assert_called_once_with("openai:gpt-4o")
-        assert app._model_override == "openai:gpt-4o"
+        mock_save.assert_called_once_with("openai:gpt-5.5")
+        assert app._model_override == "openai:gpt-5.5"
         assert settings.model_name == "gpt-4o"
         assert settings.model_provider == "openai"
-        assert any("Switched to openai:gpt-4o" in m for m in captured_messages)
+        assert any("Switched to openai:gpt-5.5" in m for m in captured_messages)
 
     async def test_bare_model_name_missing_credentials(self) -> None:
         """Bare model name shows credential error when provider creds are missing."""

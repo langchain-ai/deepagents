@@ -159,7 +159,7 @@ class TestModelSwap:
     def test_different_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
         override = _make_model("gpt-4o")
-        request = _make_request(original, context=CLIContext(model="openai:gpt-4o"))
+        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
 
         captured: list[ModelRequest] = []
         with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
@@ -173,7 +173,7 @@ class TestModelSwap:
     async def test_async_model_swapped(self) -> None:
         original = _make_model("claude-sonnet-4-6")
         override = _make_model("gpt-4o")
-        request = _make_request(original, context=CLIContext(model="openai:gpt-4o"))
+        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
 
         captured: list[ModelRequest] = []
 
@@ -233,7 +233,7 @@ class TestAnthropicSettingsStripped:
         override = _make_model("gpt-4o")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             model_settings={"cache_control": {"type": "ephemeral", "ttl": "5m"}},
         )
         captured: list[ModelRequest] = []
@@ -278,7 +278,7 @@ class TestAnthropicSettingsStripped:
         override = _make_model("gpt-4o")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             model_settings={
                 "cache_control": {"type": "ephemeral"},
                 "max_tokens": 2048,
@@ -302,7 +302,7 @@ class TestAnthropicSettingsStripped:
         override = _make_model("gpt-4o")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             model_settings={"cache_control": {"type": "ephemeral"}},
         )
         captured: list[ModelRequest] = []
@@ -328,7 +328,7 @@ class TestAnthropicSettingsStripped:
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(
-                model="openai:gpt-4o",
+                model="openai:gpt-5.5",
                 model_params={"temperature": 0.7},
             ),
             model_settings={
@@ -357,7 +357,7 @@ class TestAnthropicSettingsStripped:
         override = _make_model("gpt-4o")
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             model_settings={"cache_control": {"type": "ephemeral"}},
         )
         captured: list[ModelRequest] = []
@@ -435,7 +435,7 @@ class TestModelParams:
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
             context=CLIContext(
-                model="openai:gpt-4o", model_params={"max_tokens": 1024}
+                model="openai:gpt-5.5", model_params={"max_tokens": 1024}
             ),
         )
         captured: list[ModelRequest] = []
@@ -480,7 +480,7 @@ class TestModelIdentityPatch:
         )
         request = _make_request(
             _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             system_prompt=self._OLD_PROMPT,
         )
         captured: list[ModelRequest] = []
@@ -507,7 +507,7 @@ class TestModelIdentityPatch:
         result = _make_model_result(override, model_name="gpt-4o", provider="openai")
         request = _make_request(
             _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             system_prompt=bare_prompt,
         )
         captured: list[ModelRequest] = []
@@ -523,7 +523,7 @@ class TestModelIdentityPatch:
         override = _make_model("gpt-4o")
         request = _make_request(
             _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
         )
         captured: list[ModelRequest] = []
         with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
@@ -542,7 +542,7 @@ class TestModelIdentityPatch:
         result = _make_model_result(override, model_name="gpt-4o", provider="openai")
         request = _make_request(
             _make_model("old"),
-            context=CLIContext(model="openai:gpt-4o"),
+            context=CLIContext(model="openai:gpt-5.5"),
             system_prompt=prompt,
         )
         captured: list[ModelRequest] = []

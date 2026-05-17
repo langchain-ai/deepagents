@@ -827,7 +827,7 @@ class TestCuratedModelSelection:
     def test_curated_models_limit_to_frontier_subset(self) -> None:
         """Current/default models outside the frontier subset should stay hidden."""
         all_models = [
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
             ("anthropic:claude-opus-4-6", "anthropic"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
         ]
@@ -842,14 +842,14 @@ class TestCuratedModelSelection:
         """Onboarding should show normal switcher entries if frontier is absent."""
         all_models = [
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.3-codex", "openai"),
         ]
 
 

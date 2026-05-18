@@ -187,8 +187,7 @@ async def _terminate_startup_process(proc: Process) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
     except TimeoutError:
         logger.warning(
-            "Startup command (pid=%s) did not exit after termination; "
-            "sending SIGKILL",
+            "Startup command (pid=%s) did not exit after termination; sending SIGKILL",
             proc.pid,
         )
         try:

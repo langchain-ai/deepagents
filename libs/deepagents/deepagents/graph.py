@@ -93,6 +93,7 @@ When the user asks you to do something:
 Keep working until the task is fully complete. Don't stop partway and explain what you would do — just do it. Only yield back to the user when the task is done or you're genuinely blocked.
 
 **When things go wrong:**
+
 - If something fails repeatedly, stop and analyze *why* — don't keep retrying the same approach.
 - If you're blocked, tell the user what's wrong and ask for guidance.
 

@@ -780,9 +780,7 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
-SKILLS_SYSTEM_PROMPT = """
-
-## Skills System
+SKILLS_SYSTEM_PROMPT = """## Skills System
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
@@ -803,6 +801,7 @@ Skills follow a **progressive disclosure** pattern - you see their name and desc
 4. **Access supporting files**: Skills may include helper scripts, configs, or reference docs - use absolute paths
 
 **When to Use Skills:**
+
 - User's request matches a skill's domain (e.g., "research X" -> web-research skill)
 - You need specialized knowledge or structured workflows
 - A skill provides proven patterns for complex tasks
@@ -819,8 +818,7 @@ User: "Can you research the latest developments in quantum computing?"
 3. Follow the skill's research workflow (search -> organize -> synthesize)
 4. Use any helper scripts with absolute paths
 
-Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!
-"""
+Remember: Skills make you more capable and consistent. When in doubt, check if a skill exists for the task!"""
 
 
 class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):

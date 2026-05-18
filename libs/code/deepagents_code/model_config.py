@@ -94,7 +94,7 @@ def resolve_env_var(name: str) -> str | None:
 
 
 PROVIDERS_DOCS_URL = (
-    "https://docs.langchain.com/oss/python/deepagents/cli/providers#provider-reference"
+    "https://docs.langchain.com/oss/python/deepagents/code/providers#provider-reference"
 )
 """Public docs page for configuring model providers.
 
@@ -296,7 +296,7 @@ class ModelSpec:
     """The provider name (e.g., `'anthropic'`, `'openai'`)."""
 
     model: str
-    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-4o'`)."""
+    """The model identifier (e.g., `'claude-sonnet-4-5'`, `'gpt-5.5'`)."""
 
     def __post_init__(self) -> None:
         """Validate the model spec after initialization.

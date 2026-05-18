@@ -45,7 +45,7 @@ cleanup() {
   if [ $exit_code -ne 0 ]; then
     echo "" >&2
     log_error "Installation failed (exit code ${exit_code}). See errors above."
-    log_error "For help, visit: https://docs.langchain.com/oss/python/deepagents/cli/overview"
+    log_error "For help, visit: https://docs.langchain.com/oss/python/deepagents/code/overview"
   fi
 }
 trap cleanup EXIT
@@ -436,4 +436,4 @@ echo ""
 printf "${GREEN}✔${NC} Setup complete. Run: ${BOLD}deepagents${NC}\n"
 echo ""
 echo "For help and support, see the Deep Agents Code docs:"
-echo "  https://docs.langchain.com/oss/python/deepagents/cli/overview"
+echo "  https://docs.langchain.com/oss/python/deepagents/code/overview"

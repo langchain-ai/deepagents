@@ -20,7 +20,7 @@ _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "An `{tool_name}` tool is available. It runs JavaScript in a persistent "
-    "REPL.\n"
+    "REPL.\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Sandboxed: no filesystem, no stdlib, no network, no real clock, "

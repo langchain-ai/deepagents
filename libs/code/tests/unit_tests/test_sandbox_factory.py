@@ -241,7 +241,7 @@ def test_agentcore_delete_untracked_session() -> None:
     [
         ("agentcore", "/tmp"),
         ("daytona", "/home/daytona"),
-        ("langsmith", "/tmp"),
+        ("langsmith", "/root"),
         ("modal", "/workspace"),
         ("runloop", "/home/user"),
     ],

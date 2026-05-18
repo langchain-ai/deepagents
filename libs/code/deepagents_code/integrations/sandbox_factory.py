@@ -73,7 +73,7 @@ def _run_sandbox_setup(backend: SandboxBackendProtocol, setup_script_path: str) 
 _PROVIDER_TO_WORKING_DIR = {
     "agentcore": "/tmp",  # noqa: S108 # AgentCore Code Interpreter working directory
     "daytona": "/home/daytona",
-    "langsmith": "/tmp",  # noqa: S108  # LangSmith sandbox working directory
+    "langsmith": "/root",  # `$HOME` in the LangSmith sandbox
     "modal": "/workspace",
     "runloop": "/home/user",
 }

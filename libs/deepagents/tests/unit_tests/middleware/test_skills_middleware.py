@@ -14,7 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.checkpoint.memory import InMemorySaver
@@ -2122,3 +2123,63 @@ async def test_skills_middleware_with_store_backend_assistant_id_async() -> None
     assert len(result_4["skills_metadata"]) == 1
     assert result_4["skills_metadata"][0]["name"] == "async-skill-one"
     assert result_4["skills_metadata"][0]["description"] == "Async skill for assistant 1"
+
+
+# --- system_prompt override / suppression --------------------------------
+
+
+def test_init_rejects_non_str_system_prompt() -> None:
+    """`system_prompt` must be str or None."""
+    with pytest.raises(TypeError, match="must be str or None"):
+        SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=0)  # type: ignore[arg-type]
+
+
+def test_init_rejects_template_missing_slot() -> None:
+    """Custom template missing any required slot fails fast at construction."""
+    with pytest.raises(ValueError, match="missing required format slot"):
+        SkillsMiddleware(
+            backend=StateBackend(),
+            sources=[],
+            # Missing `{skills_list}`.
+            system_prompt="{skills_locations} {skills_load_warnings}",
+        )
+
+
+def test_modify_request_returns_unchanged_when_system_prompt_none() -> None:
+    """`system_prompt=None` skips appending; system message identical to input."""
+    middleware = SkillsMiddleware(backend=StateBackend(), sources=[], system_prompt=None)
+    base = SystemMessage(content="base")
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=base,
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+
+    assert result is request
+    assert result.system_message is base
+
+
+def test_modify_request_uses_custom_template() -> None:
+    """Custom template flows through `modify_request` instead of the default constant."""
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="LOC:{skills_locations}|WARN:{skills_load_warnings}|LIST:{skills_list}",
+    )
+    request = ModelRequest(
+        model=GenericFakeChatModel(messages=iter([])),  # ty: ignore[unresolved-reference]
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "skills_metadata": []},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    appended = list(result.system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
+
+    assert "LOC:" in appended
+    assert "WARN:" in appended
+    assert "LIST:" in appended
+    assert "## Skills System" not in appended  # default template marker absent

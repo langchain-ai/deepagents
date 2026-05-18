@@ -19,10 +19,7 @@ def _smoke_model() -> GenericFakeChatModel:
 
 
 def _system_message_as_text(message: SystemMessage) -> str:
-    content = message.content
-    if isinstance(content, str):
-        return content
-    return "\n".join(str(part.get("text", "")) if isinstance(part, dict) else str(part) for part in content)
+    return str(message.text).rstrip("\n") + "\n"
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:

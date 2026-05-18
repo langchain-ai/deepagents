@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain_anthropic import ChatAnthropic
@@ -29,7 +30,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT, MemoryMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -85,6 +86,22 @@ def create_store_memory_item(content: str) -> dict:
         "created_at": timestamp,
         "modified_at": timestamp,
     }
+
+
+def test_memory_system_prompt_trust_and_investigation_balance() -> None:
+    """Prompt warns that memory files are untrusted data and avoids memory-before-all-tools wording."""
+    formatted = MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+    # Structural section headers must be present.
+    assert "**Trust and verification:**" in formatted
+    assert "**Learning from feedback:**" in formatted
+    assert "**Asking for information:**" in formatted
+    assert "**When to update memories:**" in formatted
+    # Investigate-first guidance is present in some form.
+    assert "investigation" in formatted
+    # Removed harsh imperatives must stay removed (guards against silent revert).
+    assert "FIRST, IMMEDIATE" not in formatted
+    assert "before doing anything else" not in formatted
+    assert "MAIN PRIORITIES" not in formatted
 
 
 def test_format_agent_memory_empty() -> None:
@@ -1031,3 +1048,66 @@ def test_create_deep_agent_wires_cache_control_for_anthropic_memory(tmp_path: Pa
     assert captured_system_messages, "Model never received a SystemMessage"
     last_block = captured_system_messages[0].content_blocks[-1]
     assert last_block.get("cache_control") == {"type": "ephemeral"}
+
+
+# --- system_prompt override / suppression --------------------------------
+
+
+def test_init_rejects_non_str_system_prompt() -> None:
+    """`system_prompt` must be str or None."""
+    with pytest.raises(TypeError, match="must be str or None"):
+        MemoryMiddleware(backend=StateBackend(), sources=[], system_prompt=0)  # type: ignore[arg-type]
+
+
+def test_init_rejects_template_missing_agent_memory_slot() -> None:
+    """Custom template without `{agent_memory}` fails fast at construction."""
+    with pytest.raises(ValueError, match="agent_memory"):
+        MemoryMiddleware(backend=StateBackend(), sources=[], system_prompt="no slot here")
+
+
+def test_modify_request_returns_unchanged_when_system_prompt_none() -> None:
+    """`system_prompt=None` skips appending; system message identical to input."""
+    middleware = MemoryMiddleware(backend=StateBackend(), sources=[], system_prompt=None)
+    base = SystemMessage(content="base")
+    request = _build_model_request(_fake_anthropic(), base)
+
+    result = middleware.modify_request(request)
+
+    assert result is request
+    assert result.system_message is base
+
+
+def test_modify_request_uses_custom_template() -> None:
+    """Custom template flows through `modify_request` instead of the default constant."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        system_prompt="CUSTOM-START\n{agent_memory}\nCUSTOM-END",
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+    appended = blocks[-1].get("text", "")
+
+    assert "CUSTOM-START" in appended
+    assert "CUSTOM-END" in appended
+    assert "<agent_memory>" not in appended  # default template marker absent
+
+
+def test_modify_request_cache_control_runs_with_system_prompt_none() -> None:
+    """`add_cache_control` still attaches the breakpoint when `system_prompt=None`."""
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=[],
+        add_cache_control=True,
+        system_prompt=None,
+    )
+    request = _build_model_request(_fake_anthropic(), SystemMessage(content="base"))
+
+    result = middleware.modify_request(request)
+    blocks = _system_blocks(result.system_message)
+
+    assert blocks[-1].get("cache_control") == {"type": "ephemeral"}
+    # No memory fragment was appended on top of `base`.
+    assert "agent_memory" not in blocks[-1].get("text", "")

@@ -1367,6 +1367,66 @@ class TestSubAgents:
         task_tool_message = tool_messages[0]
         assert task_tool_message.content == "Plain text result without structured response"
 
+    def test_fallback_skips_trailing_empty_ai_message(self) -> None:
+        """Skip a trailing empty AIMessage and use the last AIMessage with text.
+
+        Anthropic/Bedrock occasionally emits an empty `end_turn` AIMessage after
+        a successful final tool call. The middleware should walk back to the
+        prior AIMessage carrying the real answer instead of forwarding an empty
+        ToolMessage.
+        """
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [
+                    AIMessage(content="The real answer from the subagent."),
+                    AIMessage(content=""),
+                ],
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Do work",
+                                    "subagent_type": "worker",
+                                },
+                                "id": "call_trailing_empty",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="A worker agent",
+                    runnable=mock_subagent,
+                ),
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Test")]},
+            config={"configurable": {"thread_id": f"test-trailing-empty-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].content == "The real answer from the subagent."
+
     def test_subagent_streaming_emits_messages_and_updates_from_subgraph(self) -> None:
         """Test end-to-end subagent streaming with `subgraphs=True`.
 

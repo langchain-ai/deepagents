@@ -107,61 +107,22 @@ def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
-    return "\n".join(
+    return "".join(
         str(part.get("text", "")) if isinstance(part, dict) else str(part)
         for part in content
     )
 
 
-_HEADING_RE = re.compile(r"^#+\s+")
-_LIST_RE = re.compile(r"^[-*]\s+")
+# Insert a blank line after a `##` heading when the next line is non-blank.
+# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
+# blank line; the fix is on `langchain` `main` and will land in the next
+# release. Drop this normalization once we pin a `langchain` version that
+# includes it.
+_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
 
 
-def _canonicalize_markdown(text: str) -> str:
-    """Canonicalize markdown whitespace so cosmetic differences compare equal.
-
-    Tolerates inconsistent blank-line placement in the generated system prompt
-    against the polished snapshot: ensures one blank line after headings, one
-    blank line before list blocks, collapses 2+ blank lines to one, and ends
-    with a single trailing newline.
-    """
-    lines = [line.rstrip() for line in text.splitlines()]
-
-    after_heading: list[str] = []
-    for i, line in enumerate(lines):
-        after_heading.append(line)
-        if _HEADING_RE.match(line) and i + 1 < len(lines) and lines[i + 1] != "":
-            after_heading.append("")
-
-    before_lists: list[str] = []
-    for line in after_heading:
-        if (
-            _LIST_RE.match(line)
-            and before_lists
-            and before_lists[-1] != ""
-            and not _LIST_RE.match(before_lists[-1])
-            and not _HEADING_RE.match(before_lists[-1])
-        ):
-            before_lists.append("")
-        before_lists.append(line)
-
-    collapsed: list[str] = []
-    prev_blank = False
-    for line in before_lists:
-        if line == "":
-            if not prev_blank:
-                collapsed.append(line)
-            prev_blank = True
-        else:
-            collapsed.append(line)
-            prev_blank = False
-
-    while collapsed and collapsed[0] == "":
-        collapsed.pop(0)
-    while collapsed and collapsed[-1] == "":
-        collapsed.pop()
-
-    return "\n".join(collapsed) + "\n"
+def _normalize_heading_blanks(text: str) -> str:
+    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
 
 
 def _assert_snapshot(
@@ -175,7 +136,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert _canonicalize_markdown(actual) == _canonicalize_markdown(expected)
+    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:
@@ -197,7 +158,7 @@ def _capture_system_prompt(model: _SmokeChatModel) -> str:
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
     assert len(system_messages) >= 1
-    return _system_message_as_text(system_messages[0])
+    return _system_message_as_text(system_messages[0]).rstrip("\n") + "\n"
 
 
 def test_system_prompt_snapshot_no_tools(

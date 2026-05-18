@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -197,3 +198,30 @@ class TestAutoWireIssuesBoard:
         _auto_wire_issues_board_if_hub(cast("DeployConfig", cfg))
 
         assert observed["context_hub_repo_handle"] == "custom-agent"
+
+
+class TestDevParserHost:
+    """Test argparse wiring for the `deepagents dev --host` flag."""
+
+    def _build_parser(self) -> argparse.ArgumentParser:
+        from deepagents_cli.deploy.commands import setup_deploy_parsers
+
+        class _NoopAction(argparse.Action):
+            def __call__(self, *_args: object, **_kwargs: object) -> None:
+                return
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        setup_deploy_parsers(
+            subparsers,
+            make_help_action=lambda _printer: _NoopAction,
+        )
+        return parser
+
+    def test_host_defaults_to_loopback(self) -> None:
+        args = self._build_parser().parse_args(["dev"])
+        assert args.host == "127.0.0.1"
+
+    def test_host_accepts_all_interfaces(self) -> None:
+        args = self._build_parser().parse_args(["dev", "--host", "0.0.0.0"])
+        assert args.host == "0.0.0.0"

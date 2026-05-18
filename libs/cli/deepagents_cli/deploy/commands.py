@@ -433,7 +433,13 @@ def _dev(
         if allow_blocking:
             cmd.append("--allow-blocking")
 
-        print(f"\nStarting langgraph dev on http://{host}:{port}")
+        if host == "0.0.0.0":
+            print(
+                f"\nStarting langgraph dev on http://localhost:{port} "
+                "(bound to 0.0.0.0)"
+            )
+        else:
+            print(f"\nStarting langgraph dev on http://{host}:{port}")
         print(f"Build directory: {build_dir}")
         print(f"Running: {' '.join(cmd)}\n")
 

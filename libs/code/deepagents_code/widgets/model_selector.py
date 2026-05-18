@@ -57,7 +57,16 @@ _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:z-ai/glm-5.1",
     }
 )
-"""Curated frontier-tier models shown in the onboarding picker."""
+"""Hand-curated frontier-tier models promoted across the UI.
+
+Used by the onboarding picker (`curated=True`) and by the in-`/model`
+"Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
+providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
+listed under each provider intentionally so the user can pick whichever
+provider they have credentials for. Keep this set in sync with the
+"Suggested models" table at
+https://docs.langchain.com/oss/python/deepagents/models.
+"""
 
 
 class ModelOption(Static):
@@ -141,16 +150,25 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
+        Binding(
+            "ctrl+r",
+            "toggle_recommended",
+            "Recommended only",
+            show=False,
+            priority=True,
+        ),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Tab copies
     the highlighted spec into the filter input, Enter selects, Ctrl+S
-    toggles the default model, and Esc dismisses. All bindings use
-    `priority=True` so they take precedence over the embedded `Input`;
-    vim-style `j`/`k` bindings are deliberately omitted because they would
-    prevent typing those letters into the always-focused filter input.
+    toggles the default model, Ctrl+R toggles between showing all installed
+    models and the hand-curated "recommended" subset, and Esc dismisses. All
+    bindings use `priority=True` so they take precedence over the embedded
+    `Input`; vim-style `j`/`k` bindings are deliberately omitted because
+    they would prevent typing those letters into the always-focused filter
+    input.
     """
 
     CSS = """
@@ -292,8 +310,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._result_callback = result_callback
+        self._recommended_only = False
 
-        # Model data — populated asynchronously in on_mount via _load_model_data
+        self._unfiltered_models: list[tuple[str, str]] = []
+
         self._all_models: list[tuple[str, str]] = []
         self._filtered_models: list[tuple[str, str]] = []
         self._selected_index = 0
@@ -306,6 +326,44 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._default_spec: str | None = None
         self._profiles: Mapping[str, ModelProfileEntry] = {}
         self._loaded = False
+
+    def _info_line_content(self) -> Content:
+        """Build the info line shown above the filter input.
+
+        Reflects whether the screen is filtered to the recommended subset.
+
+        Returns:
+            Styled `Content` for the info line.
+        """
+        if self._recommended_only:
+            return Content.styled(
+                "Showing recommended models — Ctrl+R for all",
+            )
+        return Content.styled(
+            "Showing models from installed providers — Ctrl+R for recommended",
+        )
+
+    def _help_text(self) -> str:
+        """Build the footer help text.
+
+        Curated/onboarding mode omits the Ctrl+R toggle and uses
+        "Esc skip setup" wording.
+
+        Returns:
+            The bullet-separated help line.
+        """
+        glyphs = get_glyphs()
+        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
+        parts = [
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Enter select",
+            "Ctrl+S set default",
+        ]
+        if not self._curated:
+            parts.append("Ctrl+R recommended")
+        parts.append(esc_label)
+        sep = f" {glyphs.bullet} "
+        return sep.join(parts)
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -328,8 +386,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Yields:
             Widgets for the model selector UI.
         """
-        glyphs = get_glyphs()
-
         with Vertical():
             # Title with current model in provider:model format
             if self._title:
@@ -350,9 +406,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             if not self._curated:
                 yield Static(
-                    Content.styled(
-                        "Showing models from installed providers.",
-                    ),
+                    self._info_line_content(),
                     classes="model-selector-info",
                     id="model-selector-info",
                 )
@@ -371,15 +425,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # Model detail footer
             yield Static("", classes="model-detail-footer", id="model-detail-footer")
 
-            # Help text
-            esc_label = "Esc skip setup" if self._curated else "Esc cancel"
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-                f" {glyphs.bullet} Enter select"
-                f" {glyphs.bullet} Ctrl+S set default"
-                f" {glyphs.bullet} {esc_label}"
-            )
-            yield Static(help_text, classes="model-selector-help")
+            yield Static(self._help_text(), classes="model-selector-help")
 
     @staticmethod
     def _load_model_data(
@@ -409,6 +455,25 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
         return all_models, config.default_model, profiles
+
+    def _apply_subset(
+        self,
+        all_models: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Apply the active subset filter (onboarding or recommended-only).
+
+        Args:
+            all_models: Full list of `(provider:model, provider)` pairs.
+
+        Returns:
+            The list reduced to the recommended subset when either
+                `_curated` (onboarding) or `_recommended_only` (Ctrl+R) is
+                active. Falls back to the full list when no recommended
+                models are installed so the screen is never empty.
+        """
+        if self._curated or self._recommended_only:
+            return self._curate_models(all_models)
+        return list(all_models)
 
     @staticmethod
     def _curate_models(
@@ -473,11 +538,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self.is_running:
             return
 
-        self._all_models = all_models
+        self._unfiltered_models = all_models
         self._default_spec = default_spec
         self._profiles = profiles
-        if self._curated:
-            self._all_models = self._curate_models(self._all_models)
+        self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._loaded = True
@@ -1155,16 +1219,46 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message."""
-        glyphs = get_glyphs()
-        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-            f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} Ctrl+S set default"
-            f" {glyphs.bullet} {esc_label}"
-        )
         help_widget = self.query_one(".model-selector-help", Static)
-        help_widget.update(help_text)
+        help_widget.update(self._help_text())
+
+    async def action_toggle_recommended(self) -> None:
+        """Toggle between the full model list and the recommended subset.
+
+        Disabled while in `_curated` (onboarding) mode — that screen is
+        already constrained to the recommended subset and the user should
+        finish or skip onboarding rather than browse the full list.
+        Preserves the highlighted model when it survives the toggle and
+        falls back to the current/default/first model otherwise.
+        """
+        if self._curated or not self._loaded:
+            return
+
+        prev_spec: str | None = None
+        if self._filtered_models and 0 <= self._selected_index < len(
+            self._filtered_models
+        ):
+            prev_spec = self._filtered_models[self._selected_index][0]
+
+        self._recommended_only = not self._recommended_only
+        self._all_models = self._apply_subset(self._unfiltered_models)
+
+        if self._filter_text.strip():
+            self._update_filtered_list()
+        else:
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+
+        if prev_spec is not None:
+            for i, (spec, _) in enumerate(self._filtered_models):
+                if spec == prev_spec:
+                    self._selected_index = i
+                    break
+
+        info = self.query_one("#model-selector-info", Static)
+        info.update(self._info_line_content())
+
+        await self._update_display()
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

@@ -231,6 +231,109 @@ class TestModelSelectorChrome:
             assert "Esc cancel" in str(help_text.content)
 
 
+class TestRecommendedToggle:
+    """Tests for the Ctrl+R recommended-only toggle in `/model`."""
+
+    async def test_toggle_filters_to_recommended_subset(self) -> None:
+        """Ctrl+R should narrow the list to recommended models."""
+        from deepagents_code.widgets.model_selector import (
+            _FRONTIER_RECOMMENDED_MODELS,
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            full_count = len(screen._filtered_models)
+            assert screen._recommended_only is False
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is True
+            assert (
+                all(
+                    spec in _FRONTIER_RECOMMENDED_MODELS
+                    for spec, _ in screen._filtered_models
+                )
+                or len(screen._filtered_models) == full_count
+            )
+
+    async def test_toggle_round_trip_restores_full_list(self) -> None:
+        """Pressing Ctrl+R twice should return to the full model list."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            original = list(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is False
+            assert screen._filtered_models == original
+
+    async def test_toggle_updates_info_line(self) -> None:
+        """Info line should advertise the inverse state after toggling."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+            assert "Ctrl+R for recommended" in str(info.content)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert "Ctrl+R for all" in str(info.content)
+
+    async def test_toggle_disabled_in_curated_onboarding_mode(self) -> None:
+        """Curated/onboarding mode should ignore Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            before = list(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert screen._recommended_only is False
+            assert screen._filtered_models == before
+
+    async def test_help_text_advertises_toggle_in_standard_mode(self) -> None:
+        """Standard `/model` help footer should mention Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+R" in str(help_text.content)
+
+    async def test_help_text_omits_toggle_in_curated_mode(self) -> None:
+        """Onboarding's curated help footer should not mention Ctrl+R."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+R" not in str(help_text.content)
+
+
 class TestModelSelectorAvailabilityHint:
     """Tests for the API-keys hint shown above the standard model list."""
 

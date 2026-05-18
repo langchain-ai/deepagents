@@ -44,6 +44,7 @@ _TIPS: dict[str, int] = {
     "Use /mcp to see your loaded tools and servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "In /model, press Ctrl+R to filter to recommended models": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
     "Use /skill:<name> to invoke a skill directly": 1,

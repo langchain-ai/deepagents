@@ -1,3 +1,4 @@
+import shutil
 import warnings
 from pathlib import Path
 
@@ -557,6 +558,38 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+def test_grep_ripgrep_glob_with_directory_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for #2732: ripgrep `--glob` patterns with a directory
+    component (e.g. `docs/*.md`) must match when the process cwd differs from
+    the search root.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    root = tmp_path / "project"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "guide.md").write_text("hello world\n")
+    (root / "notes.md").write_text("hello world\n")
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    matches = be.grep("hello", path=str(root), glob="docs/*.md").matches
+    assert matches is not None
+    matched_paths = [m["path"] for m in matches]
+    assert any(p.endswith("docs/guide.md") for p in matched_paths), (
+        f"expected docs/guide.md in {matched_paths}"
+    )
+    assert not any(p.endswith("notes.md") for p in matched_paths), (
+        f"glob should have excluded notes.md but matched {matched_paths}"
+    )
 
 
 class TestToVirtualPath:

@@ -570,7 +570,11 @@ class FilesystemBackend(BackendProtocol):
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
-        cmd.extend(["--", pattern, str(base_full)])
+        # ripgrep resolves --glob patterns against the process cwd, not the
+        # search root, so directory-component globs (e.g. "docs/*.md") fail
+        # silently when cwd != base_full. Run rg from base_full with "." as
+        # the search path so globs anchor correctly. (#2732)
+        cmd.extend(["--", pattern, "."])
 
         try:
             proc = subprocess.run(  # noqa: S603
@@ -579,6 +583,7 @@ class FilesystemBackend(BackendProtocol):
                 text=True,
                 timeout=30,
                 check=False,
+                cwd=str(base_full),
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
             return None
@@ -595,7 +600,11 @@ class FilesystemBackend(BackendProtocol):
             ftext = pdata.get("path", {}).get("text")
             if not ftext:
                 continue
-            p = Path(ftext)
+            # rg now runs with cwd=base_full and search path ".", so it emits
+            # paths relative to base_full. Re-anchor to absolute so virtual /
+            # normal mode path handling below sees the same shape as before.
+            raw = Path(ftext)
+            p = raw if raw.is_absolute() else (base_full / raw).resolve()
             if self.virtual_mode:
                 try:
                     virt = self._to_virtual_path(p)

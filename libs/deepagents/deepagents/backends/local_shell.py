@@ -110,6 +110,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
+        shell_executable: str | None = None,
     ) -> None:
         """Initialize local shell backend with filesystem access.
 
@@ -157,6 +158,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             inherit_env: Whether to inherit the parent process's environment variables.
                 When False (default), only variables in `env` dict are available.
                 When True, inherits all `os.environ` variables and applies `env` overrides.
+
+            shell_executable: Path to the shell executable to use for command execution.
+                When None (default), uses the system default (`/bin/sh` on most systems).
+                Set to `"zsh"` to use zsh, `"bash"` for bash, etc.
 
         Raises:
             ValueError: If timeout is not positive.
@@ -208,6 +213,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         # Generate unique sandbox ID
         self._sandbox_id = f"local-{uuid.uuid4().hex[:8]}"
+        self._shell_executable = shell_executable
 
     @property
     def id(self) -> str:
@@ -223,6 +229,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         command: str,
         *,
         timeout: int | None = None,
+        shell_executable: str | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
@@ -252,6 +259,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 **Security:** This string is passed directly to the shell. Agents can
                 execute arbitrary commands including pipes, redirects, command
                 substitution, etc.
+            shell_executable: Maximum time in seconds to wait for this command.
+
+                Overrides the default timeout set at init and the instance-level
+                `shell_executable` setting.
+
+                If None, uses the instance-level setting.
             timeout: Maximum time in seconds to wait for this command.
 
                 Overrides the default timeout set at init.
@@ -287,6 +300,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             # Override timeout for long-running commands
             result = backend.execute("make build", timeout=300)
 
+            # Use zsh instead of the default shell
+            result = backend.execute("ls -la", shell_executable="zsh")
+
+
             # Commands run in root_dir, but can access any path
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
@@ -304,17 +321,34 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
-            result = subprocess.run(  # noqa: S602
-                command,
-                check=False,
-                shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
-                text=True,
-                timeout=effective_timeout,
-                env=self._env,
-                cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-            )
+            effective_shell = shell_executable if shell_executable is not None else self._shell_executable
+
+            if effective_shell:
+                # Use specified shell executable with -c flag
+                result = subprocess.run(  # noqa: S603
+                    [effective_shell, "-c", command],
+                    check=False,
+                    shell=False,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    timeout=effective_timeout,
+                    env=self._env,
+                    cwd=str(self.cwd),
+                )
+            else:
+                # Use system shell (shell=True)
+                result = subprocess.run(  # noqa: S602
+                    command,
+                    check=False,
+                    shell=True,  # Intentional: designed for LLM-controlled shell execution
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
+                    text=True,
+                    timeout=effective_timeout,
+                    env=self._env,
+                    cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
+                )
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.

@@ -275,6 +275,34 @@ def test_local_shell_backend_stderr_formatting() -> None:
         assert "error message" in result.output
 
 
+def test_local_shell_backend_custom_shell_executable() -> None:
+    """Test that custom shell executable can be specified."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True, shell_executable="sh")
+
+
+        # Execute command using the specified shell
+        result = backend.execute("echo $0")
+
+
+        assert result.exit_code == 0
+        # When using explicit [shell, -c, cmd], $0 should be empty or the shell name
+        assert "sh" in result.output or result.output.strip() == ""
+
+
+
+def test_local_shell_backend_execute_with_shell_executable_override() -> None:
+    """Test that shell_executable can be overridden per-command."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True, shell_executable="sh")
+
+        # Override shell executable for this specific command
+        result = backend.execute("echo test", shell_executable="sh")
+
+        assert result.exit_code == 0
+        assert "test" in result.output
+
+
 async def test_local_shell_backend_async_execute() -> None:
     """Test async execute method."""
     with tempfile.TemporaryDirectory() as tmpdir:

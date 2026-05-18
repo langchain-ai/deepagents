@@ -1,0 +1,252 @@
+"""Tests for exception handling improvements in CLI modules.
+
+These tests verify that:
+1. Exceptions are properly logged at DEBUG level
+2. Specific exception types are caught instead of bare Exception
+3. The code behaves correctly when exceptions occur
+4. Tavily-specific exceptions are handled in web_search
+"""
+
+import ast
+import logging
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from tavily import BadRequestError, InvalidAPIKeyError, UsageLimitExceededError
+from tavily.errors import TimeoutError as TavilyTimeoutError
+
+from deepagents_code.file_ops import FileOpTracker, _safe_read
+from deepagents_code.media_utils import (
+    _get_clipboard_via_osascript,
+    _get_macos_clipboard_image,
+    logger as media_utils_logger,
+)
+from deepagents_code.tools import web_search
+
+
+class TestToolsExceptionHandling:
+    """Test exception handling in CLI tools."""
+
+    def test_web_search_handles_tavily_usage_limit_error(self):
+        """Test that web_search catches Tavily UsageLimitExceededError."""
+        mock_client = MagicMock()
+        mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
+            result = web_search("test query")
+
+        assert "error" in result
+        assert "Rate limit" in result["error"]
+        assert result["query"] == "test query"
+
+    def test_web_search_handles_tavily_invalid_api_key(self):
+        """Test that web_search catches Tavily InvalidAPIKeyError."""
+        mock_client = MagicMock()
+        mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
+            result = web_search("test query")
+
+        assert "error" in result
+        assert "Invalid key" in result["error"]
+
+    def test_web_search_handles_tavily_bad_request(self):
+        """Test that web_search catches Tavily BadRequestError."""
+        mock_client = MagicMock()
+        mock_client.search.side_effect = BadRequestError("Bad request")
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
+            result = web_search("test query")
+
+        assert "error" in result
+        assert "Bad request" in result["error"]
+
+    def test_web_search_handles_tavily_timeout(self):
+        """Test that web_search catches Tavily TimeoutError."""
+        mock_client = MagicMock()
+        mock_client.search.side_effect = TavilyTimeoutError(30.0)
+        with patch(
+            "deepagents_code.tools._get_tavily_client", return_value=mock_client
+        ):
+            result = web_search("test query")
+
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+
+
+class TestFileOpsExceptionHandling:
+    """Test exception handling in file_ops."""
+
+    def test_file_op_tracker_handles_backend_failure(self, caplog):
+        """Test that FileOpTracker logs backend failures."""
+        # Create tracker with a mock backend that fails
+        mock_backend = MagicMock()
+        mock_backend.download_files.side_effect = OSError("Backend error")
+
+        tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
+
+        with caplog.at_level(logging.DEBUG):
+            tracker.start_operation(
+                "write_file",
+                {"file_path": "/test.txt", "content": "test"},
+                "tool_call_123",
+            )
+
+        # Should have recorded the operation (with empty before_content due to failure)
+        assert "tool_call_123" in tracker.active
+        record = tracker.active["tool_call_123"]
+        assert record.before_content == ""
+
+        # Verify the error was logged
+        assert "Failed to read before_content" in caplog.text
+        assert "Backend error" in caplog.text
+
+    def test_file_op_tracker_handles_attribute_error(self, caplog):
+        """Test that FileOpTracker handles AttributeError properly."""
+        # Create tracker with a mock backend that raises AttributeError
+        mock_backend = MagicMock()
+        mock_backend.download_files.side_effect = AttributeError("Missing attribute")
+
+        tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
+
+        with caplog.at_level(logging.DEBUG):
+            tracker.start_operation(
+                "edit_file",
+                {"file_path": "/test.txt", "old_string": "a", "new_string": "b"},
+                "tool_call_456",
+            )
+
+        # Should have recorded the operation with empty before_content
+        assert "tool_call_456" in tracker.active
+        record = tracker.active["tool_call_456"]
+        assert record.before_content == ""
+
+        # Verify the error was logged
+        assert "Failed to read before_content" in caplog.text
+        assert "Missing attribute" in caplog.text
+
+    def test_file_op_tracker_handles_unicode_decode_error(self, caplog):
+        """Test that FileOpTracker handles UnicodeDecodeError for binary files."""
+        # Create tracker with a mock backend that returns binary data
+        mock_backend = MagicMock()
+        mock_response = MagicMock()
+        mock_response.content = b"\xff\xfe\x00\x01"  # Invalid UTF-8
+        mock_response.error = None
+        mock_backend.download_files.return_value = [mock_response]
+
+        tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
+
+        with caplog.at_level(logging.DEBUG):
+            tracker.start_operation(
+                "write_file",
+                {"file_path": "/test.bin", "content": "test"},
+                "tool_call_789",
+            )
+
+        # Should have recorded the operation with empty before_content
+        assert "tool_call_789" in tracker.active
+        record = tracker.active["tool_call_789"]
+        assert record.before_content == ""
+
+        # Verify the error was logged
+        assert "Failed to read before_content" in caplog.text
+
+    def test_safe_read_logs_on_failure(self, caplog, tmp_path):
+        """Test that _safe_read logs when file read fails."""
+        # Test with non-existent file
+        nonexistent = tmp_path / "does_not_exist.txt"
+
+        with caplog.at_level(logging.DEBUG):
+            result = _safe_read(nonexistent)
+
+        assert result is None
+        assert "Failed to read file" in caplog.text
+
+
+class TestMediaUtilsExceptionHandling:
+    """Test exception handling in media utilities."""
+
+    def test_media_utils_logger_exists(self):
+        """Test that media_utils module has proper logging configured."""
+        assert media_utils_logger is not None
+        assert media_utils_logger.name == "deepagents_code.media_utils"
+
+    def test_media_utils_exception_types(self):
+        """Test that media_utils uses proper exception types."""
+        # Read the source file and check exception handling
+        source_path = (
+            Path(__file__).parent.parent.parent / "deepagents_code" / "media_utils.py"
+        )
+        source = source_path.read_text()
+        tree = ast.parse(source)
+
+        # Find all except handlers - bare excepts have type=None
+        bare_excepts = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ExceptHandler) and node.type is None
+        ]
+
+        # Should have no bare excepts after our fix
+        assert len(bare_excepts) == 0, f"Found bare except at lines: {bare_excepts}"
+
+    def test_pngpaste_timeout_logs_and_returns_none(self, caplog):
+        """Test that pngpaste timeout is logged and function falls back."""
+        with (
+            patch("deepagents_code.media_utils._get_executable") as mock_exec,
+            patch("subprocess.run") as mock_run,
+            patch(
+                "deepagents_code.media_utils._get_clipboard_via_osascript"
+            ) as mock_osascript,
+        ):
+            mock_exec.return_value = "/usr/local/bin/pngpaste"
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="pngpaste", timeout=2)
+            mock_osascript.return_value = None
+
+            with caplog.at_level(logging.DEBUG):
+                result = _get_macos_clipboard_image()
+
+            assert result is None
+            assert "pngpaste timed out" in caplog.text
+
+    def test_pngpaste_not_found_logs_and_falls_back(self, caplog):
+        """Test that FileNotFoundError for pngpaste is logged."""
+        with (
+            patch("deepagents_code.media_utils._get_executable") as mock_exec,
+            patch("subprocess.run") as mock_run,
+            patch(
+                "deepagents_code.media_utils._get_clipboard_via_osascript"
+            ) as mock_osascript,
+        ):
+            mock_exec.return_value = "/usr/local/bin/pngpaste"
+            mock_run.side_effect = FileNotFoundError("pngpaste")
+            mock_osascript.return_value = None
+
+            with caplog.at_level(logging.DEBUG):
+                result = _get_macos_clipboard_image()
+
+            assert result is None
+            assert "pngpaste not found" in caplog.text
+
+    def test_osascript_timeout_logs_and_returns_none(self, caplog):
+        """Test that osascript timeout is logged."""
+        with (
+            patch("deepagents_code.media_utils._get_executable") as mock_exec,
+            patch("subprocess.run") as mock_run,
+            patch("tempfile.mkstemp") as mock_mkstemp,
+            patch("os.close"),
+        ):
+            mock_exec.return_value = "/usr/bin/osascript"
+            mock_mkstemp.return_value = (5, "/tmp/test.png")
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="osascript", timeout=2)
+
+            with caplog.at_level(logging.DEBUG):
+                result = _get_clipboard_via_osascript()
+
+            assert result is None
+            assert "osascript timed out" in caplog.text

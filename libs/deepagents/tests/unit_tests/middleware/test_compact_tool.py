@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, NonCallableMagicMock, patch
 
-from langchain_core.messages import AIMessage, HumanMessage
+import pytest
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.types import Command
 
 from deepagents.middleware.summarization import (
+    SUMMARIZATION_SYSTEM_PROMPT,
     SummarizationMiddleware,
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -635,3 +638,74 @@ def test_create_summarization_tool_middleware_returns_instance() -> None:
 
     assert isinstance(mw, SummarizationToolMiddleware)
     assert mw.tools[0].name == "compact_conversation"
+
+
+# --- system_prompt override / suppression --------------------------------
+
+
+class TestSystemPromptOverride:
+    """Verify the `system_prompt` ctor arg controls the nudge fragment."""
+
+    def test_init_rejects_non_str_system_prompt(self) -> None:
+        """`system_prompt` must be str or None."""
+        with pytest.raises(TypeError, match="must be str or None"):
+            SummarizationToolMiddleware(_make_summarization_middleware(), system_prompt=0)  # type: ignore[arg-type]
+
+    def test_wrap_model_call_appends_default_nudge(self) -> None:
+        """Baseline: default `system_prompt` appends the standard nudge text."""
+        mw = _make_middleware()
+        captured: dict[str, ModelRequest] = {}
+
+        def handler(req: ModelRequest) -> None:
+            captured["req"] = req
+
+        request = ModelRequest(
+            model=GenericFakeChatModel(messages=iter([])),
+            messages=[HumanMessage(content="hi")],
+            system_message=SystemMessage(content="base"),
+            state={"messages": []},
+        )
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
+        appended = list(captured["req"].system_message.content_blocks)[-1].get("text", "")  # type: ignore[union-attr]
+        assert SUMMARIZATION_SYSTEM_PROMPT in appended
+
+    def test_wrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
+        """`system_prompt=None` passes the request through untouched."""
+        summ = _make_summarization_middleware()
+        mw = SummarizationToolMiddleware(summ, system_prompt=None)
+        captured: dict[str, ModelRequest] = {}
+
+        def handler(req: ModelRequest) -> None:
+            captured["req"] = req
+
+        base = SystemMessage(content="base")
+        request = ModelRequest(
+            model=GenericFakeChatModel(messages=iter([])),
+            messages=[HumanMessage(content="hi")],
+            system_message=base,
+            state={"messages": []},
+        )
+        mw.wrap_model_call(request, handler)  # type: ignore[arg-type]
+        # Untouched: same request and same system_message identity.
+        assert captured["req"] is request
+        assert captured["req"].system_message is base
+
+    async def test_awrap_model_call_skips_appending_when_system_prompt_none(self) -> None:
+        """`system_prompt=None` passes the async request through untouched."""
+        summ = _make_summarization_middleware()
+        mw = SummarizationToolMiddleware(summ, system_prompt=None)
+        captured: dict[str, ModelRequest] = {}
+
+        async def handler(req: ModelRequest) -> None:
+            captured["req"] = req
+
+        base = SystemMessage(content="base")
+        request = ModelRequest(
+            model=GenericFakeChatModel(messages=iter([])),
+            messages=[HumanMessage(content="hi")],
+            system_message=base,
+            state={"messages": []},
+        )
+        await mw.awrap_model_call(request, handler)  # type: ignore[arg-type]
+        assert captured["req"] is request
+        assert captured["req"].system_message is base

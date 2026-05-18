@@ -14,7 +14,6 @@ This document describes the release process for packages in the Deep Agents mono
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
 | `langchain-quickjs` | `libs/partners/quickjs` | `langchain-quickjs` | [`langchain-quickjs`](https://pypi.org/project/langchain-quickjs/) |
-| `langchain-repl` | `libs/repl` | `langchain-repl` | [`langchain-repl`](https://pypi.org/project/langchain-repl/) |
 
 ## Overview
 
@@ -46,7 +45,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> **(CLI only)** The CLI pins an exact `deepagents==` version in `libs/cli/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version the CLI actually requires. See [Release Failed: CLI SDK Pin Mismatch](#release-failed-cli-sdk-pin-mismatch) for recovery if a mismatch slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
 
 ### Version Bumping
 
@@ -126,7 +125,7 @@ Mark a change as breaking using either form supported by Conventional Commits �
    `Backend.fetch`, which returns a `FetchResult` instead of raw bytes.
    ```
 
-The two forms should be combined, as shown above. The `!` makes the breaking nature obvious in `git log` and PR titles, and the footer body becomes the migration note that release-please surfaces under `⚠ BREAKING CHANGES`.
+The `!` alone is sufficient to trigger the version bump. The `BREAKING CHANGE:` footer is optional — it only changes what text appears under the `⚠ BREAKING CHANGES` heading in the changelog. Without the footer, that entry is just the commit subject; with it, the entry becomes your footer text (use this to spell out the migration). Combine both whenever the migration path isn't obvious from the subject alone — the `!` makes the breaking nature obvious in `git log` and PR titles, and the footer carries the migration instructions.
 
 > [!IMPORTANT]
 > All packages are pre-1.0, so a breaking change bumps the **minor** version, not the major (see [Version Bumping](#version-bumping)). The change is still flagged as `⚠ BREAKING CHANGES` at the top of the release notes regardless of the resulting version bump.
@@ -156,8 +155,7 @@ Tracks the current version of each package. Automatically updated by release-ple
   "libs/partners/daytona": "0.0.5",
   "libs/partners/modal": "0.0.3",
   "libs/partners/runloop": "0.0.4",
-  "libs/partners/quickjs": "0.0.1",
-  "libs/repl": "0.0.1"
+  "libs/partners/quickjs": "0.0.1"
 }
 ```
 
@@ -207,14 +205,73 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 1. Go to **Actions** > `⚠️ Manual Package Release`
 2. Click **Run workflow**
 3. Select the package to release
-4. **Provide `version`**: the version being released (e.g. `0.0.35`). This is required and used for the run name and a sanity-check warning against `pyproject.toml` — it does not control the released version.
-5. **Provide `release-sha`**: the SHA of the release-PR merge commit. Look it up with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The workflow validates the commit's subject matches `release(<package>): <version>` and refuses to run otherwise.
-6. (Optionally enable `dangerous-nonmain-release` for hotfix branches AKA not `main` — when set, `release-sha` may be left empty and the dispatched HEAD is used instead. Validation is skipped.)
+4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
+5. **Provide `release-sha`**: the commit to publish. Usually this is the release-please PR's merge commit. Find it with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. If a release failed before anything reached PyPI, you can also use the hotfix commit you merged afterward. See [Hotfix Protocol > Case A](#case-a--release-failed-before-pypi-publish) for that recovery flow.
+6. (Optionally enable `dangerous-nonmain-release` for hotfix branches that are not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
 
 > [!WARNING]
-> Manual releases should be rare. Prefer the standard release-please flow for managed packages. Manual dispatch bypasses the changelog detection in `release-please.yml` and skips the lockfile update job. Only use it for recovery scenarios (e.g., the release workflow failed after the release PR was already merged).
+> Manual releases should be rare. Prefer the normal release-please flow whenever possible. Use this workflow mainly for recovery, such as when the release workflow failed after the release PR was already merged!
 >
-> **Why `release-sha` is required:** when the auto-triggered release fails (e.g., at `pre-release-checks`) and you re-run via `workflow_dispatch`, `github.sha` resolves to whatever HEAD is at dispatch time — *not* the original release commit. Without `release-sha`, the GitHub release tag would land on an unrelated commit, which breaks release-please's tag-anchored changelog generation on the next run. release-please walks history back from the most recent tag for each package; if the tag sits on the wrong commit, the next run either includes commits that already shipped or treats the package as un-released and (incorrectly) regenerates the full changelog. The `setup` job's `Resolve and validate release SHA` step enforces this and refuses to run when the input is missing or doesn't match a `release(<package>): <version>` commit.
+> **Why `release-sha` matters:** it tells the workflow exactly which commit to build, test, publish, and tag. That keeps the PyPI package and the GitHub tag pointing at the same code. The workflow also checks that the selected commit declares the version you are releasing.
+
+## Hotfix Protocol
+
+Something went wrong with a release. This section tells you what to do.
+
+The right answer depends on a single question: **is the broken version already on PyPI?**
+
+- **No** → [Case A](#case-a--release-failed-before-pypi-publish): the release workflow failed partway through. Nothing public, you have options.
+- **Yes** → [Case B](#case-b--bug-found-after-pypi-publish): the bad version is out there. You'll ship a new patch version.
+
+> [!IMPORTANT]
+> **The rule we have to maintain:** a version should mean one exact thing. If `mypackage==1.2.3` is on PyPI, then the GitHub tag for `mypackage==1.2.3` must point at the same code.
+>
+> PyPI does its part automatically: once a version is uploaded, you cannot upload different files for that same version. GitHub tags are easier to move by accident, so we have to be careful. Do not move or recreate a tag for a version that is already on PyPI. If a shipped release needs a fix, ship a new version.
+>
+> Why it matters: if PyPI and GitHub disagree, different users can install different code for the same version without knowing it. See [Why one version = one artifact](#why-one-version--one-artifact) at the end of this section.
+
+### Case A — Release failed before PyPI publish
+
+The release-please PR was merged, but the release workflow failed before publishing anything. PyPI does not have the package yet, and no GitHub release was created.
+
+Because nothing was published, you still get to decide what eventually goes out as this version. The fix:
+
+1. **Figure out why the release failed.** Look at the workflow run logs.
+2. **Open a PR with the fix.** Use a `hotfix(<scope>): <description>` title so it doesn't trigger another release PR update. Merge it to `main`.
+   - Important: leave `pyproject.toml`'s version exactly as the release-please PR set it. The hotfix should only fix the problem that broke the release.
+3. **Manually re-dispatch the release workflow** ([Manual Release](#manual-release)). Pass `release-sha` = `main`'s HEAD (the hotfix commit). The workflow will build, publish, and tag that commit.
+4. **Confirm the label swap.** The `mark-release` job swaps the original release-please PR's `autorelease: pending` label to `autorelease: tagged` — it finds the right PR via a fallback label search, even though `release-sha` points at the hotfix commit, not the release-please commit. Double-check the original release-please PR in GitHub after the workflow succeeds. If the label didn't swap, fix it by hand — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
+
+> [!NOTE]
+> The git tag for the version ends up on the hotfix commit, not on the earlier release-please commit. That is okay: the hotfix commit is the code that actually shipped.
+
+### Case B — Bug found *after* PyPI publish
+
+The version is published.
+
+**Do not:**
+
+- Re-run the manual release workflow against the same version (PyPI will reject it anyway).
+- Delete and re-create the git tag.
+- Open a PR titled something like `hotfix(sdk): bump _version.py` and try to push out a "corrected" version with the same number.
+
+**Do this instead:**
+
+1. Open a normal `fix(<scope>): <description>` PR with the fix. Merge it to `main`.
+2. release-please will open (or update) the next release PR — something like `release(<package>): <next-patch>`. Merge it. The standard auto-release flow handles PyPI and the GitHub tag.
+3. If the broken release is actively harmful (security hole, won't install, corrupts data), also [yank it from PyPI](#yanking-a-release). Yanking hides a version from default installs but keeps it findable for anyone who pinned it explicitly. You don't need to delete the GitHub tag — leaving it preserves an audit trail.
+
+That's it. The new patch version has its own commit, tag, and wheel. The broken version stays exactly as it was when it shipped.
+
+#### Why one version = one artifact
+
+If the GitHub tag for `<version>` points at different code than the PyPI package for `<version>`, users get different software depending on how they install it:
+
+- `pip install <pkg>==<version>` → gets the PyPI wheel.
+- `pip install git+https://.../<repo>@<pkg>==<version>` → gets whatever's at the GitHub tag.
+- `git checkout <pkg>==<version>` (vendored copies, distro packagers, security tools pinning by SHA) → also gets the GitHub tag's code.
+
+When these disagree, the same version can behave differently for different users. The workflow pinning and the "never re-release a version" rule are there to prevent that.
 
 ## Alpha / Beta / Pre-release Versions
 
@@ -253,7 +310,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
-   - (CLI only): leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
 5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
 
@@ -415,26 +472,27 @@ The label update is non-fatal in the workflow (`|| true`), so the release itself
 
 ### Release Failed: Pre-release Checks
 
-If the `pre-release-checks` job fails (unit tests, integration tests, or import verification), nothing has been published yet — neither Test PyPI nor PyPI have the package. The release PR is already merged, so the normal release-please flow won't re-trigger.
+The `pre-release-checks` job runs after the package is built but before anything is published. If it fails, nothing reached PyPI or GitHub Releases, but the release PR is already merged. release-please will not retry on its own. This is **Case A** in the [Hotfix Protocol](#case-a--release-failed-before-pypi-publish).
 
-**To fix:**
+**Steps:**
 
-1. **Inspect the failure** in the workflow run logs. Pre-release checks install the built wheel into a fresh venv (no cache) and run:
-   - Package import verification (`python -c "import <pkg>"`)
-   - Unit tests (`make test`)
-   - Integration tests (`make integration_test`, if the target exists)
+1. **Look at the workflow logs** to see why it failed. Pre-release checks install the built package in a clean environment and run:
+   - `python -c "import <pkg>"` — does the package even import?
+   - `make test` — do the unit tests pass against the built wheel?
+   - `make integration_test` (if defined) — do the integration tests pass?
 
-2. **Fix the issue on `main`** — open a PR titled `hotfix(<scope>): <description>`. This won't re-trigger the release because the commit doesn't modify the package's `CHANGELOG.md`.
+2. **Open a `hotfix(<scope>): <description>` PR with the fix.** Merge it to `main` on top of the release-please commit. **Leave `pyproject.toml`'s version exactly as the release-please PR set it.**
 
-3. **Manually trigger the release:**
-   - Go to **Actions** > `⚠️ Manual Package Release`
-   - Click **Run workflow**
-   - Select `main` branch and the affected package
+3. **Manually re-dispatch the release** ([Manual Release](#manual-release)). Pass:
+   - `version` = the same version you were originally trying to release.
+   - `release-sha` = `main` HEAD (the hotfix commit you just merged).
 
-4. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job swaps this automatically (even on manual dispatch), but check the workflow logs to confirm. If it emitted a warning that the label swap failed, fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If this label isn't swapped, release-please will not create new release PRs.**
+   The workflow will build, test, publish, and tag that commit.
+
+4. **Confirm the label swap.** The `mark-release` job should change the original release-please PR from `autorelease: pending` to `autorelease: tagged`. If the swap didn't happen, fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label).
 
 > [!TIP]
-> Because pre-release checks run against the built wheel (not the editable install), failures here sometimes indicate missing files in the package manifest or undeclared dependencies that happen to be present locally. Check `pyproject.toml` `[tool.setuptools.packages]` and dependency lists if the failure is an import error rather than a test assertion.
+> Pre-release checks run against the *built wheel*, not against your editable working copy. That means failures here often point at missing files in the wheel or undeclared dependencies — things that worked locally because they were sitting in your venv but didn't get packaged. If the failure is an import error rather than a test assertion, check the `packages` config in `pyproject.toml` and the declared dependencies first.
 
 ### Re-releasing a Version
 
@@ -470,35 +528,35 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
 
-### Release Failed: CLI SDK Pin Mismatch
+### Release Failed: Code SDK Pin Mismatch
 
-If the release workflow fails at the "Verify CLI pins latest SDK version" step with:
+If the release workflow fails at the "Verify package pins latest SDK version" step with:
 
 ```txt
-CLI SDK pin does not match SDK version!
+deepagents-code SDK pin does not match SDK version!
 SDK version (libs/deepagents/pyproject.toml): 0.4.2
-CLI SDK pin (libs/cli/pyproject.toml): 0.4.1
+deepagents-code SDK pin (libs/code/pyproject.toml): 0.4.1
 ```
 
-This means the CLI's pinned `deepagents` dependency in `libs/cli/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the CLI's pin isn't updated before the CLI release PR is merged.
+This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged.
 
 **To fix:**
 
 1. **Hotfix the pin on `main`:**
 
    ```bash
-   # Update the pin in libs/cli/pyproject.toml
+   # Update the pin in libs/code/pyproject.toml
    # e.g., change deepagents==0.4.1 to deepagents==0.4.2
-   cd libs/cli && uv lock
-   git add libs/cli/pyproject.toml libs/cli/uv.lock
-   git commit -m "hotfix(cli): bump SDK pin to <VERSION>"
+   cd libs/code && uv lock
+   git add libs/code/pyproject.toml libs/code/uv.lock
+   git commit -m "hotfix(code): bump SDK pin to <VERSION>"
    git push origin main
    ```
 
-2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/cli/CHANGELOG.md`):
+2. **Manually trigger the release** (the push to `main` won't re-trigger the release because the commit doesn't modify `libs/code/CHANGELOG.md`):
    - Go to **Actions** > `⚠️ Manual Package Release`
    - Click **Run workflow**
-   - Select `main` branch and `deepagents-cli` package
+   - Select `main` branch and `deepagents-code` package
 
 3. **Verify the `autorelease: pending` label was swapped.** The `mark-release` job will attempt to find the release PR by label and update it automatically, even on manual dispatch. If the label wasn't swapped (e.g., the job failed), fix it manually — see [Release PR Stuck with "autorelease: pending" Label](#release-pr-stuck-with-autorelease-pending-label). **If you skip this step, release-please will not create new release PRs.**
 

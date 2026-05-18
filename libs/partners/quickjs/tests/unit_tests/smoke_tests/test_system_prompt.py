@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
@@ -12,7 +13,7 @@ from langchain_core.tools import tool
 from pydantic import Field
 from typing_extensions import TypedDict
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -106,10 +107,22 @@ def _system_message_as_text(message: SystemMessage) -> str:
     content = message.content
     if isinstance(content, str):
         return content
-    return "\n".join(
+    return "".join(
         str(part.get("text", "")) if isinstance(part, dict) else str(part)
         for part in content
     )
+
+
+# Insert a blank line after a `##` heading when the next line is non-blank.
+# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
+# blank line; the fix is on `langchain` `main` and will land in the next
+# release. Drop this normalization once we pin a `langchain` version that
+# includes it.
+_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
+
+
+def _normalize_heading_blanks(text: str) -> str:
+    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
 
 
 def _assert_snapshot(
@@ -123,7 +136,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert actual == expected
+    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:
@@ -145,7 +158,7 @@ def _capture_system_prompt(model: _SmokeChatModel) -> str:
     messages = history[0]["messages"]
     system_messages = [m for m in messages if isinstance(m, SystemMessage)]
     assert len(system_messages) >= 1
-    return _system_message_as_text(system_messages[0])
+    return _system_message_as_text(system_messages[0]).rstrip("\n") + "\n"
 
 
 def test_system_prompt_snapshot_no_tools(
@@ -154,7 +167,7 @@ def test_system_prompt_snapshot_no_tools(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[REPLMiddleware()],
+        middleware=[CodeInterpreterMiddleware()],
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
@@ -176,7 +189,7 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
     model = _smoke_model()
     agent = create_deep_agent(
         model=model,
-        middleware=[REPLMiddleware(ptc=mixed_tools)],
+        middleware=[CodeInterpreterMiddleware(ptc=mixed_tools)],
         tools=mixed_tools,
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})

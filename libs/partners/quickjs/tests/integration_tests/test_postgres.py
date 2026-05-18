@@ -13,7 +13,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import Field
 
-from langchain_quickjs import REPLMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 try:
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -139,7 +139,7 @@ async def test_ptc_task_with_postgres_checkpointer_keeps_loop_affinity(
                         }
                     ],
                 ),
-                REPLMiddleware(ptc=["task"]),
+                CodeInterpreterMiddleware(ptc=["task"]),
             ],
             checkpointer=checkpointer,
         )

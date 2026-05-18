@@ -2,6 +2,15 @@
 
 > Generated: 2026-03-28 | Commit: e859077f | Scope: libs/cli only
 
+> ⚠️ **(2026-05-15):** This document was generated before the
+> 0.1.0 split that moved the interactive REPL out of `deepagents-cli`. The
+> sections covering the Textual app, `non_interactive.py`, MCP, sandbox
+> bootstrap, sessions, server subprocess management, hooks, and skills no
+> longer apply to this package — those surfaces now live under
+> [`libs/code/`](../code/THREAT_MODEL.md). The remaining in-scope surface is
+> `deepagents_cli.deploy` (bundler, templates, hub seeding) and the slim
+> `_load_dotenv`/`resolve_env_var` helpers in `config.py`/`model_config.py`.
+
 > **Disclaimer:** This threat model is automatically generated to help developers and security researchers understand where trust is placed in this system and where boundaries exist. It is experimental, subject to change, and not an authoritative security reference — findings should be validated before acting on them. The analysis may be incomplete or contain inaccuracies. We welcome suggestions and corrections to improve this document.
 
 ## Scope
@@ -57,7 +66,7 @@
 
 ### Architecture Diagram
 
-```
+```txt
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        User (local machine)                          │
 │                                                                      │
@@ -138,6 +147,7 @@
 | C17 | Model Config Loader         | Resolves model provider, supports `class_path` for arbitrary `BaseChatModel` instantiation via `importlib`          | user-controlled      | N/A      | `config.create_model`, `config._create_model_from_class`, `model_config.ModelConfig.load`         |
 
 **Notes:**
+
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
 2. MCP servers only load if `.mcp.json` config files are present.
 3. Hooks only execute if `~/.deepagents/hooks.json` exists.

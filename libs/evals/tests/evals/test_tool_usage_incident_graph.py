@@ -14,8 +14,7 @@ from deepagents import create_deep_agent
 from langchain.agents.middleware.types import ToolCallRequest, wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException, tool
-from langchain_quickjs import REPLMiddleware
-from langchain_repl.middleware import ReplMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -33,7 +32,7 @@ from tests.evals.utils import (
 pytestmark = [
     pytest.mark.eval_category("tool_use"),
     pytest.mark.eval_tier("baseline"),
-    pytest.mark.repl("quickjs", "langchain"),
+    pytest.mark.repl("quickjs"),
 ]
 
 
@@ -767,10 +766,8 @@ def _create_agent(model: BaseChatModel, repl_name: str | None):
     """Create an agent implementation."""
     middleware = [_incident_graph_tool_error_middleware]
     tools = None
-    if repl_name == "langchain":
-        middleware.append(ReplMiddleware(ptc=INCIDENT_GRAPH_TOOLS, add_ptc_docs=True))
-    elif repl_name == "quickjs":
-        middleware.append(REPLMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
+    if repl_name == "quickjs":
+        middleware.append(CodeInterpreterMiddleware(ptc=INCIDENT_GRAPH_TOOLS))
     elif repl_name is None:
         tools = INCIDENT_GRAPH_TOOLS
     else:

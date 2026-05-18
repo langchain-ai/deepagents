@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.6.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.0...deepagents==0.6.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* **sdk:** import profile re-exports from leaf modules ([#3377](https://github.com/langchain-ai/deepagents/issues/3377)) ([ca99391](https://github.com/langchain-ai/deepagents/commit/ca99391668ea1510932f8e9097e8ed3c0caadf73))
+
+## [0.6.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.9...deepagents==0.6.0) (2026-05-12)
+
+
+### Features
+
+* **[`CodeInterpreterMiddleware`](https://pypi.org/project/langchain-quickjs)**: (experimental) `deepagents` now supports code execution and programmatic tool calling through a scoped QuickJS runtime. Install via the optional dependency: `deepagents[quickjs]`.
+* Support for `version="v3"` in `stream_events` / `astream_events`. Refer to the [event streaming](https://docs.langchain.com/oss/python/deepagents/event-streaming) guide for details.
+
+## [0.5.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.8...deepagents==0.5.9) (2026-05-10)
+
+### Bug Fixes
+
+* Import profile symbols directly from `harness_profiles` ([#3291](https://github.com/langchain-ai/deepagents/issues/3291)) ([503453c](https://github.com/langchain-ai/deepagents/commit/503453c06f7e0545914789a07ddba6ca6b0c8ec5))
+
 ## [0.5.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.7...deepagents==0.5.8) (2026-05-08)
 
 ### Bug Fixes

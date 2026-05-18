@@ -16,14 +16,24 @@ permissions:
 jobs:
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
+    if: github.repository_owner == 'langchain-ai'
+    permissions:
+      contents: read
+      # Required for CodSpeed OIDC authentication in _benchmark.yml
+      id-token: write
     uses: ./.github/workflows/_benchmark.yml
     with:
       working-directory: "libs/deepagents"
     secrets: inherit
 
-  benchmark-cli:
-    name: "⏱️ Benchmark cli"
+  benchmark-code:
+    name: "⏱️ Benchmark code"
+    if: github.repository_owner == 'langchain-ai'
+    permissions:
+      contents: read
+      # Required for CodSpeed OIDC authentication in _benchmark.yml
+      id-token: write
     uses: ./.github/workflows/_benchmark.yml
     with:
-      working-directory: "libs/cli"
+      working-directory: "libs/code"
     secrets: inherit

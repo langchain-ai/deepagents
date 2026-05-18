@@ -35,7 +35,7 @@ class TestSubagentMiddlewareInit:
             subagents=[
                 {
                     **GENERAL_PURPOSE_SUBAGENT,
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
@@ -54,7 +54,7 @@ class TestSubagentMiddlewareInit:
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [get_weather],
                 }
             ],
@@ -73,7 +73,7 @@ class TestSubagentMiddlewareInit:
                     "name": "weather",
                     "description": "Weather subagent",
                     "system_prompt": "Get weather.",
-                    "model": "gpt-4o-mini",
+                    "model": "gpt-5.4-mini",
                     "tools": [],
                 }
             ],
@@ -117,7 +117,7 @@ class TestSubagentMiddlewareInit:
                         "name": "test",
                         "description": "Test",
                         "system_prompt": "Test.",
-                        "model": "gpt-4o-mini",
+                        "model": "gpt-5.4-mini",
                         # Missing "tools"
                     }
                 ],

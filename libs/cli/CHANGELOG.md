@@ -1,5 +1,96 @@
 # Deep Agents CLI Changelog
 
+From 0.1.0 onward, `deepagents-cli` only contains `deploy`, `dev`, and `init`.
+The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
+
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.0...deepagents-cli==0.1.1) (2026-05-18)
+
+### Features
+
+* Add `--host` option to `deepagents dev` command ([#3444](https://github.com/langchain-ai/deepagents/issues/3444)) ([0bb1e74](https://github.com/langchain-ai/deepagents/commit/0bb1e74bba8097b38f204e3db6e6ebad7e0f5317))
+
+## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.59...deepagents-cli==0.1.0) (2026-05-16)
+
+### ⚠ BREAKING CHANGES
+
+* Removes the interactive TUI / coding-agent surface from `deepagents-cli`. The package now only ships the `deploy` command and supporting config. Users relying on the chat REPL, sessions, MCP tooling, skills, and related widgets should migrate to `deepagents-code`.
+
+## [0.0.59](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.58...deepagents-cli==0.0.59) (2026-05-12)
+
+### Bug Fixes
+
+* Prevent import deadlock during skill discovery and prewarm ([#3385](https://github.com/langchain-ai/deepagents/issues/3385)) ([0bf8dd1](https://github.com/langchain-ai/deepagents/commit/0bf8dd1cfd680bd4d27ce19295f96c720f525787))
+
+## [0.0.58](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.57...deepagents-cli==0.0.58) (2026-05-12)
+
+### Features
+
+* Pin v0.6 and fix import race ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
+
+## [0.0.57](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.56...deepagents-cli==0.0.57) (2026-05-12)
+
+### Features
+
+* OSC 9;4 progress & escape helper ([#3347](https://github.com/langchain-ai/deepagents/issues/3347)) ([75d60cd](https://github.com/langchain-ai/deepagents/commit/75d60cd82f559b2944b78a348d16b0a10a00d663))
+
+### Bug Fixes
+
+* Suppress LangSmith trace for `_context_tokens` state writes ([#3317](https://github.com/langchain-ai/deepagents/issues/3317)) ([63db13e](https://github.com/langchain-ai/deepagents/commit/63db13ee262d19a1a87fbe4df1271a2e958deed6))
+
+## [0.0.56](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.55...deepagents-cli==0.0.56) (2026-05-11)
+
+### Features
+
+* Free-text reject reason on HITL approval prompt ([#3344](https://github.com/langchain-ai/deepagents/issues/3344)) ([dcc48f4](https://github.com/langchain-ai/deepagents/commit/dcc48f48d20757f17011e65b61363dd0347af164))
+* Add docs link to project MCP approval prompt ([#3341](https://github.com/langchain-ai/deepagents/issues/3341)) ([b5c1228](https://github.com/langchain-ai/deepagents/commit/b5c12280e47bc37938290a4219317f47c1abfa8a))
+
+### Bug Fixes
+
+* Dedupe MCP servers in project trust approval prompt ([#3342](https://github.com/langchain-ai/deepagents/issues/3342)) ([73484ea](https://github.com/langchain-ai/deepagents/commit/73484ea551189985190f52cb26b299819d3fc37d))
+* Remove legacy shell tool aliases and harden HITL widget cleanup ([#3340](https://github.com/langchain-ai/deepagents/issues/3340)) ([398f7f4](https://github.com/langchain-ai/deepagents/commit/398f7f4512182a8e51cbdfbfb9dc211c77014e2b))
+* Truncate multi-line shell commands in HITL approval ([#3314](https://github.com/langchain-ai/deepagents/issues/3314)) ([7ab6e14](https://github.com/langchain-ai/deepagents/commit/7ab6e14565d6dd9d9c9e76d9d6677e5568a727f7))
+* (Deploy) Add `together` provider to bundler deps and optional extras ([#2670](https://github.com/langchain-ai/deepagents/issues/2670)) ([4290953](https://github.com/langchain-ai/deepagents/commit/4290953e44570ec02399e4d423ab4ffd24e97609))
+
+### Performance Improvements
+
+* Gate dropped-path detection on multi-character insert size ([#3343](https://github.com/langchain-ai/deepagents/issues/3343)) ([06a21e8](https://github.com/langchain-ai/deepagents/commit/06a21e8a69738b7ba055d2f13dae4cd9fab353cd))
+
+## [0.0.55](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.54...deepagents-cli==0.0.55) (2026-05-11)
+
+### Bug Fixes
+
+* Keep Thinking spinner during `edit_file` approval ([#3310](https://github.com/langchain-ai/deepagents/issues/3310)) ([d06133f](https://github.com/langchain-ai/deepagents/commit/d06133f8dd7cb924c82e46ece3e165d561ef7d9e))
+
+## [0.0.54](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.53...deepagents-cli==0.0.54) (2026-05-11)
+
+### Features
+
+* Allow filtering threads by directory ([#3290](https://github.com/langchain-ai/deepagents/issues/3290)) ([07a973a](https://github.com/langchain-ai/deepagents/commit/07a973ae5b0256fddfd9591dc88c7987e5581264))
+* Show sandbox provider in header `sub_title` ([#3295](https://github.com/langchain-ai/deepagents/issues/3295)) ([779f7f4](https://github.com/langchain-ai/deepagents/commit/779f7f45c501f3c6d53e12087e3d4c340ef8aded))
+* Surface sandbox startup errors in server crash messages ([#3306](https://github.com/langchain-ai/deepagents/issues/3306)) ([2606d57](https://github.com/langchain-ai/deepagents/commit/2606d57b623f16955df6f91e693051f4b61f6120))
+
+### Bug Fixes
+
+* Allow TUI launch without preconfigured model credentials ([#3301](https://github.com/langchain-ai/deepagents/issues/3301)) ([aa28ff7](https://github.com/langchain-ai/deepagents/commit/aa28ff73768a826b216bfa54d76ecd313c325077))
+* Suppress token placeholder on first invoke ([#3302](https://github.com/langchain-ai/deepagents/issues/3302)) ([c21dee2](https://github.com/langchain-ai/deepagents/commit/c21dee2e9bc1a7d3f52ff62e9e66d1caaaf7b464))
+* Sync thread ID and render clickable link on `/clear` ([#3305](https://github.com/langchain-ai/deepagents/issues/3305)) ([0904974](https://github.com/langchain-ai/deepagents/commit/0904974d52dff259809d00a7a8b26c3e894cc0c0))
+
+## [0.0.53](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.52...deepagents-cli==0.0.53) (2026-05-10)
+
+### Features
+
+* `/copy` slash command ([#3225](https://github.com/langchain-ai/deepagents/issues/3225)) ([646df53](https://github.com/langchain-ai/deepagents/commit/646df5364274ba11c1104038095ed4478c076c40))
+* Per-terminal theme selection ([#3248](https://github.com/langchain-ai/deepagents/issues/3248)) ([e2251f1](https://github.com/langchain-ai/deepagents/commit/e2251f17c0cc9363d6ed2385436ade22a8e74cd2))
+* Incognito shell command mode ([#3252](https://github.com/langchain-ai/deepagents/issues/3252)) ([56aee50](https://github.com/langchain-ai/deepagents/commit/56aee504b5f8196d569757794e2e7e61cf9bef18))
+* Live progress UI and periodic recheck for self-updates ([#3280](https://github.com/langchain-ai/deepagents/issues/3280)) ([3e9e805](https://github.com/langchain-ai/deepagents/commit/3e9e80597d9e2edc7685400023a2cad15a84a6b8))
+* Ollama model discovery via probe ([#3286](https://github.com/langchain-ai/deepagents/issues/3286)) ([c1dd6c8](https://github.com/langchain-ai/deepagents/commit/c1dd6c8a0f8b423edc75be243fc0487e4c900703))
+
+### Bug Fixes
+
+* Re-render assistant messages after streaming to fix fenced code disappearance ([#3293](https://github.com/langchain-ai/deepagents/issues/3293)) ([01b0a44](https://github.com/langchain-ai/deepagents/commit/01b0a44353a891a2ff10b3a2e2f6e23cc0879c9b))
+* Show `Resuming...` banner immediately on thread resume ([#3297](https://github.com/langchain-ai/deepagents/issues/3297)) ([3bb2782](https://github.com/langchain-ai/deepagents/commit/3bb2782ae8bd42d9521b611ebdfc42456b7d41a2))
+* Show pending token placeholder during streaming and restore on early exit ([#3288](https://github.com/langchain-ai/deepagents/issues/3288)) ([882232d](https://github.com/langchain-ai/deepagents/commit/882232dbc4ffbaf0bedeb12f0f3119024352ac43))
+
 ## [0.0.52](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.0.51...deepagents-cli==0.0.52) (2026-05-08)
 
 ### Features

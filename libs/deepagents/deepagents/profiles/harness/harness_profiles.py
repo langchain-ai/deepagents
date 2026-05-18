@@ -670,7 +670,10 @@ class HarnessProfile:
             cannot be excluded as class or as their `.name` string. The check
             fires at `HarnessProfile` construction,
             so register-site typos fail fast rather than waiting until
-            `create_deep_agent` resolves the profile.
+            `create_deep_agent` resolves the profile. To hide their tools
+            from the model without removing the middleware, use
+            `excluded_tools` instead — the runtime rejection message points
+            at the same workaround.
         - Entries that match no middleware in the assembled stack are
             rejected as likely typos or stale profiles.
 

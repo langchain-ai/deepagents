@@ -130,11 +130,7 @@ def _canonicalize_markdown(text: str) -> str:
     after_heading: list[str] = []
     for i, line in enumerate(lines):
         after_heading.append(line)
-        if (
-            _HEADING_RE.match(line)
-            and i + 1 < len(lines)
-            and lines[i + 1] != ""
-        ):
+        if _HEADING_RE.match(line) and i + 1 < len(lines) and lines[i + 1] != "":
             after_heading.append("")
 
     before_lists: list[str] = []

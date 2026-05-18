@@ -34,10 +34,20 @@ from deepagents_code.model_config import (
     get_credential_env_var,
     get_model_profiles,
     get_provider_auth_status,
+    load_recent_models,
     save_default_model,
 )
 
 logger = logging.getLogger(__name__)
+
+_RECENT_SECTION_LABEL = "Recent"
+"""Header label for the MRU pseudo-provider section pinned at the top of `/model`.
+
+Recent picks are surfaced regardless of the recommended-only toggle —
+they're a personal signal that outweighs curation — and de-duplicated
+from the per-provider sections below.
+"""
+
 
 _FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
@@ -310,9 +320,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._result_callback = result_callback
-        self._recommended_only = False
+        # Standard /model defaults to the curated recommended subset so users
+        # face less decision fatigue; onboarding (`curated=True`) already
+        # constrains the list via `_curated`, so leaving this False there
+        # avoids double-flagging in `_apply_subset`.
+        self._recommended_only = not curated
 
         self._unfiltered_models: list[tuple[str, str]] = []
+        self._recent_specs: list[str] = []
 
         self._all_models: list[tuple[str, str]] = []
         self._filtered_models: list[tuple[str, str]] = []
@@ -434,6 +449,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         list[tuple[str, str]],
         str | None,
         Mapping[str, ModelProfileEntry],
+        list[str],
     ]:
         """Gather model discovery data synchronously.
 
@@ -441,10 +457,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         `get_available_models` does not block the event loop.
 
         Returns:
-            Tuple of (all_models, default_spec, profiles) where
-                `all_models` is a list of `(provider:model spec, provider)`
-                pairs, `default_spec` is the configured default model or
-                `None`, and `profiles` maps spec strings to profile entries.
+            Tuple of (all_models, default_spec, profiles, recent_specs)
+                where `all_models` is a list of `(provider:model spec,
+                provider)` pairs, `default_spec` is the configured default
+                model or `None`, `profiles` maps spec strings to profile
+                entries, and `recent_specs` is the most-recent-first list of
+                `provider:model` strings read from
+                `~/.deepagents/.state/recent_models.json`.
         """
         all_models: list[tuple[str, str]] = [
             (f"{provider}:{model}", provider)
@@ -454,13 +473,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
-        return all_models, config.default_model, profiles
+        recent_specs = load_recent_models()
+        return all_models, config.default_model, profiles, recent_specs
 
     def _apply_subset(
         self,
         all_models: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
         """Apply the active subset filter (onboarding or recommended-only).
+
+        Recently-used specs are unioned in even when the recommended-only
+        toggle is on, so personal usage always wins over curation. Onboarding
+        intentionally keeps a tight curated subset and skips this union.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
@@ -471,8 +495,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 active. Falls back to the full list when no recommended
                 models are installed so the screen is never empty.
         """
-        if self._curated or self._recommended_only:
+        if self._curated:
             return self._curate_models(all_models)
+        if self._recommended_only:
+            curated = self._curate_models(all_models)
+            curated_specs = {spec for spec, _ in curated}
+            recent_extra = [
+                (spec, provider)
+                for spec, provider in all_models
+                if spec in self._recent_specs and spec not in curated_specs
+            ]
+            return [*recent_extra, *curated]
         return list(all_models)
 
     @staticmethod
@@ -516,7 +549,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
-            all_models, default_spec, profiles = await asyncio.to_thread(
+            all_models, default_spec, profiles, recent_specs = await asyncio.to_thread(
                 self._load_model_data, self._cli_profile_override
             )
         except Exception:
@@ -541,6 +574,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._unfiltered_models = all_models
         self._default_spec = default_spec
         self._profiles = profiles
+        self._recent_specs = recent_specs
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
@@ -659,18 +693,34 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
-        # Group by provider, preserving insertion order so models from the
-        # same provider cluster together in the visual list.
+        # Resolve which recent specs are present in the current filtered set.
+        # Recent rendering only happens at the top of an unfiltered view; once
+        # the user starts fuzzy-filtering, recents are surfaced through the
+        # match logic like any other model so the search remains predictable.
+        if self._filter_text.strip():
+            recent_entries: list[tuple[str, str]] = []
+        else:
+            spec_to_provider = dict(self._filtered_models)
+            recent_entries = [
+                (spec, spec_to_provider[spec])
+                for spec in self._recent_specs
+                if spec in spec_to_provider
+            ]
+        # Group models by provider, preserving insertion order so models
+        # from the same provider cluster together in the visual list. Specs
+        # also in the Recent section are intentionally kept here so a user
+        # who opens `/model` always finds their model at its provider's
+        # familiar position in addition to the MRU shortcut at the top.
         by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in self._filtered_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
 
-        # Rebuild _filtered_models to match the provider-grouped display
-        # order. Without this, _filtered_models stays in score-sorted order
-        # while _option_widgets follow provider-grouped order, causing
-        # _update_footer to look up the wrong model for the highlighted
-        # index.
-        grouped_order: list[tuple[str, str]] = []
+        # Rebuild _filtered_models to match the rendered order (recents first,
+        # then provider-grouped). Without this, _filtered_models stays in
+        # score-sorted order while _option_widgets follow rendered order,
+        # causing _update_footer to look up the wrong model for the
+        # highlighted index.
+        grouped_order: list[tuple[str, str]] = list(recent_entries)
         for entries in by_provider.values():
             grouped_order.extend(entries)
 
@@ -693,11 +743,57 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Resolve provider auth upfront so the widget-building loop
         # stays focused on layout
-        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
+        auth_providers = {provider for _, provider in self._filtered_models}
+        auth_statuses = {p: get_provider_auth_status(p) for p in auth_providers}
 
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
+
+        # Pinned "Recent" section — pseudo-provider header with no auth badge
+        # because each entry already carries its real provider's auth state
+        # via `ModelOption.auth_status`.
+        if recent_entries:
+            all_widgets.append(
+                Static(
+                    Content.from_markup(
+                        "[bold]$label[/bold]", label=_RECENT_SECTION_LABEL
+                    ),
+                    classes="model-provider-header",
+                )
+            )
+            for model_spec, real_provider in recent_entries:
+                auth_status = auth_statuses[real_provider]
+                is_current = model_spec == current_spec
+                is_selected = flat_index == self._selected_index
+
+                classes = "model-option"
+                if is_selected:
+                    classes += " model-option-selected"
+                if is_current:
+                    classes += " model-option-current"
+
+                label = self._format_option_label(
+                    model_spec,
+                    selected=is_selected,
+                    current=is_current,
+                    auth_status=auth_status,
+                    is_default=model_spec == self._default_spec,
+                    status=self._get_model_status(model_spec),
+                )
+                widget = ModelOption(
+                    label=label,
+                    model_spec=model_spec,
+                    provider=real_provider,
+                    index=flat_index,
+                    auth_status=auth_status,
+                    classes=classes,
+                )
+                all_widgets.append(widget)
+                self._option_widgets.append(widget)
+                if is_selected:
+                    selected_widget = widget
+                flat_index += 1
 
         for provider, model_entries in by_provider.items():
             # Provider header; auth/readiness indicator appended only when non-empty.

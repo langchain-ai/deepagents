@@ -1165,7 +1165,11 @@ async def _run_acp_cli_async(
     """
     from deepagents_code.agent import create_cli_agent, load_async_subagents
     from deepagents_code.config import create_model, settings
-    from deepagents_code.model_config import ModelConfigError, save_recent_model
+    from deepagents_code.model_config import (
+        ModelConfigError,
+        save_recent_model,
+        touch_recent_model,
+    )
     from deepagents_code.tools import fetch_url, web_search
 
     try:
@@ -1181,7 +1185,9 @@ async def _run_acp_cli_async(
     model_result.apply_to_settings()
 
     # Persist the resolved model so [models].recent is always populated.
-    save_recent_model(f"{model_result.provider}:{model_result.model_name}")
+    resolved_spec = f"{model_result.provider}:{model_result.model_name}"
+    save_recent_model(resolved_spec)
+    touch_recent_model(resolved_spec)
 
     tools: list[Any] = [fetch_url]
     if settings.has_tavily:

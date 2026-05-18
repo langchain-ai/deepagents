@@ -136,6 +136,10 @@ def show_help() -> None:
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
+    console.print(
+        "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
+        " (needs -n/stdin)"
+    )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(
         "  --json                     Emit machine-readable JSON for commands"

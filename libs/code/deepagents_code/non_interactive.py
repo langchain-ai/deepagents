@@ -61,6 +61,8 @@ from deepagents_code.unicode_security import (
 )
 
 if TYPE_CHECKING:
+    from asyncio.subprocess import Process
+
     from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger(__name__)
@@ -149,6 +151,81 @@ class _ConsoleSpinner:
                 logger.warning("Spinner stop failed: %s", exc)
             finally:
                 self._live = None
+
+
+async def _terminate_startup_process(proc: Process) -> None:
+    """Terminate and reap a startup command subprocess.
+
+    Args:
+        proc: Process returned by `asyncio.create_subprocess_shell`.
+    """
+    import asyncio
+    import sys
+
+    if proc.returncode is not None:
+        return
+
+    try:
+        if sys.platform != "win32":
+            import os
+            import signal
+
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.warning(
+            "Failed to terminate startup command (pid=%s)",
+            proc.pid,
+            exc_info=True,
+        )
+        return
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except TimeoutError:
+        logger.warning(
+            "Startup command (pid=%s) did not exit after termination; sending SIGKILL",
+            proc.pid,
+        )
+        try:
+            if sys.platform != "win32":
+                import os
+                import signal
+
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to SIGKILL startup command (pid=%s); process may leak",
+                proc.pid,
+                exc_info=True,
+            )
+            return
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.warning(
+                "Failed to reap startup command (pid=%s) after SIGKILL",
+                proc.pid,
+                exc_info=True,
+            )
+    except ProcessLookupError:
+        pass
+    except OSError:
+        logger.warning(
+            "Failed to wait on startup command (pid=%s) after SIGTERM; "
+            "process may leak",
+            proc.pid,
+            exc_info=True,
+        )
 
 
 @dataclass
@@ -780,6 +857,10 @@ async def _run_startup_command(
         quiet: When `True`, suppresses the "Running startup command" header
             so piped output stays minimal; warnings still appear (on stderr
             when the caller wired the console there).
+
+    Raises:
+        asyncio.CancelledError: If the caller cancels while the startup command
+            is running.
     """
     import asyncio
     import sys
@@ -805,69 +886,11 @@ async def _run_startup_command(
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
             proc.communicate(), timeout=60
         )
+    except asyncio.CancelledError:
+        await _terminate_startup_process(proc)
+        raise
     except TimeoutError:
-        if proc.returncode is None:
-            try:
-                if sys.platform != "win32":
-                    import os
-                    import signal
-
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                else:
-                    proc.kill()
-            except ProcessLookupError:
-                pass
-            except OSError:
-                logger.warning(
-                    "Failed to terminate startup command (pid=%s)",
-                    proc.pid,
-                    exc_info=True,
-                )
-            else:
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except TimeoutError:
-                    logger.warning(
-                        "Startup command (pid=%s) did not exit after termination; "
-                        "sending SIGKILL",
-                        proc.pid,
-                    )
-                    try:
-                        if sys.platform != "win32":
-                            import os
-                            import signal
-
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        else:
-                            proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        logger.warning(
-                            "Failed to SIGKILL startup command (pid=%s); "
-                            "process may leak",
-                            proc.pid,
-                            exc_info=True,
-                        )
-                    try:
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        logger.warning(
-                            "Failed to reap startup command (pid=%s) after SIGKILL",
-                            proc.pid,
-                            exc_info=True,
-                        )
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    logger.warning(
-                        "Failed to wait on startup command (pid=%s) after SIGTERM; "
-                        "process may leak",
-                        proc.pid,
-                        exc_info=True,
-                    )
+        await _terminate_startup_process(proc)
         console.print("[yellow]Warning:[/yellow] startup command timed out (60s limit)")
         return
 

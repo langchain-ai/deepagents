@@ -239,8 +239,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         fallback_id = self._fallback_thread_id
         middleware = self
 
-        def _run(outcome_fn: Any, code: str, tool_call_id: str | None) -> ToolMessage:
-            outcome = outcome_fn(code)
+        def _make_tool_message(
+            outcome: Any,
+            tool_call_id: str | None,
+        ) -> ToolMessage:
             return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
@@ -257,16 +259,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage:
             repl = registry.get(_resolve_thread_id(fallback_id))
             skills = middleware._skills_for_eval(runtime)
-            return _run(
-                lambda c: repl.eval_sync(
-                    c,
-                    skills=skills,
-                    skills_backend=middleware._skills_backend,
-                    outer_runtime=runtime,
-                ),
+            outcome = repl.eval_sync(
                 code,
-                runtime.tool_call_id,
+                skills=skills,
+                skills_backend=middleware._skills_backend,
+                outer_runtime=runtime,
             )
+            return _make_tool_message(outcome, runtime.tool_call_id)
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
@@ -281,11 +280,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 outer_runtime=runtime,
                 outer_loop=asyncio.get_running_loop(),
             )
-            return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
-                tool_call_id=runtime.tool_call_id,
-                name=tool_name,
-            )
+            return _make_tool_message(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
             name=tool_name,

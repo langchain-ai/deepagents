@@ -5,6 +5,11 @@
 # directly on `main` as a 2-parent merge commit, bypassing the repo's
 # squash-only policy and polluting the changelog.
 #
+# `pull_request_target` is required so the job receives a token scoped to
+# write PR labels/comments on fork PRs (the standard `pull_request` token is
+# read-only for forks). This also means the job MUST NOT check out PR code —
+# see the inline warning in the trigger block below.
+#
 # Maintainer bypass: add the `bypass-fork-main-check` label to the PR.
 
 name: Block fork main PRs
@@ -42,14 +47,23 @@ jobs:
             try {
               await github.rest.issues.getLabel({ owner, repo, name: labelName });
             } catch (e) {
-              if (e.status !== 404) throw e;
+              if (e.status !== 404) {
+                throw new Error(`getLabel(${labelName}) failed: ${e.message}`);
+              }
               try {
                 await github.rest.issues.createLabel({
                   owner, repo, name: labelName, color: 'b76e79',
                 });
               } catch (createErr) {
-                // 422 = label already exists (race or pre-existing) — safe to ignore.
-                if (createErr.status !== 422) throw createErr;
+                // A 422 with code `already_exists` means a race created the
+                // label between getLabel and createLabel — safe to ignore.
+                // Any other 422 (bad color, name too long) indicates a real
+                // bug introduced by editing this step, so rethrow.
+                const alreadyExists =
+                  createErr.status === 422 &&
+                  Array.isArray(createErr.errors) &&
+                  createErr.errors.some(e => e.code === 'already_exists');
+                if (!alreadyExists) throw createErr;
               }
             }
             await github.rest.issues.addLabels({
@@ -99,7 +113,12 @@ jobs:
             // Best-effort: new runs may still queue after this loop (e.g., other
             // pull_request triggers fanning out). The PR is already closed above,
             // so leftover runs are wasted compute, not a correctness issue.
+            // We track the cancel ratio so a wholesale failure (token-scope
+            // regression making EVERY cancel return 403) is surfaced rather
+            // than silently producing N warnings + green job.
             const headSha = context.payload.pull_request.head.sha;
+            let attempted = 0;
+            let cancelled = 0;
             for (const status of ['in_progress', 'queued']) {
               const runs = await github.paginate(
                 github.rest.actions.listWorkflowRunsForRepo,
@@ -107,14 +126,19 @@ jobs:
               );
               for (const run of runs) {
                 if (run.id === context.runId) continue;
+                attempted++;
                 try {
                   await github.rest.actions.cancelWorkflowRun({
                     owner, repo, run_id: run.id,
                   });
+                  cancelled++;
                 } catch (err) {
                   core.warning(`Could not cancel run ${run.id}: ${err.message}`);
                 }
               }
+            }
+            if (attempted > 0 && cancelled === 0) {
+              core.warning(`Attempted to cancel ${attempted} run(s) on head ${headSha} but none succeeded — check token scope.`);
             }
 
             core.setFailed(`PR head ref is \`${headRef}\` on a fork — open from a feature branch instead.`);

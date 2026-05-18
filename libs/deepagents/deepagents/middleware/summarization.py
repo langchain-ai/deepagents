@@ -70,12 +70,13 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.config import get_config
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
+from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -315,6 +316,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
+        self._large_tool_results_prefix = f"{_root}/large_tool_results"
 
         if _deprecated_history_prefix is not None:
             self._history_path_prefix = _deprecated_history_prefix
@@ -957,11 +959,12 @@ A condensed summary follows:
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_triggered = False
         if not should_summarize:
             try:
                 return handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                pass
+                overflow_triggered = True
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
@@ -972,9 +975,21 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._get_backend(request.state, request.runtime)
+        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        new_state_tail: list[AnyMessage] = []
+        if overflow_triggered:
+            preserved_messages, new_state_tail = _clip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
         file_path = self._offload_to_backend(backend, messages_to_summarize)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
@@ -1001,10 +1016,20 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = handler(request.override(messages=modified_messages))
 
+        # Persist the clipped tail into state via Overwrite. Match the
+        # pattern from filesystem.py: atomically replace the messages channel
+        # so the clipped TMs survive DeltaChannel replay (append + reducer
+        # id-matching is broken until langchain-core auto-assigns ids upstream).
+        update: dict[str, Any] = {"_summarization_event": new_event}
+        if new_state_tail:
+            state_messages = list(request.state.get("messages", []))
+            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
+            update["messages"] = Overwrite(new_state_messages)
+
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
     async def awrap_model_call(
@@ -1061,11 +1086,12 @@ A condensed summary follows:
         should_summarize = self._should_summarize(truncated_messages, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_triggered = False
         if not should_summarize:
             try:
                 return await handler(request.override(messages=truncated_messages))
             except ContextOverflowError:
-                pass
+                overflow_triggered = True
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
@@ -1076,9 +1102,21 @@ A condensed summary follows:
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._get_backend(request.state, request.runtime)
+        # On overflow, offload the large preserved tail TM batch to per-TM files.
+        new_state_tail: list[AnyMessage] = []
+        if overflow_triggered:
+            preserved_messages, new_state_tail = await _aclip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
         file_path, summary = await asyncio.gather(
             self._aoffload_to_backend(backend, messages_to_summarize),
             self._acreate_summary(messages_to_summarize),
@@ -1105,10 +1143,20 @@ A condensed summary follows:
         modified_messages = [*new_messages, *preserved_messages]
         response = await handler(request.override(messages=modified_messages))
 
+        # Persist the clipped tail into state via Overwrite. Match the
+        # pattern from filesystem.py: atomically replace the messages channel
+        # so the clipped TMs survive DeltaChannel replay (append + reducer
+        # id-matching is broken until langchain-core auto-assigns ids upstream).
+        update: dict[str, Any] = {"_summarization_event": new_event}
+        if new_state_tail:
+            state_messages = list(request.state.get("messages", []))
+            new_state_messages = [*state_messages[: len(state_messages) - len(new_state_tail)], *new_state_tail]
+            update["messages"] = Overwrite(new_state_messages)
+
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
 

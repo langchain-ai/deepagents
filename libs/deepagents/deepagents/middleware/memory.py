@@ -167,13 +167,9 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
-    Loads memory content from configured sources and injects into the system prompt.
-
-    Supports multiple sources that are combined together.
-
-    Args:
-        backend: Backend instance or factory function for file operations.
-        sources: List of `MemorySource` configurations specifying paths and names.
+    Loads memory content from configured sources and injects into the system
+    prompt. Supports multiple sources that are combined together. See
+    constructor for the full argument list.
     """
 
     state_schema = MemoryState
@@ -184,6 +180,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         backend: BACKEND_TYPES,
         sources: list[str],
         add_cache_control: bool = False,
+        system_prompt: str | None = MEMORY_SYSTEM_PROMPT,
     ) -> None:
         """Initialize the memory middleware.
 
@@ -210,10 +207,27 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
                 No-ops on non-Anthropic models; Bedrock and Vertex wrappers do
                 not qualify.
+            system_prompt: System-prompt fragment template. Must contain a
+                `{agent_memory}` slot for runtime memory substitution. Pass
+                `None` to skip appending entirely (memory is still loaded
+                into `state["memory_contents"]`).
+
+        Raises:
+            TypeError: If `system_prompt` is not `str` or `None`.
+            ValueError: If `system_prompt` is a string missing the
+                `{agent_memory}` format slot.
         """
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str):
+                msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
+                raise TypeError(msg)
+            if "{agent_memory}" not in system_prompt:
+                msg = "system_prompt must contain the `{agent_memory}` format slot"
+                raise ValueError(msg)
         self._backend = backend
         self.sources = sources
         self._add_cache_control = add_cache_control
+        self.system_prompt = system_prompt
 
     def _get_backend(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -239,25 +253,30 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
             return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
         return self._backend
 
-    def _format_agent_memory(self, contents: dict[str, str]) -> str:
+    def _format_agent_memory(self, contents: dict[str, str], template: str = MEMORY_SYSTEM_PROMPT) -> str:
         """Format memory with locations and contents paired together.
+
+        Substitutes loaded memory into the `{agent_memory}` slot of the
+        supplied template.
 
         Args:
             contents: Dict mapping source paths to content.
+            template: Surrounding template; must contain `{agent_memory}`.
 
         Returns:
-            Formatted string with location+content pairs wrapped in <agent_memory> tags.
+            Formatted string with location+content pairs substituted into
+            the supplied template.
         """
         if not contents:
-            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+            return template.format(agent_memory="(No memory loaded)")
 
         sections = [f"{path}\n\n{contents[path].rstrip()}" for path in self.sources if contents.get(path)]
 
         if not sections:
-            return MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+            return template.format(agent_memory="(No memory loaded)")
 
         memory_body = "\n\n".join(sections)
-        return MEMORY_SYSTEM_PROMPT.format(agent_memory=memory_body)
+        return template.format(agent_memory=memory_body)
 
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
         """Load memory content before agent execution (synchronous).
@@ -336,14 +355,23 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             Modified request with memory injected into system message.
         """
-        contents = request.state.get("memory_contents", {})
-        agent_memory = self._format_agent_memory(contents)
-
-        new_system_message = append_to_system_message(request.system_message, agent_memory)
+        if self.system_prompt is None:
+            new_system_message = request.system_message
+        else:
+            contents = request.state.get("memory_contents", {})
+            agent_memory = self._format_agent_memory(contents, self.system_prompt)
+            new_system_message = append_to_system_message(request.system_message, agent_memory)
 
         # Runtime check uses `request.model` (not a flag captured at init) so
         # the breakpoint correctly follows middleware-level model overrides.
-        if self._add_cache_control and isinstance(request.model, ChatAnthropic) and new_system_message.content_blocks:
+        # Runs regardless of `system_prompt` so callers who suppress the
+        # fragment still get the prompt-cache breakpoint they asked for.
+        if (
+            self._add_cache_control
+            and isinstance(request.model, ChatAnthropic)
+            and new_system_message is not None
+            and new_system_message.content_blocks
+        ):
             blocks: list[ContentBlock] = list(new_system_message.content_blocks)
             last = blocks[-1]
             base = last if isinstance(last, dict) else {}
@@ -352,6 +380,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
             blocks[-1] = {**base, "cache_control": {"type": "ephemeral"}}  # ty: ignore[invalid-assignment]
             new_system_message = SystemMessage(content_blocks=blocks)
 
+        if new_system_message is request.system_message:
+            return request
         return request.override(system_message=new_system_message)
 
     def wrap_model_call(

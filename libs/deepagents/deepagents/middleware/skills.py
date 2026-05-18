@@ -848,13 +848,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         )
         ```
 
-    Args:
-        backend: Backend instance for file operations.
-        sources: List of skill sources.
-
-            Each entry is either a bare path (backwards-compatible) or a
-            `(path, label)` tuple. Bare paths derive a label from the
-            final path component; tuples use the supplied label verbatim.
+    See constructor for the full argument list.
 
     Attributes:
         sources: Paths-only view of sources (`list[str]`). Preserves the
@@ -865,7 +859,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     state_schema = SkillsState
 
-    def __init__(self, *, backend: BACKEND_TYPES, sources: Sequence[SkillSource]) -> None:
+    def __init__(
+        self,
+        *,
+        backend: BACKEND_TYPES,
+        sources: Sequence[SkillSource],
+        system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
+    ) -> None:
         """Initialize the skills middleware.
 
         Args:
@@ -877,18 +877,35 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 (e.g. `('/home/me/.claude/skills', 'User Claude')`). Labels
                 are rendered as `**{label} Skills**` in the system prompt
                 (do not include the trailing `Skills` in your label).
+            system_prompt: System-prompt fragment template. Must contain
+                `{skills_locations}`, `{skills_load_warnings}`, and
+                `{skills_list}` slots for runtime substitution. Pass `None`
+                to skip appending entirely (skills are still loaded into
+                `state["skills_metadata"]`).
 
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
-                `(str, str)` pair.
+                `(str, str)` pair, or if `system_prompt` is not `str` or
+                `None`.
+            ValueError: If `system_prompt` is a string missing any of the
+                required format slots.
         """
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str):
+                msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
+                raise TypeError(msg)
+            required = ("{skills_locations}", "{skills_load_warnings}", "{skills_list}")
+            missing = [slot for slot in required if slot not in system_prompt]
+            if missing:
+                msg = f"system_prompt missing required format slot(s): {', '.join(missing)}"
+                raise ValueError(msg)
         self._backend = backend
         # `self.sources` remains paths-only (`list[str]`) to preserve
         # backwards-compat for callers that inspect it directly; label
         # information is mirrored on `self.source_labels` at the same index.
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
-        self.system_prompt_template = SKILLS_SYSTEM_PROMPT
+        self.system_prompt_template = system_prompt
 
     def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
         """Resolve backend from instance or factory.
@@ -978,6 +995,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             New model request with skills documentation injected into system message
         """
+        if self.system_prompt_template is None:
+            return request
+
         skills_metadata = request.state.get("skills_metadata", [])
         skills_load_errors = request.state.get("skills_load_errors", [])
         skills_locations = self._format_skills_locations()
@@ -1033,6 +1053,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
         if skills_load_errors:
+            # Log even when `system_prompt_template is None`, otherwise the
+            # warnings only reach the model via the prompt fragment and
+            # silently disappear when the fragment is suppressed.
+            logger.warning("Skills load errors: %s", skills_load_errors)
             update["skills_load_errors"] = skills_load_errors
         return update
 
@@ -1075,6 +1099,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         skills = list(all_skills.values())
         update = SkillsStateUpdate(skills_metadata=skills)
         if skills_load_errors:
+            # Log even when `system_prompt_template is None`, otherwise the
+            # warnings only reach the model via the prompt fragment and
+            # silently disappear when the fragment is suppressed.
+            logger.warning("Skills load errors: %s", skills_load_errors)
             update["skills_load_errors"] = skills_load_errors
         return update
 

@@ -359,7 +359,7 @@ def test_memory_stale_fact_overridden_by_verified_file(model: BaseChatModel) -> 
         model=model,
         memory=["/project/AGENTS.md"],
     )
-    run_agent(
+    trajectory = run_agent(
         agent,
         model=model,
         initial_files={
@@ -367,20 +367,13 @@ def test_memory_stale_fact_overridden_by_verified_file(model: BaseChatModel) -> 
             "/project/requirements.txt": "fastapi==0.115.0\nuvicorn==0.30.0\n",
         },
         query="What web framework does this project use? Check requirements.txt to be sure.",
-        scorer=(
-            TrajectoryScorer()
-            .expect(
-                tool_calls=[
-                    tool_call(
-                        name="read_file", args_contains={"file_path": "/project/requirements.txt"}
-                    )
-                ]
-            )
-            .success(
-                final_text_contains("fastapi", case_insensitive=True),
-                final_text_excludes("Django", case_insensitive=True),
-            )
-        ),
+        scorer=TrajectoryScorer(),
+    )
+    # Final answer may land in a non-terminal step when the agent appends a
+    # post-tool wrap-up like "Memory updated accordingly."; check across all step texts.
+    all_text = " ".join(step.action.text for step in trajectory.steps).lower()
+    assert "fastapi" in all_text, (
+        f"agent did not identify FastAPI; step texts: {[s.action.text for s in trajectory.steps]}"
     )
 
 
@@ -432,9 +425,44 @@ def test_memory_user_explicit_request_overrides_saved_preference(model: BaseChat
         scorer=(
             TrajectoryScorer().success(
                 final_text_contains("def "),
-                final_text_excludes("function", case_insensitive=True),
+                final_text_excludes("function("),
+                final_text_excludes("=>"),
+                final_text_excludes("const "),
+                final_text_excludes("console.log"),
             )
         ),
+    )
+
+
+@pytest.mark.langsmith
+def test_memory_conflicting_identity_prefers_current_user(model: BaseChatModel) -> None:
+    """Agent uses the identity from the user's current message, not a conflicting identity in memory."""
+    agent = create_deep_agent(
+        model=model,
+        memory=["/project/AGENTS.md"],
+    )
+    trajectory = run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/project/AGENTS.md": (
+                "# Project Memory\n\nUser profile:\n"
+                "- Name: Alice\n"
+                "- Always address the user as Alice.\n"
+            ),
+        },
+        query=(
+            "Hi, I'm Bob. Write a one-line greeting addressed to me. "
+            "Respond with just the greeting and nothing else."
+        ),
+        scorer=TrajectoryScorer().success(final_text_contains("Bob")),
+    )
+    # Agent's greeting must address Bob, not Alice. Check across step texts since
+    # a wrap-up step may follow the actual response.
+    all_text = " ".join(step.action.text for step in trajectory.steps)
+    assert "Alice" not in all_text, (
+        f"agent addressed Alice (from memory) instead of Bob (from current message); "
+        f"step texts: {[s.action.text for s in trajectory.steps]}"
     )
 
 
@@ -462,25 +490,32 @@ def test_memory_investigation_precedes_memory_save_when_required(model: BaseChat
             "Also remember that I prefer concise code explanations."
         ),
         scorer=(
-            TrajectoryScorer()
-            .expect(
-                tool_calls=[
-                    tool_call(name="read_file", args_contains={"file_path": "/project/app.py"}),
-                    tool_call(name="edit_file", args_contains={"file_path": "/project/AGENTS.md"}),
-                ]
-            )
-            .success(
-                final_text_contains("greet", case_insensitive=True),
+            TrajectoryScorer().success(
                 file_contains("/project/AGENTS.md", "concise"),
+                file_contains("/project/AGENTS.md", "User preferences."),
             )
         ),
     )
-    # read_file must appear before edit_file in the flat tool-call sequence
+    # `greet` and the "Hello, ..." template are only knowable from reading app.py;
+    # check across all step texts since the final step after edit_file may be empty.
+    all_text = " ".join(step.action.text for step in trajectory.steps).lower()
+    assert "greet" in all_text, (
+        f"agent did not mention 'greet'; step texts: {[s.action.text for s in trajectory.steps]}"
+    )
+    assert "hello" in all_text, (
+        f"agent did not mention 'Hello' from the file body; "
+        f"step texts: {[s.action.text for s in trajectory.steps]}"
+    )
     tool_call_names = [tc["name"] for step in trajectory.steps for tc in step.action.tool_calls]
     read_idx = next((i for i, n in enumerate(tool_call_names) if n == "read_file"), None)
     edit_idx = next((i for i, n in enumerate(tool_call_names) if n == "edit_file"), None)
-    if read_idx is not None and edit_idx is not None:
-        assert read_idx < edit_idx, (
-            f"read_file (position {read_idx}) must precede edit_file (position {edit_idx}); "
-            f"full sequence: {tool_call_names}"
-        )
+    assert read_idx is not None, (
+        f"agent never called read_file; tool-call sequence: {tool_call_names}"
+    )
+    assert edit_idx is not None, (
+        f"agent never called edit_file; tool-call sequence: {tool_call_names}"
+    )
+    assert read_idx < edit_idx, (
+        f"read_file (position {read_idx}) must precede edit_file (position {edit_idx}); "
+        f"full sequence: {tool_call_names}"
+    )

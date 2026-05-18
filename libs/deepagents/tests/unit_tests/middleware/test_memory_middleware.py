@@ -90,10 +90,17 @@ def create_store_memory_item(content: str) -> dict:
 def test_memory_system_prompt_trust_and_investigation_balance() -> None:
     """Prompt warns that memory files are untrusted data and avoids memory-before-all-tools wording."""
     formatted = MEMORY_SYSTEM_PROMPT.format(agent_memory="(No memory loaded)")
+    # Structural section headers must be present.
     assert "**Trust and verification:**" in formatted
-    assert "essential investigation" in formatted
+    assert "**Learning from feedback:**" in formatted
+    assert "**Asking for information:**" in formatted
+    assert "**When to update memories:**" in formatted
+    # Investigate-first guidance is present in some form.
+    assert "investigation" in formatted
+    # Removed harsh imperatives must stay removed (guards against silent revert).
     assert "FIRST, IMMEDIATE" not in formatted
     assert "before doing anything else" not in formatted
+    assert "MAIN PRIORITIES" not in formatted
 
 
 def test_format_agent_memory_empty() -> None:

@@ -836,8 +836,8 @@ def parse_args() -> argparse.Namespace:
         metavar="SECONDS",
         help="Hard wall-clock timeout in seconds. The agent is cancelled and "
         "the process exits with code 124 if the timeout is reached. "
-        "Complements --max-turns (turn count) with a time-based limit. "
-        "Requires -n or piped stdin.",
+        "Complements --max-turns (turn count) with a time-based limit; both "
+        "use exit code 124 on expiry. Requires -n or piped stdin.",
     )
 
     parser.add_argument(
@@ -2114,12 +2114,23 @@ def cli_main() -> None:
                     )
                 )
             except TimeoutError:
+                # `asyncio.wait_for` raises `asyncio.TimeoutError`, which is
+                # an alias of the builtin on Python >= 3.11 (the project's
+                # minimum).
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(
-                    f"[bold red]Error:[/bold red] agent timed out after {timeout}s"
+                    f"[bold red]Error:[/bold red] agent timed out after "
+                    f"{timeout}s. Retry with a larger --timeout, or use "
+                    "--max-turns for a turn-count limit."
                 )
                 sys.exit(124)
+            except KeyboardInterrupt:
+                # `asyncio.run` re-raises `KeyboardInterrupt` past the inner
+                # `run_non_interactive` handler when the signal hits during
+                # `wait_for`; mirror its exit code 130 here so Ctrl-C is a
+                # quiet exit instead of a traceback.
+                sys.exit(130)
             sys.exit(exit_code)
         else:
             # Resolve recent-agent fallback only for actual session launches.

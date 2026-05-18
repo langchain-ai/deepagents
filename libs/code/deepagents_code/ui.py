@@ -138,7 +138,7 @@ def show_help() -> None:
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
-        " (needs -n)"
+        " (needs -n/stdin)"
     )
     console.print("  --stdin                    Read input from stdin explicitly")
     console.print(

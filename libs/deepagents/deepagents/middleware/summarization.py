@@ -76,11 +76,7 @@ from typing_extensions import TypedDict
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend
-from deepagents.middleware._message_eviction import (
-    _aoffload_tool_message_content,
-    _extract_text_from_message,
-    _offload_tool_message_content,
-)
+from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
 
 if TYPE_CHECKING:
@@ -759,169 +755,6 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
-    def _derive_overflow_clip_threshold_tokens(self) -> int:
-        """Derive token threshold for tail-ToolMessage clipping from `keep`.
-
-        Returns the keep token budget. If `keep` is message-based (no token
-        info), falls back to 5_000 -- equivalent to the previous 20_000-char
-        floor under a `chars / 4` approximation.
-        """
-        kind, value = self._lc_helper.keep
-        if kind == "tokens":
-            return int(value)
-        if kind == "fraction":
-            max_input = self._get_profile_limits()
-            if max_input is None:
-                return 5_000
-            return int(max_input * value)
-        return 5_000
-
-    @staticmethod
-    def _find_tail_tool_message_batch(
-        messages: list[AnyMessage],
-    ) -> tuple[int, list[ToolMessage]] | None:
-        """Return `(start_index, batch)` if `messages` ends with consecutive ToolMessages."""
-        if not messages or not isinstance(messages[-1], ToolMessage):
-            return None
-        i = len(messages) - 1
-        while i >= 0 and isinstance(messages[i], ToolMessage):
-            i -= 1
-        start = i + 1
-        return start, [cast("ToolMessage", m) for m in messages[start:]]
-
-    @staticmethod
-    def _build_tool_call_index(messages: list[AnyMessage]) -> dict[str, dict[str, Any]]:
-        """Map `tool_call_id` -> tool_call dict for all AIMessage tool_calls in `messages`."""
-        index: dict[str, dict[str, Any]] = {}
-        for m in messages:
-            if isinstance(m, AIMessage):
-                for tc in m.tool_calls or []:
-                    tcid = tc.get("id")
-                    if tcid:
-                        index[tcid] = cast("dict[str, Any]", tc)
-        return index
-
-    @staticmethod
-    def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
-        """Slice a `read_file` ToolMessage's content to ~4k head chars and append a path-pointer notice.
-
-        `read_file` results don't need a fresh `/large_tool_results/{tcid}` write -- the
-        full file is already on the backend at `original_path`, and the agent can
-        recover with `read_file(file_path=original_path, offset=N, limit=K)`. The
-        truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
-        agent encounters a consistent format whether the tool truncated itself
-        or the middleware did.
-        """
-        content = _extract_text_from_message(msg)
-        notice = (
-            f"\n\n[Output was truncated due to context window size limits. "
-            f"The full content is at {original_path}. "
-            f"Use read_file with offset and limit parameters to retrieve specific portions. "
-            f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
-        )
-        return msg.model_copy(update={"content": content[:4_000] + notice})
-
-    @staticmethod
-    def _read_file_original_path(msg: ToolMessage, tc_index: dict[str, dict[str, Any]]) -> str | None:
-        """Return the `file_path` arg from the matching read_file tool_call, or `None`."""
-        tc = tc_index.get(msg.tool_call_id) if msg.tool_call_id else None
-        if not tc or tc.get("name") != "read_file":
-            return None
-        path = tc.get("args", {}).get("file_path")
-        return path if isinstance(path, str) and path else None
-
-    def _clip_one_tail_message(
-        self,
-        msg: ToolMessage,
-        tc_index: dict[str, dict[str, Any]],
-        backend: BackendProtocol,
-    ) -> ToolMessage | None:
-        """Apply the appropriate per-TM clip: read_file slice vs generic eviction."""
-        original_path = self._read_file_original_path(msg, tc_index)
-        if original_path is not None:
-            return self._slice_read_file_tm(msg, original_path)
-        return _offload_tool_message_content(msg, _extract_text_from_message(msg), backend, self._large_tool_results_prefix)
-
-    async def _aclip_one_tail_message(
-        self,
-        msg: ToolMessage,
-        tc_index: dict[str, dict[str, Any]],
-        backend: BackendProtocol,
-    ) -> ToolMessage | None:
-        """Async variant of `_clip_one_tail_message`."""
-        original_path = self._read_file_original_path(msg, tc_index)
-        if original_path is not None:
-            return self._slice_read_file_tm(msg, original_path)
-        return await _aoffload_tool_message_content(msg, _extract_text_from_message(msg), backend, self._large_tool_results_prefix)
-
-    def _clip_overflow_tail(
-        self,
-        preserved_messages: list[AnyMessage],
-        backend: BackendProtocol,
-    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        """Offload the trailing ToolMessage batch when it's large enough to matter.
-
-        Engages only when `preserved_messages` ends with consecutive ToolMessages
-        whose combined token count reaches `_derive_overflow_clip_threshold_tokens()`.
-        Each large TM is written under `large_tool_results/{tool_call_id}` and
-        replaced in-place by an offload-pointer ToolMessage.
-
-        Returns `(modified preserved_messages, replacement TMs to persist in
-        state)`. Replacements carry the original ids so the `add_messages`
-        reducer overwrites the originals when the caller propagates them via
-        a `Command` update. The replacements list omits any TM whose backend
-        write failed (those keep their originals in both lists).
-        """
-        found = self._find_tail_tool_message_batch(preserved_messages)
-        if found is None:
-            return preserved_messages, []
-        start, tail = found
-        if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
-            return preserved_messages, []
-        tc_index = self._build_tool_call_index(preserved_messages)
-        new_tail: list[AnyMessage] = []
-        any_clipped = False
-        for m in tail:
-            r = self._clip_one_tail_message(m, tc_index, backend)
-            if r is not None:
-                if r.id is None:
-                    r = r.model_copy(update={"id": str(uuid.uuid4())})
-                new_tail.append(r)
-                any_clipped = True
-            else:
-                new_tail.append(m)
-        if not any_clipped:
-            return preserved_messages, []
-        return [*preserved_messages[:start], *new_tail], new_tail
-
-    async def _aclip_overflow_tail(
-        self,
-        preserved_messages: list[AnyMessage],
-        backend: BackendProtocol,
-    ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-        """Async variant of `_clip_overflow_tail`. Offloads each tail TM concurrently."""
-        found = self._find_tail_tool_message_batch(preserved_messages)
-        if found is None:
-            return preserved_messages, []
-        start, tail = found
-        if self.token_counter(tail) < self._derive_overflow_clip_threshold_tokens():
-            return preserved_messages, []
-        tc_index = self._build_tool_call_index(preserved_messages)
-        results = await asyncio.gather(*(self._aclip_one_tail_message(m, tc_index, backend) for m in tail))
-        new_tail: list[AnyMessage] = []
-        any_clipped = False
-        for r, m in zip(results, tail, strict=True):
-            if r is not None:
-                if r.id is None:
-                    r = r.model_copy(update={"id": str(uuid.uuid4())})  # noqa: PLW2901
-                new_tail.append(r)
-                any_clipped = True
-            else:
-                new_tail.append(m)
-        if not any_clipped:
-            return preserved_messages, []
-        return [*preserved_messages[:start], *new_tail], new_tail
-
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
@@ -1146,7 +979,14 @@ A condensed summary follows:
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
-            preserved_messages, new_state_tail = self._clip_overflow_tail(preserved_messages, backend)
+            preserved_messages, new_state_tail = _clip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
 
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
@@ -1266,7 +1106,14 @@ A condensed summary follows:
         # On overflow, offload the large preserved tail TM batch to per-TM files.
         new_state_tail: list[AnyMessage] = []
         if overflow_triggered:
-            preserved_messages, new_state_tail = await self._aclip_overflow_tail(preserved_messages, backend)
+            preserved_messages, new_state_tail = await _aclip_overflow_tail(
+                preserved_messages,
+                backend,
+                keep=self._lc_helper.keep,
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
 
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).

@@ -1,5 +1,6 @@
 """Tests for non-interactive mode HITL decision logic."""
 
+import asyncio
 import io
 import signal
 import sys
@@ -1483,6 +1484,31 @@ class TestRunStartupCommand:
         mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
         mock_proc.kill.assert_not_called()
         assert "timed out" in buf.getvalue()
+
+    async def test_cancellation_kills_process_group_on_posix(self) -> None:
+        """Outer cancellation should still clean up the startup process group."""
+        buf = io.StringIO()
+        console = Console(file=buf, width=200, highlight=False)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.CancelledError())
+        mock_proc.wait = AsyncMock()
+        mock_proc.returncode = None
+        mock_proc.pid = 12345
+        mock_proc.kill = MagicMock()
+
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=mock_proc),
+            patch.object(sys, "platform", "darwin"),
+            patch("os.getpgid", return_value=12345),
+            patch("os.killpg") as mock_killpg,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _run_startup_command("sleep 999", console, quiet=False)
+
+        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
+        mock_proc.kill.assert_not_called()
+        assert "timed out" not in buf.getvalue()
 
     async def test_timeout_escalates_to_sigkill_when_sigterm_ignored(self) -> None:
         """If SIGTERM + 5s wait also times out, SIGKILL must follow."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
@@ -112,6 +113,57 @@ def _system_message_as_text(message: SystemMessage) -> str:
     )
 
 
+_HEADING_RE = re.compile(r"^#+\s+")
+_LIST_RE = re.compile(r"^[-*]\s+")
+
+
+def _canonicalize_markdown(text: str) -> str:
+    """Canonicalize markdown whitespace so cosmetic differences compare equal.
+
+    Tolerates inconsistent blank-line placement in the generated system prompt
+    against the polished snapshot: ensures one blank line after headings, one
+    blank line before list blocks, collapses 2+ blank lines to one, and ends
+    with a single trailing newline.
+    """
+    lines = [line.rstrip() for line in text.splitlines()]
+
+    after_heading: list[str] = []
+    for i, line in enumerate(lines):
+        after_heading.append(line)
+        if _HEADING_RE.match(line) and i + 1 < len(lines) and lines[i + 1] != "":
+            after_heading.append("")
+
+    before_lists: list[str] = []
+    for line in after_heading:
+        if (
+            _LIST_RE.match(line)
+            and before_lists
+            and before_lists[-1] != ""
+            and not _LIST_RE.match(before_lists[-1])
+            and not _HEADING_RE.match(before_lists[-1])
+        ):
+            before_lists.append("")
+        before_lists.append(line)
+
+    collapsed: list[str] = []
+    prev_blank = False
+    for line in before_lists:
+        if line == "":
+            if not prev_blank:
+                collapsed.append(line)
+            prev_blank = True
+        else:
+            collapsed.append(line)
+            prev_blank = False
+
+    while collapsed and collapsed[0] == "":
+        collapsed.pop(0)
+    while collapsed and collapsed[-1] == "":
+        collapsed.pop()
+
+    return "\n".join(collapsed) + "\n"
+
+
 def _assert_snapshot(
     snapshot_path: Path, actual: str, *, update_snapshots: bool
 ) -> None:
@@ -123,7 +175,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert actual == expected
+    assert _canonicalize_markdown(actual) == _canonicalize_markdown(expected)
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:

@@ -10,7 +10,7 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 ```
 
-**105 evals** across **7 categories**
+**110 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -93,7 +93,7 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 - [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1063) — `tests/evals/test_tool_usage_relational.py:1063`
 - [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1134) — `tests/evals/test_tool_usage_relational.py:1134`
 
-## Memory (`memory`) (17 evals)
+## Memory (`memory`) (22 evals)
 
 - [`test_conflict_resolution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L351) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:351`
 - [`test_time_learning`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L381) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:381`
@@ -109,6 +109,11 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 - [`test_memory_updates_user_formatting_preference`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L252) — `tests/evals/test_memory.py:252`
 - [`test_memory_missing_file_graceful_without_claiming_context`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L285) — `tests/evals/test_memory.py:285`
 - [`test_memory_middleware_composite_backend`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L309) — `tests/evals/test_memory.py:309`
+- [`test_memory_stale_fact_overridden_by_verified_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L356) — `tests/evals/test_memory.py:356`
+- [`test_memory_adversarial_instruction_does_not_override_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L381) — `tests/evals/test_memory.py:381`
+- [`test_memory_user_explicit_request_overrides_saved_preference`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L410) — `tests/evals/test_memory.py:410`
+- [`test_memory_conflicting_identity_prefers_current_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L438) — `tests/evals/test_memory.py:438`
+- [`test_memory_investigation_precedes_memory_save_when_required`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L475) — `tests/evals/test_memory.py:475`
 - [`test_implicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L205) — `tests/evals/test_memory_multiturn.py:205`
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L232) — `tests/evals/test_memory_multiturn.py:232`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L259) — `tests/evals/test_memory_multiturn.py:259`

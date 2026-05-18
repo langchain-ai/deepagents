@@ -84,6 +84,15 @@ def setup_deploy_parsers(
         default=True,
         help="Pass --allow-blocking to langgraph dev (default: enabled)",
     )
+    dev_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help=(
+            "Network interface to bind the dev server "
+            "(default: 127.0.0.1; use 0.0.0.0 for all interfaces)"
+        ),
+    )
 
     # deepagents deploy
     deploy_parser = subparsers.add_parser(
@@ -138,6 +147,7 @@ def execute_dev_command(args: argparse.Namespace) -> None:
     _dev(
         config_path=args.config,
         port=args.port,
+        host=args.host,
         allow_blocking=args.allow_blocking,
     )
 
@@ -343,6 +353,7 @@ def _dev(
     *,
     config_path: str | None,
     port: int,
+    host: str = "127.0.0.1",
     allow_blocking: bool,
 ) -> None:
     """Bundle the project and run a local `langgraph dev` server.
@@ -356,6 +367,7 @@ def _dev(
     Args:
         config_path: Path to `deepagents.toml`, or `None` for default.
         port: Local port for the dev server.
+        host: Network interface to bind (default: 127.0.0.1).
         allow_blocking: Pass `--allow-blocking` to `langgraph dev` so
             sync HTTP calls inside the graph (e.g. the LangSmith sandbox
             client) don't trigger blockbuster errors.
@@ -413,13 +425,21 @@ def _dev(
             "langgraph",
             "dev",
             "--no-browser",
+            "--host",
+            host,
             "--port",
             str(port),
         ]
         if allow_blocking:
             cmd.append("--allow-blocking")
 
-        print(f"\nStarting langgraph dev on http://localhost:{port}")
+        if host == "0.0.0.0":
+            print(
+                f"\nStarting langgraph dev on http://localhost:{port} "
+                "(bound to 0.0.0.0)"
+            )
+        else:
+            print(f"\nStarting langgraph dev on http://{host}:{port}")
         print(f"Build directory: {build_dir}")
         print(f"Running: {' '.join(cmd)}\n")
 

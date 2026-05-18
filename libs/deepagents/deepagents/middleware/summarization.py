@@ -1311,14 +1311,31 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     state_schema = SummarizationState
 
-    def __init__(self, summarization: _DeepAgentsSummarizationMiddleware) -> None:
+    def __init__(
+        self,
+        summarization: _DeepAgentsSummarizationMiddleware,
+        *,
+        system_prompt: str | None = SUMMARIZATION_SYSTEM_PROMPT,
+    ) -> None:
         """Initialize with a reference to the summarization middleware.
 
         Args:
             summarization: The `SummarizationMiddleware` instance whose
                 summarization engine this tool will delegate to.
+            system_prompt: System-prompt fragment nudging the model to call
+                `compact_conversation`. Pass `None` to skip appending the
+                nudge entirely (the tool remains registered and callable
+                but the model is unlikely to discover it without an
+                external mention).
+
+        Raises:
+            TypeError: If `system_prompt` is not `str` or `None`.
         """
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
+            raise TypeError(msg)
         self._summarization = summarization
+        self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
 
     def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
@@ -1583,7 +1600,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        if self.system_prompt is None:
+            return handler(request)
+        new_system_message = append_to_system_message(request.system_message, self.system_prompt)
         return handler(request.override(system_message=new_system_message))
 
     async def awrap_model_call(
@@ -1604,5 +1623,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        if self.system_prompt is None:
+            return await handler(request)
+        new_system_message = append_to_system_message(request.system_message, self.system_prompt)
         return await handler(request.override(system_message=new_system_message))

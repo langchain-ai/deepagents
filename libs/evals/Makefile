@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -13,8 +13,27 @@ PYTEST_EXTRA ?=
 test: ## Run unit tests
 	uv run --group test pytest $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE)
 
-evals: ## Run evals
-	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short $(PYTEST_EXTRA)
+evals: ## Run evals (set MODEL=<id>; required)
+	@if [ -z "$(MODEL)" ]; then \
+		echo "ERROR: MODEL is required. Example: make evals MODEL=claude-opus-4-7" >&2; \
+		exit 1; \
+	fi
+	LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals -v --tb=short --model $(MODEL) $(PYTEST_EXTRA)
+
+# Run the eval suite N times for the same MODEL/config and aggregate metrics
+# (mean / median / stdev / min / max). See scripts/run_trials.py for full options.
+TRIALS ?=
+TRIAL_ARGS ?=
+evals-trials: ## Run evals N times (set MODEL=<id> TRIALS=<n>; both required)
+	@if [ -z "$(MODEL)" ]; then \
+		echo "ERROR: MODEL is required. Example: make evals-trials MODEL=openai:gpt-5.5 TRIALS=5" >&2; \
+		exit 1; \
+	fi
+	@if [ -z "$(TRIALS)" ]; then \
+		echo "ERROR: TRIALS is required. Example: make evals-trials MODEL=openai:gpt-5.5 TRIALS=5" >&2; \
+		exit 1; \
+	fi
+	uv run --group test python scripts/run_trials.py --model $(MODEL) --trials $(TRIALS) $(TRIAL_ARGS)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

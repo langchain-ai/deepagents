@@ -2,7 +2,7 @@
 
 End-to-end behavioral evaluation suite for the Deep Agents SDK. Each eval runs an agent against a real LLM, captures the full trajectory (tool calls, file mutations, final response), and scores it on correctness and efficiency.
 
-See [`EVAL_CATALOG.md`](EVAL_CATALOG.md) for the full list of evals and categories.
+See [`EVAL_CATALOG.md`](EVAL_CATALOG.md) for the full list of evals and categories, and [`MODEL_GROUPS.md`](MODEL_GROUPS.md) for the model catalog used by the eval workflow.
 
 The suite also includes [Harbor](https://github.com/laude-institute/harbor) integration for running sandboxed benchmarks like [Terminal Bench 2.0](https://github.com/laude-institute/terminal-bench-2).
 

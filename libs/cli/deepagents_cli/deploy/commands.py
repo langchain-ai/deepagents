@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents_cli.deploy.config import DeployConfig
+
 
 def setup_deploy_parsers(
     subparsers: Any,  # noqa: ANN401
@@ -44,6 +46,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: init_parser.print_help()),
+        help="show this help message and exit",
     )
     init_parser.add_argument(
         "--force",
@@ -61,6 +64,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: dev_parser.print_help()),
+        help="show this help message and exit",
     )
     dev_parser.add_argument(
         "--config",
@@ -80,6 +84,15 @@ def setup_deploy_parsers(
         default=True,
         help="Pass --allow-blocking to langgraph dev (default: enabled)",
     )
+    dev_parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help=(
+            "Network interface to bind the dev server "
+            "(default: 127.0.0.1; use 0.0.0.0 for all interfaces)"
+        ),
+    )
 
     # deepagents deploy
     deploy_parser = subparsers.add_parser(
@@ -91,6 +104,7 @@ def setup_deploy_parsers(
         "-h",
         "--help",
         action=make_help_action(lambda: deploy_parser.print_help()),
+        help="show this help message and exit",
     )
     deploy_parser.add_argument(
         "--config",
@@ -133,6 +147,7 @@ def execute_dev_command(args: argparse.Namespace) -> None:
     _dev(
         config_path=args.config,
         port=args.port,
+        host=args.host,
         allow_blocking=args.allow_blocking,
     )
 
@@ -265,6 +280,51 @@ def _deploy(
             print(f"  - {err}")
         raise SystemExit(1)
 
+    # Warn + confirm if the frontend was set to anonymous mode. The
+    # generated auth.py for this case is permissive (overrides the
+    # LangSmith default x-api-key requirement) so the API is reachable
+    # by anyone with the deploy URL.
+    is_anonymous = (
+        config.frontend is not None
+        and config.frontend.enabled
+        and config.auth is not None
+        and config.auth.provider == "anonymous"
+    )
+    if is_anonymous:
+        # ANSI bold-red header + red bullets so this warning is visually
+        # distinct from the yellow beta-warning that prints above it
+        # (otherwise the "Continue? [y/N]" prompt looks like it's
+        # confirming the beta line rather than the anonymous-auth line).
+        print(
+            "\033[1;31m⚠ This deploy will use ANONYMOUS auth. "
+            "The API is open to anyone with the deploy URL.\033[0m"
+        )
+        print(
+            "\033[31m  • Browser UI shows per-browser threads "
+            "(cookie-scoped UX, not security).\033[0m"
+        )
+        print(
+            "\033[31m  • Anyone with the URL can call the API directly "
+            "(curl /threads, /runs, etc.) — no auth.\033[0m"
+        )
+        print(
+            "\033[31m  • For real per-user auth, add an [auth] section "
+            '(provider = "supabase" or "clerk").\033[0m'
+        )
+        # Skip the interactive confirm on dry-run (no real push happens).
+        if not dry_run:
+            try:
+                answer = (
+                    input("Continue with anonymous deploy? [y/N]: ").strip().lower()
+                )
+            except (EOFError, KeyboardInterrupt):
+                print()
+                print("Aborted.")
+                raise SystemExit(1) from None
+            if answer not in {"y", "yes"}:
+                print("Aborted.")
+                raise SystemExit(1)
+
     # Bundle
     build_dir = Path(tempfile.mkdtemp(prefix="deepagents-deploy-"))
 
@@ -277,8 +337,11 @@ def _deploy(
             print(f"Inspect the build directory: {build_dir}")
             return
 
+        _seed_hub_repo(config, build_dir)
+
         # Deploy via langgraph CLI.
         _run_langgraph_deploy(build_dir, name=config.agent.name)
+        _auto_wire_issues_board_if_hub(config)
     finally:
         if not dry_run:
             import shutil
@@ -290,6 +353,7 @@ def _dev(
     *,
     config_path: str | None,
     port: int,
+    host: str = "127.0.0.1",
     allow_blocking: bool,
 ) -> None:
     """Bundle the project and run a local `langgraph dev` server.
@@ -303,6 +367,7 @@ def _dev(
     Args:
         config_path: Path to `deepagents.toml`, or `None` for default.
         port: Local port for the dev server.
+        host: Network interface to bind (default: 127.0.0.1).
         allow_blocking: Pass `--allow-blocking` to `langgraph dev` so
             sync HTTP calls inside the graph (e.g. the LangSmith sandbox
             client) don't trigger blockbuster errors.
@@ -347,6 +412,8 @@ def _dev(
         bundle(config, project_root, build_dir)
         print_bundle_summary(config, build_dir)
 
+        _seed_hub_repo(config, build_dir)
+
         if shutil.which("langgraph") is None:
             print(
                 "Error: `langgraph` CLI not found. Install it with:\n"
@@ -358,13 +425,21 @@ def _dev(
             "langgraph",
             "dev",
             "--no-browser",
+            "--host",
+            host,
             "--port",
             str(port),
         ]
         if allow_blocking:
             cmd.append("--allow-blocking")
 
-        print(f"\nStarting langgraph dev on http://localhost:{port}")
+        if host == "0.0.0.0":
+            print(
+                f"\nStarting langgraph dev on http://localhost:{port} "
+                "(bound to 0.0.0.0)"
+            )
+        else:
+            print(f"\nStarting langgraph dev on http://{host}:{port}")
         print(f"Build directory: {build_dir}")
         print(f"Running: {' '.join(cmd)}\n")
 
@@ -380,6 +455,94 @@ def _dev(
             raise SystemExit(result.returncode)
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def _seed_hub_repo(config: DeployConfig, build_dir: Path) -> None:
+    """Eagerly create the LangSmith Hub agent repo at bundle time.
+
+    Mirrors the per-(process, assistant_id) seeding that the generated
+    `deploy_graph.py` performs on first invocation, but runs it from the
+    CLI so the repo exists in LangSmith Hub the moment `deepagents deploy`
+    (or `deepagents dev`) returns from bundling. The runtime seed path
+    stays in place as a defensive no-op: it short-circuits via
+    `has_prior_commits()` once this seed has run.
+
+    Per-user hub repos (`{identifier}-user-{slug}`) are intentionally
+    *not* seeded here — user identities aren't known until authenticated
+    requests arrive at runtime.
+
+    Args:
+        config: Loaded `DeployConfig`. Only invoked for hub-backed deploys;
+            no-op otherwise.
+        build_dir: Directory containing `_seed.json` written by `bundle()`.
+
+    Raises:
+        SystemExit: If the hub commit fails or returns per-file errors —
+            fail fast at bundle time rather than at first invocation.
+    """
+    import json
+
+    from deepagents_cli.deploy.context_hub import ContextHubBackend
+
+    if config.memories.backend != "hub":
+        return
+
+    seed_path = build_dir / "_seed.json"
+    try:
+        seed = json.loads(seed_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Error: failed to read {seed_path.name} for hub seed: {exc}")
+        raise SystemExit(1) from None
+
+    # Hub-repo layout matches what the runtime ends up writing: when the
+    # generated graph calls `CompositeBackend.aupload_files` with paths
+    # like `/memories/AGENTS.md`, the composite strips the `/memories/`
+    # route prefix before delegating to `ContextHubBackend`. We call the
+    # hub backend directly here, so emit the post-strip paths directly.
+    batch: list[tuple[str, bytes]] = []
+    for path, content in seed.get("memories", {}).items():
+        batch.append((path.lstrip("/"), content.encode("utf-8")))
+    for path, content in seed.get("skills", {}).items():
+        batch.append((f"skills/{path.lstrip('/')}", content.encode("utf-8")))
+    for sa_name, sa_data in seed.get("subagents", {}).items():
+        sa_prefix = f"subagents/{sa_name}/"
+        for path, content in sa_data.get("memories", {}).items():
+            batch.append((f"{sa_prefix}{path.lstrip('/')}", content.encode("utf-8")))
+        for path, content in sa_data.get("skills", {}).items():
+            batch.append(
+                (f"{sa_prefix}skills/{path.lstrip('/')}", content.encode("utf-8"))
+            )
+
+    identifier = config.memories.identifier or f"-/{config.agent.name}"
+    backend = ContextHubBackend(identifier=identifier)
+
+    try:
+        if backend.has_prior_commits():
+            print(f"Hub repo {identifier} already exists — skipping seed.")
+            return
+    except Exception as exc:
+        print(f"Error: failed to inspect hub repo {identifier}: {exc}")
+        raise SystemExit(1) from None
+
+    if not batch:
+        print(f"Hub repo {identifier}: nothing to seed.")
+        return
+
+    print(f"Creating hub repo {identifier} with {len(batch)} file(s)...")
+    try:
+        responses = backend.upload_files(batch)
+    except Exception as exc:
+        print(f"Error: hub seed failed for {identifier}: {exc}")
+        raise SystemExit(1) from None
+
+    failures = [r for r in responses if r.error is not None]
+    if failures:
+        print(f"Error: hub seed had {len(failures)} failed file(s):")
+        for resp in failures:
+            print(f"  - {resp.path}: {resp.error}")
+        raise SystemExit(1)
+
+    print(f"Hub repo {identifier} created.")
 
 
 def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
@@ -417,3 +580,154 @@ def _run_langgraph_deploy(build_dir: Path, *, name: str) -> None:
         raise SystemExit(result.returncode)
 
     print("\nDeployment complete!")
+
+
+def _resolve_langsmith_api_key() -> str | None:
+    from deepagents_cli.model_config import resolve_env_var
+
+    return resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
+
+
+def _resolve_langsmith_endpoint() -> str:
+    from deepagents_cli.model_config import resolve_env_var
+
+    return (
+        resolve_env_var("LANGSMITH_ENDPOINT")
+        or resolve_env_var("LANGCHAIN_ENDPOINT")
+        or "https://api.smith.langchain.com"
+    ).rstrip("/")
+
+
+def _resolve_tracer_session_id_by_project_name(
+    *, project_name: str, api_key: str
+) -> str | None:
+    """Resolve tracing project id (session id) by name."""
+    from langsmith import Client
+    from langsmith.utils import LangSmithNotFoundError
+
+    api_url = _resolve_langsmith_endpoint()
+    try:
+        client = Client(api_url=api_url, api_key=api_key)
+        project = client.read_project(project_name=project_name)
+        return str(project.id)
+    except LangSmithNotFoundError as exc:
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
+    except Exception as exc:
+        print(f"Warning: Failed to resolve tracing project '{project_name}': {exc}")
+    return None
+
+
+def _upsert_issues_board_config(
+    *,
+    session_id: str,
+    api_key: str,
+    context_hub_repo_handle: str,
+) -> None:
+    """Best-effort create or patch board config for a deployed agent."""
+    import httpx
+
+    from deepagents_cli.model_config import resolve_env_var
+
+    success_codes = {200, 201}
+    http_conflict = 409
+    endpoint = _resolve_langsmith_endpoint()
+    url = f"{endpoint}/v1/platform/sessions/{session_id}/issues-agent"
+    headers = {
+        "x-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    tenant_id = resolve_env_var("LANGSMITH_TENANT_ID")
+    if tenant_id:
+        headers["x-tenant-id"] = tenant_id
+
+    create_payload = {
+        "cron_schedule": "0 */6 * * *",
+        "heavy_model": "anthropic:issues-agent-heavy",
+        "light_model": "anthropic:issues-agent-light",
+        "context_hub_repo_handle": context_hub_repo_handle,
+    }
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            create_resp = client.post(url, headers=headers, json=create_payload)
+            if create_resp.status_code in success_codes:
+                print(
+                    f"Issues board auto-wired for tracing project {session_id} "
+                    f"({context_hub_repo_handle})."
+                )
+                return
+            if create_resp.status_code == http_conflict:
+                patch_resp = client.patch(
+                    url,
+                    headers=headers,
+                    json={"context_hub_repo_handle": context_hub_repo_handle},
+                )
+                if patch_resp.status_code in success_codes:
+                    print(
+                        "Issues board already existed; updated context hub id "
+                        f"to {context_hub_repo_handle}."
+                    )
+                    return
+                print(
+                    "Warning: Failed to patch existing issues board: "
+                    f"HTTP {patch_resp.status_code} — {patch_resp.text[:300]}"
+                )
+                return
+            print(
+                "Warning: Failed to create issues board config: "
+                f"HTTP {create_resp.status_code} — {create_resp.text[:300]}"
+            )
+    except Exception as exc:
+        print(f"Warning: Issues board auto-wire failed: {exc}")
+
+
+def _resolve_context_hub_identifier(config: DeployConfig) -> str:
+    return config.memories.identifier or f"-/{config.agent.name}"
+
+
+def _resolve_context_hub_repo_handle_for_issues_board(
+    config: DeployConfig,
+) -> str | None:
+    identifier = _resolve_context_hub_identifier(config)
+    owner, sep, repo_handle = identifier.partition("/")
+    if not sep or not owner or not repo_handle:
+        print(
+            "Warning: Invalid memories identifier for hub-backed deploy: "
+            f"{identifier!r}; skipping issues board auto-wire."
+        )
+        return None
+    return repo_handle
+
+
+def _auto_wire_issues_board_if_hub(config: DeployConfig) -> None:
+    """Best-effort issues-board wiring after deploy for hub-backed memories."""
+    if config.memories.backend != "hub":
+        return
+
+    context_hub_repo_handle = _resolve_context_hub_repo_handle_for_issues_board(config)
+    if context_hub_repo_handle is None:
+        return
+    api_key = _resolve_langsmith_api_key()
+    if api_key is None:
+        print(
+            "Warning: LANGSMITH/LANGCHAIN API key not found; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    session_id = _resolve_tracer_session_id_by_project_name(
+        project_name=config.agent.name,
+        api_key=api_key,
+    )
+    if session_id is None:
+        print(
+            "Warning: Could not resolve tracing project after deploy; "
+            "skipping issues board auto-wire."
+        )
+        return
+
+    _upsert_issues_board_config(
+        session_id=session_id,
+        api_key=api_key,
+        context_hub_repo_handle=context_hub_repo_handle,
+    )

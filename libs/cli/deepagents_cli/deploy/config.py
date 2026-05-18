@@ -36,11 +36,22 @@ VALID_SANDBOX_PROVIDERS: frozenset[str] = frozenset(get_args(SandboxProvider))
 
 VALID_SANDBOX_SCOPES: frozenset[str] = frozenset(get_args(SandboxScope))
 
-AuthProvider = Literal["supabase", "clerk"]
-"""Valid auth provider identifiers."""
+AuthProvider = Literal["supabase", "clerk", "anonymous"]
+"""Valid auth provider identifiers.
+
+`"anonymous"` ships a permissive auth handler that overrides LangSmith
+Cloud's default `x-api-key` requirement so the bundled frontend can
+reach `/threads`. The API is open to anyone with the deploy URL —
+per-browser thread scoping is enforced client-side via a UUID cookie.
+"""
 
 VALID_AUTH_PROVIDERS: frozenset[str] = frozenset(get_args(AuthProvider))
 """Valid auth providers for deploy."""
+
+MemoriesBackend = Literal["store", "hub"]
+"""Valid backing store for the `/memories/` namespace."""
+
+VALID_MEMORIES_BACKENDS: frozenset[str] = frozenset(get_args(MemoriesBackend))
 
 DEFAULT_CONFIG_FILENAME = "deepagents.toml"
 
@@ -121,11 +132,59 @@ class SandboxConfig:
 class AuthConfig:
     """`[auth]` section — authentication provider settings.
 
-    The whole section is optional. When omitted, the deployed agent has
-    no authentication and all requests are anonymous.
+    The whole section is optional. When omitted, no `auth.py` is
+    generated and LangSmith Cloud's default `x-api-key` auth applies
+    (callers still need a LangSmith API key to reach the deployment).
+    To make the API genuinely open — e.g., to expose the bundled
+    `[frontend]` without sign-in — set `provider = "anonymous"`
+    explicitly.
     """
 
     provider: AuthProvider
+
+
+@dataclass(frozen=True)
+class MemoriesConfig:
+    """`[memories]` section — backing store for `/memories/`.
+
+    `backend = "hub"` (default) routes `/memories/` through a
+    `ContextHubBackend` bound to a LangSmith Hub agent repo, giving
+    persistent, git-like storage. `backend = "store"` routes it through a
+    `StoreBackend` against the LangGraph runtime store.
+
+    `identifier` overrides the Hub agent repo. When omitted, it defaults
+    to `-/{agent.name}` at bundle time.
+
+    `agent_writable` controls whether the agent can write to `/memories/`.
+    When `False` (default), agent memory is read-only and only user memories
+    under `/memories/user/` are writable. When `True`, the agent can write
+    anywhere under `/memories/`.
+    """
+
+    backend: MemoriesBackend = "hub"
+    identifier: str = ""
+    agent_writable: bool = False
+
+
+@dataclass(frozen=True)
+class FrontendConfig:
+    """`[frontend]` section — bundled default frontend settings.
+
+    When `enabled = True`, `deepagent deploy` copies a pre-built React
+    chat UI into the deployment alongside the agent. An `[auth]`
+    section is required in this case — pick `"supabase"` or `"clerk"`
+    for real per-user auth, or set `provider = "anonymous"` explicitly
+    to ship the UI with an open API.
+    """
+
+    enabled: bool = False
+    app_name: str | None = None
+    subtitle: str | None = None
+    """Subtitle shown under the app name in the header and on the
+    empty-state hero. Falls back to a generic default when unset."""
+    prompts: tuple[str, ...] | None = None
+    """Suggestion chips shown on the empty-state. Falls back to the
+    bundled defaults when unset."""
 
 
 @dataclass(frozen=True)
@@ -138,6 +197,9 @@ class DeployConfig:
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     """Parsed `[sandbox]` section — provider, snapshot name, image, scope."""
     auth: AuthConfig | None = None
+    memories: MemoriesConfig = field(default_factory=MemoriesConfig)
+    """Parsed `[memories]` section — backing store for `/memories/`."""
+    frontend: FrontendConfig | None = None
 
     def validate(self, project_root: Path) -> list[str]:
         """Validate config against the filesystem.
@@ -184,6 +246,15 @@ class DeployConfig:
                 f"Valid: {', '.join(sorted(VALID_SANDBOX_SCOPES))}"
             )
 
+        if self.memories.backend not in VALID_MEMORIES_BACKENDS:
+            errors.append(
+                f"Unknown memories backend: {self.memories.backend}. "
+                f"Valid: {', '.join(sorted(VALID_MEMORIES_BACKENDS))}"
+            )
+
+        if self.memories.backend == "hub":
+            errors.extend(_validate_hub_credentials())
+
         # Validate credentials for model provider.
         errors.extend(_validate_model_credentials(self.agent.model))
 
@@ -193,6 +264,16 @@ class DeployConfig:
         # Validate credentials for auth provider.
         if self.auth is not None:
             errors.extend(_validate_auth_credentials(self.auth.provider))
+
+        if self.frontend is not None and self.frontend.enabled:
+            if self.auth is None:
+                errors.append(
+                    "[frontend].enabled requires [auth] to be configured. "
+                    'Add an [auth] section with provider = "supabase", '
+                    '"clerk", or "anonymous".'
+                )
+            else:
+                errors.extend(_validate_frontend_credentials(self.auth.provider))
 
         return errors
 
@@ -363,10 +444,12 @@ def load_config(config_path: Path) -> DeployConfig:
     return _parse_config(data)
 
 
-_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth"})
+_ALLOWED_SECTIONS = frozenset({"agent", "sandbox", "auth", "memories", "frontend"})
 _ALLOWED_AGENT_KEYS = frozenset({"name", "description", "model"})
 _ALLOWED_SANDBOX_KEYS = frozenset({"provider", "template", "image", "scope"})
 _ALLOWED_AUTH_KEYS = frozenset({"provider"})
+_ALLOWED_MEMORIES_KEYS = frozenset({"backend", "identifier", "agent_writable"})
+_ALLOWED_FRONTEND_KEYS = frozenset({"enabled", "app_name", "subtitle", "prompts"})
 
 
 def _parse_config(data: dict[str, Any]) -> DeployConfig:
@@ -442,7 +525,80 @@ def _parse_config(data: dict[str, Any]) -> DeployConfig:
 
         auth = AuthConfig(provider=auth_provider)
 
-    return DeployConfig(agent=agent, sandbox=sandbox, auth=auth)
+    memories = MemoriesConfig()
+    memories_data = data.get("memories")
+    if memories_data is not None:
+        unknown_memories = set(memories_data.keys()) - _ALLOWED_MEMORIES_KEYS
+        if unknown_memories:
+            msg = (
+                f"Unknown key(s) in [memories]: {sorted(unknown_memories)}. "
+                f"Allowed: {sorted(_ALLOWED_MEMORIES_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        backend = memories_data.get("backend", "hub")
+        if backend not in VALID_MEMORIES_BACKENDS:
+            msg = (
+                f"Unknown memories backend: {backend}. "
+                f"Valid: {', '.join(sorted(VALID_MEMORIES_BACKENDS))}"
+            )
+            raise ValueError(msg)
+
+        identifier = memories_data.get("identifier", "")
+        if identifier and "/" not in identifier:
+            msg = (
+                f"[memories].identifier must be in 'owner/name' form "
+                f"(or '-/name' for the caller's tenant); got {identifier!r}"
+            )
+            raise ValueError(msg)
+
+        agent_writable = memories_data.get("agent_writable", False)
+        if not isinstance(agent_writable, bool):
+            msg = (
+                "[memories].agent_writable must be a boolean, "
+                f"got {type(agent_writable).__name__}"
+            )
+            raise ValueError(msg)
+
+        memories = MemoriesConfig(
+            backend=backend,
+            identifier=identifier,
+            agent_writable=agent_writable,
+        )
+
+    frontend: FrontendConfig | None = None
+    frontend_data = data.get("frontend")
+    if frontend_data is not None:
+        unknown_frontend = set(frontend_data.keys()) - _ALLOWED_FRONTEND_KEYS
+        if unknown_frontend:
+            msg = (
+                f"Unknown key(s) in [frontend]: {sorted(unknown_frontend)}. "
+                f"Allowed: {sorted(_ALLOWED_FRONTEND_KEYS)}"
+            )
+            raise ValueError(msg)
+
+        frontend_kwargs: dict[str, Any] = {
+            k: frontend_data[k] for k in _ALLOWED_FRONTEND_KEYS if k in frontend_data
+        }
+        # FrontendConfig is frozen=True; coerce list -> tuple so the
+        # dataclass stays hashable.
+        if "prompts" in frontend_kwargs:
+            prompts_raw = frontend_kwargs["prompts"]
+            if not isinstance(prompts_raw, list) or not all(
+                isinstance(p, str) for p in prompts_raw
+            ):
+                msg = "[frontend].prompts must be a list of strings"
+                raise ValueError(msg)
+            frontend_kwargs["prompts"] = tuple(prompts_raw)
+        frontend = FrontendConfig(**frontend_kwargs)
+
+    return DeployConfig(
+        agent=agent,
+        sandbox=sandbox,
+        auth=auth,
+        memories=memories,
+        frontend=frontend,
+    )
 
 
 _MODEL_PROVIDER_ENV: dict[str, str] = {
@@ -479,6 +635,16 @@ _AUTH_PROVIDER_ENV: dict[str, list[str]] = {
     "supabase": ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_DEFAULT_KEY"],
     "clerk": ["CLERK_SECRET_KEY"],
 }
+
+_FRONTEND_EXTRA_ENV: dict[str, list[str]] = {
+    # Supabase reuses `SUPABASE_URL` + `SUPABASE_PUBLISHABLE_DEFAULT_KEY`
+    # from [auth] — no extra browser-facing env vars needed.
+    "supabase": [],
+    # Clerk's browser-facing publishable key is distinct from
+    # `CLERK_SECRET_KEY` (which [auth] uses for JWKS validation).
+    "clerk": ["CLERK_PUBLISHABLE_KEY"],
+}
+"""Additional env vars the frontend bundle needs beyond what `[auth]` requires."""
 
 
 def _validate_model_credentials(model: str) -> list[str]:
@@ -530,6 +696,36 @@ def _validate_auth_credentials(provider: str) -> list[str]:
     ]
 
 
+def _validate_hub_credentials() -> list[str]:
+    """Check that a LangSmith key is set when `[memories].backend = 'hub'`."""
+    if os.environ.get("LANGSMITH_API_KEY") or os.environ.get("LANGCHAIN_API_KEY"):
+        return []
+    return [
+        (
+            "Memories backend 'hub' requires a LangSmith key: "
+            "set LANGSMITH_API_KEY (or LANGCHAIN_API_KEY) in your .env "
+            "file or environment."
+        ),
+    ]
+
+
+def _validate_frontend_credentials(provider: str) -> list[str]:
+    """Check that all extra env vars are set for the frontend bundle."""
+    required = _FRONTEND_EXTRA_ENV.get(provider)
+    if required is None:
+        return []
+    missing = [v for v in required if not os.environ.get(v)]
+    if not missing:
+        return []
+    return [
+        (
+            f"Frontend for '{provider}' requires {' and '.join(missing)}. "
+            f"Add it to your .env file so the bundler can write it "
+            f"into index.html at deploy time."
+        ),
+    ]
+
+
 def find_config(start_path: Path | None = None) -> Path | None:
     """Find `deepagents.toml` in *start_path* (or cwd if not given).
 
@@ -558,7 +754,23 @@ model = "anthropic:claude-sonnet-4-6"
 
 # [auth] is optional. Add to enable user authentication.
 # [auth]
-# provider = "supabase"   # supabase | clerk
+# provider = "supabase"   # supabase | clerk | anonymous
+
+# [memories] is optional. Defaults to a LangSmith Hub agent repo
+# (`backend = "hub"`). Set backend = "store" to use the LangGraph
+# runtime store instead.
+# [memories]
+# backend = "hub"            # hub | store
+# identifier = "-/my-agent"  # optional override; defaults to `-/{agent.name}`
+
+# [frontend] is optional. Add to ship a bundled chat UI on the same
+# deployment as the agent. Requires [auth] — pick "supabase" or
+# "clerk" for real per-user auth, or set provider = "anonymous" to
+# leave the API open to anyone with the deploy URL (private/dev
+# deploys only).
+# [frontend]
+# enabled = true
+# app_name = "My Agent"
 """
 
 
@@ -589,6 +801,10 @@ LANGSMITH_API_KEY=
 # SUPABASE_URL=
 # SUPABASE_PUBLISHABLE_DEFAULT_KEY=
 # CLERK_SECRET_KEY=
+
+# Frontend (optional, uncomment for [frontend] + matching [auth])
+# Clerk only — browser-facing publishable key. Supabase reuses the keys above.
+# CLERK_PUBLISHABLE_KEY=
 """
 
 

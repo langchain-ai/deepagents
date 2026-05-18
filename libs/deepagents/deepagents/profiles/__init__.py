@@ -1,41 +1,38 @@
-"""Harness profiles and provider-specific configuration.
+"""Public beta APIs for model and harness profiles.
 
-!!! warning
+!!! beta
 
-    This is an internal API subject to change without deprecation. It is not
-    intended for external use or consumption.
+    `deepagents.profiles` exposes beta APIs that may receive minor changes in
+    future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+    for more details.
 
-Re-exports the profile dataclass, registry helpers, and provider modules so
-internal consumers can import from `deepagents.profiles` directly.
+Exposes the public `ProviderProfile`, `HarnessProfile`, and
+`HarnessProfileConfig` APIs for customizing how `resolve_model` constructs chat
+models and how `create_deep_agent` shapes agent runtime behavior.
+
+Registration helpers are additive: re-registering under an existing key merges
+on top of the prior registration.
 """
 
-# Provider modules register their profiles as a side effect of import.
-# _openrouter registration fires via the `from` import below.
-from deepagents.profiles import _openai as _openai
-from deepagents.profiles._harness_profiles import (
-    _HARNESS_PROFILES,
-    _get_harness_profile,
-    _HarnessProfile,
-    _merge_profiles,
-    _register_harness_profile,
+from deepagents.profiles.harness.harness_profiles import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    HarnessProfileConfig,
+    register_harness_profile,
 )
-from deepagents.profiles._openrouter import (
-    _OPENROUTER_APP_TITLE,
-    _OPENROUTER_APP_URL,
-    OPENROUTER_MIN_VERSION,
-    _openrouter_attribution_kwargs,
-    check_openrouter_version,
+from deepagents.profiles.provider.provider_profiles import (
+    ProviderProfile,
+    register_provider_profile,
 )
 
+# Built-in provider/harness profiles are registered lazily on first
+# profile-registry access so importing `deepagents.profiles` stays cheap.
+
 __all__ = [
-    "OPENROUTER_MIN_VERSION",
-    "_HARNESS_PROFILES",
-    "_OPENROUTER_APP_TITLE",
-    "_OPENROUTER_APP_URL",
-    "_HarnessProfile",
-    "_get_harness_profile",
-    "_merge_profiles",
-    "_openrouter_attribution_kwargs",
-    "_register_harness_profile",
-    "check_openrouter_version",
+    "GeneralPurposeSubagentProfile",
+    "HarnessProfile",
+    "HarnessProfileConfig",
+    "ProviderProfile",
+    "register_harness_profile",
+    "register_provider_profile",
 ]

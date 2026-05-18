@@ -11,6 +11,8 @@ on:
       - "libs/deepagents/deepagents/_version.py"
       - "libs/cli/pyproject.toml"
       - "libs/cli/deepagents_cli/_version.py"
+      - "libs/code/pyproject.toml"
+      - "libs/code/deepagents_code/_version.py"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

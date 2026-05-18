@@ -50,10 +50,12 @@
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
+    "code": "dcode",
     "daytona": "daytona",
     "deepagents": "deepagents",
     "deepagents-acp": "acp",
     "deepagents-cli": "cli",
+    "deepagents-code": "dcode",
     "deps": "dependencies",
     "docs": "documentation",
     "evals": "evals",
@@ -63,15 +65,19 @@
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
-    "langchain-repl": "repl",
     "langchain-runloop": "runloop",
     "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
     "quickjs": "quickjs",
-    "repl": "repl",
     "runloop": "runloop",
     "sdk": "deepagents"
   },
+  "branchRules": [
+    {
+      "label": "open-swe",
+      "prefix": "open-swe/"
+    }
+  ],
   "fileRules": [
     {
       "label": "deepagents",
@@ -86,6 +92,11 @@
     {
       "label": "acp",
       "prefix": "libs/acp/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "dcode",
+      "prefix": "libs/code/",
       "skipExcludedFiles": true
     },
     {
@@ -106,11 +117,6 @@
     {
       "label": "quickjs",
       "prefix": "libs/partners/quickjs/",
-      "skipExcludedFiles": true
-    },
-    {
-      "label": "repl",
-      "prefix": "libs/repl/",
       "skipExcludedFiles": true
     },
     {

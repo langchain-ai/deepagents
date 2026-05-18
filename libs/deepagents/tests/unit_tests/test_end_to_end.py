@@ -14,9 +14,10 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 from pydantic import Field
@@ -27,8 +28,7 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.permissions import FilesystemPermission
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemPermission
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
@@ -2619,6 +2619,52 @@ class TestStateBackendConfigKeys:
 
         assert result["files"]["/injected.txt"]["content"] == "from middleware"
 
+    def test_state_backend_read_your_writes_within_one_tool_call(self) -> None:
+        """Write + read in the same tool call — read sees the pending write.
+
+        Both operations happen inside a single ToolNode superstep, so the
+        write is still in `task.writes` (not yet committed). `fresh=True`
+        in `_read_files` applies pending writes through the channel reducer,
+        giving read-your-writes semantics.
+        """
+        backend = StateBackend()
+
+        @tool
+        def write_then_read(path: str, content: str) -> str:
+            """Write a file via StateBackend, then immediately read it back."""
+            backend.write(path, content)
+            result = backend.read(path)
+            if result.error:
+                return f"ERROR: {result.error}"
+            file_data = result.file_data or {}
+            return str(file_data.get("content", ""))
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_then_read",
+                                "args": {"path": "/pending.txt", "content": "buffered"},
+                                "id": "call_wr",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[write_then_read])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msg = next(m for m in result["messages"] if m.type == "tool" and m.tool_call_id == "call_wr")
+        assert "buffered" in tool_msg.content
+        assert "ERROR" not in tool_msg.content
+
 
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""
@@ -3436,3 +3482,144 @@ class TestAsyncSubagentEndToEnd:
 
         async_tasks = result.get("async_tasks", {})
         assert async_tasks["thread_err"]["status"] == "error"
+
+
+class TestDeltaChannels:
+    """Verify that messages and files use DeltaChannel.
+
+    DeltaChannel stores individual writes in the `writes` table rather than
+    snapshotting the full accumulated value into `channel_values` on every
+    checkpoint step. This keeps checkpoint blobs small (O(1) per step instead
+    of O(N) for messages). The full state is still reconstructable via
+    `agent.get_state()`, which replays writes through the reducer.
+    """
+
+    def test_messages_uses_delta_channel(self) -> None:
+        """Messages channel must be a DeltaChannel in the compiled graph."""
+        fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
+        agent = create_deep_agent(model=fake_model)
+
+        assert isinstance(agent.channels.get("messages"), DeltaChannel), "messages must use DeltaChannel so checkpoint growth is O(N) not O(N²)"
+
+    def test_messages_reconstructed_via_get_state(self) -> None:
+        """get_state() must reconstruct messages correctly despite DeltaChannel."""
+        fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-messages-reconstruct"}}
+        agent.invoke({"messages": [HumanMessage(content="Hi")]}, config)
+
+        state = agent.get_state(config)
+        msgs = state.values["messages"]
+        assert len(msgs) >= 2
+        assert any(isinstance(m, HumanMessage) for m in msgs)
+        assert any(isinstance(m, AIMessage) for m in msgs)
+
+    def test_files_not_in_channel_values(self) -> None:
+        """Files should not appear in checkpoint channel_values (DeltaChannel)."""
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "name": "write_file",
+                                "args": {"file_path": "hello.txt", "content": "hello"},
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        backend = StateBackend()
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-files"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+
+        checkpoint = checkpointer.get(config)
+        assert checkpoint is not None
+        # DeltaChannel: full files dict is NOT snapshotted into channel_values on every step
+        assert "files" not in checkpoint["channel_values"], (
+            "files is a DeltaChannel and should not appear in channel_values; it should be reconstructed from writes"
+        )
+
+    def test_files_reconstructed_via_get_state(self) -> None:
+        """get_state() must reconstruct files correctly despite DeltaChannel."""
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "name": "write_file",
+                                "args": {"file_path": "hello.txt", "content": "hello"},
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        backend = StateBackend()
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-files-reconstruct"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+
+        state = agent.get_state(config)
+        files = state.values.get("files", {})
+        assert any("hello.txt" in k for k in files)
+
+
+def test_invalid_tool_call_patched_on_next_turn() -> None:
+    # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
+    # will be produced because agents only route on ``tool_calls``).
+    # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_truncated",
+                            "name": "search",
+                            "args": '{"query": "weath',
+                            "error": "Unterminated string at line 1 column 17",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+    config: dict = {"configurable": {"thread_id": "patch-invalid-tool-calls"}}
+
+    agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
+    result = agent.invoke({"messages": [HumanMessage(content="Try again")]}, config)
+
+    # The second model call must see the dangling invalid_tool_call paired with a ToolMessage.
+    second_call_inputs = fake_model.call_history[1]["messages"]
+    synthetic = next(
+        (m for m in second_call_inputs if isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated"),
+        None,
+    )
+    assert synthetic is not None, "PatchToolCallsMiddleware did not inject a ToolMessage for invalid_tool_calls"
+    assert "could not be executed" in synthetic.content
+    assert "malformed or truncated" in synthetic.content
+    assert synthetic.name == "search"
+
+    # Final state must also expose the patched ToolMessage.
+    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])

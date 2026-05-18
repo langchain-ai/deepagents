@@ -21,7 +21,7 @@ function loadConfig() {
     throw new Error(`Failed to parse pr-labeler-config.json: ${e.message}`);
   }
   const required = [
-    'labelColor', 'sizeThresholds', 'fileRules',
+    'labelColor', 'sizeThresholds', 'fileRules', 'branchRules',
     'typeToLabel', 'scopeToLabel', 'trustedThreshold',
     'excludedFiles', 'excludedPaths',
   ];
@@ -43,6 +43,7 @@ function init(github, owner, repo, config, core) {
     scopeToLabel,
     typeToLabel,
     fileRules: fileRulesDef,
+    branchRules: branchRulesDef,
     excludedFiles,
     excludedPaths,
   } = config;
@@ -127,6 +128,29 @@ function init(github, owner, repo, config, core) {
       if (candidates.some(f => rule.test(f.filename ?? ''))) {
         labels.add(rule.label);
       }
+    }
+    return labels;
+  }
+
+  // ── Branch-name-based labels ──────────────────────────────────────
+
+  function matchBranchLabels(headRef) {
+    const labels = new Set();
+    const ref = headRef ?? '';
+    if (!ref) return labels;
+    for (const rule of branchRulesDef) {
+      let matched = false;
+      if (rule.prefix) matched = ref.startsWith(rule.prefix);
+      else if (rule.suffix) matched = ref.endsWith(rule.suffix);
+      else if (rule.exact) matched = ref === rule.exact;
+      else if (rule.pattern) matched = new RegExp(rule.pattern).test(ref);
+      else {
+        throw new Error(
+          `branchRules entry (label: "${rule.label}") has no recognized matcher ` +
+          `(expected one of: prefix, suffix, exact, pattern)`,
+        );
+      }
+      if (matched) labels.add(rule.label);
     }
     return labels;
   }
@@ -290,6 +314,7 @@ function init(github, owner, repo, config, core) {
     computeSize,
     buildFileRules,
     matchFileLabels,
+    matchBranchLabels,
     matchTitleLabels,
     labelPR,
     allTypeLabels,

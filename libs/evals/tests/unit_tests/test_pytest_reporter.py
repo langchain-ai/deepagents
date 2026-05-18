@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from _pytest.outcomes import Exit
 
 import tests.evals.pytest_reporter as reporter
+
+if TYPE_CHECKING:
+    from _pytest.mark.structures import Mark
 
 
 @dataclass
@@ -16,6 +24,20 @@ class _FakeReport:
     outcome: str
     duration: float
     longreprtext: str = ""
+
+
+@dataclass
+class _FakeSession:
+    """Minimal stand-in for `pytest.Session` for `sessionfinish` tests."""
+
+    exitstatus: int
+    config: Any = field(
+        default_factory=lambda: SimpleNamespace(
+            getoption=lambda *_args, **_kw: None,
+            _inicache={},
+            pluginmanager=SimpleNamespace(getplugin=lambda _name: None),
+        )
+    )
 
 
 class TestFailuresCapture:
@@ -123,3 +145,242 @@ class TestFailuresCapture:
         msg = reporter._FAILURES[0]["failure_message"]
         assert msg.endswith("... [truncated]")
         assert len(msg) < len(long_msg)
+
+
+class TestSessionExitStatus:
+    """Verify that pytest_sessionfinish preserves exit 1 when no tests ran."""
+
+    def setup_method(self):
+        reporter._FAILURES.clear()
+        reporter._RESULTS.update(passed=0, failed=0, skipped=0, total=0)
+        reporter._DURATIONS_S.clear()
+        reporter._EFFICIENCY_RESULTS.clear()
+        reporter._NODEID_TO_CATEGORY.clear()
+        reporter._CATEGORY_RESULTS.clear()
+        reporter._EXPERIMENT_LINKS.clear()
+
+    def test_exit_1_swallowed_when_tests_ran(self):
+        reporter._RESULTS.update(passed=2, failed=1, total=3)
+        session = _FakeSession(exitstatus=1)
+        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        assert session.exitstatus == 0
+
+    def test_exit_1_preserved_when_no_tests_ran(self):
+        session = _FakeSession(exitstatus=1)
+        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        assert session.exitstatus == 1
+
+    def test_exit_0_unchanged(self):
+        reporter._RESULTS.update(passed=3, total=3)
+        session = _FakeSession(exitstatus=0)
+        reporter.pytest_sessionfinish(session, 0)  # type: ignore[arg-type]
+        assert session.exitstatus == 0
+
+    def test_exit_1_preserved_when_only_marked_skips(self):
+        """Marked-skip tests (`@pytest.mark.skip`) emit only a `setup` phase
+        report — pytest_runtest_logreport returns early and total stays 0. If
+        an external exit 1 were to fire in this state, the reporter must not
+        mask it.
+        """
+        report = _FakeReport(
+            nodeid="tests/evals/test_x.py::test_y",
+            when="setup",
+            outcome="skipped",
+            duration=0.0,
+        )
+        reporter.pytest_runtest_logreport(report)  # type: ignore[arg-type]
+        assert reporter._RESULTS["total"] == 0
+
+        session = _FakeSession(exitstatus=1)
+        reporter.pytest_sessionfinish(session, 1)  # type: ignore[arg-type]
+        assert session.exitstatus == 1
+
+    @pytest.mark.parametrize("exitstatus", [2, 3, 4, 5])
+    def test_non_1_exitstatus_unchanged(self, exitstatus: int):
+        """Pytest exit codes 2 (interrupt), 3 (internal), 4 (usage), 5 (no
+        tests collected) must pass through regardless of whether tests ran.
+        """
+        reporter._RESULTS.update(passed=3, total=3)
+        session = _FakeSession(exitstatus=exitstatus)
+        reporter.pytest_sessionfinish(session, exitstatus)  # type: ignore[arg-type]
+        assert session.exitstatus == exitstatus
+
+
+class _FakeItem:
+    """Minimal stand-in for `pytest.Item` carrying a single `eval_category` mark."""
+
+    def __init__(self, category: str) -> None:
+        self._mark = pytest.mark.eval_category(category).mark
+
+    def get_closest_marker(self, name: str) -> Mark | None:
+        return self._mark if self._mark.name == name else None
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnknownMarkWarning")
+class TestFilterByMarker:
+    """Verify include/exclude semantics and exit-on-unknown for `_filter_by_marker`.
+
+    Pairs with TestSessionExitStatus to cover the full failure path — the
+    filter raises `Exit(returncode=1)`, and the reporter preserves it.
+    The `eval_category` mark is registered in the eval conftest, not here.
+
+    Each test imports `_filter_by_marker` lazily because `tests.evals.conftest`
+    pulls in `deepagents_harbor` at module load.
+    """
+
+    @staticmethod
+    def _make_config(
+        values: list[str], excluded: list[str] | None = None
+    ) -> tuple[SimpleNamespace, list[object]]:
+        """Build a fake `pytest.Config` and return it alongside the deselected list.
+
+        The list is mutated in-place when the filter calls
+        `config.hook.pytest_deselected(items=...)`, so tests can assert on
+        which items were reported as deselected.
+        """
+        deselected: list[object] = []
+        options = {"--eval-category": values, "--eval-category-exclude": excluded or []}
+        config = SimpleNamespace(
+            getoption=lambda option: options[option],
+            # Lambda adapts the kwarg-only `pytest_deselected(items=...)` call to list.extend.
+            hook=SimpleNamespace(pytest_deselected=lambda items: deselected.extend(items)),  # noqa: PLW0108
+        )
+        return config, deselected
+
+    def test_unknown_value_exits_with_code_1(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config(["unknown_cat"])
+
+        with pytest.raises(Exit) as exc_info:
+            _filter_by_marker(
+                config,  # ty: ignore[invalid-argument-type]
+                items,  # ty: ignore[invalid-argument-type]
+                option="--eval-category",
+                marker_name="eval_category",
+            )
+
+        assert exc_info.value.returncode == 1
+        msg = str(exc_info.value)
+        assert "unknown_cat" in msg
+        assert "valid_cat" in msg
+
+    def test_known_value_does_not_exit(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
+        config, _ = self._make_config(["valid_cat"])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+        )
+        assert len(items) == 1
+        mark = items[0].get_closest_marker("eval_category")
+        assert mark is not None
+        assert mark.args == ("valid_cat",)
+
+    def test_empty_option_is_noop(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config([])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
+        )
+        assert len(items) == 1
+
+    def test_excluded_value_is_removed(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
+        config, deselected = self._make_config([], excluded=["valid_cat"])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
+        )
+        assert len(items) == 1
+        mark = items[0].get_closest_marker("eval_category")
+        assert mark is not None
+        assert mark.args == ("other_cat",)
+        # The excluded item must be reported via `pytest_deselected`, otherwise
+        # pytest's CLI summary loses the "deselected" line.
+        assert len(deselected) == 1
+        deselected_mark = deselected[0].get_closest_marker("eval_category")  # type: ignore[attr-defined]
+        assert deselected_mark is not None
+        assert deselected_mark.args == ("valid_cat",)
+
+    def test_excluded_value_can_overlap_include_list(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat"), _FakeItem("other_cat")]
+        config, _ = self._make_config(["valid_cat", "other_cat"], excluded=["valid_cat"])
+
+        _filter_by_marker(
+            config,  # ty: ignore[invalid-argument-type]
+            items,  # ty: ignore[invalid-argument-type]
+            option="--eval-category",
+            marker_name="eval_category",
+            exclude_option="--eval-category-exclude",
+        )
+        assert len(items) == 1
+        mark = items[0].get_closest_marker("eval_category")
+        assert mark is not None
+        assert mark.args == ("other_cat",)
+
+    def test_unknown_excluded_value_exits_with_code_1(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config([], excluded=["unknown_cat"])
+
+        with pytest.raises(Exit) as exc_info:
+            _filter_by_marker(
+                config,  # ty: ignore[invalid-argument-type]
+                items,  # ty: ignore[invalid-argument-type]
+                option="--eval-category",
+                marker_name="eval_category",
+                exclude_option="--eval-category-exclude",
+            )
+
+        assert exc_info.value.returncode == 1
+        msg = str(exc_info.value)
+        assert "--eval-category-exclude" in msg
+        assert "unknown_cat" in msg
+        assert "valid_cat" in msg
+
+    def test_unknown_include_and_exclude_both_reported(self):
+        from tests.evals.conftest import _filter_by_marker  # noqa: PLC0415
+
+        items = [_FakeItem("valid_cat")]
+        config, _ = self._make_config(["bogus_inc"], excluded=["bogus_exc"])
+
+        with pytest.raises(Exit) as exc_info:
+            _filter_by_marker(
+                config,  # ty: ignore[invalid-argument-type]
+                items,  # ty: ignore[invalid-argument-type]
+                option="--eval-category",
+                marker_name="eval_category",
+                exclude_option="--eval-category-exclude",
+            )
+
+        assert exc_info.value.returncode == 1
+        msg = str(exc_info.value)
+        # Both unknown lists must surface in the same error message.
+        assert "bogus_inc" in msg
+        assert "bogus_exc" in msg
+        assert "--eval-category " in msg or "--eval-category values" in msg
+        assert "--eval-category-exclude" in msg
+        assert "; " in msg

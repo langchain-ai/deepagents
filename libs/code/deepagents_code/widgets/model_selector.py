@@ -500,6 +500,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if self._recommended_only:
             curated = self._curate_models(all_models)
             curated_specs = {spec for spec, _ in curated}
+            # Order follows all_models (insertion), not MRU; _update_display
+            # rebuilds visual order by iterating self._recent_specs directly.
             recent_extra = [
                 (spec, provider)
                 for spec, provider in all_models

@@ -24,11 +24,13 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._debug import configure_debug_logging
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
 logger = logging.getLogger(__name__)
+configure_debug_logging(logger)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
 

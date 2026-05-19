@@ -8366,11 +8366,12 @@ class DeepAgentsApp(App):
                 display = f"{provider}:{model_name}"
 
             try:
-                create_model(
+                result = create_model(
                     display,
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,
-                ).apply_to_settings()
+                )
+                result.apply_to_settings()
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 await self._mount_message(
@@ -8403,9 +8404,12 @@ class DeepAgentsApp(App):
                     AppMessage(f"Switched to {display}{params_suffix}")
                 )
             # Best-effort MRU update for the `/model` Recent section.
-            # Failure is logged inside the helper; no user-facing message
-            # because the switch itself already succeeded.
-            await asyncio.to_thread(touch_recent_model, display)
+            # `display` may be a bare model name when provider auto-detection
+            # fails; use the post-resolution spec so touch_recent_model always
+            # gets a valid "provider:model" string. Silent on failure —
+            # debug log captures it when DEEPAGENTS_CODE_DEBUG=1.
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            await asyncio.to_thread(touch_recent_model, resolved_spec)
             logger.info(
                 "Model switched to %s (via configurable middleware); model_params=%s",
                 display,

@@ -57,13 +57,13 @@ def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
     if schema_type == "array":
         result = {**schema}
         items = result.get("items")
-        if _is_schema_node(items):
+        if isinstance(items, dict):
             result["items"] = normalize_schema(items)
         return result
 
     result = {**schema, "additionalProperties": False}
     props = schema.get("properties")
-    if _is_schema_node(props):
+    if isinstance(props, dict):
         normalized: dict[str, Any] = {}
         for key, value in props.items():
             normalized[key] = (

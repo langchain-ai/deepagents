@@ -42,8 +42,8 @@ class OAuthInteraction(Protocol):
             The raw pasted URL (the caller parses `code`/`state`/`error`).
 
         Raises:
-            RuntimeError: When the user cannot provide a callback URL
-                (e.g. closed stdin on the CLI).
+            RuntimeError: When the user interaction cannot complete (for
+                example, the input surface is unavailable or was dismissed).
         """
         ...
 
@@ -102,7 +102,11 @@ class CliOAuthInteraction:
     async def show_authorize_url(  # noqa: PLR6301
         self, url: str, *, opened_in_browser: bool
     ) -> None:
-        """Print the authorize URL with paste-back or browser-opened wording."""
+        """Print the full authorize instruction block to stdout.
+
+        Uses browser-opened wording when `opened_in_browser` is `True`;
+        otherwise instructs the user to open the URL and paste back the callback.
+        """
         if opened_in_browser:
             print(  # noqa: T201
                 "\nOpened your browser to approve MCP access. "
@@ -144,7 +148,7 @@ class CliOAuthInteraction:
         user_code: str,
         expires_in: int,
     ) -> None:
-        """Print device-code instructions to stdout."""
+        """Print RFC 8628 device-code instructions to stdout."""
         print(  # noqa: T201
             f"\nVisit {verification_uri} and enter code: "
             f"{user_code}\n(code expires in {expires_in}s)\n"
@@ -154,24 +158,27 @@ class CliOAuthInteraction:
         """Ask for a Slack team ID via `input()` on a worker thread.
 
         Returns:
-            The entered Slack team ID, or `None` if the prompt was blank.
+            The entered Slack team ID, or `None` if the prompt was blank or
+                stdin was closed.
         """
         import asyncio
 
-        raw = await asyncio.to_thread(
-            input,
-            "Slack team ID to install the app into "
-            "(e.g. T01234567 — leave blank to pick on Slack's page): ",
-        )
-        stripped = raw.strip()
-        return stripped or None
+        try:
+            raw = await asyncio.to_thread(
+                input,
+                "Slack team ID to install the app into "
+                "(e.g. T01234567 — leave blank to pick on Slack's page): ",
+            )
+        except EOFError:
+            return None
+        return raw.strip() or None
 
     async def show_success(self, message: str) -> None:  # noqa: PLR6301
-        """Print a success line to stdout."""
+        """Print success message to stdout."""
         print(message)  # noqa: T201
 
     async def show_notice(self, message: str) -> None:  # noqa: PLR6301
-        """Print a progress notice to stdout."""
+        """Print progress notice to stdout."""
         print(message)  # noqa: T201
 
 

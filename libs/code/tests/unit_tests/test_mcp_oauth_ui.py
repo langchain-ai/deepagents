@@ -9,7 +9,6 @@ end-to-end without touching `builtins.input`, `print`, or stdin.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -337,3 +336,63 @@ class TestCliOAuthInteraction:
 
         monkeypatch.setattr("builtins.input", lambda _: "   ")
         assert await CliOAuthInteraction().prompt_slack_team_id() is None
+
+    async def test_cli_prompt_slack_team_id_returns_stripped_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`prompt_slack_team_id` returns the stripped team ID when non-blank."""
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        monkeypatch.setattr("builtins.input", lambda _: "  T01234567  ")
+        assert await CliOAuthInteraction().prompt_slack_team_id() == "T01234567"
+
+    async def test_cli_prompt_slack_team_id_returns_none_on_eof(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`EOFError` from closed stdin returns `None` instead of propagating."""
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        def _raise_eof(_prompt: str) -> str:
+            raise EOFError
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        assert await CliOAuthInteraction().prompt_slack_team_id() is None
+
+    async def test_cli_show_device_code_prints_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`show_device_code` writes the verification URI and user code to stdout."""
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        await CliOAuthInteraction().show_device_code(
+            verification_uri="https://github.com/login/device",
+            user_code="ABCD-1234",
+            expires_in=900,
+        )
+        out = capsys.readouterr().out
+        assert "https://github.com/login/device" in out
+        assert "ABCD-1234" in out
+        assert "900" in out
+        assert capsys.readouterr().err == ""
+
+    async def test_cli_show_success_prints_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`show_success` writes to stdout, not stderr."""
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        await CliOAuthInteraction().show_success("Logged in to MCP server 'test'.")
+        captured = capsys.readouterr()
+        assert "Logged in to MCP server 'test'" in captured.out
+        assert captured.err == ""
+
+    async def test_cli_show_notice_prints_to_stdout(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`show_notice` writes to stdout, not stderr."""
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+        await CliOAuthInteraction().show_notice("Falling back to paste-back flow.")
+        captured = capsys.readouterr()
+        assert "Falling back to paste-back flow." in captured.out
+        assert captured.err == ""

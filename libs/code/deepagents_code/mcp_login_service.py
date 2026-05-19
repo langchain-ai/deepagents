@@ -5,8 +5,7 @@ shape validation, and `print()`-based error reporting. The TUI cannot
 consume those print statements or `sys.exit` codes, so this module
 extracts the same logic into pure functions that return structured
 results (`ConfigResolution`, `ServerSelection`) plus a typed
-`ConfigResolutionError`. Callers — the CLI today, the TUI tomorrow —
-decide how to render those results.
+`ConfigResolutionError`. Callers decide how to render those results.
 
 No `print()` calls live in this module. No imports happen at module
 top level beyond `dataclasses`/`typing`/`pathlib` so the CLI fast path
@@ -28,8 +27,9 @@ if TYPE_CHECKING:
 class ConfigErrorKind(StrEnum):
     """Discriminator for `ConfigResolutionError` reasons.
 
-    Each value maps to a distinct CLI exit code in `run_mcp_login`; the
-    TUI surface translates them into in-app status messages.
+    Only `NO_CONFIG_FOUND` maps to exit code 2 in `run_mcp_login`; all
+    other kinds map to exit code 1. The TUI surface translates them into
+    in-app status messages.
     """
 
     EXPLICIT_LOAD_FAILED = "explicit_load_failed"
@@ -81,6 +81,16 @@ class ConfigResolution:
     untrusted_project_paths: tuple[Path, ...] = ()
     """Project-level configs that were skipped during this resolution."""
 
+    def __post_init__(self) -> None:
+        """Enforce the non-empty `used_paths` invariant.
+
+        Raises:
+            ValueError: If `used_paths` is empty.
+        """
+        if not self.used_paths:
+            msg = "ConfigResolution must have at least one used path"
+            raise ValueError(msg)
+
     @property
     def search_label(self) -> str:
         """Human-readable join of the paths backing this resolution."""
@@ -100,6 +110,16 @@ class ServerSelection:
     search_label: str = ""
     """Where the config came from — used in not-found errors."""
 
+    def __post_init__(self) -> None:
+        """Enforce the non-empty `server_name` invariant.
+
+        Raises:
+            ValueError: If `server_name` is empty.
+        """
+        if not self.server_name:
+            msg = "ServerSelection.server_name must not be empty"
+            raise ValueError(msg)
+
 
 def resolve_mcp_config(
     config_path: str | None,
@@ -111,7 +131,7 @@ def resolve_mcp_config(
 
     Returns:
         A `ConfigResolution` on success, or a `ConfigResolutionError`
-        describing why no usable config could be assembled.
+            describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -124,7 +144,7 @@ def resolve_mcp_config(
     if config_path is not None:
         try:
             config = load_mcp_config(config_path)
-        except (FileNotFoundError, TypeError, ValueError, RuntimeError) as exc:
+        except (OSError, TypeError, ValueError, RuntimeError) as exc:
             return ConfigResolutionError(
                 kind=ConfigErrorKind.EXPLICIT_LOAD_FAILED,
                 message=f"Failed to load MCP config {config_path}: {exc}",
@@ -201,7 +221,7 @@ def select_server(
 
     Returns:
         A `ServerSelection` on success, or a `ConfigResolutionError`
-        describing why the server entry is unusable.
+            describing why the server entry is unusable.
     """
     from deepagents_code.mcp_tools import _validate_server_config
 

@@ -50,6 +50,20 @@ class TestResolveMcpConfigExplicit:
         assert isinstance(result, ConfigResolutionError)
         assert result.kind is ConfigErrorKind.EXPLICIT_LOAD_FAILED
 
+    def test_permission_error_on_explicit_config_returns_error(
+        self, tmp_path: Path
+    ) -> None:
+        """An unreadable explicit config surfaces a structured error."""
+        cfg = tmp_path / "mcp.json"
+        cfg.write_text('{"mcpServers":{}}')
+        cfg.chmod(0o000)
+        try:
+            result = resolve_mcp_config(str(cfg))
+        finally:
+            cfg.chmod(0o644)
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.EXPLICIT_LOAD_FAILED
+
 
 class TestResolveMcpConfigAutodiscover:
     """Auto-discovery resolution path."""
@@ -118,6 +132,47 @@ class TestResolveMcpConfigAutodiscover:
         assert isinstance(result, ConfigResolution)
         assert result.used_paths == (user_cfg,)
         assert result.untrusted_project_paths == ()
+
+    def test_user_config_with_untrusted_project_config_succeeds_with_notice(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """User config loads OK while an untrusted project config is noted."""
+        fake_home = tmp_path / "home"
+        user_dir = fake_home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        user_cfg = user_dir / ".mcp.json"
+        user_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"type":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[user_cfg, project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=False,
+            ),
+        ):
+            result = resolve_mcp_config(None)
+        # Resolution succeeds because the user config is usable.
+        assert isinstance(result, ConfigResolution)
+        assert user_cfg in result.used_paths
+        # The untrusted project config is recorded so callers can surface the hint.
+        assert result.untrusted_project_paths == (project_cfg,)
+        # Only the user server is in the merged config; the project server is excluded.
+        assert "notion" in result.config["mcpServers"]
+        assert "slack" not in result.config["mcpServers"]
 
 
 class TestSelectServer:

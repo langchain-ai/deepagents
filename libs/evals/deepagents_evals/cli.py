@@ -600,7 +600,7 @@ def _add_run_options(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument("--openrouter-provider", default=None)
     p.add_argument("--openrouter-allow-fallbacks", action="store_true", default=False)
-    p.add_argument("--repl", choices=("quickjs", "langchain"), default=None)
+    p.add_argument("--repl", choices=("quickjs",), default=None)
     p.add_argument("--dry-run", action="store_true", help="Print the command instead of running.")
     p.add_argument("--json", action="store_true", help="Emit machine-readable JSON on stdout.")
 

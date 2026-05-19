@@ -1,0 +1,208 @@
+"""Loading widget with animated spinner for agent activity."""
+
+from __future__ import annotations
+
+from time import time
+from typing import TYPE_CHECKING
+
+from textual.containers import Horizontal
+from textual.content import Content
+from textual.widgets import Static
+
+from deepagents_code.config import get_glyphs
+from deepagents_code.formatting import format_duration
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.await_remove import AwaitRemove
+    from textual.timer import Timer
+
+
+class Spinner:
+    """Animated spinner using charset-appropriate frames."""
+
+    def __init__(self) -> None:
+        """Initialize spinner."""
+        self._position = 0
+
+    @property
+    def frames(self) -> tuple[str, ...]:
+        """Get spinner frames from glyphs config."""
+        return get_glyphs().spinner_frames
+
+    def next_frame(self) -> str:
+        """Get next animation frame.
+
+        Returns:
+            The next spinner character in the animation sequence.
+        """
+        frames = self.frames
+        frame = frames[self._position]
+        self._position = (self._position + 1) % len(frames)
+        return frame
+
+    def current_frame(self) -> str:
+        """Get current frame without advancing.
+
+        Returns:
+            The current spinner character.
+        """
+        return self.frames[self._position]
+
+
+class LoadingWidget(Static):
+    """Animated loading indicator with status text and elapsed time.
+
+    Displays: <spinner> Thinking... (3s, esc to interrupt)
+    """
+
+    DEFAULT_CSS = """
+    LoadingWidget {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+
+    LoadingWidget .loading-container {
+        height: auto;
+        width: 100%;
+    }
+
+    LoadingWidget .loading-spinner {
+        width: auto;
+        color: $primary;
+    }
+
+    LoadingWidget .loading-status {
+        width: auto;
+        color: $primary;
+    }
+
+    LoadingWidget .loading-hint {
+        width: auto;
+        color: $text-muted;
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, status: str = "Thinking") -> None:
+        """Initialize loading widget.
+
+        Args:
+            status: Initial status text to display
+        """
+        super().__init__()
+        self._status = status
+        self._spinner = Spinner()
+        self._start_time: float | None = None
+        self._spinner_widget: Static | None = None
+        self._status_widget: Static | None = None
+        self._hint_widget: Static | None = None
+        self._animation_timer: Timer | None = None
+        self._paused = False
+        self._paused_elapsed: int = 0
+
+    def compose(self) -> ComposeResult:
+        """Compose the loading widget layout.
+
+        Yields:
+            Widgets for spinner, status text, and hint.
+        """
+        with Horizontal(classes="loading-container"):
+            self._spinner_widget = Static(
+                self._spinner.current_frame(), classes="loading-spinner"
+            )
+            yield self._spinner_widget
+
+            self._status_widget = Static(
+                f" {self._status}... ", classes="loading-status"
+            )
+            yield self._status_widget
+
+            self._hint_widget = Static("(0s, esc to interrupt)", classes="loading-hint")
+            yield self._hint_widget
+
+    def on_mount(self) -> None:
+        """Start animation on mount.
+
+        Preserves `_start_time` when the widget is remounted (e.g., after
+        being removed and re-added for repositioning) so the elapsed-time
+        counter doesn't reset. Repositioning via `move_child` avoids the
+        remount path entirely, but this guard keeps the behavior correct
+        if any caller ever falls back to remove + mount.
+        """
+        if self._start_time is None:
+            self._start_time = time()
+        self._animation_timer = self.set_interval(0.1, self._update_animation)
+
+    def on_unmount(self) -> None:
+        """Stop the animation timer when the widget leaves the DOM."""
+        self._stop_timer()
+
+    def remove(self) -> AwaitRemove:
+        """Stop animation before delegating DOM removal to Textual.
+
+        Returns:
+            Awaitable that completes once the widget is removed from the DOM.
+        """
+        self._stop_timer()
+        return super().remove()
+
+    def _stop_timer(self) -> None:
+        """Stop the animation timer if it is running."""
+        if self._animation_timer is not None:
+            self._animation_timer.stop()
+            self._animation_timer = None
+
+    def _update_animation(self) -> None:
+        """Update spinner and elapsed time."""
+        if self._paused:
+            return
+
+        if self._spinner_widget:
+            frame = self._spinner.next_frame()
+            self._spinner_widget.update(frame)
+
+        if self._hint_widget and self._start_time is not None:
+            elapsed = int(time() - self._start_time)
+            self._hint_widget.update(f"({format_duration(elapsed)}, esc to interrupt)")
+
+    def set_status(self, status: str) -> None:
+        """Update the status text.
+
+        Args:
+            status: New status text
+        """
+        self._status = status
+        if self._status_widget:
+            self._status_widget.update(f" {self._status}... ")
+
+    def pause(self, status: str = "Awaiting decision") -> None:
+        """Pause the animation and update status.
+
+        Args:
+            status: Status to show while paused
+        """
+        self._paused = True
+        if self._start_time is not None:
+            self._paused_elapsed = int(time() - self._start_time)
+        self._status = status
+        if self._status_widget:
+            self._status_widget.update(f" {status}... ")
+        if self._hint_widget:
+            self._hint_widget.update(
+                f"(paused at {format_duration(self._paused_elapsed)})"
+            )
+        if self._spinner_widget:
+            self._spinner_widget.update(Content.styled(get_glyphs().pause, "dim"))
+
+    def resume(self) -> None:
+        """Resume the animation."""
+        self._paused = False
+        self._status = "Thinking"
+        if self._status_widget:
+            self._status_widget.update(f" {self._status}... ")
+
+    def stop(self) -> None:
+        """Stop the animation (widget will be removed by caller)."""
+        self._stop_timer()

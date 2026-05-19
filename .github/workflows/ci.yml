@@ -40,7 +40,6 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
-      repl: ${{ steps.filter.outputs.repl }}
       runloop: ${{ steps.filter.outputs.runloop }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
@@ -82,6 +81,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
+              - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
             evals:
               - 'libs/evals/**'
@@ -114,13 +114,6 @@ jobs:
               - '.github/workflows/_test.yml'
               - '.github/workflows/_benchmark.yml'
               - '.github/actions/**'
-            repl:
-              - 'libs/repl/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/_lint.yml'
-              - '.github/workflows/_test.yml'
-              - '.github/actions/**'
-
   # Run linting on changed packages
   lint-deepagents:
     name: "🧹 Lint deepagents"
@@ -183,15 +176,6 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
-      python-version: "3.11"
-
-  lint-repl:
-    name: "🧹 Lint repl"
-    needs: changes
-    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_lint.yml
-    with:
-      working-directory: "libs/repl"
       python-version: "3.11"
 
   lint-quickjs:
@@ -285,16 +269,6 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.11"
 
-  test-repl:
-    name: "🧪 Test repl"
-    needs: changes
-    if: needs.changes.outputs.repl == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_test.yml
-    with:
-      working-directory: "libs/repl"
-      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
-
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
@@ -305,14 +279,14 @@ jobs:
       working-directory: "libs/deepagents"
     secrets: inherit
 
-  # Run CodSpeed benchmarks on CLI changes
-  benchmark-cli:
-    name: "⏱️ Benchmark cli"
+  # Run CodSpeed benchmarks on code changes
+  benchmark-code:
+    name: "⏱️ Benchmark code"
     needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
     uses: ./.github/workflows/_benchmark.yml
     with:
-      working-directory: "libs/cli"
+      working-directory: "libs/code"
     secrets: inherit
 
   # # TODO(hntrl): re-enable when bench flakiness is under control
@@ -356,7 +330,6 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
-      - lint-repl
       - lint-quickjs
       - test-deepagents
       - test-cli
@@ -366,9 +339,8 @@ jobs:
       - test-modal
       - test-runloop
       - test-quickjs
-      - test-repl
       - benchmark-deepagents
-      - benchmark-cli
+      - benchmark-code
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

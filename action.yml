@@ -1,5 +1,5 @@
-name: "Deep Agents"
-description: "Run Deep Agents CLI coding assistant in GitHub workflows"
+name: "Deep Agents Code"
+description: "Run Deep Agents Code in GitHub workflows"
 author: "LangChain AI"
 branding:
   icon: "cpu"
@@ -30,7 +30,7 @@ inputs:
     required: false
     default: "."
   cli_version:
-    description: "deepagents-cli version (empty = latest)"
+    description: "deepagents-code version (empty = latest)"
     required: false
     default: ""
   skills_repo:
@@ -124,20 +124,20 @@ runs:
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/
-          ~/.deepagents/sessions.db
+          ~/.deepagents/.state/sessions.db
           ${{ inputs.working_directory }}/.deepagents/AGENTS.md
         key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}
         restore-keys: |
           ${{ steps.cache-key.outputs.key }}-
           ${{ steps.cache-key.outputs.restore-keys }}
 
-    - name: Install deepagents-cli
+    - name: Install deepagents-code
       shell: bash
       env:
         INPUT_CLI_VERSION: ${{ inputs.cli_version }}
       run: |
-        # Action requires --agent, --shell-allow-list, -n (available since 0.0.31)
-        MIN_CLI_VERSION="0.0.31"
+        # Action requires --agent, --shell-allow-list, -n (available since 0.1.0)
+        MIN_CLI_VERSION="0.1.0"
 
         if [ -n "$INPUT_CLI_VERSION" ]; then
           if ! printf '%s\n%s' "$MIN_CLI_VERSION" "$INPUT_CLI_VERSION" \
@@ -145,9 +145,9 @@ runs:
             echo "::error::cli_version '${INPUT_CLI_VERSION}' is below the minimum '${MIN_CLI_VERSION}' required by this action"
             exit 1
           fi
-          uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents --version
+          uvx --from "deepagents-code==${INPUT_CLI_VERSION}" deepagents-code --version
         else
-          uvx --from deepagents-cli deepagents --version
+          uvx --from deepagents-code deepagents-code --version
         fi
 
     - name: Install skills
@@ -221,9 +221,9 @@ runs:
       run: |
         # Build command (pin version if specified, matching the install step)
         if [ -n "$INPUT_CLI_VERSION" ]; then
-          CMD=(uvx --from "deepagents-cli==${INPUT_CLI_VERSION}" deepagents)
+          CMD=(uvx --from "deepagents-code==${INPUT_CLI_VERSION}" deepagents-code)
         else
-          CMD=(uvx --from deepagents-cli deepagents)
+          CMD=(uvx --from deepagents-code deepagents-code)
         fi
 
         CMD+=(--agent "$INPUT_AGENT_NAME")
@@ -268,6 +268,6 @@ runs:
       with:
         path: |
           ~/.deepagents/${{ inputs.agent_name }}/
-          ~/.deepagents/sessions.db
+          ~/.deepagents/.state/sessions.db
           ${{ inputs.working_directory }}/.deepagents/AGENTS.md
         key: ${{ steps.cache-key.outputs.key }}-${{ github.run_id }}

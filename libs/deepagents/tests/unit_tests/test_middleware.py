@@ -31,15 +31,17 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     update_file_data,
 )
+from deepagents.middleware._message_eviction import (
+    _build_evicted_content,
+    _create_content_preview,
+    _extract_text_from_message,
+)
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     NUM_CHARS_PER_TOKEN,
     FileData,
     FilesystemMiddleware,
     FilesystemState,
-    _build_evicted_content,
-    _create_content_preview,
-    _extract_text_from_message,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -72,7 +74,7 @@ def _runtime(tool_call_id=""):
 class TestAddMiddleware:
     def test_filesystem_middleware(self):
         middleware = [FilesystemMiddleware()]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools
@@ -89,7 +91,7 @@ class TestAddMiddleware:
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             )
         ]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "task" in agent.nodes["tools"].bound._tools_by_name
 
     def test_multiple_middleware(self):
@@ -100,7 +102,7 @@ class TestAddMiddleware:
                 subagents=[{**GENERAL_PURPOSE_SUBAGENT, "model": "claude-sonnet-4-6", "tools": []}],
             ),
         ]
-        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware, tools=[])
+        agent = create_agent(model="claude-sonnet-4-6", middleware=middleware)
         assert "files" in agent.stream_channels
         agent_tools = agent.nodes["tools"].bound._tools_by_name.keys()
         assert "ls" in agent_tools

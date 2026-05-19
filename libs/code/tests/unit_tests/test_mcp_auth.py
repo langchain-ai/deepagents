@@ -807,6 +807,8 @@ class TestLogin:
             )
             await storage.set_client_info(_make_client_info())
 
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="notion",
@@ -815,6 +817,7 @@ class TestLogin:
                     "url": "https://mcp.notion.com/mcp",
                     "auth": "oauth",
                 },
+                ui=CliOAuthInteraction(),
             )
 
         storage = FileTokenStorage(
@@ -828,21 +831,25 @@ class TestLogin:
     async def test_login_rejects_non_oauth_server(self) -> None:
         """Only `auth: oauth` servers support the login command."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with pytest.raises(ValueError, match="does not use OAuth"):
             await login(
                 server_name="srv",
                 server_config={"transport": "http", "url": "https://example.com"},
+                ui=CliOAuthInteraction(),
             )
 
     async def test_login_rejects_stdio_server(self) -> None:
         """OAuth login is limited to HTTP/SSE transports."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with pytest.raises(ValueError, match="only valid for http/sse"):
             await login(
                 server_name="srv",
                 server_config={"command": "echo", "auth": "oauth"},
+                ui=CliOAuthInteraction(),
             )
 
     async def test_login_propagates_static_headers(
@@ -859,6 +866,8 @@ class TestLogin:
             await asyncio.sleep(0)
             captured.update(next(iter(connections.values())))
 
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
         with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="notion",
@@ -871,6 +880,7 @@ class TestLogin:
                         "Authorization": "Bearer ${MCP_GATEWAY_TOKEN}",
                     },
                 },
+                ui=CliOAuthInteraction(),
             )
 
         assert captured["headers"] == {
@@ -881,6 +891,7 @@ class TestLogin:
     async def test_login_unset_env_var_in_headers_raises(self) -> None:
         """Unset env vars in static headers fail before the handshake."""
         from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with pytest.raises(RuntimeError, match="unset env var"):
             await login(
@@ -891,6 +902,7 @@ class TestLogin:
                     "auth": "oauth",
                     "headers": {"Authorization": "Bearer ${MISSING_VAR}"},
                 },
+                ui=CliOAuthInteraction(),
             )
 
     async def test_github_login_runs_device_flow_and_seeds_client(self) -> None:
@@ -906,8 +918,9 @@ class TestLogin:
             token_url: str,
             client_id: str,
             scope: str | None = None,
+            ui: object | None = None,
         ) -> OAuthToken:
-            del device_code_url, token_url, client_id, scope
+            del device_code_url, token_url, client_id, scope, ui
             return OAuthToken(access_token="gh-tok", token_type="Bearer")
 
         handshake_called = False
@@ -916,6 +929,8 @@ class TestLogin:
             del connections
             nonlocal handshake_called
             handshake_called = True
+
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
         with (
             patch(
@@ -934,6 +949,7 @@ class TestLogin:
                     "url": "https://api.githubcopilot.com/mcp/",
                     "auth": "oauth",
                 },
+                ui=CliOAuthInteraction(),
             )
 
         assert handshake_called is False, (
@@ -952,9 +968,38 @@ class TestLogin:
 
     async def test_slack_login_routes_team_into_redirect_url(self) -> None:
         """Slack login threads the entered team id into the interactive URL."""
-        from deepagents_code.mcp_auth import login
+        from mcp.shared.auth import OAuthToken
 
-        captured_urls: list[str] = []
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import OAuthInteraction
+
+        class _CapturingUI:
+            def __init__(self) -> None:
+                self.authorize_urls: list[tuple[str, bool]] = []
+
+            async def show_authorize_url(
+                self, url: str, *, opened_in_browser: bool
+            ) -> None:
+                self.authorize_urls.append((url, opened_in_browser))
+
+            async def request_callback_url(self) -> str:
+                msg = "not expected in this test"
+                raise AssertionError(msg)
+
+            async def show_device_code(
+                self, *, verification_uri: str, user_code: str, expires_in: int
+            ) -> None: ...
+
+            async def prompt_slack_team_id(self) -> str | None:
+                return "T01234567"
+
+            async def show_success(self, message: str) -> None: ...
+
+            async def show_notice(self, message: str) -> None: ...
+
+        assert isinstance(_CapturingUI(), OAuthInteraction)
+
+        ui = _CapturingUI()
 
         async def _fake_handshake(connections: dict) -> None:
             server_name, connection = next(iter(connections.items()))
@@ -962,29 +1007,9 @@ class TestLogin:
             redirect = provider.context.redirect_handler
             await redirect("https://slack.com/oauth/v2/authorize?client_id=x")
             storage = FileTokenStorage(server_name, server_url=connection["url"])
-            from mcp.shared.auth import OAuthToken
-
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
-        async def _fake_prompt_team() -> str | None:
-            return "T01234567"
-
-        with (
-            patch(
-                "deepagents_code.mcp_providers.slack._prompt_slack_team",
-                _fake_prompt_team,
-            ),
-            patch(
-                "deepagents_code.mcp_auth._drive_handshake",
-                _fake_handshake,
-            ),
-            patch(
-                "builtins.print",
-                lambda *args, **_kwargs: captured_urls.extend(
-                    s for s in args if isinstance(s, str)
-                ),
-            ),
-        ):
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
                 server_name="slack",
                 server_config={
@@ -992,10 +1017,12 @@ class TestLogin:
                     "url": "https://slack.com/mcp",
                     "auth": "oauth",
                 },
+                ui=ui,
             )
 
-        joined = "\n".join(captured_urls)
-        assert "team=T01234567" in joined
+        assert ui.authorize_urls, "authorize URL must be shown"
+        shown_url, _opened = ui.authorize_urls[0]
+        assert "team=T01234567" in shown_url
 
     async def test_slack_preseed_is_idempotent(self) -> None:
         """Preseeding Slack client info a second time reads rather than writes."""

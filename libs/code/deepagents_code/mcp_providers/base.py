@@ -19,6 +19,7 @@ from mcp.shared.auth import AnyUrl, OAuthClientMetadata
 
 if TYPE_CHECKING:
     from deepagents_code.mcp_auth import FileTokenStorage
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,7 @@ class OAuthProvider(ABC):
         server_name: str,
         server_url: str,
         storage: FileTokenStorage,
+        ui: OAuthInteraction,
     ) -> LoginResult:
         """Perform any provider-specific pre-handshake work.
 
@@ -88,6 +90,8 @@ class OAuthProvider(ABC):
             server_name: MCP server name from `mcpServers`.
             server_url: Remote MCP endpoint URL.
             storage: File-backed token storage for this server identity.
+            ui: Interaction surface used for any provider-specific
+                prompts (e.g. device-code instructions, workspace IDs).
 
         Returns:
             `LoginResult.completed=True` if the provider finished the
@@ -95,7 +99,7 @@ class OAuthProvider(ABC):
             the standard Authorization Code handshake and passes any
             returned `extra_auth_params` to the redirect URL.
         """
-        del server_name, server_url, storage
+        del server_name, server_url, storage, ui
         return LoginResult()
 
 

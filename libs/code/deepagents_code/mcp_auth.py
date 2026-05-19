@@ -277,7 +277,7 @@ class FileTokenStorage(TokenStorage):
         except (OSError, json.JSONDecodeError) as exc:
             msg = (
                 f"Failed to read MCP token file {path}: {exc}. "
-                "Delete the file and re-run `deepagents mcp login "
+                "Delete the file and re-run `dcode mcp login "
                 f"{self._server_name}` if it is corrupt."
             )
             raise RuntimeError(msg) from exc
@@ -285,7 +285,7 @@ class FileTokenStorage(TokenStorage):
             msg = (
                 f"MCP token file {path} has unsupported version "
                 f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
-                "Delete it and re-run `deepagents mcp login "
+                "Delete it and re-run `dcode mcp login "
                 f"{self._server_name}`."
             )
             raise RuntimeError(msg)
@@ -356,7 +356,7 @@ class MCPReauthRequiredError(RuntimeError):
         self.server_name = server_name
         super().__init__(
             f"MCP server {server_name!r} needs re-authentication. "
-            f"Run: deepagents mcp login {server_name}"
+            f"Run: dcode mcp login {server_name}"
         )
 
 
@@ -407,7 +407,7 @@ def _make_paste_back_handlers(
         except EOFError as exc:
             msg = (
                 "No callback URL received (stdin closed). "
-                "Re-run `deepagents mcp login <server>` and paste the URL."
+                "Re-run `dcode mcp login <server>` and paste the URL."
             )
             raise RuntimeError(msg) from exc
         url = raw.strip()
@@ -582,7 +582,7 @@ async def _run_device_flow(
                 )
                 raise RuntimeError(msg) from exc
 
-    msg = "Device flow timed out; re-run `deepagents mcp login <server>`."
+    msg = "Device flow timed out; re-run `dcode mcp login <server>`."
     raise RuntimeError(msg)
 
 

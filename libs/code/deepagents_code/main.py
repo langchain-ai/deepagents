@@ -1281,7 +1281,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         piped text to it (the CLI still runs non-interactively):
 
         ```bash
-        cat context.txt | deepagents -n "summarize this"
+        cat context.txt | dcode -n "summarize this"
         # non_interactive_message = "{contents of context.txt}\n\nsummarize this"
         ```
 
@@ -1289,7 +1289,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         the piped text to it (the CLI still runs interactively):
 
         ```bash
-        cat error.log | deepagents -m "explain this"
+        cat error.log | dcode -m "explain this"
         # initial_prompt = "{contents of error.log}\n\nexplain this"
         ```
 
@@ -1298,7 +1298,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         startup request:
 
         ```bash
-        cat diff.txt | deepagents --skill code-review
+        cat diff.txt | dcode --skill code-review
         # initial_prompt = "{contents of diff.txt}"
         ```
 
@@ -1306,7 +1306,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
         the CLI to run non-interactively with it as the prompt:
 
         ```bash
-        echo "fix the typo in README.md" | deepagents
+        echo "fix the typo in README.md" | dcode
         # non_interactive_message = "fix the typo in README.md"
         ```
 
@@ -1342,7 +1342,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             console.print(
                 "[bold red]Error:[/bold red] --stdin was passed but stdin "
                 "is a terminal. Pipe input or use -n instead.\n"
-                "  cat prompt.txt | deepagents --stdin -q"
+                "  cat prompt.txt | dcode --stdin -q"
             )
             sys.exit(1)
         return
@@ -1693,8 +1693,8 @@ def cli_main() -> None:
                 msg = (
                     "Error: --no-mcp and --mcp-config are mutually exclusive."
                     " Use one or the other.\n"
-                    "  deepagents --mcp-config path/to/config.json\n"
-                    "  deepagents --no-mcp\n"
+                    "  dcode --mcp-config path/to/config.json\n"
+                    "  dcode --no-mcp\n"
                 )
                 sys.stderr.write(msg)
                 sys.stderr.flush()
@@ -1729,8 +1729,8 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --no-mcp and --mcp-config "
                 "are mutually exclusive. Use one or the other.\n"
-                "  deepagents --mcp-config path/to/config.json\n"
-                "  deepagents --no-mcp"
+                "  dcode --mcp-config path/to/config.json\n"
+                "  dcode --no-mcp"
             )
             sys.exit(2)
 
@@ -1745,8 +1745,8 @@ def cli_main() -> None:
                 "[bold red]Error:[/bold red] --skill requires "
                 "--non-interactive (-n) when combined with --quiet or "
                 "--no-stream.\n"
-                "  deepagents --skill code-review -m 'review this patch'\n"
-                "  deepagents --skill code-review -n 'review this patch'"
+                "  dcode --skill code-review -m 'review this patch'\n"
+                "  dcode --skill code-review -n 'review this patch'"
             )
             sys.exit(2)
 
@@ -1757,7 +1757,7 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --max-turns requires "
                 "--non-interactive (-n) or piped stdin\n"
-                "  deepagents -n 'refactor auth module' --max-turns 5"
+                "  dcode -n 'refactor auth module' --max-turns 5"
             )
             sys.exit(2)
 
@@ -1768,7 +1768,7 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --timeout requires "
                 "--non-interactive (-n) or piped stdin\n"
-                "  deepagents -n 'run the test suite' --timeout 120"
+                "  dcode -n 'run the test suite' --timeout 120"
             )
             sys.exit(2)
 
@@ -1787,7 +1787,7 @@ def cli_main() -> None:
             _Console(stderr=True).print(
                 f"[bold red]Error:[/bold red] {flag} requires "
                 "--non-interactive (-n) or piped stdin\n"
-                "  deepagents -n 'summarize README.md' --quiet"
+                "  dcode -n 'summarize README.md' --quiet"
             )
             sys.exit(2)
 
@@ -1992,7 +1992,7 @@ def cli_main() -> None:
                 if getattr(args, "mcp_config", None) and not args.config_path:
                     print(  # noqa: T201
                         "--mcp-config is not supported for 'mcp login'. "
-                        "Use: deepagents mcp login <server> --config <path>",
+                        "Use: dcode mcp login <server> --config <path>",
                         file=sys.stderr,
                     )
                     sys.exit(2)
@@ -2238,7 +2238,7 @@ def cli_main() -> None:
             if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
                 console.print()
                 console.print("[dim]Resume this thread with:[/dim]")
-                hint = Text("deepagents -r ", style="cyan")
+                hint = Text("dcode -r ", style="cyan")
                 hint.append(str(thread_id), style="cyan")
                 console.print(hint)
 
@@ -2273,7 +2273,7 @@ def cli_main() -> None:
                         console.print(cmd_hint)
                         if not is_auto_update_enabled():
                             auto_hint = Text("Enable auto-updates: ", style="dim")
-                            auto_hint.append("deepagents --auto-update", style="cyan")
+                            auto_hint.append("dcode --auto-update", style="cyan")
                             console.print(auto_hint)
                         mark_update_notified(latest)
             except Exception:

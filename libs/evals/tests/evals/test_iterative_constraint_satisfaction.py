@@ -68,7 +68,7 @@ def _sentences(paragraph: str) -> list[str]:
 def _grade_text(text: str, target_words: int) -> tuple[bool, list[str]]:
     """Grade a paragraph against both constraints.
 
-    Returns ``(passed, problems)`` where ``problems`` is a human-readable list
+    Returns `(passed, problems)` where `problems` is a human-readable list
     of constraint violations (empty when ``passed`` is True).
     """
     paragraph = _extract_paragraph(text)

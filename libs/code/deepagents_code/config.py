@@ -2389,6 +2389,14 @@ def create_model(
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
 
+    # Wrap the model client in a bounded transient-error retry layer so a
+    # momentary Fireworks 503 / httpx ReadError doesn't kill the user's
+    # task mid-conversation. Installed at the LLM-client layer so every
+    # middleware-wrapped call inherits the same recovery.
+    from deepagents_code._model_retry import install_transient_retry
+
+    install_transient_retry(model)
+
     resolved_provider = provider or getattr(model, "_model_provider", provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)

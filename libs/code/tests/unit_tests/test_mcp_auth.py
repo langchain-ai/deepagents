@@ -344,13 +344,10 @@ class TestBuildOAuthProvider:
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == ["https://localhost/"]
 
-    def test_generic_branch_uses_loopback_callback(
-        self, socket_enabled: object
-    ) -> None:
+    def test_generic_branch_uses_loopback_callback(self) -> None:
         """Non-Slack URLs use a local callback server redirect."""
         from deepagents_code.mcp_auth import build_oauth_provider
 
-        del socket_enabled
         provider = build_oauth_provider(
             server_name="notion",
             server_url="https://mcp.notion.com/mcp",
@@ -359,7 +356,7 @@ class TestBuildOAuthProvider:
         metadata = provider.context.client_metadata
         assert metadata.redirect_uris is not None
         redirect_uri = str(metadata.redirect_uris[0])
-        assert re.fullmatch(r"http://localhost:\d+/callback", redirect_uri)
+        assert re.fullmatch(r"http://127\.0\.0\.1:\d+/callback", redirect_uri)
         # Generic (non-Slack) providers default to client-secret auth, so the
         # Slack-only `token_endpoint_auth_method="none"` override must not
         # leak into this branch.

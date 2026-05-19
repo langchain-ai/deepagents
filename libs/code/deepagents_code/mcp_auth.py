@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import stat
 import threading
 from collections.abc import Awaitable, Callable
@@ -350,7 +351,6 @@ class FileTokenStorage(TokenStorage):
 RedirectHandler = Callable[[str], Awaitable[None]]
 CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
 _LOOPBACK_HOST = "127.0.0.1"
-_LOOPBACK_REDIRECT_HOST = "localhost"
 _LOOPBACK_CALLBACK_PATH = "/callback"
 _LOOPBACK_CALLBACK_TIMEOUT = 300.0
 
@@ -359,11 +359,46 @@ class _LoopbackCallbackTimeoutError(RuntimeError):
     """Raised when the browser never reaches the local callback server."""
 
 
+class _LoopbackCallbackUnavailableError(RuntimeError):
+    """Raised when the local callback server cannot be started."""
+
+
+def _choose_loopback_port() -> int:
+    """Return a high local TCP port candidate without opening a socket.
+
+    The OAuth redirect URI must be known before the provider starts the
+    handshake, but the actual callback server should not keep a socket open
+    unless a browser redirect is needed.
+
+    Returns:
+        A port number from the dynamic/private port range.
+    """
+    return 49152 + secrets.randbelow(65535 - 49152 + 1)
+
+
 class _LoopbackOAuthCallbackServer:
     """Single-use loopback HTTP server for CLI OAuth callbacks."""
 
-    def __init__(self) -> None:
-        """Bind a local-only HTTP server and prepare its redirect URI."""
+    def __init__(self, *, port: int) -> None:
+        """Prepare a callback server for a previously selected loopback port.
+
+        Args:
+            port: TCP port to bind when `start()` is called.
+        """
+        self._port = port
+        self.redirect_uri = f"http://{_LOOPBACK_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+        self._future: concurrent.futures.Future[tuple[str, str | None]] = (
+            concurrent.futures.Future()
+        )
+        self._server: object | None = None
+        self._started = False
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Bind and start serving callback requests in a background thread."""
+        if self._started:
+            return
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
         parent = self
@@ -379,29 +414,20 @@ class _LoopbackOAuthCallbackServer:
             ) -> None:
                 del format, args
 
-        self._server = ThreadingHTTPServer((_LOOPBACK_HOST, 0), Handler)
-        port = self._server.server_address[1]
-        self.redirect_uri = (
-            f"http://{_LOOPBACK_REDIRECT_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
-        )
-        self._future: concurrent.futures.Future[tuple[str, str | None]] = (
-            concurrent.futures.Future()
-        )
-        self._started = False
-        self._closed = False
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        """Start serving callback requests in a background thread."""
-        if self._started:
-            return
+        self._server = ThreadingHTTPServer((_LOOPBACK_HOST, self._port), Handler)
         self._started = True
         self._thread = threading.Thread(
-            target=self._server.serve_forever,
+            target=self._serve_forever,
             name="deepagents-mcp-oauth-callback",
             daemon=True,
         )
         self._thread.start()
+
+    def _serve_forever(self) -> None:
+        from http.server import ThreadingHTTPServer
+
+        if isinstance(self._server, ThreadingHTTPServer):
+            self._server.serve_forever()
 
     async def wait(self) -> tuple[str, str | None]:
         """Wait for the authorization callback and return `(code, state)`.
@@ -428,9 +454,12 @@ class _LoopbackOAuthCallbackServer:
         if self._closed:
             return
         self._closed = True
-        if self._started:
-            self._server.shutdown()
-        self._server.server_close()
+        from http.server import ThreadingHTTPServer
+
+        if isinstance(self._server, ThreadingHTTPServer):
+            if self._started:
+                self._server.shutdown()
+            self._server.server_close()
 
     def _handle_get(self, request: object) -> None:
         from http.server import BaseHTTPRequestHandler
@@ -642,7 +671,22 @@ def _make_loopback_handlers(
         import webbrowser
 
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
-        callback_server.start()
+        try:
+            callback_server.start()
+        except OSError as exc:
+            if not callback_server._future.done():
+                msg = "Local OAuth callback server could not be started."
+                callback_server._future.set_exception(
+                    _LoopbackCallbackUnavailableError(msg)
+                )
+            print(  # noqa: T201 - intentional user-facing fallback
+                "\nCould not start the local OAuth callback server. "
+                "Open this URL in a browser, approve access, then paste "
+                "the full callback URL back here:\n"
+                f"\n  {final_url}\n"
+            )
+            del exc
+            return
         opened = await asyncio.to_thread(webbrowser.open, final_url)
         if opened:
             print(  # noqa: T201 - intentional user-facing prompt
@@ -659,7 +703,10 @@ def _make_loopback_handlers(
     async def callback() -> tuple[str, str | None]:
         try:
             return await callback_server.wait()
-        except _LoopbackCallbackTimeoutError as exc:
+        except (
+            _LoopbackCallbackTimeoutError,
+            _LoopbackCallbackUnavailableError,
+        ) as exc:
             print(  # noqa: T201 - intentional user-facing fallback
                 f"{exc}\nPaste the full callback URL instead."
             )
@@ -709,7 +756,9 @@ def build_oauth_provider(
     if interactive:
         if policy.supports_loopback_callback():
             try:
-                callback_server = _LoopbackOAuthCallbackServer()
+                callback_server = _LoopbackOAuthCallbackServer(
+                    port=_choose_loopback_port()
+                )
             except (OSError, RuntimeError):
                 redirect, callback = _make_paste_back_handlers(
                     extra_auth_params=extra_auth_params

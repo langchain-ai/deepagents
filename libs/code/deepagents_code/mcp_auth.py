@@ -522,9 +522,7 @@ class _LoopbackOAuthCallbackServer:
             self._send_html(handler, 400, _oauth_error_html(msg))
             return
 
-        self._future.set_result(
-            (params["code"][0], (params.get("state") or [None])[0])
-        )
+        self._future.set_result((params["code"][0], (params.get("state") or [None])[0]))
         self._send_html(
             handler,
             200,
@@ -795,9 +793,7 @@ def build_oauth_provider(
 
     if interactive:
         if policy.supports_loopback_callback():
-            callback_server = _LoopbackOAuthCallbackServer(
-                port=_choose_loopback_port()
-            )
+            callback_server = _LoopbackOAuthCallbackServer(port=_choose_loopback_port())
             redirect_uri = callback_server.redirect_uri
             redirect, callback = _make_loopback_handlers(
                 callback_server=callback_server,

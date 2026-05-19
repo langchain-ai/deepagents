@@ -34,30 +34,74 @@ from deepagents_code.model_config import (
     get_credential_env_var,
     get_model_profiles,
     get_provider_auth_status,
+    load_recent_models,
     save_default_model,
 )
 
 logger = logging.getLogger(__name__)
 
-_FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
+_RECENT_SECTION_LABEL = "Recent"
+"""Header label for the MRU pseudo-provider section pinned at the top of `/model`.
+
+Recent picks are surfaced regardless of the recommended-only toggle —
+they're a personal signal that outweighs curation — and de-duplicated
+from the per-provider sections below.
+"""
+
+
+_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+        "baseten:deepseek-ai/DeepSeek-V4-Pro",
         "baseten:moonshotai/Kimi-K2.6",
+        "baseten:zai-org/GLM-5",
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        "fireworks:accounts/fireworks/models/glm-5p1",
+        "fireworks:accounts/fireworks/models/kimi-k2p6",
+        "fireworks:accounts/fireworks/models/minimax-m2p7",
+        "fireworks:accounts/fireworks/models/qwen3p6-plus",
+        "google_genai:gemini-3-flash-preview",
         "google_genai:gemini-3.1-pro-preview",
+        "ollama:deepseek-v4-flash:cloud",
         "ollama:deepseek-v4-pro:cloud",
         "ollama:glm-5.1:cloud",
         "ollama:kimi-k2.6:cloud",
         "ollama:minimax-m2.7:cloud",
         "openai:gpt-5.4",
+        "openai:gpt-5.4-mini",
+        "openai:gpt-5.4-pro",
         "openai:gpt-5.5",
+        "openai:gpt-5.5-pro",
+        "openrouter:anthropic/claude-opus-4.6",
+        "openrouter:anthropic/claude-opus-4.7",
+        "openrouter:anthropic/claude-opus-4.7-fast",
+        "openrouter:anthropic/claude-sonnet-4.6",
+        "openrouter:deepseek/deepseek-v4-flash",
+        "openrouter:deepseek/deepseek-v4-flash:free",
         "openrouter:deepseek/deepseek-v4-pro",
+        "openrouter:google/gemini-3-flash-preview",
+        "openrouter:google/gemini-3.1-pro-preview",
         "openrouter:minimax/minimax-m2.7",
         "openrouter:moonshotai/kimi-k2.6",
+        "openrouter:openai/gpt-5.4",
+        "openrouter:openai/gpt-5.4-mini",
+        "openrouter:openai/gpt-5.4-pro",
+        "openrouter:openai/gpt-5.5",
+        "openrouter:openai/gpt-5.5-pro",
+        "openrouter:z-ai/glm-5",
         "openrouter:z-ai/glm-5.1",
     }
 )
-"""Curated frontier-tier models shown in the onboarding picker."""
+"""Hand-curated frontier-tier models promoted across the UI.
+
+Used by the onboarding picker (`curated=True`) and by the in-`/model`
+"Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
+providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
+listed under each provider intentionally so the user can pick whichever
+provider they have credentials for.
+"""
 
 
 class ModelOption(Static):
@@ -141,16 +185,25 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("ctrl+s", "set_default", "Set default", show=False, priority=True),
+        Binding(
+            "ctrl+r",
+            "toggle_recommended",
+            "Recommended only",
+            show=False,
+            priority=True,
+        ),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Tab copies
     the highlighted spec into the filter input, Enter selects, Ctrl+S
-    toggles the default model, and Esc dismisses. All bindings use
-    `priority=True` so they take precedence over the embedded `Input`;
-    vim-style `j`/`k` bindings are deliberately omitted because they would
-    prevent typing those letters into the always-focused filter input.
+    toggles the default model, Ctrl+R toggles between showing all installed
+    models and the hand-curated "recommended" subset, and Esc dismisses. All
+    bindings use `priority=True` so they take precedence over the embedded
+    `Input`; vim-style `j`/`k` bindings are deliberately omitted because
+    they would prevent typing those letters into the always-focused filter
+    input.
     """
 
     CSS = """
@@ -292,8 +345,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._result_callback = result_callback
+        # Standard /model defaults to the curated recommended subset so users
+        # face less decision fatigue; onboarding (`curated=True`) already
+        # constrains the list via `_curated`, so leaving this False there
+        # avoids double-flagging in `_apply_subset`.
+        self._recommended_only = not curated
 
-        # Model data — populated asynchronously in on_mount via _load_model_data
+        self._unfiltered_models: list[tuple[str, str]] = []
+        self._recent_specs: list[str] = []
+
         self._all_models: list[tuple[str, str]] = []
         self._filtered_models: list[tuple[str, str]] = []
         self._selected_index = 0
@@ -306,6 +366,44 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._default_spec: str | None = None
         self._profiles: Mapping[str, ModelProfileEntry] = {}
         self._loaded = False
+
+    def _info_line_content(self) -> Content:
+        """Build the info line shown above the filter input.
+
+        Reflects whether the screen is filtered to the recommended subset.
+
+        Returns:
+            Styled `Content` for the info line.
+        """
+        if self._recommended_only:
+            return Content.styled(
+                "Showing recommended models — Ctrl+R for all",
+            )
+        return Content.styled(
+            "Showing all models from installed providers — Ctrl+R for recommended",
+        )
+
+    def _help_text(self) -> str:
+        """Build the footer help text.
+
+        Curated/onboarding mode omits the Ctrl+R toggle and uses
+        "Esc skip setup" wording.
+
+        Returns:
+            The bullet-separated help line.
+        """
+        glyphs = get_glyphs()
+        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
+        parts = [
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Enter select",
+            "Ctrl+S set default",
+        ]
+        if not self._curated:
+            parts.append("Ctrl+R recommended")
+        parts.append(esc_label)
+        sep = f" {glyphs.bullet} "
+        return sep.join(parts)
 
     def _find_current_model_index(self) -> int:
         """Find the index of the current model in the filtered list.
@@ -328,8 +426,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Yields:
             Widgets for the model selector UI.
         """
-        glyphs = get_glyphs()
-
         with Vertical():
             # Title with current model in provider:model format
             if self._title:
@@ -350,9 +446,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
             if not self._curated:
                 yield Static(
-                    Content.styled(
-                        "Showing models from installed providers.",
-                    ),
+                    self._info_line_content(),
                     classes="model-selector-info",
                     id="model-selector-info",
                 )
@@ -371,15 +465,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # Model detail footer
             yield Static("", classes="model-detail-footer", id="model-detail-footer")
 
-            # Help text
-            esc_label = "Esc skip setup" if self._curated else "Esc cancel"
-            help_text = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-                f" {glyphs.bullet} Enter select"
-                f" {glyphs.bullet} Ctrl+S set default"
-                f" {glyphs.bullet} {esc_label}"
-            )
-            yield Static(help_text, classes="model-selector-help")
+            yield Static(self._help_text(), classes="model-selector-help")
 
     @staticmethod
     def _load_model_data(
@@ -388,6 +474,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         list[tuple[str, str]],
         str | None,
         Mapping[str, ModelProfileEntry],
+        list[str],
     ]:
         """Gather model discovery data synchronously.
 
@@ -395,10 +482,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         `get_available_models` does not block the event loop.
 
         Returns:
-            Tuple of (all_models, default_spec, profiles) where
-                `all_models` is a list of `(provider:model spec, provider)`
-                pairs, `default_spec` is the configured default model or
-                `None`, and `profiles` maps spec strings to profile entries.
+            Tuple of (all_models, default_spec, profiles, recent_specs)
+                where `all_models` is a list of `(provider:model spec,
+                provider)` pairs, `default_spec` is the configured default
+                model or `None`, `profiles` maps spec strings to profile
+                entries, and `recent_specs` is the most-recent-first list of
+                `provider:model` strings read from
+                `~/.deepagents/.state/recent_models.json`.
         """
         all_models: list[tuple[str, str]] = [
             (f"{provider}:{model}", provider)
@@ -408,7 +498,42 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         config = ModelConfig.load()
         profiles = get_model_profiles(cli_override=cli_override)
-        return all_models, config.default_model, profiles
+        recent_specs = load_recent_models()
+        return all_models, config.default_model, profiles, recent_specs
+
+    def _apply_subset(
+        self,
+        all_models: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Apply the active subset filter (onboarding or recommended-only).
+
+        Recently-used specs are unioned in even when the recommended-only
+        toggle is on, so personal usage always wins over curation. Onboarding
+        intentionally keeps a tight curated subset and skips this union.
+
+        Args:
+            all_models: Full list of `(provider:model, provider)` pairs.
+
+        Returns:
+            The list reduced to the recommended subset when either
+                `_curated` (onboarding) or `_recommended_only` (Ctrl+R) is
+                active. Falls back to the full list when no recommended
+                models are installed so the screen is never empty.
+        """
+        if self._curated:
+            return self._curate_models(all_models)
+        if self._recommended_only:
+            curated = self._curate_models(all_models)
+            curated_specs = {spec for spec, _ in curated}
+            # Order follows all_models (insertion), not MRU; _update_display
+            # rebuilds visual order by iterating self._recent_specs directly.
+            recent_extra = [
+                (spec, provider)
+                for spec, provider in all_models
+                if spec in self._recent_specs and spec not in curated_specs
+            ]
+            return [*recent_extra, *curated]
+        return list(all_models)
 
     @staticmethod
     def _curate_models(
@@ -429,7 +554,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         frontier = [
             (spec, provider)
             for spec, provider in all_models
-            if spec in _FRONTIER_RECOMMENDED_MODELS
+            if spec in _RECOMMENDED_MODELS
         ]
         return frontier or all_models
 
@@ -451,7 +576,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
-            all_models, default_spec, profiles = await asyncio.to_thread(
+            all_models, default_spec, profiles, recent_specs = await asyncio.to_thread(
                 self._load_model_data, self._cli_profile_override
             )
         except Exception:
@@ -473,11 +598,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self.is_running:
             return
 
-        self._all_models = all_models
+        self._unfiltered_models = all_models
         self._default_spec = default_spec
         self._profiles = profiles
-        if self._curated:
-            self._all_models = self._curate_models(self._all_models)
+        self._recent_specs = recent_specs
+        self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
         self._selected_index = self._find_current_model_index()
         self._loaded = True
@@ -595,18 +720,34 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._update_footer()
             return
 
-        # Group by provider, preserving insertion order so models from the
-        # same provider cluster together in the visual list.
+        # Resolve which recent specs are present in the current filtered set.
+        # Recent rendering only happens at the top of an unfiltered view; once
+        # the user starts fuzzy-filtering, recents are surfaced through the
+        # match logic like any other model so the search remains predictable.
+        if self._filter_text.strip():
+            recent_entries: list[tuple[str, str]] = []
+        else:
+            spec_to_provider = dict(self._filtered_models)
+            recent_entries = [
+                (spec, spec_to_provider[spec])
+                for spec in self._recent_specs
+                if spec in spec_to_provider
+            ]
+        # Group models by provider, preserving insertion order so models
+        # from the same provider cluster together in the visual list. Specs
+        # also in the Recent section are intentionally kept here so a user
+        # who opens `/model` always finds their model at its provider's
+        # familiar position in addition to the MRU shortcut at the top.
         by_provider: dict[str, list[tuple[str, str]]] = {}
         for model_spec, provider in self._filtered_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
 
-        # Rebuild _filtered_models to match the provider-grouped display
-        # order. Without this, _filtered_models stays in score-sorted order
-        # while _option_widgets follow provider-grouped order, causing
-        # _update_footer to look up the wrong model for the highlighted
-        # index.
-        grouped_order: list[tuple[str, str]] = []
+        # Rebuild _filtered_models to match the rendered order (recents first,
+        # then provider-grouped). Without this, _filtered_models stays in
+        # score-sorted order while _option_widgets follow rendered order,
+        # causing _update_footer to look up the wrong model for the
+        # highlighted index.
+        grouped_order: list[tuple[str, str]] = list(recent_entries)
         for entries in by_provider.values():
             grouped_order.extend(entries)
 
@@ -629,11 +770,57 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Resolve provider auth upfront so the widget-building loop
         # stays focused on layout
-        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
+        auth_providers = {provider for _, provider in self._filtered_models}
+        auth_statuses = {p: get_provider_auth_status(p) for p in auth_providers}
 
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget
         all_widgets: list[Static] = []
+
+        # Pinned "Recent" section — pseudo-provider header with no auth badge
+        # because each entry already carries its real provider's auth state
+        # via `ModelOption.auth_status`.
+        if recent_entries:
+            all_widgets.append(
+                Static(
+                    Content.from_markup(
+                        "[bold]$label[/bold]", label=_RECENT_SECTION_LABEL
+                    ),
+                    classes="model-provider-header",
+                )
+            )
+            for model_spec, real_provider in recent_entries:
+                auth_status = auth_statuses[real_provider]
+                is_current = model_spec == current_spec
+                is_selected = flat_index == self._selected_index
+
+                classes = "model-option"
+                if is_selected:
+                    classes += " model-option-selected"
+                if is_current:
+                    classes += " model-option-current"
+
+                label = self._format_option_label(
+                    model_spec,
+                    selected=is_selected,
+                    current=is_current,
+                    auth_status=auth_status,
+                    is_default=model_spec == self._default_spec,
+                    status=self._get_model_status(model_spec),
+                )
+                widget = ModelOption(
+                    label=label,
+                    model_spec=model_spec,
+                    provider=real_provider,
+                    index=flat_index,
+                    auth_status=auth_status,
+                    classes=classes,
+                )
+                all_widgets.append(widget)
+                self._option_widgets.append(widget)
+                if is_selected:
+                    selected_widget = widget
+                flat_index += 1
 
         for provider, model_entries in by_provider.items():
             # Provider header; auth/readiness indicator appended only when non-empty.
@@ -1155,16 +1342,46 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message."""
-        glyphs = get_glyphs()
-        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-            f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} Ctrl+S set default"
-            f" {glyphs.bullet} {esc_label}"
-        )
         help_widget = self.query_one(".model-selector-help", Static)
-        help_widget.update(help_text)
+        help_widget.update(self._help_text())
+
+    async def action_toggle_recommended(self) -> None:
+        """Toggle between the full model list and the recommended subset.
+
+        Disabled while in `_curated` (onboarding) mode — that screen is
+        already constrained to the recommended subset and the user should
+        finish or skip onboarding rather than browse the full list.
+        Preserves the highlighted model when it survives the toggle and
+        falls back to the current/default/first model otherwise.
+        """
+        if self._curated or not self._loaded:
+            return
+
+        prev_spec: str | None = None
+        if self._filtered_models and 0 <= self._selected_index < len(
+            self._filtered_models
+        ):
+            prev_spec = self._filtered_models[self._selected_index][0]
+
+        self._recommended_only = not self._recommended_only
+        self._all_models = self._apply_subset(self._unfiltered_models)
+
+        if self._filter_text.strip():
+            self._update_filtered_list()
+        else:
+            self._filtered_models = list(self._all_models)
+            self._selected_index = self._find_current_model_index()
+
+        if prev_spec is not None:
+            for i, (spec, _) in enumerate(self._filtered_models):
+                if spec == prev_spec:
+                    self._selected_index = i
+                    break
+
+        info = self.query_one("#model-selector-info", Static)
+        info.update(self._info_line_content())
+
+        await self._update_display()
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

@@ -250,7 +250,7 @@ class TestInterruptCleanup:
         await _handle_interrupt_cleanup(
             adapter=adapter,
             agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},  # type: ignore[arg-type]
+            config={"configurable": {"thread_id": "t-1"}},
             pending_text_by_namespace={},
             captured_input_tokens=0,
             captured_output_tokens=0,
@@ -293,7 +293,7 @@ class TestInterruptCleanup:
         await _handle_interrupt_cleanup(
             adapter=adapter,
             agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},  # type: ignore[arg-type]
+            config={"configurable": {"thread_id": "t-1"}},
             pending_text_by_namespace={},
             captured_input_tokens=0,
             captured_output_tokens=0,

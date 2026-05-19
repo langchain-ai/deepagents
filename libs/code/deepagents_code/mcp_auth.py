@@ -11,13 +11,17 @@ server X") rather than the token itself.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import hashlib
+import html
 import json
 import logging
 import os
 import re
+import secrets
 import stat
+import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
@@ -346,6 +350,250 @@ class FileTokenStorage(TokenStorage):
 
 RedirectHandler = Callable[[str], Awaitable[None]]
 CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
+_LOOPBACK_HOST = "127.0.0.1"
+_LOOPBACK_CALLBACK_PATH = "/callback"
+_LOOPBACK_CALLBACK_TIMEOUT = 300.0
+
+
+class _LoopbackCallbackTimeoutError(RuntimeError):
+    """Raised when the browser never reaches the local callback server."""
+
+
+class _LoopbackCallbackUnavailableError(RuntimeError):
+    """Raised when the local callback server cannot be started."""
+
+
+def _choose_loopback_port() -> int:
+    """Return a high local TCP port candidate without opening a socket.
+
+    The OAuth redirect URI must be known before the provider starts the
+    handshake, but the actual callback server should not keep a socket open
+    unless a browser redirect is needed.
+
+    Returns:
+        A port number from the dynamic/private port range.
+    """
+    return 49152 + secrets.randbelow(65535 - 49152 + 1)
+
+
+class _LoopbackOAuthCallbackServer:
+    """Single-use loopback HTTP server for CLI OAuth callbacks.
+
+    Port selection and socket binding are intentionally separated: the
+    redirect URI is fixed at construction time so it can be registered with
+    the OAuth provider, while the socket is not opened until `start()` is
+    called from the redirect handler.
+    """
+
+    def __init__(self, *, port: int) -> None:
+        """Prepare a callback server for a previously selected loopback port.
+
+        Args:
+            port: TCP port to bind when `start()` is called.
+        """
+        self._port = port
+        self.redirect_uri = f"http://{_LOOPBACK_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+        self._future: concurrent.futures.Future[tuple[str, str | None]] = (
+            concurrent.futures.Future()
+        )
+        self._server: object | None = None
+        self._started = False
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Bind and start serving callback requests in a background thread."""
+        if self._started:
+            return
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        parent = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                parent._handle_get(self)
+
+            def log_message(  # noqa: PLR6301  # stdlib override
+                self,
+                format: str,  # noqa: A002
+                *args: object,
+            ) -> None:
+                del format, args
+
+        self._server = ThreadingHTTPServer((_LOOPBACK_HOST, self._port), Handler)
+        self._started = True
+        self._thread = threading.Thread(
+            target=self._serve_forever,
+            name="deepagents-mcp-oauth-callback",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _serve_forever(self) -> None:
+        from http.server import ThreadingHTTPServer
+
+        if isinstance(self._server, ThreadingHTTPServer):
+            self._server.serve_forever()
+
+    async def wait(self) -> tuple[str, str | None]:
+        """Wait for the authorization callback and return `(code, state)`.
+
+        Returns:
+            The OAuth authorization code and optional state.
+
+        Raises:
+            _LoopbackCallbackTimeoutError: If no callback arrives before the timeout.
+            _LoopbackCallbackUnavailableError: If the server could not be started.
+            RuntimeError: If the provider returned an OAuth error or the callback
+                URL lacked a `code` parameter.
+        """  # noqa: DOC502 - _LoopbackCallbackUnavailableError/RuntimeError set on future
+        import asyncio
+
+        try:
+            return await asyncio.wait_for(
+                asyncio.wrap_future(self._future),
+                timeout=_LOOPBACK_CALLBACK_TIMEOUT,
+            )
+        except TimeoutError as exc:
+            msg = "Browser callback was not received before the timeout."
+            raise _LoopbackCallbackTimeoutError(msg) from exc
+
+    def fail(self, exc: Exception) -> None:
+        """Poison the future so `wait()` raises `exc` immediately.
+
+        Args:
+            exc: Exception to surface to the awaiting coroutine.
+        """
+        if not self._future.done():
+            self._future.set_exception(exc)
+
+    def close(self) -> None:
+        """Stop the local callback server and release its socket."""
+        if self._closed:
+            return
+        self._closed = True
+        from http.server import ThreadingHTTPServer
+
+        if isinstance(self._server, ThreadingHTTPServer):
+            if self._started:
+                self._server.shutdown()
+            self._server.server_close()
+
+    def _handle_get(self, request: object) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        handler = request
+        if not isinstance(handler, BaseHTTPRequestHandler):
+            return
+
+        if self._future.done():
+            # Duplicate browser request (retry, prefetch, favicon) after the
+            # flow already completed. Respond and return without touching the
+            # future — avoids InvalidStateError from a concurrent set_result.
+            self._send_html(
+                handler,
+                200,
+                _oauth_success_html(
+                    "MCP authorization complete. You can close this browser tab."
+                ),
+            )
+            return
+
+        parsed = urlparse(handler.path)
+        if parsed.path != _LOOPBACK_CALLBACK_PATH:
+            self._send_html(
+                handler, 404, _oauth_error_html("Callback route not found.")
+            )
+            return
+
+        params = parse_qs(parsed.query)
+        if "error" in params:
+            err_code = params["error"][0]
+            err_desc = (params.get("error_description") or [""])[0]
+            detail = f": {err_desc}" if err_desc else ""
+            msg = f"Authorization denied by provider: {err_code}{detail}"
+            self._future.set_exception(RuntimeError(msg))
+            self._send_html(handler, 400, _oauth_error_html(msg))
+            return
+
+        if "code" not in params or not params["code"]:
+            msg = "Callback URL is missing the 'code' parameter."
+            self._future.set_exception(RuntimeError(msg))
+            self._send_html(handler, 400, _oauth_error_html(msg))
+            return
+
+        self._future.set_result((params["code"][0], (params.get("state") or [None])[0]))
+        self._send_html(
+            handler,
+            200,
+            _oauth_success_html(
+                "MCP authorization complete. You can close this browser tab."
+            ),
+        )
+
+    @staticmethod
+    def _send_html(handler: object, status: int, body: str) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        if not isinstance(handler, BaseHTTPRequestHandler):
+            return
+        payload = body.encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+
+
+def _oauth_success_html(message: str) -> str:
+    return _oauth_result_html(
+        title="Authorization complete",
+        heading="You're signed in",
+        message=message,
+        status="success",
+    )
+
+
+def _oauth_error_html(message: str) -> str:
+    return _oauth_result_html(
+        title="Authorization failed",
+        heading="Authorization failed",
+        message=message,
+        status="error",
+    )
+
+
+def _oauth_result_html(
+    *, title: str, heading: str, message: str, status: Literal["success", "error"]
+) -> str:
+    accent = "#137333" if status == "success" else "#b3261e"
+    background = "#eef7f0" if status == "success" else "#fceeee"
+    mark = "✓" if status == "success" else "!"
+    escaped_title = html.escape(title)
+    escaped_heading = html.escape(heading)
+    escaped = html.escape(message)
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{escaped_title}</title>"
+        "<style>"
+        "body{margin:0;min-height:100vh;display:grid;place-items:center;"
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+        "background:#f8faf9;color:#1f2328}"
+        ".panel{width:min(480px,calc(100vw - 40px));box-sizing:border-box;"
+        "padding:32px;border:1px solid #d8dee4;border-radius:8px;"
+        "background:#fff;box-shadow:0 18px 45px rgba(31,35,40,.08)}"
+        ".mark{width:44px;height:44px;border-radius:50%;display:grid;"
+        "place-items:center;margin-bottom:20px;font-weight:700}"
+        "h1{font-size:24px;line-height:1.2;margin:0 0 10px}"
+        "p{font-size:15px;line-height:1.5;margin:0;color:#57606a}"
+        "</style></head><body>"
+        '<main class="panel">'
+        f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
+        f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
+        "</main>"
+        "</body></html>"
+    )
 
 
 class MCPReauthRequiredError(RuntimeError):
@@ -426,6 +674,87 @@ def _make_paste_back_handlers(
     return redirect, callback
 
 
+def _make_loopback_handlers(
+    *,
+    callback_server: _LoopbackOAuthCallbackServer,
+    extra_auth_params: dict[str, str] | None = None,
+) -> tuple[RedirectHandler, CallbackHandler]:
+    """Create browser loopback redirect and callback handlers for OAuth.
+
+    Args:
+        callback_server: Prepared local callback server for this login attempt.
+            The socket is bound when the returned redirect handler is first called.
+        extra_auth_params: Extra query params to append to the auth URL.
+
+    Returns:
+        A tuple of `(redirect_handler, callback_handler)`.
+    """
+    extras = dict(extra_auth_params or {})
+    _paste_redirect, paste_callback = _make_paste_back_handlers(
+        extra_auth_params=extra_auth_params
+    )
+
+    async def redirect(auth_url: str) -> None:
+        import asyncio
+        import webbrowser
+
+        final_url = _append_query_params(auth_url, extras) if extras else auth_url
+        opened = await asyncio.to_thread(webbrowser.open, final_url)
+        if not opened:
+            # No browser available — poison the future so callback() falls
+            # through to paste_callback() immediately instead of waiting 300s.
+            # The socket is never bound because start() is not called.
+            callback_server.fail(
+                _LoopbackCallbackUnavailableError(
+                    "No browser is available to complete the OAuth flow."
+                )
+            )
+            print(  # noqa: T201 - intentional user-facing fallback
+                "\nOpen this URL in a browser, approve access, then paste the full "
+                "callback URL back here:\n"
+                f"\n  {final_url}\n"
+            )
+            return
+        try:
+            callback_server.start()
+        except OSError as exc:
+            logger.warning(
+                "Could not start loopback OAuth callback server on port %s: %s",
+                callback_server._port,
+                exc,
+            )
+            msg = "Local OAuth callback server could not be started."
+            callback_server.fail(_LoopbackCallbackUnavailableError(msg))
+            print(  # noqa: T201 - intentional user-facing fallback
+                "\nCould not start the local OAuth callback server. "
+                "Open this URL in a browser, approve access, then paste "
+                "the full callback URL back here:\n"
+                f"\n  {final_url}\n"
+            )
+            return
+        print(  # noqa: T201 - intentional user-facing prompt
+            "\nOpened your browser to approve MCP access. "
+            "If it did not open, visit this URL:\n"
+            f"\n  {final_url}\n"
+        )
+
+    async def callback() -> tuple[str, str | None]:
+        try:
+            return await callback_server.wait()
+        except (
+            _LoopbackCallbackTimeoutError,
+            _LoopbackCallbackUnavailableError,
+        ) as exc:
+            print(  # noqa: T201 - intentional user-facing fallback
+                f"{exc}\nPaste the full callback URL instead."
+            )
+            return await paste_callback()
+        finally:
+            callback_server.close()
+
+    return redirect, callback
+
+
 def _append_query_params(url: str, params: dict[str, str]) -> str:
     """Return `url` with `params` replacing any same-named query keys."""
     from urllib.parse import urlencode, urlunparse
@@ -457,16 +786,31 @@ def build_oauth_provider(
     Returns:
         A configured `OAuthClientProvider`.
     """
+    from deepagents_code.mcp_providers import resolve_provider
+
+    policy = resolve_provider(server_url)
+    redirect_uri: str | None = None
+
     if interactive:
-        redirect, callback = _make_paste_back_handlers(
-            extra_auth_params=extra_auth_params
-        )
+        if policy.supports_loopback_callback():
+            callback_server = _LoopbackOAuthCallbackServer(port=_choose_loopback_port())
+            redirect_uri = callback_server.redirect_uri
+            redirect, callback = _make_loopback_handlers(
+                callback_server=callback_server,
+                extra_auth_params=extra_auth_params,
+            )
+        else:
+            redirect, callback = _make_paste_back_handlers(
+                extra_auth_params=extra_auth_params
+            )
     else:
         redirect, callback = _make_reauth_required_handlers(server_name=server_name)
 
-    from deepagents_code.mcp_providers import resolve_provider
-
-    metadata = resolve_provider(server_url).client_metadata()
+    metadata = (
+        policy.client_metadata(redirect_uri=redirect_uri)
+        if redirect_uri is not None
+        else policy.client_metadata()
+    )
 
     return OAuthClientProvider(
         server_url=server_url,

@@ -235,3 +235,4 @@ CLAUDE.md
 libs/cli/frontend/node_modules/
 libs/cli/frontend/dist/
 node_modules/
+.tensorlake/

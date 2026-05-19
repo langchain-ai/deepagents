@@ -127,55 +127,25 @@ except Exception as e:
         return '\n'.join(selected_lines)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        """Download files from the sandbox.
-
-        Checks file existence and permissions, then reads files via execute().
-        """
-        import base64
+        """Download files from the sandbox using the native read_file API."""
+        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
         responses: list[FileDownloadResponse] = []
         for path in paths:
             if not path.startswith("/"):
                 responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
                 continue
-
-            # Read file with Python script — check existence and mode bits explicitly.
-            # Using mode bits (stat) rather than os.access() so the check is correct
-            # even when the sandbox process runs as root (root bypasses access checks).
-            read_script = f"""python3 -c "
-import os, base64, stat
-try:
-    st = os.stat('{path}')
-    # Treat as permission_denied when no read bit is set for anyone
-    readable = bool(st.st_mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH))
-    if not readable:
-        print('PERMISSION_DENIED')
-    else:
-        with open('{path}', 'rb') as f:
-            content = f.read()
-        print(base64.b64encode(content).decode('ascii'))
-except FileNotFoundError:
-    print('FILE_NOT_FOUND')
-except PermissionError:
-    print('PERMISSION_DENIED')
-except Exception as e:
-    print(f'ERROR:{{str(e)}}')
-" """
-            result = self.execute(read_script)
-            output = result.output.strip()
-
-            if output == "FILE_NOT_FOUND":
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            elif output == "PERMISSION_DENIED":
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            elif output.startswith("ERROR:"):
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            else:
-                try:
-                    content = base64.b64decode(output.encode('ascii'))
-                    responses.append(FileDownloadResponse(path=path, content=content, error=None))
-                except Exception:
-                    responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+            try:
+                raw = self._sandbox.read_file(path)
+                content: bytes = raw.value if hasattr(raw, 'value') else raw
+                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+            except TensorlakeSandboxError as exc:
+                error_msg = str(exc).lower()
+                if "permission" in error_msg:
+                    error = "permission_denied"
+                else:
+                    error = "file_not_found"
+                responses.append(FileDownloadResponse(path=path, content=None, error=error))
 
         return responses
 

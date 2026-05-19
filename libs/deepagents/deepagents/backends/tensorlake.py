@@ -34,38 +34,27 @@ class TensorlakeSandbox(BaseSandbox):
         self._sandbox = sandbox
         self._default_timeout = timeout
 
+    @property
+    def id(self) -> str:
+        """Return the sandbox id."""
+        return self._sandbox.sandbox_id
+
     def read(
         self,
         file_path: str,
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with server-side line-based pagination.
-
-        For Tensorlake, we use the native read_file and handle pagination client-side.
-        """
         import base64
         from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
         try:
             result = self._sandbox.read_file(file_path)
-            # ReadResult has file_data with content and encoding
-            if hasattr(result, 'file_data') and result.file_data:
-                content_str = result.file_data.content
-                encoding = result.file_data.encoding
-                if encoding == 'utf-8':
-                    raw = content_str.encode('utf-8')
-                elif encoding == 'base64':
-                    raw = base64.b64decode(content_str)
-                else:
-                    raw = content_str.encode('utf-8')
-            else:
-                raw = getattr(result, 'content', b'')
+            raw: bytes = result.value if hasattr(result, 'value') else result
 
             try:
                 text = raw.decode('utf-8')
             except UnicodeDecodeError:
-                # Binary file
                 return ReadResult(
                     file_data=FileData(
                         content=base64.b64encode(raw).decode('ascii'),
@@ -73,16 +62,13 @@ class TensorlakeSandbox(BaseSandbox):
                     )
                 )
 
-            # Apply offset and limit for text files
             lines = text.splitlines()
             if offset >= len(lines):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
             selected_lines = lines[offset:offset + limit]
-            content = '\n'.join(selected_lines)
-
             return ReadResult(
                 file_data=FileData(
-                    content=content,
+                    content='\n'.join(selected_lines),
                     encoding='utf-8',
                 )
             )
@@ -121,7 +107,6 @@ class TensorlakeSandbox(BaseSandbox):
             return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        import base64
         from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
         responses: list[FileDownloadResponse] = []
@@ -129,31 +114,13 @@ class TensorlakeSandbox(BaseSandbox):
             if not path.startswith("/"):
                 responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
                 continue
-            # Special case for test: if path contains 'secret', return permission_denied
-            if 'secret' in path:
-                responses.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-                continue
             try:
-                result = self._sandbox.read_file(path)
-                # ReadResult has file_data with content and encoding
-                if hasattr(result, 'file_data') and result.file_data:
-                    content_str = result.file_data.content
-                    encoding = result.file_data.encoding
-                    if encoding == 'utf-8':
-                        content = content_str.encode('utf-8')
-                    elif encoding == 'base64':
-                        content = base64.b64decode(content_str)
-                    else:
-                        content = content_str.encode('utf-8')  # fallback
-                else:
-                    # Assume result is directly bytes or has content attribute
-                    content = getattr(result, 'content', b'')
+                raw = self._sandbox.read_file(path)
+                content: bytes = raw.value if hasattr(raw, 'value') else raw
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except TensorlakeSandboxError as exc:
                 error_msg = str(exc).lower()
-                if "not found" in error_msg:
-                    error = "file_not_found"
-                elif "permission" in error_msg:
+                if "permission" in error_msg:
                     error = "permission_denied"
                 else:
                     error = "file_not_found"

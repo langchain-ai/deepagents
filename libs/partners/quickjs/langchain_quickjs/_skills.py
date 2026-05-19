@@ -291,7 +291,9 @@ def _rewrite_js_imports_to_ts(files: dict[str, str | ModuleScope]) -> None:
         if not isinstance(source, str):
             continue
 
-        def _replace(m: re.Match[str], _dir: str = str(PurePosixPath(key).parent)) -> str:
+        def _replace(
+            m: re.Match[str], _dir: str = str(PurePosixPath(key).parent)
+        ) -> str:
             prefix, rel_stem, suffix = m.group(1), m.group(2), m.group(3)
             if _dir == ".":
                 resolved = rel_stem.lstrip("./") + ".js"

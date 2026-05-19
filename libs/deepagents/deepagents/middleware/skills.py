@@ -288,6 +288,30 @@ class SkillMetadata(TypedDict):
     - Space-delimited list of tool names
     """
 
+<<<<<<< HEAD
+=======
+    module: NotRequired[str | None]
+    """Path to a JS/TS entrypoint file for a QuickJS REPL module, relative to the skill directory.
+
+    Warning: this is experimental.
+
+    When present, consumers of this metadata (notably `langchain-quickjs`'s
+    `CodeInterpreterMiddleware`) may install the skill as a dynamic-importable ES
+    module. The string is a POSIX path like `./index.ts` pointing at a
+    file inside the skill dir. This middleware only parses and validates
+    the field — it does not load or execute any JavaScript.
+    """
+
+    required_ptc_tools: NotRequired[list[str]]
+    """PTC tool names that must be present in the QuickJS middleware's ``ptc`` configuration
+    for this skill to function.
+
+    The middleware validates these at skill-load time and returns a descriptive error
+    if any are missing. Tool names should match the agent tool names as configured
+    in ``ptc`` (e.g. ``read_file``, not ``readFile``).
+    """
+
+>>>>>>> 46df55e1 (add required ptc tools to skill metadata)
 
 class SkillsState(AgentState):
     """State for the skills middleware."""

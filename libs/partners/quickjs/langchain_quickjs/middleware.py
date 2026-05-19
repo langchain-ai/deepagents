@@ -299,6 +299,16 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             metadata={"ls_code_input_language": "javascript"},
         )
 
+    def _ptc_tool_names(self) -> set[str]:
+        """Collect tool names from the PTC configuration."""
+        names: set[str] = set()
+        for entry in self._ptc or []:
+            if isinstance(entry, str):
+                names.add(entry)
+            elif isinstance(entry, BaseTool):
+                names.add(entry.name)
+        return names
+
     def _skills_for_eval(
         self,
         runtime: ToolRuntime[None, Any],
@@ -309,7 +319,37 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         metadata_list = (
             runtime.state.get("skills_metadata", []) if runtime.state else []
         )
-        return {m["name"]: m for m in metadata_list}
+        ptc_names = self._ptc_tool_names()
+        result: dict[str, SkillMetadata] = {}
+        for m in metadata_list:
+            required = m.get("required_ptc_tools", [])
+            missing = [t for t in required if t not in ptc_names]
+            if missing:
+                logger.warning(
+                    "Skill '%s' requires PTC tools not in ptc config: %s",
+                    m["name"],
+                    ", ".join(missing),
+                )
+                continue
+            result[m["name"]] = m
+        return result
+
+    def _validate_required_ptc_tools(self, state: REPLState) -> None:
+        """Raise if any skill requires PTC tools not in the config."""
+        if self._skills_backend is None:
+            return
+        metadata_list: list[SkillMetadata] = state.get("skills_metadata", [])  # type: ignore[assignment]
+        ptc_names = self._ptc_tool_names()
+        for skill in metadata_list:
+            required = skill.get("required_ptc_tools", [])
+            missing = [t for t in required if t not in ptc_names]
+            if missing:
+                msg = (
+                    f"Skill '{skill['name']}' requires PTC tools that are not configured: "
+                    f"{', '.join(missing)}. "
+                    f"Add them to CodeInterpreterMiddleware(ptc=[...])."
+                )
+                raise ValueError(msg)
 
     def before_agent(
         self,
@@ -317,6 +357,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Restore REPL snapshot bytes into the current thread slot."""
+        self._validate_required_ptc_tools(state)
         if not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
@@ -341,6 +382,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent` snapshot restore."""
+        self._validate_required_ptc_tools(state)
         if not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")

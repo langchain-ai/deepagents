@@ -224,6 +224,90 @@ class TestInterruptCleanup:
         assert interrupted_msg.tool_calls[0]["id"] == "call-1"
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
+    async def test_disables_tracing_during_state_save(self) -> None:
+        """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
+
+        Interrupt state writes (partial AI message + cancellation notice) are
+        internal recovery mechanics. Surfacing them as standalone `UpdateState`
+        runs in LangSmith would add noise unrelated to user-visible agent activity.
+        """
+        from langsmith import get_tracing_context
+
+        captured: list[object] = []
+
+        async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+            captured.append(get_tracing_context().get("enabled"))
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},  # type: ignore[arg-type]
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert captured, "aupdate_state was never called"
+        assert all(v is False for v in captured), (
+            f"tracing was not disabled: {captured}"
+        )
+
+    async def test_disables_tracing_when_interrupted_msg_present(self) -> None:
+        """Both `aupdate_state` calls disable tracing when interrupted_msg is set.
+
+        When there is a partial AI message to save, both writes (interrupted AI
+        message and cancellation notice) must be suppressed from LangSmith traces.
+        """
+        from langsmith import get_tracing_context
+
+        captured: list[object] = []
+
+        async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+            captured.append(get_tracing_context().get("enabled"))
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},  # type: ignore[arg-type]
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 2, (
+            f"expected 2 aupdate_state calls, got {len(captured)}"
+        )
+        assert all(v is False for v in captured), (
+            f"tracing was not disabled: {captured}"
+        )
+
 
 class TestBuildStreamConfig:
     """Tests for `build_stream_config` metadata construction."""

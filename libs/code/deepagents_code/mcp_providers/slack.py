@@ -22,6 +22,7 @@ from deepagents_code.mcp_providers.base import LoginResult, OAuthProvider
 
 if TYPE_CHECKING:
     from deepagents_code.mcp_auth import FileTokenStorage
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
 # Public OAuth client ID — safe to check in. No secret is associated;
@@ -42,24 +43,23 @@ def _is_slack_mcp_url(url: str) -> bool:
     return host == "slack.com" or host.endswith(".slack.com")
 
 
-async def _prompt_slack_team() -> str | None:
+async def _prompt_slack_team(ui: OAuthInteraction | None = None) -> str | None:
     """Interactively ask the user which Slack workspace to install into.
 
-    Runs the blocking `input()` in a worker thread so `login()` stays safe
-    to await from an already-running event loop (Textual worker, IPython).
+    Delegates to the supplied `OAuthInteraction` so the same flow drives
+    either the CLI stdin/stdout prompt or a TUI input widget.
+
+    Args:
+        ui: Interaction surface to use. Defaults to the CLI implementation.
 
     Returns:
         The entered Slack team ID, or `None` if the prompt was left blank.
     """
-    import asyncio
+    if ui is None:
+        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-    raw = await asyncio.to_thread(
-        input,
-        "Slack team ID to install the app into "
-        "(e.g. T01234567 — leave blank to pick on Slack's page): ",
-    )
-    stripped = raw.strip()
-    return stripped or None
+        ui = CliOAuthInteraction()
+    return await ui.prompt_slack_team_id()
 
 
 async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
@@ -126,6 +126,7 @@ class SlackProvider(OAuthProvider):
         server_name: str,
         server_url: str,
         storage: FileTokenStorage,
+        ui: OAuthInteraction,
     ) -> LoginResult:
         """Preseed client info and optionally thread the team ID into auth URL.
 
@@ -133,6 +134,7 @@ class SlackProvider(OAuthProvider):
             server_name: MCP server name (unused).
             server_url: Remote MCP endpoint URL (unused).
             storage: File-backed token storage for this server identity.
+            ui: Interaction surface used to prompt for the Slack team ID.
 
         Returns:
             A `LoginResult` carrying the optional `team=<id>` extra param
@@ -140,6 +142,6 @@ class SlackProvider(OAuthProvider):
         """
         del server_name, server_url
         await _preseed_slack_client_info(storage)
-        team_id = await _prompt_slack_team()
+        team_id = await _prompt_slack_team(ui)
         extras = {"team": team_id} if team_id else {}
         return LoginResult(extra_auth_params=extras)

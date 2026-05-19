@@ -906,8 +906,9 @@ class TestLogin:
             token_url: str,
             client_id: str,
             scope: str | None = None,
+            ui: object | None = None,
         ) -> OAuthToken:
-            del device_code_url, token_url, client_id, scope
+            del device_code_url, token_url, client_id, scope, ui
             return OAuthToken(access_token="gh-tok", token_type="Bearer")
 
         handshake_called = False
@@ -966,7 +967,7 @@ class TestLogin:
 
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
-        async def _fake_prompt_team() -> str | None:
+        async def _fake_prompt_team(_ui: object | None = None) -> str | None:
             return "T01234567"
 
         with (

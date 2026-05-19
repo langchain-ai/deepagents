@@ -127,6 +127,18 @@ def _sanitize_inline(text: str, *, max_length: int = 200) -> str:
     return cleaned
 
 
+def _sort_servers_for_display(
+    server_info: list[MCPServerInfo],
+) -> list[MCPServerInfo]:
+    """Return `server_info` with `unauthenticated` servers floated to the top.
+
+    Stable sort so the user's config order is preserved within each group.
+    Surfacing unauthenticated servers first makes the auth prompt visible
+    without scrolling on configs with many `ok` servers.
+    """
+    return sorted(server_info, key=lambda s: 0 if s.status == "unauthenticated" else 1)
+
+
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
@@ -819,7 +831,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         colors = theme.get_theme_colors(self)
         flat_index = 0
 
-        for server in self._server_info:
+        for server in _sort_servers_for_display(self._server_info):
             visible_tools = _visible_tools_for(server, tokens)
             if visible_tools is None:
                 # Server filtered out entirely.

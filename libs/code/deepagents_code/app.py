@@ -1280,6 +1280,11 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._pending_mcp_reconnect: bool = False
+        """Set after a successful MCP login when the user defers the server
+        restart. Cleared by the next reconnect or restart so multiple deferred
+        logins coalesce into a single user-driven restart."""
+
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
         profile-aware behavior (model selection, offload budget display,
@@ -8130,12 +8135,28 @@ class DeepAgentsApp(App):
             server_name = rest.split()[0]
             self._start_mcp_login(server_name)
             return
+        if subcommand == "reconnect":
+            await self._handle_mcp_reconnect_command()
+            return
         await self._mount_message(
             AppMessage(
                 f"Unknown `/mcp` subcommand: {subcommand!r}. "
-                "Try `/mcp` or `/mcp login <server>`.",
+                "Try `/mcp`, `/mcp login <server>`, or `/mcp reconnect`.",
             ),
         )
+
+    async def _handle_mcp_reconnect_command(self) -> None:
+        """Restart the server to pick up any deferred MCP login tokens.
+
+        No-op (with an inline notice) when nothing is pending so the
+        command is safe to run idempotently.
+        """
+        if not self._pending_mcp_reconnect:
+            await self._mount_message(
+                AppMessage("No pending MCP reconnect — nothing to do."),
+            )
+            return
+        await self._restart_server_for_mcp_refresh("pending login")
 
     async def _show_mcp_viewer(self) -> None:
         """Show the MCP server/tool viewer as a modal screen.
@@ -8357,17 +8378,56 @@ class DeepAgentsApp(App):
         screen.finish(
             success=True,
             message=(
-                f"Logged in to {server_name!r}. Restarting server to load new tools…"
+                f"Logged in to {server_name!r}. Reconnect required to load new tools."
             ),
         )
         await asyncio.wait_for(outcome_future, timeout=5.0)
 
-        # Re-run the in-TUI restart so the LangGraph server rebuilds MCP
-        # tools with the freshly persisted token. The existing
-        # `_start_server_background` worker posts `ServerReady`, which the
-        # message handler routes back into MCP metadata, `/mcp` viewer,
-        # and welcome-banner refresh — no duplicate refresh code here.
-        await self._restart_server_for_mcp_refresh(server_name)
+        # Ask the user whether to restart now or defer. Deferring lets them
+        # authenticate against additional MCP servers before paying the
+        # restart cost. `/mcp reconnect` (or another login confirmed with
+        # "reconnect") drives the restart later.
+        await self._prompt_mcp_reconnect(server_name)
+
+    async def _prompt_mcp_reconnect(self, server_name: str) -> None:
+        """Ask whether to restart now or defer after an MCP login succeeds.
+
+        Args:
+            server_name: Server whose login just completed — surfaced in the
+                modal title and downstream messages only.
+        """
+        from deepagents_code.widgets.mcp_reconnect import (
+            MCPReconnectPromptScreen,
+            ReconnectChoice,
+        )
+
+        choice_future: asyncio.Future[ReconnectChoice | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        def _on_dismiss(result: ReconnectChoice | None) -> None:
+            if not choice_future.done():
+                choice_future.set_result(result)
+
+        self.push_screen(MCPReconnectPromptScreen(server_name), _on_dismiss)
+        choice = await choice_future
+
+        if choice == "reconnect":
+            self._pending_mcp_reconnect = False
+            await self._restart_server_for_mcp_refresh(server_name)
+            return
+
+        # Defer: keep the running server in place so the user can authenticate
+        # with additional MCP servers. Surface a notification so they remember
+        # the running session is still using the pre-login tool set.
+        self._pending_mcp_reconnect = True
+        self.notify(
+            f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "
+            "to load the new tools.",
+            severity="information",
+            timeout=8,
+            markup=False,
+        )
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -8389,6 +8449,8 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             return
+
+        self._pending_mcp_reconnect = False
 
         try:
             self._connecting = True

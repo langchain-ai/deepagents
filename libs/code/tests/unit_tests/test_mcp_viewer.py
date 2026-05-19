@@ -832,12 +832,9 @@ class TestMCPViewerScreen:
             app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
-            # Navigate to the github unauth row (index 2 — past filesystem
-            # header + 1 tool row).
-            for _ in range(2):
-                await pilot.press("down")
-                await pilot.pause()
-            assert screen._row_widgets[2]._server.name == "github"  # type: ignore[union-attr]
+            # `unauthenticated` servers are floated to the top, so github
+            # is now the first row and starts selected.
+            assert screen._row_widgets[0]._server.name == "github"  # type: ignore[union-attr]
 
             await pilot.press("enter")
             await pilot.pause()
@@ -857,7 +854,8 @@ class TestMCPViewerScreen:
             app.push_screen(screen, on_dismiss)
             await pilot.pause()
 
-            # Navigate to the `broken` (error) row at index 3.
+            # After `unauthenticated`-first sort: github(0), filesystem(1),
+            # read_file tool(2), broken(3).
             for _ in range(3):
                 await pilot.press("down")
                 await pilot.pause()
@@ -1076,9 +1074,10 @@ class TestMCPViewerScreen:
             headers = screen.query(".mcp-server-header")
             assert len(headers) == 3
 
-            # Headers are ordered: filesystem (ok), github (unauth), broken (err).
-            ok_text = _widget_text(headers[0])
-            unauth_text = _widget_text(headers[1])
+            # `unauthenticated` servers float to the top, so the order is:
+            # github (unauth), filesystem (ok), broken (err).
+            unauth_text = _widget_text(headers[0])
+            ok_text = _widget_text(headers[1])
             err_text = _widget_text(headers[2])
 
             assert "filesystem" in ok_text
@@ -1116,8 +1115,9 @@ class TestMCPViewerScreen:
 
             glyphs = get_glyphs()
             headers = screen.query(".mcp-server-header")
-            assert glyphs.checkmark in _widget_text(headers[0])
-            assert glyphs.warning in _widget_text(headers[1])
+            # `unauthenticated` floats to the top: warning, then ok, then error.
+            assert glyphs.warning in _widget_text(headers[0])
+            assert glyphs.checkmark in _widget_text(headers[1])
             assert glyphs.error in _widget_text(headers[2])
 
     async def test_synthetic_config_error_entry_renders(self) -> None:
@@ -1200,6 +1200,59 @@ class TestModuleLevelHelpers:
         from deepagents_code.widgets.mcp_viewer import _format_prop_type
 
         assert _format_prop_type("") == "any"
+
+    # --- _sort_servers_for_display ---
+
+    def test_sort_servers_floats_unauthenticated_to_top(self) -> None:
+        """`unauthenticated` servers move ahead of `ok` and `error` servers."""
+        from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
+
+        info = _mixed_status_info()
+        ordered = _sort_servers_for_display(info)
+        assert [s.name for s in ordered] == ["github", "filesystem", "broken"]
+
+    def test_sort_servers_is_stable_within_groups(self) -> None:
+        """Original config order is preserved among same-priority servers."""
+        from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
+
+        info = [
+            MCPServerInfo(name="ok-a", transport="stdio"),
+            MCPServerInfo(
+                name="unauth-a",
+                transport="http",
+                status="unauthenticated",
+                error="login required",
+            ),
+            MCPServerInfo(name="ok-b", transport="stdio"),
+            MCPServerInfo(
+                name="unauth-b",
+                transport="http",
+                status="unauthenticated",
+                error="login required",
+            ),
+            MCPServerInfo(
+                name="err-a",
+                transport="sse",
+                status="error",
+                error="boom",
+            ),
+        ]
+        ordered = _sort_servers_for_display(info)
+        assert [s.name for s in ordered] == [
+            "unauth-a",
+            "unauth-b",
+            "ok-a",
+            "ok-b",
+            "err-a",
+        ]
+
+    def test_sort_servers_no_unauthenticated_preserves_order(self) -> None:
+        """When no server is unauthenticated, the order is identical."""
+        from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
+
+        info = _sample_info()
+        ordered = _sort_servers_for_display(info)
+        assert [s.name for s in ordered] == [s.name for s in info]
 
     # --- _sanitize_inline ---
 

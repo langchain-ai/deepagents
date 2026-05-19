@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileUploadResponse,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
+from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
 if TYPE_CHECKING:
     from tensorlake.sandbox import Sandbox as TensorlakeSandboxClient
-    from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +28,7 @@ class TensorlakeSandbox(BaseSandbox):
 
     def __init__(
         self,
-        sandbox: "TensorlakeSandboxClient",
+        sandbox: TensorlakeSandboxClient,
         *,
         timeout: int = 30 * 60,
     ) -> None:
@@ -50,12 +53,9 @@ class TensorlakeSandbox(BaseSandbox):
         # Tensorlake sandbox expects `run()` to be called with an executable path and
         # optional args. The test command can be compound shell syntax (&&, |, etc.),
         # so run it through a shell interpreter.
-        shell_command = "/bin/sh"
-        shell_args = ["-c", command]
-
         result = self._sandbox.run(
-            shell_command,
-            args=shell_args,
+            "/bin/sh",
+            args=["-c", command],
             timeout=effective_timeout,
         )
 
@@ -71,88 +71,75 @@ class TensorlakeSandbox(BaseSandbox):
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write file contents through Tensorlake native write_file."""
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
         try:
             self._sandbox.write_file(file_path, content.encode("utf-8"))
             return WriteResult(path=file_path)
         except TensorlakeSandboxError as exc:
             return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        """Read file content - returns string for test compatibility.
-
-        Uses execute() to run Python scripts that read and return file contents.
-        """
-        import base64
-
-        # Check if file is readable by running a test cat
-        test_result = self.execute(f"cat {file_path}")
-        if test_result.exit_code != 0:
-            return f"Error reading {file_path}"
-
-        # Read file as base64 to handle binary safely
-        read_script = f"""python3 -c "
-import base64
-try:
-    with open('{file_path}', 'rb') as f:
-        content = f.read()
-    print(base64.b64encode(content).decode('ascii'))
-except Exception as e:
-    print(f'ERROR:{{str(e)}}')
-" """
-        result = self.execute(read_script)
-        output = result.output.strip()
-
-        if output.startswith("ERROR:"):
-            return f"Error: {output[6:]}"
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
+        """Read file content using the native read_file API."""
+        try:
+            raw_result = self._sandbox.read_file(file_path)
+            raw: bytes = (
+                raw_result.value if hasattr(raw_result, "value") else raw_result
+            )
+        except TensorlakeSandboxError as exc:
+            return ReadResult(error=f"File '{file_path}': {exc}")
 
         try:
-            raw = base64.b64decode(output.encode('ascii'))
-        except Exception:
-            return "Error: failed to decode file"
-
-        # Try to decode as text
-        try:
-            text = raw.decode('utf-8')
+            text = raw.decode("utf-8")
         except UnicodeDecodeError:
-            # Binary file
-            return base64.b64encode(raw).decode('ascii')
+            return ReadResult(
+                file_data=FileData(
+                    content=base64.b64encode(raw).decode("ascii"),
+                    encoding="base64",
+                )
+            )
 
-        # Apply offset/limit for text files
         lines = text.splitlines()
         if offset >= len(lines):
-            return f"Error: Line offset {offset} exceeds file length ({len(lines)} lines)"
-        selected_lines = lines[offset:offset + limit]
-        return '\n'.join(selected_lines)
+            return ReadResult(
+                error=f"Line offset {offset} exceeds file length ({len(lines)} lines)"
+            )
+        return ReadResult(
+            file_data=FileData(
+                content="\n".join(lines[offset : offset + limit]),
+                encoding="utf-8",
+            )
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download files from the sandbox using the native read_file API."""
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
         responses: list[FileDownloadResponse] = []
         for path in paths:
             if not path.startswith("/"):
-                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error="invalid_path")
+                )
                 continue
             try:
-                raw = self._sandbox.read_file(path)
-                content: bytes = raw.value if hasattr(raw, 'value') else raw
-                responses.append(FileDownloadResponse(path=path, content=content, error=None))
+                raw_result = self._sandbox.read_file(path)
+                content: bytes = (
+                    raw_result.value if hasattr(raw_result, "value") else raw_result
+                )
+                responses.append(
+                    FileDownloadResponse(path=path, content=content, error=None)
+                )
             except TensorlakeSandboxError as exc:
-                error_msg = str(exc).lower()
-                if "permission" in error_msg:
-                    error = "permission_denied"
-                else:
-                    error = "file_not_found"
-                responses.append(FileDownloadResponse(path=path, content=None, error=error))
+                error = (
+                    "permission_denied"
+                    if "permission" in str(exc).lower()
+                    else "file_not_found"
+                )
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error=error)
+                )
 
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload files to the Tensorlake sandbox."""
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
         responses: list[FileUploadResponse] = []
         for path, content in files:
             if not path.startswith("/"):
@@ -162,11 +149,8 @@ except Exception as e:
                 self._sandbox.write_file(path, content)
                 responses.append(FileUploadResponse(path=path, error=None))
             except TensorlakeSandboxError as exc:
-                msg = str(exc).lower()
-                if "permission" in msg:
-                    error = "permission_denied"
-                else:
-                    error = "permission_denied"
                 logger.warning("Tensorlake upload failed for %s: %s", path, exc)
-                responses.append(FileUploadResponse(path=path, error=error))
+                responses.append(
+                    FileUploadResponse(path=path, error="permission_denied")
+                )
         return responses

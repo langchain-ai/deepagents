@@ -497,37 +497,45 @@ class _TensorlakeProvider(SandboxProvider):
     """Tensorlake sandbox provider — lifecycle management for Tensorlake sandboxes."""
 
     def __init__(self) -> None:
-        from deepagents_cli.model_config import resolve_env_var
+        tensorlake_module = _import_provider_module(
+            "tensorlake",
+            provider="tensorlake",
+            package="langchain-tensorlake",
+        )
+
+        from deepagents_code.model_config import resolve_env_var
 
         api_key = resolve_env_var("TENSORLAKE_API_KEY")
         if not api_key:
             msg = (
                 "No Tensorlake API key found. Set TENSORLAKE_API_KEY "
-                "or DEEPAGENTS_CLI_TENSORLAKE_API_KEY."
+                "or DEEPAGENTS_CODE_TENSORLAKE_API_KEY."
             )
             raise ValueError(msg)
 
         self._api_key = api_key
-
-        try:
-            from tensorlake.sandbox import SandboxClient
-        except ImportError as exc:
-            msg = (
-                "The 'tensorlake' sandbox provider requires the 'langchain-tensorlake' package. "
-                "Install it with: pip install 'deepagents-cli[tensorlake]'"
-            )
-            raise ImportError(msg) from exc
-
-        self._client = SandboxClient.for_cloud(api_key=api_key)
+        self._tensorlake = tensorlake_module
 
     def get_or_create(
         self,
         *,
         sandbox_id: str | None = None,
-        timeout: int = 180,
+        timeout: int = 180,  # noqa: ARG002
         **kwargs: Any,  # noqa: ARG002
     ) -> SandboxBackendProtocol:
-        """Get or create a Tensorlake sandbox."""
+        """Get or create a Tensorlake sandbox.
+
+        Args:
+            sandbox_id: Not supported yet — must be None.
+            timeout: Unused; Sandbox.create() handles readiness internally.
+            **kwargs: Unused.
+
+        Returns:
+            `TensorlakeSandbox` instance.
+
+        Raises:
+            NotImplementedError: If `sandbox_id` is provided.
+        """
         tensorlake_backend = _import_provider_module(
             "langchain_tensorlake",
             provider="tensorlake",
@@ -535,33 +543,21 @@ class _TensorlakeProvider(SandboxProvider):
         )
 
         if sandbox_id:
-            try:
-                self._client.get(sandbox_id)
-            except Exception as e:
-                raise SandboxNotFoundError(sandbox_id) from e
-            create_id = sandbox_id
-        else:
-            response = self._client.create()
-            create_id = response.sandbox_id
-            for _ in range(timeout // 2):
-                status = self._client.get(create_id)
-                if status.status == "running":
-                    break
-                time.sleep(2)
-            else:
-                with contextlib.suppress(Exception):
-                    self._client.delete(create_id)
-                msg = f"Tensorlake sandbox failed to start within {timeout} seconds"
-                raise RuntimeError(msg)
+            msg = (
+                "Connecting to existing Tensorlake sandbox by ID not yet supported. "
+                "Create a new sandbox by omitting sandbox_id parameter."
+            )
+            raise NotImplementedError(msg)
 
-        from tensorlake.sandbox import Sandbox
-
-        sandbox = Sandbox(sandbox_id=create_id, api_key=self._api_key)
+        sandbox = self._tensorlake.sandbox.Sandbox.create(api_key=self._api_key)
         return tensorlake_backend.TensorlakeSandbox(sandbox=sandbox)
 
     def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
         """Delete a Tensorlake sandbox by id."""
-        self._client.delete(sandbox_id)
+        sandbox = self._tensorlake.sandbox.Sandbox(
+            sandbox_id=sandbox_id, api_key=self._api_key
+        )
+        sandbox.terminate()
 
 
 class _ModalProvider(SandboxProvider):

@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import TYPE_CHECKING
 
+from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
+
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileUploadResponse,
     ReadResult,
-    FileData,
     WriteResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
 
 if TYPE_CHECKING:
     from tensorlake.sandbox import Sandbox as TensorlakeSandboxClient
-    from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +29,11 @@ class TensorlakeSandbox(BaseSandbox):
 
     def __init__(
         self,
-        sandbox: "TensorlakeSandboxClient",
+        sandbox: TensorlakeSandboxClient,
         *,
         timeout: int = 30 * 60,
     ) -> None:
+        """Create a backend wrapping an existing Tensorlake sandbox."""
         self._sandbox = sandbox
         self._default_timeout = timeout
 
@@ -45,31 +48,29 @@ class TensorlakeSandbox(BaseSandbox):
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        import base64
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
+        """Read file content using the native read_file API."""
         try:
             result = self._sandbox.read_file(file_path)
-            raw: bytes = result.value if hasattr(result, 'value') else result
+            raw: bytes = result.value if hasattr(result, "value") else result
 
             try:
-                text = raw.decode('utf-8')
+                text = raw.decode("utf-8")
             except UnicodeDecodeError:
                 return ReadResult(
                     file_data=FileData(
-                        content=base64.b64encode(raw).decode('ascii'),
-                        encoding='base64',
+                        content=base64.b64encode(raw).decode("ascii"),
+                        encoding="base64",
                     )
                 )
 
             lines = text.splitlines()
             if offset >= len(lines):
                 return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-            selected_lines = lines[offset:offset + limit]
+            selected_lines = lines[offset : offset + limit]
             return ReadResult(
                 file_data=FileData(
-                    content='\n'.join(selected_lines),
-                    encoding='utf-8',
+                    content="\n".join(selected_lines),
+                    encoding="utf-8",
                 )
             )
         except TensorlakeSandboxError as exc:
@@ -81,6 +82,7 @@ class TensorlakeSandbox(BaseSandbox):
         *,
         timeout: int | None = None,
     ) -> ExecuteResponse:
+        """Execute a shell command inside the sandbox."""
         effective_timeout = timeout if timeout is not None else self._default_timeout
 
         # Tensorlake requires an executable path + args; map shell-like
@@ -98,8 +100,7 @@ class TensorlakeSandbox(BaseSandbox):
         return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
+        """Write file contents through Tensorlake native write_file."""
         try:
             self._sandbox.write_file(file_path, content.encode("utf-8"))
             return WriteResult(path=file_path)
@@ -107,8 +108,7 @@ class TensorlakeSandbox(BaseSandbox):
             return WriteResult(error=f"Failed to write file '{file_path}': {exc}")
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
+        """Download files from the sandbox using the native read_file API."""
         responses: list[FileDownloadResponse] = []
         for path in paths:
             if not path.startswith("/"):
@@ -116,21 +116,17 @@ class TensorlakeSandbox(BaseSandbox):
                 continue
             try:
                 raw = self._sandbox.read_file(path)
-                content: bytes = raw.value if hasattr(raw, 'value') else raw
+                content: bytes = raw.value if hasattr(raw, "value") else raw
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except TensorlakeSandboxError as exc:
                 error_msg = str(exc).lower()
-                if "permission" in error_msg:
-                    error = "permission_denied"
-                else:
-                    error = "file_not_found"
+                error = "permission_denied" if "permission" in error_msg else "file_not_found"
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
 
         return responses
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
-        from tensorlake.sandbox.exceptions import SandboxError as TensorlakeSandboxError
-
+        """Upload files to the Tensorlake sandbox."""
         responses: list[FileUploadResponse] = []
         for path, content in files:
             if not path.startswith("/"):

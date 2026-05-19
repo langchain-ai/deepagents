@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from tensorlake.sandbox.exceptions import SandboxError
+
 import langchain_tensorlake
 from langchain_tensorlake.sandbox import TensorlakeSandbox
 
@@ -20,7 +22,9 @@ def test_import_tensorlake() -> None:
 
 def test_execute_returns_stdout() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.run.return_value = SimpleNamespace(stdout="hello world", stderr="", exit_code=0)
+    mock_sdk.run.return_value = SimpleNamespace(
+        stdout="hello world", stderr="", exit_code=0
+    )
 
     result = sb.execute("echo hello world")
 
@@ -51,8 +55,6 @@ def test_download_files_success() -> None:
 
 
 def test_download_files_not_found() -> None:
-    from tensorlake.sandbox.exceptions import SandboxError
-
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read_file.side_effect = SandboxError("file not found")
 
@@ -62,7 +64,7 @@ def test_download_files_not_found() -> None:
 
 
 def test_upload_files_success() -> None:
-    sb, mock_sdk = _make_sandbox()
+    sb, _mock_sdk = _make_sandbox()
 
     responses = sb.upload_files([("/app/file.txt", b"content")])
 
@@ -71,8 +73,6 @@ def test_upload_files_success() -> None:
 
 
 def test_upload_files_permission_denied() -> None:
-    from tensorlake.sandbox.exceptions import SandboxError
-
     sb, mock_sdk = _make_sandbox()
     mock_sdk.write_file.side_effect = SandboxError("permission denied")
 

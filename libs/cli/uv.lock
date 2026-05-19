@@ -830,6 +830,7 @@ test = [
     { name = "pytest-watcher", specifier = ">=0.3.4,<1.0.0" },
     { name = "pytest-xdist" },
     { name = "ruff", specifier = ">=0.12.2,<0.16.0" },
+    { name = "tensorlake", specifier = ">=0.5.9" },
     { name = "twine" },
     { name = "ty", specifier = ">=0.0.1,<1.0.0" },
 ]
@@ -859,6 +860,7 @@ all-sandboxes = [
     { name = "langchain-daytona" },
     { name = "langchain-modal" },
     { name = "langchain-runloop" },
+    { name = "langchain-tensorlake" },
 ]
 daytona = [
     { name = "langchain-daytona" },
@@ -868,6 +870,9 @@ modal = [
 ]
 runloop = [
     { name = "langchain-runloop" },
+]
+tensorlake = [
+    { name = "langchain-tensorlake" },
 ]
 
 [package.dev-dependencies]
@@ -890,13 +895,14 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop"], marker = "extra == 'all-sandboxes'" },
+    { name = "deepagents-cli", extras = ["agentcore", "daytona", "modal", "runloop", "tensorlake"], marker = "extra == 'all-sandboxes'" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "langchain", specifier = ">=1.3.0,<2.0.0" },
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.2" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-runloop", marker = "extra == 'runloop'", editable = "../partners/runloop" },
+    { name = "langchain-tensorlake", marker = "extra == 'tensorlake'", editable = "../partners/tensorlake" },
     { name = "langgraph", specifier = ">=1.2.0,<2.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.24,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.28.1,<1.0.0" },
@@ -904,7 +910,7 @@ requires-dist = [
     { name = "langsmith", specifier = ">=0.8.0" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
 ]
-provides-extras = ["agentcore", "daytona", "modal", "runloop", "all-sandboxes"]
+provides-extras = ["agentcore", "daytona", "modal", "runloop", "tensorlake", "all-sandboxes"]
 
 [package.metadata.requires-dev]
 test = [
@@ -1376,6 +1382,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
 ]
 
+[package.optional-dependencies]
+http2 = [
+    { name = "h2" },
+]
+
 [[package]]
 name = "hyperframe"
 version = "6.1.0"
@@ -1803,6 +1814,34 @@ requires-dist = [
 [package.metadata.requires-dev]
 test = [
     { name = "langchain-tests", specifier = ">=1.1.6" },
+    { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "pytest-cov" },
+    { name = "pytest-socket" },
+    { name = "pytest-timeout", specifier = ">=2.3.1,<3.0.0" },
+    { name = "pytest-xdist" },
+    { name = "ruff", specifier = ">=0.13.1,<0.16.0" },
+    { name = "ty", specifier = ">=0.0.1,<1.0.0" },
+]
+
+[[package]]
+name = "langchain-tensorlake"
+version = "0.0.1"
+source = { editable = "../partners/tensorlake" }
+dependencies = [
+    { name = "deepagents" },
+    { name = "tensorlake" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deepagents", editable = "../deepagents" },
+    { name = "tensorlake", specifier = ">=0.5.9" },
+]
+
+[package.metadata.requires-dev]
+test = [
+    { name = "langchain-tests", specifier = ">=1.1.4" },
     { name = "pytest", specifier = ">=7.3.0,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "pytest-cov" },
@@ -3249,6 +3288,25 @@ wheels = [
 ]
 
 [[package]]
+name = "tensorlake"
+version = "0.5.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "grpcio" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "protobuf" },
+    { name = "pydantic" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/51/7d1020097852f593fc628e36c4af371f5ffaf87480173d0c464bd1689a47/tensorlake-0.5.15.tar.gz", hash = "sha256:a71d834b6311d263dff88dca56757fb8638e40f5c0a91e31ea8f7f26eac4b58d", size = 2292355, upload-time = "2026-05-18T10:54:22.863Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9a/05/b7af41a64cc86288e1c550741ffe671b8e21dcdad82627568612f538b472/tensorlake-0.5.15-py3-none-macosx_11_0_arm64.whl", hash = "sha256:10716f3b0ba67c47f4e7e426df7cd7844aeedf638090a99b98d4116720e5a077", size = 15179635, upload-time = "2026-05-18T10:54:08.783Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/06/d4c2883a6ef2b602bfbd00ddaf80b216e935407cb91255dac74cb5408da0/tensorlake-0.5.15-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c7dcfb61da41c70a14388e9eadeed0468a1213b4d7438b8ae37dd8b707901f03", size = 15725531, upload-time = "2026-05-18T10:54:12.205Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/a3/103726dab4c93cb6a3d8d8fa3e88293da6f5db88574656d2a18a4322e555/tensorlake-0.5.15-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1dd07addfe98dcf3345bf7ba7756f996486357c48977bc6ffc5b4431dc4b5dc2", size = 16347997, upload-time = "2026-05-18T10:54:15.825Z" },
+    { url = "https://files.pythonhosted.org/packages/de/f5/bab1a48c6397b8c85f09af166f002ffbf4a22fd815db0d1ab6b0bbb6c96f/tensorlake-0.5.15-py3-none-win_amd64.whl", hash = "sha256:a4da65cad108fe51dc3218caed7b52d3e1bfa3873c570e88cfdb65578cf41cf7", size = 17253267, upload-time = "2026-05-18T10:54:19.979Z" },
+]
+
+[[package]]
 name = "toml"
 version = "0.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3631,6 +3689,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/79/3e/c0bdc27cf06f4e47680bd5803a07cb3dfd17de84cde92dd217dcb9e05253/wcmatch-10.1.tar.gz", hash = "sha256:f11f94208c8c8484a16f4f48638a85d771d9513f4ab3f37595978801cb9465af", size = 117421, upload-time = "2025-06-22T19:14:02.49Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/d8/0d1d2e9d3fabcf5d6840362adcf05f8cf3cd06a73358140c3a97189238ae/wcmatch-10.1-py3-none-any.whl", hash = "sha256:5848ace7dbb0476e5e55ab63c6bbd529745089343427caa5537f230cc01beb8a", size = 39854, upload-time = "2025-06-22T19:14:00.978Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
 ]
 
 [[package]]

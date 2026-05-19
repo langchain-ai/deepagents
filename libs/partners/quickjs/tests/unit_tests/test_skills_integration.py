@@ -171,6 +171,68 @@ async def test_multi_file_skill_relative_import(
     assert after.result == "14"
 
 
+async def test_multi_file_skill_js_import_specifiers_resolve_to_ts(
+    registry: _Registry, tmp_path: Path
+) -> None:
+    """TS files imported via .js specifiers (Node convention) resolve correctly."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_dir = str(tmp_path / "skills" / "jsimport")
+    _write(
+        backend,
+        {
+            f"{skill_dir}/SKILL.md": "---\nname: jsimport\ndescription: x\n---\n",
+            f"{skill_dir}/index.ts": (
+                'import { value } from "./util.js";\n'
+                "export const doubled = value * 2;\n"
+            ),
+            f"{skill_dir}/util.ts": "export const value: number = 7;\n",
+        },
+    )
+    meta = _metadata("jsimport", path=f"{skill_dir}/SKILL.md", module="index.ts")
+
+    repl = registry.get("t1")
+    import_outcome = await repl.eval_async(
+        'const m = await import("@/skills/jsimport"); globalThis.r = m.doubled;',
+        skills={"jsimport": meta},
+        skills_backend=backend,
+    )
+    assert import_outcome.error_type is None, import_outcome.error_message
+    after = await repl.eval_async("globalThis.r")
+    assert after.result == "14"
+
+
+async def test_subdirectory_entrypoint_with_js_imports(
+    registry: _Registry, tmp_path: Path
+) -> None:
+    """Entrypoint in a subdirectory with .js import specifiers resolves correctly."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_dir = str(tmp_path / "skills" / "subdir")
+    _write(
+        backend,
+        {
+            f"{skill_dir}/SKILL.md": "---\nname: subdir\ndescription: x\n---\n",
+            f"{skill_dir}/scripts/index.ts": (
+                'import { compute } from "./math.js";\n'
+                "export const result = compute(3, 4);\n"
+            ),
+            f"{skill_dir}/scripts/math.ts": (
+                "export function compute(a: number, b: number): number { return a + b; }\n"
+            ),
+        },
+    )
+    meta = _metadata("subdir", path=f"{skill_dir}/SKILL.md", module="scripts/index.ts")
+
+    repl = registry.get("t1")
+    import_outcome = await repl.eval_async(
+        'const m = await import("@/skills/subdir"); globalThis.r = m.result;',
+        skills={"subdir": meta},
+        skills_backend=backend,
+    )
+    assert import_outcome.error_type is None, import_outcome.error_message
+    after = await repl.eval_async("globalThis.r")
+    assert after.result == "7"
+
+
 async def test_install_cache_avoids_second_fetch(
     registry: _Registry, tmp_path: Path
 ) -> None:

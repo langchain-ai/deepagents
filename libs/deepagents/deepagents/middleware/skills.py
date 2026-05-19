@@ -104,7 +104,7 @@ import json
 import logging
 import re
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import PrivateStateAttr
@@ -363,7 +363,7 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
     return []
 
 
-def _parse_required_ptc_tools(metadata_obj: object) -> list[str]:
+def _parse_required_ptc_tools(metadata_obj: Any) -> list[str]:  # noqa: ANN401
     """Extract ``required-ptc-tools`` from the metadata mapping."""
     if not isinstance(metadata_obj, dict):
         return []

@@ -560,7 +560,7 @@ class TestInvokeMode:
                 {
                     "name": "structured_output",
                     "description": "Return the structured result.",
-                    "schema": {
+                    "parameters": {
                         "type": "object",
                         "additionalProperties": False,
                         "properties": {"label": {"type": "string"}},

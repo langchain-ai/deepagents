@@ -359,4 +359,32 @@ def test_loaded_scope_installs_on_context(tmp_path: Path) -> None:
         rt.install(ModuleScope({loaded.specifier: loaded.scope}))
 
 
+def test_load_skill_subdirectory_entrypoint_relocates_siblings(tmp_path: Path) -> None:
+    """When the entrypoint is in a subdirectory, sibling files are relocated
+    to the scope root so relative imports from the flattened index resolve."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    skill_dir = str(tmp_path / "skills" / "swarm")
+    _write(
+        backend,
+        {
+            f"{skill_dir}/SKILL.md": "---\nname: swarm\ndescription: x\n---\n",
+            f"{skill_dir}/scripts/index.ts": 'import { create } from "./table.js";',
+            f"{skill_dir}/scripts/table.ts": "export function create() {}",
+            f"{skill_dir}/scripts/lib/utils.ts": "export function read() {}",
+        },
+    )
+    meta = _metadata("swarm", path=f"{skill_dir}/SKILL.md", module="scripts/index.ts")
+
+    loaded = load_skill(meta, backend)
+
+    keys = set(loaded.scope.modules.keys())
+    assert "index.ts" in keys
+    assert "table.ts" in keys
+    assert "lib/utils.ts" in keys
+    # Originals kept for backwards compatibility
+    assert "scripts/index.ts" in keys
+    assert "scripts/table.ts" in keys
+    assert "scripts/lib/utils.ts" in keys
+
+
 __all__: list[Any] = []

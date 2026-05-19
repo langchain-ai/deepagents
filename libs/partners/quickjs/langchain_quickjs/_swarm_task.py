@@ -163,7 +163,7 @@ async def _invoke_with_structured_output(
 
     tool_name = "structured_output"
     bound = model.bind_tools(
-        [{"name": tool_name, "description": "Return the structured result.", "schema": normalized}],
+        [{"name": tool_name, "description": "Return the structured result.", "parameters": normalized}],
         tool_choice=tool_name,
     )
     response = await bound.ainvoke(messages)

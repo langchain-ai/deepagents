@@ -549,15 +549,32 @@ class TestBuildConnectingFooter:
         assert "Connecting" not in footer.plain
 
     def test_local_server_message(self) -> None:
-        """Footer should say 'local server' when local_server is True."""
+        """Footer should say 'Connecting to local server' on first connect."""
         footer = build_connecting_footer(local_server=True)
         assert "Connecting to local server..." in footer.plain
+        assert "Reconnecting" not in footer.plain
+
+    def test_local_server_reconnecting_message(self) -> None:
+        """Footer should say 'Reconnecting to local server' on mid-session restart."""
+        footer = build_connecting_footer(local_server=True, reconnecting=True)
+        assert "Reconnecting to local server..." in footer.plain
 
     def test_resuming_takes_precedence_over_local(self) -> None:
         """Resuming text should win when both resuming and local_server are set."""
         footer = build_connecting_footer(resuming=True, local_server=True)
         assert "Resuming..." in footer.plain
         assert "local server" not in footer.plain
+
+    def test_dots_parameter_animates_ellipsis(self) -> None:
+        """Custom dots string should appear in footer text."""
+        assert "Connecting to server." in build_connecting_footer(dots=".").plain
+        assert "Connecting to server.." in build_connecting_footer(dots="..").plain
+        assert (
+            "Reconnecting to local server."
+            in build_connecting_footer(
+                local_server=True, reconnecting=True, dots="."
+            ).plain
+        )
 
 
 class TestBannerConnectingFooterVariants:
@@ -580,11 +597,12 @@ class TestBannerConnectingFooterVariants:
         assert "Connecting" not in plain
 
     def test_connecting_local_server(self) -> None:
-        """Banner forwards local_server flag to footer."""
+        """Banner shows 'Connecting' (not 'Reconnecting') on first connect."""
         with patch.dict("os.environ", {}, clear=True):
             widget = WelcomeBanner(connecting=True, local_server=True)
         plain = widget._build_banner().plain
         assert "Connecting to local server..." in plain
+        assert "Reconnecting" not in plain
 
     def test_connecting_resuming_precedence(self) -> None:
         """Resuming wins over local_server at the banner level."""

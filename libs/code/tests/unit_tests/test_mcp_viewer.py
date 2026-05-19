@@ -109,7 +109,7 @@ class TestMCPViewerScreen:
         async with app.run_test() as pilot:
             dismissed = False
 
-            def on_dismiss(result: None) -> None:  # noqa: ARG001
+            def on_dismiss(result: str | None) -> None:  # noqa: ARG001
                 nonlocal dismissed
                 dismissed = True
 
@@ -816,6 +816,58 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert screen._selected_index == 1
 
+    async def test_enter_on_unauth_header_dismisses_with_server_name(self) -> None:
+        """Activating an unauthenticated header returns the server name.
+
+        The app uses the dismiss value to drive in-TUI OAuth login.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            # Navigate to the github unauth row (index 2 — past filesystem
+            # header + 1 tool row).
+            for _ in range(2):
+                await pilot.press("down")
+                await pilot.pause()
+            assert screen._row_widgets[2]._server.name == "github"  # type: ignore[union-attr]
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == ["github"]
+
+    async def test_enter_on_error_header_is_noop(self) -> None:
+        """Activating an error-status header does not dismiss the viewer."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            dismissed_with: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                dismissed_with.append(result)
+
+            screen = MCPViewerScreen(server_info=_mixed_status_info())
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            # Navigate to the `broken` (error) row at index 3.
+            for _ in range(3):
+                await pilot.press("down")
+                await pilot.pause()
+            assert screen._row_widgets[3]._server.name == "broken"  # type: ignore[union-attr]
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dismissed_with == []
+
     async def test_enter_on_server_header_is_noop(self) -> None:
         """Enter on a server header does not expand or crash."""
         app = MCPViewerTestApp()
@@ -1034,7 +1086,9 @@ class TestMCPViewerScreen:
 
             assert "github" in unauth_text
             assert "unauthenticated" in unauth_text
-            assert "Run: dcode mcp login github" in unauth_text
+            # The header now invites in-TUI login instead of telling the
+            # user to leave the app and run `dcode mcp login`.
+            assert "Enter to log in" in unauth_text
 
             assert "broken" in err_text
             assert "error" in err_text

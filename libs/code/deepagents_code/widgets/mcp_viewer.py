@@ -409,6 +409,15 @@ def _render_server_header(
             (summary, dim_style),
         )
     error_text = _sanitize_inline(server.error or "")
+    if server.status == "unauthenticated":
+        login_hint = " — Enter to log in"
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (f" {server.transport}", dim_style),
+            (f" {glyphs.bullet} {server.status}", indicator_color),
+            (login_hint, dim_style),
+        )
     return Content.assemble(
         (f"{indicator_glyph} ", indicator_color),
         (server.name, "bold"),
@@ -494,25 +503,37 @@ class MCPServerHeaderItem(Static):
         )
 
     def on_click(self, event: Click) -> None:
-        """Handle click — select the header row via parent screen.
+        """Handle click — select the header, or start login on unauth re-click.
 
-        Headers are not expandable; clicking only moves the cursor.
+        Headers are not expandable. Clicking once moves the cursor;
+        clicking the already-selected header for a server in
+        `unauthenticated` state dismisses the viewer with the server name
+        so the parent app can start in-TUI OAuth login.
 
         Args:
             event: The click event.
         """
         event.stop()
         screen = self.screen
-        if isinstance(screen, MCPViewerScreen):
-            screen._move_to(self.index)
+        if not isinstance(screen, MCPViewerScreen):
+            return
+        if self._selected and self._server.status == "unauthenticated":
+            screen.dismiss(self._server.name)
+            return
+        screen._move_to(self.index)
 
 
-class MCPViewerScreen(ModalScreen[None]):
+class MCPViewerScreen(ModalScreen[str | None]):
     """Modal viewer for active MCP servers and their tools.
 
     Displays servers grouped by name with transport type and tool count.
-    Navigate with arrow keys, Enter to expand/collapse tool descriptions,
-    Escape to close.
+    Navigate with arrow keys, Enter to expand/collapse tool descriptions
+    or start in-app OAuth login for an unauthenticated server, Escape
+    to close.
+
+    Dismisses with `None` when closed without action, or with the server
+    name to drive an in-TUI OAuth login when the user activates an
+    `unauthenticated` server header.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -763,7 +784,7 @@ class MCPViewerScreen(ModalScreen[None]):
 
         help_text = (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-            f" {glyphs.bullet} Enter expand"
+            f" {glyphs.bullet} Enter expand/login"
             f" {glyphs.bullet} Ctrl+E expand all"
             f" {glyphs.bullet} type to filter"
             f" {glyphs.bullet} Esc close"
@@ -970,12 +991,22 @@ class MCPViewerScreen(ModalScreen[None]):
         self._row_widgets[target].scroll_visible(top=True)
 
     def action_toggle_expand(self) -> None:
-        """Toggle expand/collapse on the selected tool (no-op for headers)."""
+        """Toggle expand on a tool row, or start login on an unauth header.
+
+        Tool rows expand/collapse as before; activating a header row for
+        a server in `unauthenticated` state dismisses the viewer with the
+        server name so the app can drive in-TUI OAuth login. Headers for
+        other states (ok, error) remain no-ops.
+        """
         if not self._row_widgets:
             return
         row = self._row_widgets[self._selected_index]
         if isinstance(row, MCPToolItem):
             row.toggle_expand()
+            return
+        server = row._server
+        if server.status == "unauthenticated":
+            self.dismiss(server.name)
 
     def action_toggle_all(self) -> None:
         """Expand or collapse every visible tool at once.
@@ -1002,5 +1033,5 @@ class MCPViewerScreen(ModalScreen[None]):
         scroll.scroll_page_down()
 
     def action_cancel(self) -> None:
-        """Close the viewer."""
+        """Close the viewer without selecting a server to log into."""
         self.dismiss(None)

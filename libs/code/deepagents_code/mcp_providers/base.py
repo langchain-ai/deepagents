@@ -57,8 +57,22 @@ class OAuthProvider(ABC):
         """
         return True
 
+    def loopback_port(self) -> int | None:  # noqa: PLR6301  # subclass hook
+        """Return a fixed loopback port, or `None` for a random ephemeral port.
+
+        Override when the provider's app registration requires a specific
+        pre-registered port (e.g. Slack registers `http://localhost:3118/callback`).
+        Ignored when `supports_loopback_callback()` is `False`.
+
+        Returns:
+            A fixed TCP port, or `None` to pick a random ephemeral port.
+        """
+        return None
+
     def client_metadata(  # noqa: PLR6301  # subclass hook
-        self, *, redirect_uri: str | None = None
+        self,
+        *,
+        redirect_uri: str | None = None,
     ) -> OAuthClientMetadata:
         """Return the `OAuthClientMetadata` used to build the auth provider.
 

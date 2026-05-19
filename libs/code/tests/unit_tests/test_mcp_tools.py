@@ -1143,7 +1143,7 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "dcode mcp login notion" in (server_infos[0].error or "")
+        assert "re-authentication" in (server_infos[0].error or "")
         await manager.cleanup()
 
     async def test_existing_tokens_attach_oauth_provider(
@@ -1227,7 +1227,7 @@ class TestLoadToolsFromConfigOAuth:
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
-        assert "dcode mcp login notion" in (server_infos[0].error or "")
+        assert "re-authentication" in (server_infos[0].error or "")
         await manager.cleanup()
 
 
@@ -1927,7 +1927,7 @@ class TestCachedSessionProxy:
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            with pytest.raises(ToolException, match="dcode mcp login srv"):
+            with pytest.raises(ToolException, match="re-authentication"):
                 await tools[0].ainvoke({})  # ty: ignore[missing-typed-dict-key]
 
         assert call_counter["n"] == 2

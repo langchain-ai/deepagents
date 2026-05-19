@@ -1,10 +1,10 @@
 """Slack-hosted MCP OAuth provider.
 
 Slack's hosted MCP endpoint uses the Authorization Code flow with a
-hardcoded public client ID and a static pre-registered redirect URI. The
-user copy-pastes the redirected URL back into the app rather than running
-a local server, and an optional `team` query parameter selects the
-workspace to install the app into.
+hardcoded public client ID and a fixed pre-registered loopback redirect
+URI (`http://localhost:3118/callback`). The local callback server listens
+on that port so the browser redirect completes automatically. An optional
+`team` query parameter selects the workspace to install the app into.
 """
 
 from __future__ import annotations
@@ -31,10 +31,17 @@ if TYPE_CHECKING:
 _SLACK_MCP_CLIENT_ID = "4518649543379.10944517634130"
 """Public OAuth client ID registered with Slack for the hosted MCP endpoint."""
 
-_SLACK_REDIRECT_URI = "https://localhost"
-"""Static pre-registered redirect URI Slack hands the authorization code back
-to; the user copy-pastes the resulting URL into the app rather than running a
-local server."""
+_SLACK_LOOPBACK_PORT = 3118
+"""Fixed TCP port the local callback server binds to for Slack OAuth.
+
+Slack validates the redirect URI against the app's registered allowlist, so
+the port must be pre-registered in the Slack app dashboard. Only one Slack
+login can proceed at a time per machine (port conflicts are surfaced as an
+OSError from the loopback server's `start()` call).
+"""
+
+_SLACK_REDIRECT_URI = f"http://localhost:{_SLACK_LOOPBACK_PORT}/callback"
+"""Pre-registered loopback redirect URI for the Slack MCP OAuth app."""
 
 
 def _is_slack_mcp_url(url: str) -> bool:
@@ -44,24 +51,34 @@ def _is_slack_mcp_url(url: str) -> bool:
 
 
 async def _prompt_slack_team(ui: OAuthInteraction) -> str | None:
-    """Interactively ask the user which Slack workspace to install into.
+    """Return a Slack team ID when the interaction surface supports prompting.
 
-    Delegates to the supplied `OAuthInteraction` so the same flow drives
-    either the CLI stdin/stdout prompt or a TUI input widget.
+    CLI surfaces implement `prompt_slack_team_id` to interactively ask the
+    user which workspace to install into. TUI surfaces omit the method so
+    Slack's browser page handles workspace selection instead.
 
     Args:
         ui: Interaction surface to use.
 
     Returns:
-        The entered Slack team ID, or `None` if the prompt was left blank.
+        The entered Slack team ID, or `None` to let Slack's page decide.
     """
-    return await ui.prompt_slack_team_id()
+    fn = getattr(ui, "prompt_slack_team_id", None)
+    if fn is None:
+        return None
+    return await fn()
 
 
 async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
-    """Write the hardcoded Slack `client_info` to `storage` if not already set."""
+    """Write the hardcoded Slack `client_info` to `storage` if not current."""
     existing = await storage.get_client_info()
-    if existing is not None and existing.client_id == _SLACK_MCP_CLIENT_ID:
+    redirect_uris = existing.redirect_uris if existing is not None else None
+    current_redirect = str(redirect_uris[0]) if redirect_uris else None
+    if (
+        existing is not None
+        and existing.client_id == _SLACK_MCP_CLIENT_ID
+        and current_redirect == _SLACK_REDIRECT_URI
+    ):
         return
     await storage.set_client_info(
         OAuthClientInformationFull(
@@ -75,7 +92,7 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
 
 
 class SlackProvider(OAuthProvider):
-    """Slack-hosted MCP: paste-back Authorization Code with a public client."""
+    """Slack-hosted MCP: loopback Authorization Code with a public client."""
 
     def matches(self, server_url: str) -> bool:  # noqa: PLR6301  # subclass hook
         """Match `slack.com` and any `*.slack.com` subdomain.
@@ -88,21 +105,21 @@ class SlackProvider(OAuthProvider):
         """
         return _is_slack_mcp_url(server_url)
 
-    def supports_loopback_callback(self) -> bool:  # noqa: PLR6301  # subclass hook
-        """Return `False` because Slack uses a fixed pre-registered redirect URI.
+    def loopback_port(self) -> int:  # noqa: PLR6301  # subclass hook
+        """Return the fixed loopback port registered in the Slack OAuth app.
 
         Returns:
-            Always `False`.
+            `_SLACK_LOOPBACK_PORT` (3118).
         """
-        return False
+        return _SLACK_LOOPBACK_PORT
 
     def client_metadata(  # noqa: PLR6301  # subclass hook
         self, *, redirect_uri: str | None = None
     ) -> OAuthClientMetadata:
-        """Return public-client metadata with Slack's static pre-registered URI.
+        """Return public-client metadata with Slack's pre-registered loopback URI.
 
         Args:
-            redirect_uri: Ignored; Slack requires its static pre-registered URI.
+            redirect_uri: Ignored; Slack requires its pre-registered loopback URI.
 
         Returns:
             Metadata configured for Slack's public OAuth client (no token secret).

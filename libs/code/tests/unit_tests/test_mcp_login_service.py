@@ -174,6 +174,49 @@ class TestResolveMcpConfigAutodiscover:
         assert "notion" in result.config["mcpServers"]
         assert "slack" not in result.config["mcpServers"]
 
+    def test_trusted_project_config_is_merged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Trusted project config merges into resolution alongside user configs."""
+        fake_home = tmp_path / "home"
+        user_dir = fake_home / ".deepagents"
+        user_dir.mkdir(parents=True)
+        user_cfg = user_dir / ".mcp.json"
+        user_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        project_cfg = tmp_path / "project" / ".mcp.json"
+        project_cfg.parent.mkdir()
+        project_cfg.write_text(
+            '{"mcpServers":{"slack":{"transport":"http",'
+            '"url":"https://slack.com/mcp","auth":"oauth"}}}'
+        )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[user_cfg, project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_trust.is_project_mcp_trusted",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.project_utils.find_project_root",
+                return_value=tmp_path / "project",
+            ),
+        ):
+            result = resolve_mcp_config(None)
+        assert isinstance(result, ConfigResolution)
+        assert user_cfg in result.used_paths
+        assert project_cfg in result.used_paths
+        assert "notion" in result.config["mcpServers"]
+        assert "slack" in result.config["mcpServers"]
+        assert result.untrusted_project_paths == ()
+
 
 class TestSelectServer:
     """`select_server` server lookup and validation."""

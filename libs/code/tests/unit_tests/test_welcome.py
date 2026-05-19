@@ -569,9 +569,12 @@ class TestBuildConnectingFooter:
         """Custom dots string should appear in footer text."""
         assert "Connecting to server." in build_connecting_footer(dots=".").plain
         assert "Connecting to server.." in build_connecting_footer(dots="..").plain
-        assert "Reconnecting to local server." in build_connecting_footer(
-            local_server=True, reconnecting=True, dots="."
-        ).plain
+        assert (
+            "Reconnecting to local server."
+            in build_connecting_footer(
+                local_server=True, reconnecting=True, dots="."
+            ).plain
+        )
 
 
 class TestBannerConnectingFooterVariants:

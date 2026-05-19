@@ -99,7 +99,10 @@ class CliOAuthInteraction:
     """
 
     async def show_authorize_url(  # noqa: PLR6301
-        self, url: str, *, opened_in_browser: bool,
+        self,
+        url: str,
+        *,
+        opened_in_browser: bool,
     ) -> None:
         """Print the full authorize instruction block to stdout.
 

@@ -393,7 +393,9 @@ class _LoopbackOAuthCallbackServer:
             port: TCP port to bind when `start()` is called.
         """
         self._port = port
-        self.redirect_uri = f"http://{_LOOPBACK_URI_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+        self.redirect_uri = (
+            f"http://{_LOOPBACK_URI_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+        )
         self._future: concurrent.futures.Future[tuple[str, str | None]] = (
             concurrent.futures.Future()
         )
@@ -503,7 +505,9 @@ class _LoopbackOAuthCallbackServer:
         parsed = urlparse(handler.path)
         if parsed.path != _LOOPBACK_CALLBACK_PATH:
             self._send_html(
-                handler, 404, _oauth_error_html("Callback route not found."),
+                handler,
+                404,
+                _oauth_error_html("Callback route not found."),
             )
             return
 
@@ -565,7 +569,11 @@ def _oauth_error_html(message: str) -> str:
 
 
 def _oauth_result_html(
-    *, title: str, heading: str, message: str, status: Literal["success", "error"],
+    *,
+    title: str,
+    heading: str,
+    message: str,
+    status: Literal["success", "error"],
 ) -> str:
     accent = "#137333" if status == "success" else "#b3261e"
     background = "#eef7f0" if status == "success" else "#fceeee"

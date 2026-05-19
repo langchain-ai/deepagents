@@ -332,7 +332,10 @@ class TestBuildOAuthProvider:
 
     def test_slack_provider_uses_fixed_loopback_port(self) -> None:
         """SlackProvider uses a fixed port matching the Slack app registration."""
-        from deepagents_code.mcp_providers.slack import SlackProvider, _SLACK_LOOPBACK_PORT
+        from deepagents_code.mcp_providers.slack import (
+            _SLACK_LOOPBACK_PORT,
+            SlackProvider,
+        )
 
         provider = SlackProvider()
         assert provider.supports_loopback_callback() is True
@@ -1004,8 +1007,13 @@ class TestLogin:
 
         # Structural check: all required protocol methods are present.
         protocol_methods = [
-            "show_authorize_url", "request_callback_url", "show_device_code",
-            "prompt_slack_team_id", "show_success", "show_notice", "show_error",
+            "show_authorize_url",
+            "request_callback_url",
+            "show_device_code",
+            "prompt_slack_team_id",
+            "show_success",
+            "show_notice",
+            "show_error",
         ]
         ui_instance = _CapturingUI()
         assert all(callable(getattr(ui_instance, m, None)) for m in protocol_methods)

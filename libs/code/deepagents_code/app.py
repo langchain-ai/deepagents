@@ -423,7 +423,8 @@ def _save_theme_preference_result(name: str) -> _ConfigWriteResult:
             ui["theme"] = name
 
             fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp",
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
             )
             try:
                 with os.fdopen(fd, "wb") as f:
@@ -463,7 +464,8 @@ def save_theme_preference(name: str) -> bool:
 
 
 def _save_terminal_theme_mapping_result(
-    term_program: str, name: str,
+    term_program: str,
+    name: str,
 ) -> _ConfigWriteResult:
     """Persist a terminal theme mapping and return TUI-facing status details.
 
@@ -521,7 +523,8 @@ def _save_terminal_theme_mapping_result(
             terminal_themes_table[term_program] = name
 
             fd, tmp_path = tempfile.mkstemp(
-                dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp",
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
             )
             try:
                 with os.fdopen(fd, "wb") as f:
@@ -1332,7 +1335,8 @@ class DeepAgentsApp(App):
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
-                self._sandbox_type, self._sandbox_type.title(),
+                self._sandbox_type,
+                self._sandbox_type.title(),
             )
             self.sub_title = f"Sandbox: {display}"
 
@@ -2327,7 +2331,8 @@ class DeepAgentsApp(App):
             from deepagents_code.model_config import save_recent_agent
 
             saved = await asyncio.to_thread(
-                save_recent_agent, self._default_assistant_id,
+                save_recent_agent,
+                self._default_assistant_id,
             )
             if not saved:
                 logger.warning(
@@ -2691,7 +2696,8 @@ class DeepAgentsApp(App):
 
             await asyncio.to_thread(get_available_models)
             await asyncio.to_thread(
-                get_model_profiles, cli_override=self._profile_override,
+                get_model_profiles,
+                cli_override=self._profile_override,
             )
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
@@ -2732,7 +2738,8 @@ class DeepAgentsApp(App):
             )
 
             available, latest = await asyncio.to_thread(
-                is_update_available, bypass_cache=periodic,
+                is_update_available,
+                bypass_cache=periodic,
             )
             if not available or latest is None:
                 return
@@ -2808,10 +2815,12 @@ class DeepAgentsApp(App):
 
                 cmd = upgrade_command()
                 release_age = await asyncio.to_thread(
-                    format_release_age_parenthetical, latest,
+                    format_release_age_parenthetical,
+                    latest,
                 )
                 installed_age = await asyncio.to_thread(
-                    format_installed_age_suffix, cli_version,
+                    format_installed_age_suffix,
+                    cli_version,
                 )
                 notification = self._build_update_notification(
                     latest=latest,
@@ -2948,7 +2957,8 @@ class DeepAgentsApp(App):
 
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
-                is_update_available, bypass_cache=True,
+                is_update_available,
+                bypass_cache=True,
             )
             if latest is None:
                 await self._mount_message(
@@ -2968,10 +2978,12 @@ class DeepAgentsApp(App):
                 return
 
             release_age = await asyncio.to_thread(
-                format_release_age_parenthetical, latest,
+                format_release_age_parenthetical,
+                latest,
             )
             installed_age = await asyncio.to_thread(
-                format_installed_age_suffix, cli_version,
+                format_installed_age_suffix,
+                cli_version,
             )
             await self._mount_message(
                 AppMessage(
@@ -2989,7 +3001,9 @@ class DeepAgentsApp(App):
             if success:
                 self._update_available = (False, None)
                 await self._mount_message(
-                    AppMessage(f"Updated to v{latest}. Restart to use the new version."),
+                    AppMessage(
+                        f"Updated to v{latest}. Restart to use the new version."
+                    ),
                 )
             else:
                 cmd = upgrade_command()
@@ -3074,7 +3088,8 @@ class DeepAgentsApp(App):
             extras_markdown = format_extras_status(get_extras_status())
         except Exception:
             logger.warning(
-                "Failed to collect optional dependency status", exc_info=True,
+                "Failed to collect optional dependency status",
+                exc_info=True,
             )
             extras_markdown = ""
         if extras_markdown:
@@ -3758,7 +3773,8 @@ class DeepAgentsApp(App):
         """
         if mode == "shell_incognito":
             await self._handle_shell_command(
-                self._strip_mode_value(value, "!!", "!", mode), incognito=True,
+                self._strip_mode_value(value, "!!", "!", mode),
+                incognito=True,
             )
         elif mode == "shell":
             await self._handle_shell_command(
@@ -3773,7 +3789,8 @@ class DeepAgentsApp(App):
             # unrecognized mode, since that would silently leak `!!`/`!`
             # prefixed text to the LLM if the mode literal is ever wrong.
             logger.error(
-                "Unrecognized input mode %r; refusing to forward to agent", mode,
+                "Unrecognized input mode %r; refusing to forward to agent",
+                mode,
             )
             await self._mount_message(
                 ErrorMessage(
@@ -3784,7 +3801,10 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _strip_mode_value(
-        value: str, prefix: str, conflicting_prefix: str, mode: InputMode,
+        value: str,
+        prefix: str,
+        conflicting_prefix: str,
+        mode: InputMode,
     ) -> str:
         """Strip `prefix` from `value`, logging if a wrong prefix was supplied.
 
@@ -3957,7 +3977,9 @@ class DeepAgentsApp(App):
                 self._chat_input.set_cursor_active(active=True)
             with suppress(Exception):
                 await self._mount_message(
-                    ErrorMessage("Failed to start startup command; continuing session."),
+                    ErrorMessage(
+                        "Failed to start startup command; continuing session."
+                    ),
                 )
             return
 
@@ -3974,7 +3996,8 @@ class DeepAgentsApp(App):
         try:
             if self._initial_skill is not None:
                 await self._invoke_skill(
-                    self._initial_skill, self._initial_prompt or "",
+                    self._initial_skill,
+                    self._initial_prompt or "",
                 )
                 return
             if self._initial_prompt and self._initial_prompt.strip():
@@ -4397,7 +4420,8 @@ class DeepAgentsApp(App):
             if self._connecting:
                 with suppress(NoMatches):
                     self.query_one(
-                        "#welcome-banner", WelcomeBanner,
+                        "#welcome-banner",
+                        WelcomeBanner,
                     ).reveal_connecting_footer()
             return
 
@@ -4555,7 +4579,8 @@ class DeepAgentsApp(App):
 
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(), timeout=60,
+                    proc.communicate(),
+                    timeout=60,
                 )
             except TimeoutError:
                 await self._kill_shell_process()
@@ -4605,7 +4630,9 @@ class DeepAgentsApp(App):
             # Surface a local-only error and re-raise so the worker layer
             # records the failure.
             logger.exception(
-                "Shell task crashed (incognito=%s): %s", incognito, command,
+                "Shell task crashed (incognito=%s): %s",
+                incognito,
+                command,
             )
             with suppress(Exception):
                 await self._mount_message(
@@ -4672,7 +4699,9 @@ class DeepAgentsApp(App):
             return
         except OSError:
             logger.warning(
-                "Failed to terminate shell process (pid=%s)", proc.pid, exc_info=True,
+                "Failed to terminate shell process (pid=%s)",
+                proc.pid,
+                exc_info=True,
             )
             return
 
@@ -5243,7 +5272,9 @@ class DeepAgentsApp(App):
                 cached = next((s for s in skills if s["name"] == normalized_name), None)
             except OSError as exc:
                 logger.warning(
-                    "Filesystem error loading skill %r", normalized_name, exc_info=True,
+                    "Filesystem error loading skill %r",
+                    normalized_name,
+                    exc_info=True,
                 )
                 await _mount_error(
                     f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
@@ -5251,7 +5282,9 @@ class DeepAgentsApp(App):
                 return
             except Exception as exc:
                 logger.warning(
-                    "Error searching for skill %r", normalized_name, exc_info=True,
+                    "Error searching for skill %r",
+                    normalized_name,
+                    exc_info=True,
                 )
                 await _mount_error(
                     f"Error loading skill: {normalized_name}. "
@@ -5282,7 +5315,9 @@ class DeepAgentsApp(App):
             return
         except OSError as exc:
             logger.warning(
-                "Filesystem error loading skill %r", normalized_name, exc_info=True,
+                "Filesystem error loading skill %r",
+                normalized_name,
+                exc_info=True,
             )
             await _mount_error(
                 f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
@@ -5522,7 +5557,8 @@ class DeepAgentsApp(App):
             # Intentionally traced: the summarization event is a meaningful state
             # transition that should surface in LangSmith alongside real agent turns.
             await self._agent.aupdate_state(
-                config, {"_summarization_event": result.new_event},
+                config,
+                {"_summarization_event": result.new_event},
             )
 
             before = format_token_count(result.tokens_before)
@@ -5669,7 +5705,8 @@ class DeepAgentsApp(App):
                 await self._mount_message(ErrorMessage(f"Agent error: {e}"))
             except Exception:
                 logger.debug(
-                    "Could not mount error message (app closing?)", exc_info=True,
+                    "Could not mount error message (app closing?)",
+                    exc_info=True,
                 )
         finally:
             # Merge turn stats before cleanup — _cleanup_agent_task may raise
@@ -6095,7 +6132,8 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     async def _mount_message(
-        self, widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+        self,
+        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
     ) -> None:
         """Mount a message widget to the messages area.
 
@@ -6434,7 +6472,9 @@ class DeepAgentsApp(App):
         self._quit_pending = True
         quit_timeout = 3
         self.notify(
-            f"Press {shortcut} again to quit", timeout=quit_timeout, markup=False,
+            f"Press {shortcut} again to quit",
+            timeout=quit_timeout,
+            markup=False,
         )
         self.set_timer(quit_timeout, lambda: setattr(self, "_quit_pending", False))
 
@@ -6606,7 +6646,8 @@ class DeepAgentsApp(App):
         except Exception:
             # Cosmetic only: must never raise during shutdown.
             logger.warning(
-                "reset_terminal_background raised unexpectedly", exc_info=True,
+                "reset_terminal_background raised unexpectedly",
+                exc_info=True,
             )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
@@ -6946,7 +6987,8 @@ class DeepAgentsApp(App):
                         ),
                     )
                     self.notify(
-                        "Model will switch after current task completes.", timeout=3,
+                        "Model will switch after current task completes.",
+                        timeout=3,
                     )
                 else:
                     self.call_later(
@@ -7018,7 +7060,8 @@ class DeepAgentsApp(App):
                 async def _persist() -> None:
                     try:
                         status = await asyncio.to_thread(
-                            _save_theme_preference_result, result,
+                            _save_theme_preference_result,
+                            result,
                         )
                         if status.message is not None:
                             self.notify(
@@ -7171,7 +7214,9 @@ class DeepAgentsApp(App):
             agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
         except OSError:
             logger.warning(
-                "Could not stat agent directory for %r", agent_name, exc_info=True,
+                "Could not stat agent directory for %r",
+                agent_name,
+                exc_info=True,
             )
             agent_dir_exists = False
 
@@ -7323,7 +7368,8 @@ class DeepAgentsApp(App):
                     )
             except Exception:
                 logger.exception(
-                    "UI teardown failed during agent swap to %r", agent_name,
+                    "UI teardown failed during agent swap to %r",
+                    agent_name,
                 )
                 # Restore the previous-agent UI state so the user isn't
                 # stuck on a permanent "Connecting..." banner.
@@ -7373,7 +7419,8 @@ class DeepAgentsApp(App):
                 self._agent = None
                 self._connecting = False
                 logger.exception(
-                    "Server restart failed during agent swap to %r", agent_name,
+                    "Server restart failed during agent swap to %r",
+                    agent_name,
                 )
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
@@ -7716,7 +7763,9 @@ class DeepAgentsApp(App):
         self.push_screen(UpdateAvailableScreen(entry), handle_result)
 
     async def _dispatch_notification_action(
-        self, key: str, action_id: ActionId,
+        self,
+        key: str,
+        action_id: ActionId,
     ) -> None:
         """Execute the side effect for a notification action.
 
@@ -7738,7 +7787,11 @@ class DeepAgentsApp(App):
             await self._route_payload_action(entry, action_id)
         except Exception as exc:  # every failure surfaces to the user
             logger.warning(
-                "Action %r on %r failed: %s", action_id, key, exc, exc_info=True,
+                "Action %r on %r failed: %s",
+                action_id,
+                key,
+                exc,
+                exc_info=True,
             )
             self.notify(
                 f"{action_label} failed: {type(exc).__name__}: {exc}",
@@ -7751,7 +7804,9 @@ class DeepAgentsApp(App):
             self._chat_input.focus_input()
 
     async def _route_payload_action(
-        self, entry: PendingNotification, action_id: ActionId,
+        self,
+        entry: PendingNotification,
+        action_id: ActionId,
     ) -> None:
         """Dispatch *action_id* to the payload-specific handler.
 
@@ -8342,7 +8397,8 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 self._connecting = False
                 logger.exception(
-                    "Server restart after MCP login for %r failed", server_name,
+                    "Server restart after MCP login for %r failed",
+                    server_name,
                 )
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
@@ -8357,7 +8413,8 @@ class DeepAgentsApp(App):
                 )
             except Exception:
                 logger.warning(
-                    "MCP metadata preload after login refresh failed", exc_info=True,
+                    "MCP metadata preload after login refresh failed",
+                    exc_info=True,
                 )
                 self.notify(
                     "MCP tool metadata could not be refreshed after login. "
@@ -8413,7 +8470,8 @@ class DeepAgentsApp(App):
                         ),
                     )
                     self.notify(
-                        "Thread will switch after current task completes.", timeout=3,
+                        "Thread will switch after current task completes.",
+                        timeout=3,
                     )
                 else:
                     self.call_later(self._resume_thread, result)
@@ -8635,7 +8693,8 @@ class DeepAgentsApp(App):
                     or self._server_startup_error is not None
                 ) and self._server_kwargs is not None:
                     await self._retry_startup_with_model(
-                        model_spec, extra_kwargs=extra_kwargs,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
                     )
                     return
                 await self._mount_message(
@@ -8689,7 +8748,9 @@ class DeepAgentsApp(App):
                         AppMessage(f"Already using {current}{params_suffix}"),
                     )
                 logger.info(
-                    "Model unchanged (%s); model_params=%s", current, extra_kwargs,
+                    "Model unchanged (%s); model_params=%s",
+                    current,
+                    extra_kwargs,
                 )
                 return
 
@@ -8896,7 +8957,8 @@ class DeepAgentsApp(App):
         else:
             await self._mount_message(
                 ErrorMessage(
-                    "Could not save default model. Check permissions for ~/.deepagents/",
+                    "Could not save default model. "
+                    "Check permissions for ~/.deepagents/",
                 ),
             )
 

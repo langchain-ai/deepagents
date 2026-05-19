@@ -59,7 +59,7 @@ def test_mcp_login_screen_implements_oauth_interaction_protocol() -> None:
 
 
 def test_mcp_login_screen_has_no_slack_team_prompt() -> None:
-    """`MCPLoginScreen` does not implement `prompt_slack_team_id`; Slack's browser page picks the workspace."""
+    """`MCPLoginScreen` does not implement `prompt_slack_team_id`; Slack's browser page picks the workspace."""  # noqa: E501
     screen = MCPLoginScreen("notion")
     assert not hasattr(screen, "prompt_slack_team_id")
 

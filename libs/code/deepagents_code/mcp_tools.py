@@ -325,7 +325,8 @@ class MCPSessionManager:
                 await asyncio.wait_for(self.invalidate(server_name), timeout=5.0)
             except TimeoutError:
                 logger.warning(
-                    "MCP session cleanup for %r timed out after 5s", server_name,
+                    "MCP session cleanup for %r timed out after 5s",
+                    server_name,
                 )
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
@@ -518,7 +519,8 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
 
 
 def _validate_tool_filter_fields(
-    server_name: str, server_config: dict[str, Any],
+    server_name: str,
+    server_config: dict[str, Any],
 ) -> None:
     """Validate optional `allowedTools` / `disabledTools` fields.
 
@@ -664,7 +666,8 @@ discovery in `discover_mcp_configs` builds the same paths from
 
 
 def discover_mcp_configs(
-    *, project_context: ProjectContext | None = None,
+    *,
+    project_context: ProjectContext | None = None,
 ) -> list[Path]:
     """Find MCP config files from standard locations.
 

@@ -330,15 +330,18 @@ class TestBuildOAuthProvider:
         assert _is_slack_mcp_url("https://deep.slack.com/mcp")
         assert not _is_slack_mcp_url("https://mcp.notion.com/mcp")
 
-    def test_slack_provider_does_not_support_loopback(self) -> None:
-        """SlackProvider opts out of loopback so its static redirect URI is used."""
-        from deepagents_code.mcp_providers.slack import SlackProvider
+    def test_slack_provider_uses_fixed_loopback_port(self) -> None:
+        """SlackProvider uses a fixed port matching the Slack app registration."""
+        from deepagents_code.mcp_providers.slack import SlackProvider, _SLACK_LOOPBACK_PORT
 
-        assert SlackProvider().supports_loopback_callback() is False
+        provider = SlackProvider()
+        assert provider.supports_loopback_callback() is True
+        assert provider.loopback_port() == _SLACK_LOOPBACK_PORT
 
     def test_slack_branch_sets_public_client_metadata(self) -> None:
-        """Slack branch configures a public OAuth client (no token secret)."""
+        """Slack branch configures a public OAuth client using the loopback URI."""
         from deepagents_code.mcp_auth import build_oauth_provider
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
 
         provider = build_oauth_provider(
             server_name="slack",
@@ -348,7 +351,7 @@ class TestBuildOAuthProvider:
         metadata = provider.context.client_metadata
         assert metadata.token_endpoint_auth_method == "none"
         assert metadata.redirect_uris is not None
-        assert [str(uri) for uri in metadata.redirect_uris] == ["https://localhost/"]
+        assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
 
     def test_generic_branch_uses_loopback_callback(self) -> None:
         """Non-Slack URLs (including Notion) use a local callback server redirect."""

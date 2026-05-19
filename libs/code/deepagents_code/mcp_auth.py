@@ -804,7 +804,10 @@ def build_oauth_provider(
 
     if interactive:
         if policy.supports_loopback_callback():
-            callback_server = _LoopbackOAuthCallbackServer(port=_choose_loopback_port())
+            fixed = policy.loopback_port()
+            callback_server = _LoopbackOAuthCallbackServer(
+                port=fixed if fixed is not None else _choose_loopback_port()
+            )
             redirect_uri = callback_server.redirect_uri
             redirect, callback = _make_loopback_handlers(
                 callback_server=callback_server,

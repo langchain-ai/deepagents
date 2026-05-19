@@ -110,6 +110,16 @@ jobs:
         shell: bash
         run: uv sync --group test
 
+      - name: "🔍 Install ripgrep (Linux)"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: "🔍 Install ripgrep (macOS)"
+        if: runner.os == 'macOS'
+        shell: bash
+        run: brew install ripgrep
+
       - name: "🧪 Run Unit Tests"
         if: runner.os != 'Windows'
         shell: bash

@@ -555,7 +555,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901  # Split except clauses for logging
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # Split except clauses for logging; dir/file + containment branches
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -570,11 +570,19 @@ class FilesystemBackend(BackendProtocol):
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
             cmd.extend(["--glob", include_glob])
-        # ripgrep resolves --glob patterns against the process cwd, not the
-        # search root, so directory-component globs (e.g. "docs/*.md") fail
-        # silently when cwd != base_full. Run rg from base_full with "." as
-        # the search path so globs anchor correctly. (#2732)
-        cmd.extend(["--", pattern, "."])
+        # When rg is given an absolute search path, directory-component
+        # globs (e.g. "docs/*.md") silently match nothing if the process cwd
+        # != search root (#2732). For a directory, set `cwd=base_full` and
+        # use `.` as the search path so `--glob` resolves correctly. For a
+        # single file we keep the absolute path — chdir to a file would
+        # raise NotADirectoryError and globs are irrelevant there.
+        rg_cwd: str | None
+        if base_full.is_dir():
+            cmd.extend(["--", pattern, "."])
+            rg_cwd = str(base_full)
+        else:
+            cmd.extend(["--", pattern, str(base_full)])
+            rg_cwd = None
 
         try:
             proc = subprocess.run(  # noqa: S603
@@ -583,9 +591,9 @@ class FilesystemBackend(BackendProtocol):
                 text=True,
                 timeout=30,
                 check=False,
-                cwd=str(base_full),
+                cwd=rg_cwd,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, NotADirectoryError):
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
@@ -600,11 +608,20 @@ class FilesystemBackend(BackendProtocol):
             ftext = pdata.get("path", {}).get("text")
             if not ftext:
                 continue
-            # rg now runs with cwd=base_full and search path ".", so it emits
-            # paths relative to base_full. Re-anchor to absolute so virtual /
-            # normal mode path handling below sees the same shape as before.
+            # When rg ran from cwd=base_full it emits paths relative to that
+            # cwd; join (don't `.resolve()`) so symlink form is preserved for
+            # callers. When rg searched a single file it emits the absolute
+            # path we passed in.
             raw = Path(ftext)
-            p = raw if raw.is_absolute() else (base_full / raw).resolve()
+            p = raw if raw.is_absolute() else (base_full / raw)
+            # Defensive containment check: resolve both sides only for the
+            # comparison so symlinks inside base_full that escape the root
+            # can't leak results, while `p` itself keeps its original shape.
+            try:
+                p.resolve().relative_to(base_full.resolve())
+            except (ValueError, OSError):
+                logger.debug("Skipping grep result outside root: %s", p)
+                continue
             if self.virtual_mode:
                 try:
                     virt = self._to_virtual_path(p)

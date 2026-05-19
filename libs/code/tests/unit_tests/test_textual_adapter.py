@@ -225,7 +225,7 @@ class TestInterruptCleanup:
         assert interrupted_msg.tool_calls[0]["name"] == "read_file"
 
     async def test_disables_tracing_during_state_save(self) -> None:
-        """`aupdate_state` calls during interrupt cleanup must run with tracing disabled.
+        """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
 
         Interrupt state writes (partial AI message + cancellation notice) are
         internal recovery mechanics. Surfacing them as standalone `UpdateState`
@@ -259,10 +259,12 @@ class TestInterruptCleanup:
         )
 
         assert captured, "aupdate_state was never called"
-        assert all(v is False for v in captured), f"tracing was not disabled: {captured}"
+        assert all(v is False for v in captured), (
+            f"tracing was not disabled: {captured}"
+        )
 
     async def test_disables_tracing_when_interrupted_msg_present(self) -> None:
-        """Both `aupdate_state` calls run with tracing disabled when interrupted_msg is set.
+        """Both `aupdate_state` calls disable tracing when interrupted_msg is set.
 
         When there is a partial AI message to save, both writes (interrupted AI
         message and cancellation notice) must be suppressed from LangSmith traces.
@@ -299,8 +301,12 @@ class TestInterruptCleanup:
             start_time=0.0,
         )
 
-        assert len(captured) == 2, f"expected 2 aupdate_state calls, got {len(captured)}"
-        assert all(v is False for v in captured), f"tracing was not disabled: {captured}"
+        assert len(captured) == 2, (
+            f"expected 2 aupdate_state calls, got {len(captured)}"
+        )
+        assert all(v is False for v in captured), (
+            f"tracing was not disabled: {captured}"
+        )
 
 
 class TestBuildStreamConfig:

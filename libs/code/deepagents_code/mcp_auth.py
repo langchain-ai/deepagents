@@ -350,7 +350,8 @@ class FileTokenStorage(TokenStorage):
 
 RedirectHandler = Callable[[str], Awaitable[None]]
 CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
-_LOOPBACK_HOST = "127.0.0.1"
+_LOOPBACK_BIND_HOST = "127.0.0.1"
+_LOOPBACK_URI_HOST = "localhost"
 _LOOPBACK_CALLBACK_PATH = "/callback"
 _LOOPBACK_CALLBACK_TIMEOUT = 300.0
 
@@ -392,7 +393,7 @@ class _LoopbackOAuthCallbackServer:
             port: TCP port to bind when `start()` is called.
         """
         self._port = port
-        self.redirect_uri = f"http://{_LOOPBACK_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
+        self.redirect_uri = f"http://{_LOOPBACK_URI_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
         self._future: concurrent.futures.Future[tuple[str, str | None]] = (
             concurrent.futures.Future()
         )
@@ -420,7 +421,7 @@ class _LoopbackOAuthCallbackServer:
             ) -> None:
                 del format, args
 
-        self._server = ThreadingHTTPServer((_LOOPBACK_HOST, self._port), Handler)
+        self._server = ThreadingHTTPServer((_LOOPBACK_BIND_HOST, self._port), Handler)
         self._started = True
         self._thread = threading.Thread(
             target=self._serve_forever,

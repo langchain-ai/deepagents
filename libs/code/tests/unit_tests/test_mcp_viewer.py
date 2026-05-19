@@ -1042,8 +1042,8 @@ class TestMCPViewerScreen:
 
     def test_status_color_maps_three_states(self) -> None:
         """Unit-level: each status maps to the correct theme color attribute."""
-        from deepagents_cli import theme
-        from deepagents_cli.widgets.mcp_viewer import _status_color
+        from deepagents_code import theme
+        from deepagents_code.widgets.mcp_viewer import _status_color
 
         colors = theme.get_theme_colors()
         assert _status_color("ok", colors) == colors.success
@@ -1052,7 +1052,7 @@ class TestMCPViewerScreen:
 
     async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
         """Status icons reuse existing `Glyphs` (unicode by default)."""
-        from deepagents_cli.config import get_glyphs
+        from deepagents_code.config import get_glyphs
 
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
@@ -1104,3 +1104,161 @@ class TestMCPViewerScreen:
             await pilot.click(MCPToolItem)
             await pilot.pause()
             assert widget._expanded
+
+
+class TestModuleLevelHelpers:
+    """Unit tests for module-level helper functions in mcp_viewer."""
+
+    # --- _format_prop_type ---
+
+    def test_format_prop_type_string(self) -> None:
+        """Plain string type renders as-is."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type("string") == "string"
+
+    def test_format_prop_type_none_returns_any(self) -> None:
+        """None type renders as 'any'."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type(None) == "any"
+
+    def test_format_prop_type_list_nullable_joins_with_pipe(self) -> None:
+        """List type (nullable pattern) joins with '|'."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type(["string", "null"]) == "string|null"
+
+    def test_format_prop_type_single_item_list(self) -> None:
+        """Single-element list renders without pipe."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type(["integer"]) == "integer"
+
+    def test_format_prop_type_empty_list_returns_any(self) -> None:
+        """Empty list renders as 'any'."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type([]) == "any"
+
+    def test_format_prop_type_empty_string_returns_any(self) -> None:
+        """Empty string renders as 'any'."""
+        from deepagents_code.widgets.mcp_viewer import _format_prop_type
+
+        assert _format_prop_type("") == "any"
+
+    # --- _sanitize_inline ---
+
+    def test_sanitize_inline_plain_text_unchanged(self) -> None:
+        """Plain printable text is returned unchanged."""
+        from deepagents_code.widgets.mcp_viewer import _sanitize_inline
+
+        assert _sanitize_inline("Connection refused") == "Connection refused"
+
+    def test_sanitize_inline_strips_ansi_escapes(self) -> None:
+        """ANSI escape sequences are replaced with spaces."""
+        from deepagents_code.widgets.mcp_viewer import _sanitize_inline
+
+        result = _sanitize_inline("\x1b[31mred error\x1b[0m")
+        assert "\x1b" not in result
+        assert "red error" in result
+
+    def test_sanitize_inline_strips_newlines(self) -> None:
+        """Newlines are replaced with spaces."""
+        from deepagents_code.widgets.mcp_viewer import _sanitize_inline
+
+        result = _sanitize_inline("line one\nline two")
+        assert "\n" not in result
+
+    def test_sanitize_inline_truncates_long_text(self) -> None:
+        """Text longer than max_length is truncated with ellipsis."""
+        from deepagents_code.widgets.mcp_viewer import _sanitize_inline
+
+        long_text = "x" * 300
+        result = _sanitize_inline(long_text)
+        assert len(result) <= 200
+        assert result.endswith("…")
+
+    def test_sanitize_inline_custom_max_length(self) -> None:
+        """Custom max_length is respected."""
+        from deepagents_code.widgets.mcp_viewer import _sanitize_inline
+
+        result = _sanitize_inline("hello world", max_length=5)
+        assert len(result) <= 5
+
+    # --- _visible_tools_for ---
+
+    def test_visible_tools_for_no_tokens_returns_all(self) -> None:
+        """Empty token list returns all tools (no filter)."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        info = MCPServerInfo(
+            name="fs",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read", description=""),),
+        )
+        assert _visible_tools_for(info, []) == info.tools
+
+    def test_visible_tools_for_server_name_match_returns_all_tools(self) -> None:
+        """Token matching server name returns all its tools."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        info = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(
+                MCPToolInfo(name="read", description=""),
+                MCPToolInfo(name="write", description=""),
+            ),
+        )
+        assert _visible_tools_for(info, ["filesystem"]) == info.tools
+
+    def test_visible_tools_for_tool_name_match_returns_subset(self) -> None:
+        """Token matching tool names returns only matching tools."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        read_tool = MCPToolInfo(name="read_file", description="")
+        write_tool = MCPToolInfo(name="write_file", description="")
+        info = MCPServerInfo(
+            name="fs", transport="stdio", tools=(read_tool, write_tool)
+        )
+        result = _visible_tools_for(info, ["read"])
+        assert result == (read_tool,)
+
+    def test_visible_tools_for_no_match_returns_none(self) -> None:
+        """No matching server or tool name returns None."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        info = MCPServerInfo(
+            name="fs",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read", description=""),),
+        )
+        assert _visible_tools_for(info, ["zzz"]) is None
+
+    def test_visible_tools_for_zero_tool_server_name_match_returns_none(self) -> None:
+        """Server name match on a zero-tool server returns None (no stub header)."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        info = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="unauthenticated",
+            error="Run: deepagents mcp login github",
+        )
+        # Server name matches but tools=() → or None collapses to None
+        assert _visible_tools_for(info, ["github"]) is None
+
+    def test_visible_tools_for_zero_tool_server_no_tokens_returns_empty_tuple(
+        self,
+    ) -> None:
+        """Without a filter, empty-tool servers return () so their header renders."""
+        from deepagents_code.widgets.mcp_viewer import _visible_tools_for
+
+        info = MCPServerInfo(
+            name="github",
+            transport="http",
+            status="unauthenticated",
+            error="Run: deepagents mcp login github",
+        )
+        assert _visible_tools_for(info, []) == ()

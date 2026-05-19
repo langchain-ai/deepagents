@@ -264,7 +264,7 @@ class MCPToolItem(Static):
             non-empty `properties`, or `properties` is malformed.
         """
         schema = self._input_schema
-        if not schema:
+        if not schema or not isinstance(schema, dict):
             return None
         properties = schema.get("properties")
         if not isinstance(properties, dict) or not properties:
@@ -364,6 +364,60 @@ class MCPToolItem(Static):
             self.toggle_expand()
 
 
+def _render_server_header(
+    server: MCPServerInfo,
+    indicator_glyph: str,
+    indicator_color: str,
+    visible_tools: tuple[MCPToolInfo, ...],
+    glyphs: Glyphs,
+    *,
+    selected: bool = False,
+) -> Content:
+    """Build the styled header line for one server.
+
+    Uses `Content.assemble`'s `(text, style)` tuple form so the per-span
+    color is applied dynamically from the theme palette — `from_markup`
+    does NOT substitute into bracket tags (`[$icolor]…[/]` would render
+    as a literal/unknown tag, not a hex color). The tuple form is also
+    injection-safe: each span's `text` is rendered verbatim, never
+    markup-parsed, so a server name like `[bold]foo[/]` shows literally
+    rather than getting styled. `server.error` additionally goes through
+    `_sanitize_inline` because MCP servers can return arbitrary error
+    text including newlines or terminal escapes.
+
+    Args:
+        server: The server whose header is being rendered.
+        indicator_glyph: Status glyph (already chosen from `_status_glyph`).
+        indicator_color: Status color (already chosen from `_status_color`).
+        visible_tools: Tools that survived the active filter — used only
+            for the count label.
+        glyphs: Active `Glyphs` table for the bullet separator.
+        selected: When `True`, suppresses `dim` styling on secondary spans
+            so the text stays readable on the `$primary` selection background.
+
+    Returns:
+        Styled `Content` ready to mount inside a `Static`.
+    """
+    dim_style = "" if selected else "dim"
+    tool_count = len(visible_tools)
+    t_label = "tool" if tool_count == 1 else "tools"
+    if server.status == "ok":
+        summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
+        return Content.assemble(
+            (f"{indicator_glyph} ", indicator_color),
+            (server.name, "bold"),
+            (summary, dim_style),
+        )
+    error_text = _sanitize_inline(server.error or "")
+    return Content.assemble(
+        (f"{indicator_glyph} ", indicator_color),
+        (server.name, "bold"),
+        (f" {server.transport}", dim_style),
+        (f" {glyphs.bullet} {server.status}", indicator_color),
+        (f" — {error_text}", dim_style) if error_text else "",
+    )
+
+
 class MCPServerHeaderItem(Static):
     """A selectable server-header row in the MCP viewer.
 
@@ -375,7 +429,11 @@ class MCPServerHeaderItem(Static):
 
     def __init__(
         self,
-        content: Content,
+        server: MCPServerInfo,
+        indicator_glyph: str,
+        indicator_color: str,
+        visible_tools: tuple[MCPToolInfo, ...],
+        glyphs: Glyphs,
         index: int,
         *,
         classes: str = "",
@@ -383,17 +441,40 @@ class MCPServerHeaderItem(Static):
         """Initialize a server-header row.
 
         Args:
-            content: Pre-built styled `Content` (from `_render_server_header`).
+            server: Server metadata used to re-render content on selection
+                state changes.
+            indicator_glyph: Pre-computed status glyph character.
+            indicator_color: Pre-computed status hex color string.
+            visible_tools: Filtered tool tuple — used for the count label.
+            glyphs: Active glyph table.
             index: Flat row index inside `MCPViewerScreen._row_widgets`.
             classes: CSS classes — should include `mcp-server-header`, and
                 optionally `mcp-header-selected` for the initial selection.
         """
+        self._server = server
+        self._indicator_glyph = indicator_glyph
+        self._indicator_color = indicator_color
+        self._visible_tools = visible_tools
+        self._glyphs = glyphs
         self.index = index
         self._selected = "mcp-header-selected" in classes
+        content = _render_server_header(
+            server,
+            indicator_glyph,
+            indicator_color,
+            visible_tools,
+            glyphs,
+            selected=self._selected,
+        )
         super().__init__(content, classes=classes)
 
     def set_selected(self, selected: bool) -> None:
-        """Apply or remove the selected-row styling."""
+        """Apply or remove the selected-row styling and re-render the label.
+
+        Re-renders content on selection change so `dim` secondary spans
+        are suppressed on the `$primary` selection background — the same
+        approach `MCPToolItem` uses via `_desc_style`.
+        """
         if self._selected == selected:
             return
         self._selected = selected
@@ -401,6 +482,16 @@ class MCPServerHeaderItem(Static):
             self.add_class("mcp-header-selected")
         else:
             self.remove_class("mcp-header-selected")
+        self.update(
+            _render_server_header(
+                self._server,
+                self._indicator_glyph,
+                self._indicator_color,
+                self._visible_tools,
+                self._glyphs,
+                selected=selected,
+            )
+        )
 
     def on_click(self, event: Click) -> None:
         """Handle click — select the header row via parent screen.
@@ -582,9 +673,16 @@ class MCPViewerScreen(ModalScreen[None]):
 
         Rebuilds the modal body in place so a user who opened `/mcp` before
         tools finished loading sees them appear without closing/reopening.
+
+        The active filter is cleared on refresh: the connecting placeholder
+        suppresses the filter input, so `_query` cannot be non-empty when
+        this is called. Resetting it also prevents the programmatic
+        `Input(value=...)` mount in `_mount_body` from triggering a
+        redundant `Input.Changed` repopulation.
         """
         self._server_info = server_info
         self._connecting = False
+        self._query = ""
         body = self.query_one(Vertical)
         body.remove_children()
         self._row_widgets = []
@@ -605,6 +703,9 @@ class MCPViewerScreen(ModalScreen[None]):
         self._row_widgets = []
         self._selected_index = 0
         self._populate_scroll(scroll, self._query)
+        self._selected_index = min(
+            self._selected_index, max(0, len(self._row_widgets) - 1)
+        )
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual requires an instance method
         """Compose the screen layout.
@@ -704,13 +805,11 @@ class MCPViewerScreen(ModalScreen[None]):
             if flat_index == 0:
                 header_classes += " mcp-header-selected"
             header = MCPServerHeaderItem(
-                self._render_server_header(
-                    server,
-                    indicator_glyph,
-                    indicator_color,
-                    visible_tools,
-                    glyphs,
-                ),
+                server=server,
+                indicator_glyph=indicator_glyph,
+                indicator_color=indicator_color,
+                visible_tools=visible_tools,
+                glyphs=glyphs,
                 index=flat_index,
                 classes=header_classes,
             )
@@ -731,57 +830,9 @@ class MCPViewerScreen(ModalScreen[None]):
                 scroll.mount(widget)
                 flat_index += 1
 
-        if tokens and not self._row_widgets:
-            scroll.mount(Static("No matching tools.", classes="mcp-empty"))
-
-    @staticmethod
-    def _render_server_header(
-        server: MCPServerInfo,
-        indicator_glyph: str,
-        indicator_color: str,
-        visible_tools: tuple[MCPToolInfo, ...],
-        glyphs: Glyphs,
-    ) -> Content:
-        """Build the styled header line for one server.
-
-        Uses `Content.assemble`'s `(text, style)` tuple form so the per-span
-        color is applied dynamically from the theme palette — `from_markup`
-        does NOT substitute into bracket tags (`[$icolor]…[/]` would render
-        as a literal/unknown tag, not a hex color). The tuple form is also
-        injection-safe: each span's `text` is rendered verbatim, never
-        markup-parsed, so a server name like `[bold]foo[/]` shows literally
-        rather than getting styled. `server.error` additionally goes through
-        `_sanitize_inline` because MCP servers can return arbitrary error
-        text including newlines or terminal escapes.
-
-        Args:
-            server: The server whose header is being rendered.
-            indicator_glyph: Status glyph (already chosen from `_status_glyph`).
-            indicator_color: Status color (already chosen from `_status_color`).
-            visible_tools: Tools that survived the active filter — used only
-                for the count label.
-            glyphs: Active `Glyphs` table for the bullet separator.
-
-        Returns:
-            Styled `Content` ready to mount inside a `Static`.
-        """
-        tool_count = len(visible_tools)
-        t_label = "tool" if tool_count == 1 else "tools"
-        if server.status == "ok":
-            summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
-            return Content.assemble(
-                (f"{indicator_glyph} ", indicator_color),
-                (server.name, "bold"),
-                (summary, "dim"),
-            )
-        error_text = _sanitize_inline(server.error or "")
-        return Content.assemble(
-            (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
-            (f" {server.transport}", "dim"),
-            (f" {glyphs.bullet} {server.status}", indicator_color),
-            (f" — {error_text}", "dim") if error_text else "",
-        )
+        if not self._row_widgets:
+            msg = "No matching tools." if tokens else "No tools available."
+            scroll.mount(Static(msg, classes="mcp-empty"))
 
     def _move_to(self, index: int) -> None:
         """Move selection to the given row index.
@@ -789,9 +840,15 @@ class MCPViewerScreen(ModalScreen[None]):
         Args:
             index: Target row index inside `_row_widgets` (header or tool).
         """
-        if not self._row_widgets:
+        count = len(self._row_widgets)
+        if not count:
+            return
+        if not (0 <= index < count):
+            # Stale index from a widget that survived a filter rebuild.
             return
         old = self._selected_index
+        if not (0 <= old < count):
+            old = 0
         self._selected_index = index
 
         if old != index:

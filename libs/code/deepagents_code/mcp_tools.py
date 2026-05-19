@@ -1353,34 +1353,48 @@ async def _load_tools_from_config(
         # shared reference would let one holder mutate every other's view.
         schemas: dict[str, dict[str, Any] | None] = {}
         for mcp_tool in mcp_tools:
+            tool_name = getattr(mcp_tool, "name", "")
             try:
                 raw_schema = getattr(mcp_tool, "inputSchema", None)
-            except (AttributeError, TypeError) as exc:
+                schema_copy = (
+                    copy.deepcopy(raw_schema) if raw_schema is not None else None
+                )
+            except (AttributeError, TypeError, RecursionError) as exc:
                 logger.warning(
-                    "MCP tool %r on server %r: inputSchema access raised %s; "
+                    "MCP tool %r on server %r: inputSchema access raised %s: %s; "
                     "rendering with no parameters",
-                    getattr(mcp_tool, "name", "<unnamed>"),
+                    tool_name,
                     server_name,
                     exc.__class__.__name__,
+                    exc,
                 )
-                raw_schema = None
-            lc_name = f"{server_name}_{mcp_tool.name}"
-            schemas[lc_name] = (
-                copy.deepcopy(raw_schema) if raw_schema is not None else None
-            )
+                schema_copy = None
+            lc_name = f"{server_name}_{tool_name}"
+            schemas[lc_name] = schema_copy
 
+        tool_infos: list[MCPToolInfo] = []
+        for tool in server_tools:
+            schema = schemas.get(tool.name)
+            if schema is None and schemas:
+                logger.debug(
+                    "MCP tool %r on server %r: no schema matched in lookup "
+                    "(available keys: %s); rendering with no parameters",
+                    tool.name,
+                    server_name,
+                    list(schemas.keys())[:5],
+                )
+            tool_infos.append(
+                MCPToolInfo(
+                    name=tool.name,
+                    description=tool.description or "",
+                    input_schema=schema,
+                )
+            )
         server_infos.append(
             MCPServerInfo(
                 name=server_name,
                 transport=transport,
-                tools=tuple(
-                    MCPToolInfo(
-                        name=tool.name,
-                        description=tool.description or "",
-                        input_schema=schemas.get(tool.name),
-                    )
-                    for tool in server_tools
-                ),
+                tools=tuple(tool_infos),
             )
         )
 

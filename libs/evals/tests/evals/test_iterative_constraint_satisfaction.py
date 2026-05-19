@@ -1,6 +1,6 @@
 """Eval test for iterative constraint satisfaction.
 
-Asks a deep agent (with whatever model `--model` selects) to produce a
+Asks a deep agent (with whatever `--model` is selected) to produce a
 paragraph under two simultaneous hard constraints: exact word count AND
 every sentence must start with a vowel. The agent has access to planning,
 scratchpad, and the agent loop itself — room to draft, count, and revise

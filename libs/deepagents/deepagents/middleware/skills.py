@@ -300,6 +300,15 @@ class SkillMetadata(TypedDict):
     the field — it does not load or execute any JavaScript.
     """
 
+    required_ptc_tools: NotRequired[list[str]]
+    """PTC tool names that must be present in the QuickJS middleware's ``ptc`` configuration
+    for this skill to function.
+
+    The middleware validates these at skill-load time and returns a descriptive error
+    if any are missing. Tool names should match the agent tool names as configured
+    in ``ptc`` (e.g. ``read_file``, not ``readFile``).
+    """
+
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
@@ -458,6 +467,15 @@ def _parse_skill_metadata(  # noqa: C901
 
     module_path = _validate_module_path(frontmatter_data.get("module"), skill_path)
 
+    metadata_obj: dict[str, object] = frontmatter_data.get("metadata") or {}
+    if isinstance(metadata_obj, dict):
+        raw_required_ptc_tools = metadata_obj.get("required-ptc-tools")
+        required_ptc_tools = (
+            str(raw_required_ptc_tools).split() if raw_required_ptc_tools else []
+        )
+    else:
+        required_ptc_tools = []
+
     result = SkillMetadata(
         name=str(name),
         description=description_str,
@@ -469,6 +487,8 @@ def _parse_skill_metadata(  # noqa: C901
     )
     if module_path is not None:
         result["module"] = module_path
+    if required_ptc_tools:
+        result["required_ptc_tools"] = required_ptc_tools
     return result
 
 

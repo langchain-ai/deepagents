@@ -2183,3 +2183,71 @@ def test_modify_request_uses_custom_template() -> None:
     assert "WARN:" in appended
     assert "LIST:" in appended
     assert "## Skills System" not in appended  # default template marker absent
+
+
+# --- required_ptc_tools parsing -------------------------------------------
+
+
+def test_parse_skill_metadata_required_ptc_tools_space_delimited() -> None:
+    """Parse space-delimited required-ptc-tools from nested metadata."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata:
+  required-ptc-tools: swarm_task read_file write_file glob
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert result["required_ptc_tools"] == ["swarm_task", "read_file", "write_file", "glob"]
+
+
+def test_parse_skill_metadata_required_ptc_tools_absent_when_metadata_has_no_key() -> None:
+    """When metadata exists but has no required-ptc-tools, the key is absent from result."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata:
+  version: "1.0"
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "required_ptc_tools" not in result
+
+
+def test_parse_skill_metadata_required_ptc_tools_absent_when_no_metadata() -> None:
+    """When no metadata field exists at all, required_ptc_tools is absent from result."""
+    content = """---
+name: test-skill
+description: A test skill
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "required_ptc_tools" not in result
+
+
+def test_parse_skill_metadata_required_ptc_tools_non_dict_metadata() -> None:
+    """Non-dict metadata gracefully produces no required_ptc_tools."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata: some-text
+---
+
+Content
+"""
+
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "required_ptc_tools" not in result

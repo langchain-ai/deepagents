@@ -1,6 +1,6 @@
 """Eval test for iterative constraint satisfaction.
 
-Asks a deep agent (with whatever model ``--model`` selects) to produce a
+Asks a deep agent (with whatever model `--model` selects) to produce a
 paragraph under two simultaneous hard constraints: exact word count AND
 every sentence must start with a vowel. The agent has access to planning,
 scratchpad, and the agent loop itself — room to draft, count, and revise
@@ -30,8 +30,13 @@ from tests.evals.utils import (
 pytestmark = [pytest.mark.eval_category("conversation")]
 
 
+# All vowel characters (upper and lowercase) used to check sentence starts.
 _VOWELS = frozenset("aeiouAEIOU")
+
+# Regex that splits text into sentences on any sequence of sentence-ending punctuation - periods, exclamation points, or question marks.
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?]+")
+
+# Characters stripped from the edges of the extracted paragraph (whitespace, quotes, markdown). Done to allow grading to be robust to models that wrap their final answer in quotes, markdown, or code fences.
 _WRAPPER_CHARS = " \t\n\r\"'`*_"
 
 

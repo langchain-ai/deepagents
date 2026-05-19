@@ -481,14 +481,17 @@ def build_connecting_footer(
 ) -> Content:
     """Build a footer shown while waiting for the server to connect.
 
+    `resuming` wins over the other branches; otherwise `local_server`
+    selects between the local and generic variants, and `reconnecting`
+    swaps the verb only when `local_server` is `True`.
+
     Args:
         resuming: Show `'Resuming...'` instead of any `'Connecting...'` variant.
         local_server: Qualify the server as "local" in the connecting message.
-
-            Ignored when `resuming` is `True`.
+            Honored only when `resuming` is `False`.
         reconnecting: Use `'Reconnecting'` instead of `'Connecting'` for
-            mid-session restarts. Ignored when `resuming` is `True` or
-            `local_server` is `False`.
+            mid-session restarts. Honored only when `local_server` is `True`
+            and `resuming` is `False`.
         dots: Ellipsis string appended to the status text. Pass an animated
             frame (e.g. `"."`, `".."`, `"..."`) to show a cycling indicator.
 

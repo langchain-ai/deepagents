@@ -9,7 +9,7 @@ on that port so the browser redirect completes automatically. An optional
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 from mcp.shared.auth import (
@@ -23,6 +23,19 @@ from deepagents_code.mcp_providers.base import LoginResult, OAuthProvider
 if TYPE_CHECKING:
     from deepagents_code.mcp_auth import FileTokenStorage
     from deepagents_code.mcp_oauth_ui import OAuthInteraction
+
+
+@runtime_checkable
+class _SupportsSlackTeamPrompt(Protocol):
+    """Optional interaction-surface capability: prompt for a Slack team ID.
+
+    `OAuthInteraction` deliberately omits this method — only the CLI
+    surface implements it. The TUI lets Slack's browser page handle
+    workspace selection. Marked `runtime_checkable` so `isinstance`
+    can replace `getattr`-style structural probes at the call site.
+    """
+
+    async def prompt_slack_team_id(self) -> str | None: ...
 
 
 # Public OAuth client ID — safe to check in. No secret is associated;
@@ -53,20 +66,22 @@ def _is_slack_mcp_url(url: str) -> bool:
 async def _prompt_slack_team(ui: OAuthInteraction) -> str | None:
     """Return a Slack team ID when the interaction surface supports prompting.
 
-    CLI surfaces implement `prompt_slack_team_id` to interactively ask the
-    user which workspace to install into. TUI surfaces omit the method so
-    Slack's browser page handles workspace selection instead.
+    `prompt_slack_team_id` is **not** a member of the `OAuthInteraction`
+    Protocol — only the CLI surface implements it. The TUI omits it so
+    Slack's browser page handles workspace selection instead. Detection
+    uses `isinstance` against the `runtime_checkable`
+    `_SupportsSlackTeamPrompt` capability protocol.
 
     Args:
         ui: Interaction surface to use.
 
     Returns:
-        The entered Slack team ID, or `None` to let Slack's page decide.
+        The entered Slack team ID, or `None` when the surface lacks the
+            optional prompt method or the user declined to specify one.
     """
-    fn = getattr(ui, "prompt_slack_team_id", None)
-    if fn is None:
+    if not isinstance(ui, _SupportsSlackTeamPrompt):
         return None
-    return await fn()
+    return await ui.prompt_slack_team_id()
 
 
 async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:

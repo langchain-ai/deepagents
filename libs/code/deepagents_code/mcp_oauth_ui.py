@@ -83,7 +83,10 @@ class OAuthInteraction(Protocol):
         ...
 
     async def show_error(self, message: str) -> None:
-        """Report a terminal error in the flow.
+        """Report a fatal (flow-ending) error.
+
+        "Fatal" rather than "terminal" because this is a TUI codebase
+        where "terminal" reads ambiguously.
 
         Args:
             message: Plain-text error description.

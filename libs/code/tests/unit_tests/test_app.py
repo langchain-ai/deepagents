@@ -8513,3 +8513,98 @@ class TestMCPLoginCommand:
                 "Unknown" in str(w._content) and "frobnicate" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_mcp_login_worker_surfaces_config_resolution_error(self) -> None:
+        """`_run_mcp_login_worker` exits with ErrorMessage on config-resolve failure."""
+        from deepagents_code.mcp_login_service import (
+            ConfigErrorKind,
+            ConfigResolutionError,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            with patch(
+                "deepagents_code.mcp_login_service.resolve_mcp_config",
+                return_value=ConfigResolutionError(
+                    kind=ConfigErrorKind.NO_CONFIG_FOUND,
+                    message="No MCP config file found",
+                ),
+            ):
+                await app._run_mcp_login_worker("notion")
+                await pilot.pause()
+            assert any(
+                "No MCP config file found" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+
+    async def test_mcp_login_worker_does_not_leak_unknown_exception_message(
+        self,
+    ) -> None:
+        """Unknown login exceptions are summarized without leaking their str().
+
+        The MCP SDK can raise exceptions whose `args`/`repr` include an
+        `OAuthToken`. The worker uses `format_login_failure` to degrade
+        unrecognized types to a class-name chain so tokens never reach the
+        user-facing `ErrorMessage` or the rotating log files.
+        """
+        from pathlib import Path as _Path
+
+        from deepagents_code.mcp_login_service import (
+            ConfigResolution,
+            ServerSelection,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+
+            resolution = ConfigResolution(
+                config={"mcpServers": {"notion": {"type": "http", "auth": "oauth"}}},
+                used_paths=(_Path("/tmp/mcp.json"),),
+            )
+            selection = ServerSelection(
+                server_name="notion",
+                server_config={
+                    "type": "http",
+                    "auth": "oauth",
+                    "url": "https://example",
+                },
+            )
+
+            class _FakeMcpError(RuntimeError):
+                pass
+
+            sentinel = "TOKEN_PAYLOAD_MUST_NOT_LEAK"
+
+            async def _failing_login(**_: object) -> None:
+                await asyncio.sleep(0)
+                raise _FakeMcpError(sentinel)
+
+            with (
+                patch(
+                    "deepagents_code.mcp_login_service.resolve_mcp_config",
+                    return_value=resolution,
+                ),
+                patch(
+                    "deepagents_code.mcp_login_service.select_server",
+                    return_value=selection,
+                ),
+                patch("deepagents_code.mcp_auth.login", _failing_login),
+            ):
+                await app._run_mcp_login_worker("notion")
+                await pilot.pause()
+
+            rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
+            assert sentinel not in rendered
+            assert "_FakeMcpError" in rendered or "FakeMcpError" in rendered

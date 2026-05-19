@@ -15,6 +15,7 @@ from deepagents_code.mcp_auth import (
     FileTokenStorage,
     MCPReauthRequiredError,
     find_reauth_required,
+    format_login_failure,
     resolve_headers,
 )
 
@@ -244,6 +245,68 @@ class TestFindReauthRequired:
         assert find_reauth_required(a) is None
 
 
+class TestFormatLoginFailure:
+    """Tests for the token-safe summary helper used in app + CLI logs."""
+
+    def test_returns_reauth_message_for_nested_reauth_error(self) -> None:
+        """ExceptionGroup wrapping `MCPReauthRequiredError` surfaces its message."""
+        exc = ExceptionGroup(
+            "anyio task group",
+            [RuntimeError("upstream"), MCPReauthRequiredError("notion")],
+        )
+        summary = format_login_failure(exc)
+        assert "notion" in summary
+        assert "Run `/mcp login notion`" in summary
+
+    def test_omits_message_for_unknown_exception_types(self) -> None:
+        """Unrecognized exceptions degrade to a class-name chain — no `str()`.
+
+        Tokens can hide in `args`/`repr` of unfamiliar MCP-SDK error types;
+        the helper must never include those payloads.
+        """
+
+        class FakeMcpError(RuntimeError):
+            pass
+
+        sentinel = "TOKEN_PAYLOAD_DO_NOT_LEAK"
+        exc = FakeMcpError(sentinel)
+        summary = format_login_failure(exc)
+        assert sentinel not in summary
+        assert "FakeMcpError" in summary
+
+    def test_includes_message_for_known_loopback_errors(self) -> None:
+        """Loopback-internal exceptions are token-free and may include their message."""
+        from deepagents_code.mcp_auth import _LoopbackCallbackTimeoutError
+
+        exc = _LoopbackCallbackTimeoutError("Callback timed out")
+        summary = format_login_failure(exc)
+        assert "Callback timed out" in summary
+        assert "_LoopbackCallbackTimeoutError" in summary
+
+    def test_walks_cause_chain_into_class_names(self) -> None:
+        """A chained unknown exception still surfaces every link's class name."""
+
+        class OuterError(RuntimeError):
+            pass
+
+        class InnerError(RuntimeError):
+            pass
+
+        inner_msg = "inner-payload"
+        outer_msg = "outer-payload"
+        try:
+            try:
+                raise InnerError(inner_msg)  # noqa: TRY301
+            except InnerError as inner:
+                raise OuterError(outer_msg) from inner
+        except OuterError as exc:
+            summary = format_login_failure(exc)
+        assert "OuterError" in summary
+        assert "InnerError" in summary
+        assert inner_msg not in summary
+        assert outer_msg not in summary
+
+
 class TestAppendQueryParams:
     """Tests for `_append_query_params` URL manipulation."""
 
@@ -397,6 +460,7 @@ class TestLoopbackHandlers:
         from deepagents_code.mcp_auth import build_oauth_provider
 
         del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
         monkeypatch.setattr("webbrowser.open", lambda _url: True)
         provider = build_oauth_provider(
             server_name="notion",
@@ -429,6 +493,7 @@ class TestLoopbackHandlers:
         from deepagents_code.mcp_auth import build_oauth_provider
 
         del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
         monkeypatch.setattr("webbrowser.open", lambda _url: True)
         provider = build_oauth_provider(
             server_name="notion",
@@ -462,6 +527,7 @@ class TestLoopbackHandlers:
         from deepagents_code.mcp_auth import build_oauth_provider
 
         del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
         monkeypatch.setattr("webbrowser.open", lambda _url: True)
         provider = build_oauth_provider(
             server_name="notion",
@@ -490,6 +556,7 @@ class TestLoopbackHandlers:
         """When the browser cannot open, callback() falls back to paste-back at once."""
         from deepagents_code.mcp_auth import build_oauth_provider
 
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
         monkeypatch.setattr("webbrowser.open", lambda _url: False)
         monkeypatch.setattr(
             "builtins.input",
@@ -519,6 +586,7 @@ class TestLoopbackHandlers:
             build_oauth_provider,
         )
 
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
         monkeypatch.setattr("webbrowser.open", lambda _url: True)
         monkeypatch.setattr(
             _LoopbackOAuthCallbackServer,
@@ -543,6 +611,124 @@ class TestLoopbackHandlers:
         code, state = await callback_handler()
         assert code == "fallback"
         assert state == "s"
+
+    async def test_loopback_falls_back_when_webbrowser_get_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No-browser environments (headless, SSH) skip the 300s loopback wait.
+
+        `webbrowser.open` can return `True` in some headless setups even
+        when nothing actually launches. `webbrowser.get` raising
+        `webbrowser.Error` is the reliable signal that no browser is
+        available — the redirect handler must trip the paste-back path
+        without binding a socket or burning the timeout.
+        """
+        import webbrowser
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        def _raise_no_browser(*_a: object, **_kw: object) -> object:
+            no_browser_msg = "no browser"
+            raise webbrowser.Error(no_browser_msg)
+
+        monkeypatch.setattr("webbrowser.get", _raise_no_browser)
+        # Sanity: webbrowser.open intentionally returns True to prove we
+        # never call it when get() fails first.
+        monkeypatch.setattr(
+            "webbrowser.open",
+            lambda _url: pytest.fail("webbrowser.open should not be called"),
+        )
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
+
+    async def test_loopback_falls_back_on_callback_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A loopback callback that never arrives falls through to paste-back.
+
+        Regression guard for `_LoopbackCallbackTimeoutError`. Without this
+        path, a user whose browser opens but never redirects would hang
+        for the full `_LOOPBACK_CALLBACK_TIMEOUT` (300s).
+        """
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("deepagents_code.mcp_auth._LOOPBACK_CALLBACK_TIMEOUT", 0.05)
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=after_timeout",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, _state = await callback_handler()
+        assert code == "after_timeout"
+
+    async def test_loopback_repeat_request_after_error_shows_error_page(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A duplicate request after a failed callback must not show success HTML.
+
+        Regression guard: previously `_handle_get` early-returned success
+        whenever the future was done, even if the future resolved with an
+        exception. A second browser hit (prefetch, favicon) would render
+        "You're signed in" while the worker was actually surfacing the
+        underlying error.
+        """
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        assert redirect_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            first = await client.get(f"{redirect_uri}?error=access_denied")
+            second = await client.get(f"{redirect_uri}?code=late")
+
+        assert first.status_code == 400
+        # Second request must surface the prior error state, not success.
+        assert second.status_code == 400
+        assert "You're signed in" not in second.text
+        assert "did not complete" in second.text
 
 
 @pytest.mark.usefixtures("fake_home")

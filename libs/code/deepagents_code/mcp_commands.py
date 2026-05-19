@@ -125,12 +125,25 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
     import httpx
     from pydantic import ValidationError
 
+    from deepagents_code.mcp_auth import format_login_failure
+
     try:
         await login(
             server_name=selection.server_name,
             server_config=selection.server_config,
             ui=CliOAuthInteraction(),
         )
+    except PermissionError as exc:
+        # PermissionError typically means the user's home dir or the
+        # ~/.deepagents/.state/mcp-tokens/ tree isn't writable. Retrying
+        # without a hint sends users in circles.
+        print(  # noqa: T201
+            f"Login failed: cannot write to the MCP tokens store ({exc}). "
+            f"Check permissions on ~/.deepagents/.state/mcp-tokens/ and "
+            f"retry `dcode mcp login {selection.server_name}`.",
+            file=sys.stderr,
+        )
+        return 1
     except (
         ValueError,
         RuntimeError,
@@ -139,7 +152,10 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         KeyError,
         OSError,
     ) as exc:
-        print(f"Login failed: {exc}", file=sys.stderr)  # noqa: T201
+        print(  # noqa: T201
+            f"Login failed: {format_login_failure(exc)}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

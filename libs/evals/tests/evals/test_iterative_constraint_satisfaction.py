@@ -36,19 +36,23 @@ _WRAPPER_CHARS = " \t\n\r\"'`*_"
 
 
 def _extract_paragraph(answer: str) -> str:
-    """Strip surrounding markdown / quotes / fences from the final answer.
+    """Extract the last paragraph from the model's reply.
 
-    Keeps grading robust to minor formatting noise without softening the
-    underlying constraints.
+    Splits the answer on blank lines and returns the final non-empty chunk,
+    stripped of surrounding markdown / quotes / fences. This makes grading
+    robust to models that prefix their answer with reasoning, drafts, or
+    summaries — only the trailing paragraph is graded.
     """
     stripped = answer.strip()
-    if stripped.startswith("```"):
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", stripped) if p.strip()]
+    last = paragraphs[-1] if paragraphs else stripped
+    if last.startswith("```"):
         # Drop a fenced code block: take the inside, ignore an optional language tag.
-        inner = stripped.strip("`")
+        inner = last.strip("`")
         if "\n" in inner:
             inner = inner.split("\n", 1)[1]
-        stripped = inner.rsplit("```", 1)[0]
-    return stripped.strip(_WRAPPER_CHARS)
+        last = inner.rsplit("```", 1)[0]
+    return last.strip(_WRAPPER_CHARS)
 
 
 def _sentences(paragraph: str) -> list[str]:
@@ -94,17 +98,9 @@ class ExactWordCountAndVowelStarts(SuccessAssertion):
         _, problems = _grade_text(trajectory.answer, self.target_words)
         return "constraint violation: " + "; ".join(problems)
 
-TARGET_WORDS = 47
+TARGET_WORDS = 72
 
-_QUERY = f"""Write a single paragraph about an bear that satisfies BOTH constraints exactly:
-
-1. The paragraph must be exactly {TARGET_WORDS} words.
-2. Every sentence must start with a vowel letter (A, E, I, O, or U).
-
-Be deliberate: draft, then count words and check each sentence's first letter.
-Revise until BOTH constraints are met exactly — not approximately.
-
-Output ONLY the final paragraph. No preamble, no quotes, no markdown fences."""
+_QUERY = f"""Write a story about a bear that's 72 words and has every sentence starting with a vowel. Output paragraph only."""
 
 
 @pytest.mark.eval_tier("hillclimb")

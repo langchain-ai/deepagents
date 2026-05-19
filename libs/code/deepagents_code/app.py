@@ -1266,7 +1266,7 @@ class DeepAgentsApp(App):
         self._mcp_unauthenticated = sum(
             1 for s in (mcp_server_info or []) if s.status == "unauthenticated"
         )
-        """MCP servers awaiting a `deepagents mcp login` run."""
+        """MCP servers awaiting a `dcode mcp login` run."""
 
         self._mcp_errored = sum(
             1 for s in (mcp_server_info or []) if s.status == "error"
@@ -7427,7 +7427,7 @@ class DeepAgentsApp(App):
             # `previous_thread_has_agent_output` above.
             if previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
-                    "[dim]Relaunch with[/dim] deepagents -r $thread "
+                    "[dim]Relaunch with[/dim] dcode -r $thread "
                     "[dim]to resume the previous thread.[/dim]",
                     thread=previous_thread_id,
                 )

@@ -195,7 +195,7 @@ def _list(
             )
             console.print(
                 "\n[dim]Create a project skill:\n"
-                "  deepagents skills create my-skill --project[/dim]",
+                "  dcode skills create my-skill --project[/dim]",
                 style=theme.MUTED,
             )
             return
@@ -246,7 +246,7 @@ def _list(
             )
             console.print(
                 "\n[dim]Create your first skill:\n"
-                "  deepagents skills create my-skill[/dim]",
+                "  dcode skills create my-skill[/dim]",
                 style=theme.MUTED,
             )
             return

@@ -1226,7 +1226,7 @@ async def _load_tools_from_config(
                         server_url=server_config["url"],
                     )
                     if await storage.get_tokens() is None:
-                        auth_msg = f"Run: deepagents mcp login {server_name}"
+                        auth_msg = f"Run: dcode mcp login {server_name}"
                         logger.warning(
                             "MCP server '%s' skipped: not authenticated. %s",
                             server_name,

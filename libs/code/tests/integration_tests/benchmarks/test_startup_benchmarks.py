@@ -225,13 +225,13 @@ class TestCLIStartupTime:
         module level.
         """
         elapsed = self._time_cli_command("--help")
-        assert elapsed < 1, f"`deepagents --help` took {elapsed:.2f}s — expected < 1s"
+        assert elapsed < 1, f"`dcode --help` took {elapsed:.2f}s — expected < 1s"
 
     def test_version_under_threshold(self) -> None:
         """`deepagents --version` should complete well under 1 s."""
         elapsed = self._time_cli_command("--version")
         assert elapsed < 1, (
-            f"`deepagents --version` took {elapsed:.2f}s — expected < 1s"
+            f"`dcode --version` took {elapsed:.2f}s — expected < 1s"
         )
 
 

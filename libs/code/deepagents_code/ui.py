@@ -75,18 +75,18 @@ def show_help() -> None:
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print(
-        "  deepagents [OPTIONS]                           Start interactive thread"
+        "  dcode [OPTIONS]                           Start interactive thread"
     )
-    console.print("  deepagents agents <list|reset>                 Manage agents")
+    console.print("  dcode agents <list|reset>                 Manage agents")
     console.print(
-        "  deepagents skills <list|create|info|delete>    Manage agent skills"
+        "  dcode skills <list|create|info|delete>    Manage agent skills"
     )
     console.print(
-        "  deepagents threads <list|delete>               Manage conversation threads"
+        "  dcode threads <list|delete>               Manage conversation threads"
     )
-    console.print("  deepagents mcp <login>                         Manage MCP servers")
+    console.print("  dcode mcp <login>                         Manage MCP servers")
     console.print(
-        "  deepagents update                              Check for and install updates"
+        "  dcode update                              Check for and install updates"
     )
     console.print()
 
@@ -162,27 +162,27 @@ def show_help() -> None:
 
     console.print("[bold]Non-Interactive Mode:[/bold]", style=theme.PRIMARY)
     console.print(
-        "  deepagents -n 'Summarize README.md'     # Run task (no local shell access)",
+        "  dcode -n 'Summarize README.md'     # Run task (no local shell access)",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'List files' -S recommended  # Use safe commands",
+        "  dcode -n 'List files' -S recommended  # Use safe commands",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'Search logs' -S ls,cat,grep # Specify list",
+        "  dcode -n 'Search logs' -S ls,cat,grep # Specify list",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents -n 'Fix tests' -S all           # Any command",
+        "  dcode -n 'Fix tests' -S all           # Any command",
         style=theme.MUTED,
     )
     console.print(
-        "  cat prompt.txt | deepagents --stdin -q      # Explicit stdin",
+        "  cat prompt.txt | dcode --stdin -q           # Explicit stdin",
         style=theme.MUTED,
     )
     console.print(
-        "  deepagents --skill code-review -m 'review this patch'",
+        "  dcode --skill code-review -m 'review this patch'",
         style=theme.MUTED,
     )
     console.print()
@@ -195,7 +195,7 @@ def show_list_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents list [options]")
+    console.print("  dcode list [options]")
     console.print()
     console.print(
         "List all agents found in ~/.deepagents/. Each agent has its own",
@@ -207,8 +207,8 @@ def show_list_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents list")
-    console.print("  deepagents list --json")
+    console.print("  dcode list")
+    console.print("  dcode list --json")
     console.print()
 
 
@@ -216,7 +216,7 @@ def show_agents_help() -> None:
     """Show help information for the `agents` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents <command> [options]")
+    console.print("  dcode agents <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all agents")
@@ -225,9 +225,9 @@ def show_agents_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents agents list")
-    console.print("  deepagents agents reset --agent coder")
-    console.print("  deepagents agents reset --agent coder --target researcher")
+    console.print("  dcode agents list")
+    console.print("  dcode agents reset --agent coder")
+    console.print("  dcode agents reset --agent coder --target researcher")
     console.print()
 
 
@@ -235,7 +235,7 @@ def show_reset_help() -> None:
     """Show help information for the `reset` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents reset --agent NAME [--target SRC]")
+    console.print("  dcode reset --agent NAME [--target SRC]")
     console.print()
     console.print(
         "Restore an agent's AGENTS.md to the built-in default, or copy",
@@ -254,9 +254,9 @@ def show_reset_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents reset --agent coder")
-    console.print("  deepagents reset --agent coder --target researcher")
-    console.print("  deepagents reset --agent coder --dry-run")
+    console.print("  dcode reset --agent coder")
+    console.print("  dcode reset --agent coder --target researcher")
+    console.print("  dcode reset --agent coder --dry-run")
     console.print()
 
 
@@ -268,7 +268,7 @@ def show_skills_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills <command> [options]")
+    console.print("  dcode skills <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all available skills")
@@ -283,14 +283,14 @@ def show_skills_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list")
-    console.print("  deepagents skills list --project")
-    console.print("  deepagents skills create my-skill")
-    console.print("  deepagents skills create my-skill --agent myagent")
-    console.print("  deepagents skills info my-skill")
-    console.print("  deepagents skills delete my-skill")
-    console.print("  deepagents skills delete my-skill --force --project")
-    console.print("  deepagents skills delete -h")
+    console.print("  dcode skills list")
+    console.print("  dcode skills list --project")
+    console.print("  dcode skills create my-skill")
+    console.print("  dcode skills create my-skill --agent myagent")
+    console.print("  dcode skills info my-skill")
+    console.print("  dcode skills delete my-skill")
+    console.print("  dcode skills delete my-skill --force --project")
+    console.print("  dcode skills delete -h")
     console.print()
     console.print(
         "[bold]Skill directories (highest precedence first):[/bold]",
@@ -310,7 +310,7 @@ def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list [options]")
+    console.print("  dcode skills list [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -318,9 +318,9 @@ def show_skills_list_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills list")
-    console.print("  deepagents skills list --project")
-    console.print("  deepagents skills list --json")
+    console.print("  dcode skills list")
+    console.print("  dcode skills list --project")
+    console.print("  dcode skills list --json")
     console.print()
 
 
@@ -328,7 +328,7 @@ def show_skills_create_help() -> None:
     """Show help information for the `skills create` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills create <name> [options]")
+    console.print("  dcode skills create <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -337,8 +337,8 @@ def show_skills_create_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills create web-research")
-    console.print("  deepagents skills create my-skill --project")
+    console.print("  dcode skills create web-research")
+    console.print("  dcode skills create my-skill --project")
     console.print()
 
 
@@ -346,7 +346,7 @@ def show_skills_info_help() -> None:
     """Show help information for the `skills info` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills info <name> [options]")
+    console.print("  dcode skills info <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -354,8 +354,8 @@ def show_skills_info_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills info web-research")
-    console.print("  deepagents skills info my-skill --project")
+    console.print("  dcode skills info web-research")
+    console.print("  dcode skills info my-skill --project")
     console.print()
 
 
@@ -363,7 +363,7 @@ def show_skills_delete_help() -> None:
     """Show help information for the `skills delete` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills delete <name> [options]")
+    console.print("  dcode skills delete <name> [options]")
     console.print()
     _print_option_section(
         "  --agent NAME            Agent identifier (default: agent)",
@@ -373,10 +373,10 @@ def show_skills_delete_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents skills delete old-skill")
-    console.print("  deepagents skills delete old-skill --force")
-    console.print("  deepagents skills delete old-skill --project")
-    console.print("  deepagents skills delete old-skill --dry-run")
+    console.print("  dcode skills delete old-skill")
+    console.print("  dcode skills delete old-skill --force")
+    console.print("  dcode skills delete old-skill --project")
+    console.print("  dcode skills delete old-skill --dry-run")
     console.print()
 
 
@@ -384,7 +384,7 @@ def show_update_help() -> None:
     """Show help information for the `update` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents update [options]")
+    console.print("  dcode update [options]")
     console.print()
     console.print(
         "Check for and install updates from PyPI.",
@@ -393,8 +393,8 @@ def show_update_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents update")
-    console.print("  deepagents update --json")
+    console.print("  dcode update")
+    console.print("  dcode update --json")
     console.print()
 
 
@@ -431,7 +431,7 @@ def show_mcp_help() -> None:
     """Show help information for the `mcp` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents mcp <command> [options]")
+    console.print("  dcode mcp <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  login <server>    Run the OAuth login flow for an MCP server")
@@ -446,8 +446,8 @@ def show_mcp_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents mcp login notion")
-    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login notion")
+    console.print("  dcode mcp login linear --config ./mcp-config.json")
     console.print()
 
 
@@ -455,7 +455,7 @@ def show_mcp_login_help() -> None:
     """Show help information for the `mcp login` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents mcp login <server> [--config PATH]")
+    console.print("  dcode mcp login <server> [--config PATH]")
     console.print()
     _print_option_section(
         "  --config PATH           Path to an MCP config JSON file "
@@ -468,8 +468,8 @@ def show_mcp_login_help() -> None:
     console.print(_MCP_CONFIG_FORMAT_EXAMPLE, style=theme.MUTED)
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents mcp login notion")
-    console.print("  deepagents mcp login linear --config ./mcp-config.json")
+    console.print("  dcode mcp login notion")
+    console.print("  dcode mcp login linear --config ./mcp-config.json")
     console.print()
 
 
@@ -481,7 +481,7 @@ def show_threads_help() -> None:
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads <command> [options]")
+    console.print("  dcode threads <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls           List all threads")
@@ -490,10 +490,10 @@ def show_threads_help() -> None:
     _print_option_section()
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list")
-    console.print("  deepagents threads list -n 10")
-    console.print("  deepagents threads list --agent mybot")
-    console.print("  deepagents threads delete abc123")
+    console.print("  dcode threads list")
+    console.print("  dcode threads list -n 10")
+    console.print("  dcode threads list --agent mybot")
+    console.print("  dcode threads delete abc123")
     console.print()
 
 
@@ -501,15 +501,15 @@ def show_threads_delete_help() -> None:
     """Show help information for the `threads delete` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads delete <ID> [options]")
+    console.print("  dcode threads delete <ID> [options]")
     console.print()
     _print_option_section(
         "  --dry-run               Show what would happen without making changes",
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads delete abc123")
-    console.print("  deepagents threads delete abc123 --dry-run")
+    console.print("  dcode threads delete abc123")
+    console.print("  dcode threads delete abc123 --dry-run")
     console.print()
 
 
@@ -517,7 +517,7 @@ def show_threads_list_help() -> None:
     """Show help information for the `threads list` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list [options]")
+    console.print("  dcode threads list [options]")
     console.print()
     _print_option_section(
         "  --agent NAME              Filter by agent name",
@@ -531,11 +531,11 @@ def show_threads_list_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  deepagents threads list")
-    console.print("  deepagents threads list -n 10")
-    console.print("  deepagents threads list --agent mybot")
-    console.print("  deepagents threads list --branch main -v")
-    console.print("  deepagents threads list --cwd")
-    console.print("  deepagents threads list --sort created --limit 50")
-    console.print("  deepagents threads list -r")
+    console.print("  dcode threads list")
+    console.print("  dcode threads list -n 10")
+    console.print("  dcode threads list --agent mybot")
+    console.print("  dcode threads list --branch main -v")
+    console.print("  dcode threads list --cwd")
+    console.print("  dcode threads list --sort created --limit 50")
+    console.print("  dcode threads list -r")
     console.print()

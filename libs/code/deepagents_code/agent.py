@@ -420,7 +420,7 @@ def reset_agent(
             console.print(
                 f"[bold red]Error:[/bold red] Source agent '{source_agent}' not found "
                 "or has no AGENTS.md\n"
-                "  Available agents: deepagents agents list"
+                "  Available agents: dcode agents list"
             )
             raise SystemExit(1)
 

@@ -5671,7 +5671,7 @@ class TestRestartServerForAgentSwap:
             plain = [str(getattr(m, "_content", m)) for m in mounted]
             assert any("Switched to researcher" in s for s in plain)
             assert any(
-                "deepagents -r old-thread" in s and "to resume" in s for s in plain
+                "dcode -r old-thread" in s and "to resume" in s for s in plain
             )
 
     async def test_no_resume_hint_when_previous_thread_has_no_agent_output(

@@ -55,7 +55,7 @@ def _mixed_status_info() -> list[MCPServerInfo]:
             name="github",
             transport="http",
             status="unauthenticated",
-            error="Run: deepagents mcp login github",
+            error="Run: dcode mcp login github",
         ),
         MCPServerInfo(
             name="broken",
@@ -1034,7 +1034,7 @@ class TestMCPViewerScreen:
 
             assert "github" in unauth_text
             assert "unauthenticated" in unauth_text
-            assert "Run: deepagents mcp login github" in unauth_text
+            assert "Run: dcode mcp login github" in unauth_text
 
             assert "broken" in err_text
             assert "error" in err_text
@@ -1244,7 +1244,7 @@ class TestModuleLevelHelpers:
             name="github",
             transport="http",
             status="unauthenticated",
-            error="Run: deepagents mcp login github",
+            error="Run: dcode mcp login github",
         )
         # Server name matches but tools=() → or None collapses to None
         assert _visible_tools_for(info, ["github"]) is None
@@ -1259,6 +1259,6 @@ class TestModuleLevelHelpers:
             name="github",
             transport="http",
             status="unauthenticated",
-            error="Run: deepagents mcp login github",
+            error="Run: dcode mcp login github",
         )
         assert _visible_tools_for(info, []) == ()

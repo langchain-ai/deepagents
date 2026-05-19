@@ -1,4 +1,4 @@
-"""Tests for the `deepagents mcp` command group."""
+"""Tests for the `dcode mcp` command group."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class TestSetupMCPParsers:
     """Argument parser wiring for the `mcp` subcommand."""
 
     def test_mcp_login_accepts_server_arg(self) -> None:
-        """The parser recognizes `deepagents mcp login <server>`."""
+        """The parser recognizes `dcode mcp login <server>`."""
         parser = _build_parser()
         ns = parser.parse_args(["mcp", "login", "notion"])
         assert ns.command == "mcp"

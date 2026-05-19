@@ -26,7 +26,7 @@ def setup_mcp_parsers(
     *,
     make_help_action: Callable[[Callable[[], None]], type[argparse.Action]],
 ) -> None:
-    """Register the `deepagents mcp` command group.
+    """Register the `dcode mcp` command group.
 
     Args:
         subparsers: The `argparse` subparsers object from the top-level CLI
@@ -68,7 +68,7 @@ def setup_mcp_parsers(
 
 
 async def run_mcp_login(*, server: str, config_path: str | None) -> int:
-    """Handle `deepagents mcp login <server>`.
+    """Handle `dcode mcp login <server>`.
 
     When `config_path` is omitted, auto-discovered MCP configs are merged in
     the same precedence order as the runtime loader, with matching trust
@@ -114,7 +114,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         if not found:
             print(  # noqa: T201
                 "No MCP config file found in any auto-discovered location. "
-                "Pass --config <path>, or run `deepagents mcp login --help` "
+                "Pass --config <path>, or run `dcode mcp login --help` "
                 "to see the search paths and config format.",
                 file=sys.stderr,
             )

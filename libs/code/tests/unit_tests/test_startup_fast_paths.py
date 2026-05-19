@@ -92,10 +92,10 @@ def _read_marker(stderr: str, prefix: str) -> object:
     ("argv", "expected"),
     [
         (["help"], "Start interactive thread"),
-        (["agents"], "deepagents agents <command>"),
-        (["skills"], "deepagents skills <command>"),
-        (["threads"], "deepagents threads <command>"),
-        (["mcp"], "deepagents mcp <command>"),
+        (["agents"], "dcode agents <command>"),
+        (["skills"], "dcode skills <command>"),
+        (["threads"], "dcode threads <command>"),
+        (["mcp"], "dcode mcp <command>"),
     ],
 )
 def test_help_only_commands_skip_runtime_imports(

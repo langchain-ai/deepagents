@@ -10,7 +10,7 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 ```
 
-**110 evals** across **7 categories**
+**114 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -131,8 +131,12 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 - [`test_compact_tool_not_overly_sensitive`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L262) — `tests/evals/test_summarization.py:262`
 - [`test_compact_tool_large_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L278) — `tests/evals/test_summarization.py:278`
 
-## Unit Test (`unit_test`) (9 evals)
+## Unit Test (`unit_test`) (13 evals)
 
+- [`test_reject_skips_tool_execution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L145) — `tests/evals/test_hitl_reject.py:145`
+- [`test_reject_causes_retry_with_default_status`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L181) — `tests/evals/test_hitl_reject.py:181`
+- [`test_reject_no_retry_matrix`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L232) — `tests/evals/test_hitl_reject.py:232`
+- [`test_reject_loop_depth_matrix`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl_reject.py#L292) — `tests/evals/test_hitl_reject.py:292`
 - [`test_read_skill_full_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L40) — `tests/evals/test_skills.py:40`
 - [`test_read_skill_by_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L78) — `tests/evals/test_skills.py:78`
 - [`test_combine_two_skills`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L122) — `tests/evals/test_skills.py:122`

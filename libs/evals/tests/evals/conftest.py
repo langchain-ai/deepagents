@@ -70,7 +70,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if not config.getoption("--model"):
         pytest.exit(
             "Aborting: --model is required. Pass an explicit model identifier, "
-            "e.g. `--model claude-sonnet-4-6`.",
+            "e.g. `--model claude-sonnet-4-6`. Repeat for multiple models.",
             returncode=1,
         )
 
@@ -78,9 +78,9 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--model",
-        action="store",
-        default=None,
-        help="Model to run evals against (required). E.g. --model claude-sonnet-4-6.",
+        action="append",
+        default=[],
+        help="Model to run evals against (required, repeatable). E.g. --model claude-sonnet-4-6 --model openai:gpt-4.1.",
     )
     parser.addoption(
         "--eval-category",
@@ -205,8 +205,8 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
     if "model_name" not in metafunc.fixturenames:
         return
 
-    model_name = metafunc.config.getoption("--model")
-    metafunc.parametrize("model_name", [model_name])
+    models = metafunc.config.getoption("--model")
+    metafunc.parametrize("model_name", models)
 
 
 @pytest.fixture
@@ -235,8 +235,9 @@ def repl_name(request: pytest.FixtureRequest) -> ReplName | None:
 
 @pytest.fixture(scope="session")
 def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, Any]:
+    models = request.config.getoption("--model")
     return {
-        "model": request.config.getoption("--model"),
+        "model": models[0] if len(models) == 1 else models,
         "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
         "deepagents_version": deepagents_version,
     }

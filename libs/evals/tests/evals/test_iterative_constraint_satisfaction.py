@@ -98,9 +98,10 @@ class ExactWordCountAndVowelStarts(SuccessAssertion):
         _, problems = _grade_text(trajectory.answer, self.target_words)
         return "constraint violation: " + "; ".join(problems)
 
+
 TARGET_WORDS = 72
 
-_QUERY = f"""Write a story about a bear that's 72 words and has every sentence starting with a vowel. Output paragraph only."""
+_QUERY = """Write a story about a bear that's 72 words and has every sentence starting with a vowel. Output paragraph only."""
 
 
 @pytest.mark.eval_tier("hillclimb")

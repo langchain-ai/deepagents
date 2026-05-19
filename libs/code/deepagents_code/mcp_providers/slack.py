@@ -91,12 +91,26 @@ class SlackProvider(OAuthProvider):
         """
         return _is_slack_mcp_url(server_url)
 
-    def client_metadata(self) -> OAuthClientMetadata:  # noqa: PLR6301  # subclass hook
+    def supports_loopback_callback(self) -> bool:  # noqa: PLR6301  # subclass hook
+        """Return `False` because Slack uses a fixed pre-registered redirect URI.
+
+        Returns:
+            Always `False`.
+        """
+        return False
+
+    def client_metadata(  # noqa: PLR6301  # subclass hook
+        self, *, redirect_uri: str | None = None
+    ) -> OAuthClientMetadata:
         """Return public-client metadata with the Slack loopback redirect URI.
+
+        Args:
+            redirect_uri: Ignored; Slack requires its pre-registered redirect URI.
 
         Returns:
             Metadata configured for Slack's public OAuth client (no token secret).
         """
+        del redirect_uri
         return OAuthClientMetadata(
             client_name="deepagents-code",
             redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],

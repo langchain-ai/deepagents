@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -343,10 +344,13 @@ class TestBuildOAuthProvider:
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == ["https://localhost/"]
 
-    def test_generic_branch_uses_localhost_callback(self) -> None:
-        """Non-Slack URLs use the generic `http://localhost/callback` redirect."""
+    def test_generic_branch_uses_loopback_callback(
+        self, socket_enabled: object
+    ) -> None:
+        """Non-Slack URLs use a local callback server redirect."""
         from deepagents_code.mcp_auth import build_oauth_provider
 
+        del socket_enabled
         provider = build_oauth_provider(
             server_name="notion",
             server_url="https://mcp.notion.com/mcp",
@@ -354,9 +358,8 @@ class TestBuildOAuthProvider:
         )
         metadata = provider.context.client_metadata
         assert metadata.redirect_uris is not None
-        assert [str(uri) for uri in metadata.redirect_uris] == [
-            "http://localhost/callback"
-        ]
+        redirect_uri = str(metadata.redirect_uris[0])
+        assert re.fullmatch(r"http://localhost:\d+/callback", redirect_uri)
         # Generic (non-Slack) providers default to client-secret auth, so the
         # Slack-only `token_endpoint_auth_method="none"` override must not
         # leak into this branch.
@@ -371,6 +374,75 @@ class TestBuildOAuthProvider:
             await redirect("https://auth.example/")
         with pytest.raises(MCPReauthRequiredError):
             await callback()
+
+
+class TestLoopbackHandlers:
+    """Tests for the local OAuth callback server."""
+
+    async def test_loopback_callback_returns_code_and_state(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A browser callback to the loopback URI completes the handler."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{redirect_uri}?code=abc&state=xyz")
+
+        assert response.status_code == 200
+        code, state = await callback_handler()
+        assert code == "abc"
+        assert state == "xyz"
+
+    async def test_loopback_callback_surfaces_provider_error(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """Provider-side callback errors propagate with a useful message."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                f"{redirect_uri}?error=access_denied&error_description=User%20declined"
+            )
+
+        assert response.status_code == 400
+        with pytest.raises(RuntimeError, match="access_denied"):
+            await callback_handler()
 
 
 @pytest.mark.usefixtures("fake_home")

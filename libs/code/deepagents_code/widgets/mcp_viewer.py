@@ -477,6 +477,11 @@ class MCPServerHeaderItem(Static):
         )
         super().__init__(content, classes=classes)
 
+    @property
+    def server(self) -> MCPServerInfo:
+        """Server metadata this header row is rendering."""
+        return self._server
+
     def set_selected(self, selected: bool) -> None:
         """Apply or remove the selected-row styling and re-render the label.
 
@@ -1004,7 +1009,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if isinstance(row, MCPToolItem):
             row.toggle_expand()
             return
-        server = row._server
+        server = row.server
         if server.status == "unauthenticated":
             self.dismiss(server.name)
 

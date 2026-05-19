@@ -283,14 +283,16 @@ class FileTokenStorage(TokenStorage):
         except (OSError, json.JSONDecodeError) as exc:
             msg = (
                 f"Failed to read MCP token file {path}: {exc}. "
-                f"Delete the file and log in to {self._server_name!r} again."
+                f"Delete the file and run `/mcp login {self._server_name}` "
+                f"in the TUI (or `dcode mcp login {self._server_name}`)."
             )
             raise RuntimeError(msg) from exc
         if data.get("version") != _STORAGE_VERSION:
             msg = (
                 f"MCP token file {path} has unsupported version "
                 f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
-                f"Delete it and log in to {self._server_name!r} again."
+                f"Delete it and run `/mcp login {self._server_name}` in the "
+                f"TUI (or `dcode mcp login {self._server_name}`)."
             )
             raise RuntimeError(msg)
         return data
@@ -404,6 +406,11 @@ class _LoopbackOAuthCallbackServer:
         self._closed = False
         self._thread: threading.Thread | None = None
 
+    @property
+    def port(self) -> int:
+        """Loopback TCP port this server will bind on `start()`."""
+        return self._port
+
     def start(self) -> None:
         """Bind and start serving callback requests in a background thread."""
         if self._started:
@@ -493,13 +500,25 @@ class _LoopbackOAuthCallbackServer:
             # Duplicate browser request (retry, prefetch, favicon) after the
             # flow already completed. Respond and return without touching the
             # future — avoids InvalidStateError from a concurrent set_result.
-            self._send_html(
-                handler,
-                200,
-                _oauth_success_html(
-                    "MCP authorization complete. You can close this browser tab.",
-                ),
-            )
+            # Branch on the future's terminal state: a previous error must
+            # not be papered over with a success page.
+            if self._future.exception() is None:
+                self._send_html(
+                    handler,
+                    200,
+                    _oauth_success_html(
+                        "MCP authorization complete. You can close this browser tab.",
+                    ),
+                )
+            else:
+                self._send_html(
+                    handler,
+                    400,
+                    _oauth_error_html(
+                        "Authorization did not complete. "
+                        "Return to your terminal for details.",
+                    ),
+                )
             return
 
         parsed = urlparse(handler.path)
@@ -613,7 +632,8 @@ class MCPReauthRequiredError(RuntimeError):
         self.server_name = server_name
         super().__init__(
             f"MCP server {server_name!r} needs re-authentication. "
-            "Log in again to restore access.",
+            f"Run `/mcp login {server_name}` in the TUI, or "
+            f"`dcode mcp login {server_name}` from the shell.",
         )
 
 
@@ -725,11 +745,22 @@ def _make_loopback_handlers(
         import webbrowser
 
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
-        opened = await asyncio.to_thread(webbrowser.open, final_url)
+
+        # Resolve a browser explicitly before opening so headless / SSH
+        # environments fall through to paste-back without burning the
+        # 300s loopback timeout. `webbrowser.open` can return `True` in
+        # those environments even when nothing launches.
+        try:
+            await asyncio.to_thread(webbrowser.get)
+            has_browser = True
+        except webbrowser.Error:
+            has_browser = False
+
+        if has_browser:
+            opened = await asyncio.to_thread(webbrowser.open, final_url)
+        else:
+            opened = False
         if not opened:
-            # No browser available — poison the future so callback() falls
-            # through to paste_callback() immediately instead of waiting 300s.
-            # The socket is never bound because start() is not called.
             callback_server.fail(
                 _LoopbackCallbackUnavailableError(
                     "No browser is available to complete the OAuth flow.",
@@ -742,7 +773,7 @@ def _make_loopback_handlers(
         except OSError as exc:
             logger.warning(
                 "Could not start loopback OAuth callback server on port %s: %s",
-                callback_server._port,
+                callback_server.port,
                 exc,
             )
             msg = "Local OAuth callback server could not be started."
@@ -752,6 +783,9 @@ def _make_loopback_handlers(
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
+        # Communicate the URL regardless of `webbrowser.open` returning
+        # success — headless setups can report success without actually
+        # rendering a browser, and users still need the paste-back URL.
         await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
     async def callback() -> tuple[str, str | None]:
@@ -927,7 +961,15 @@ async def _run_device_flow(
             # before raise_for_status so 400-returning providers work.
             try:
                 body = token_response.json()
-            except ValueError:
+            except ValueError as exc:
+                # Malformed JSON would otherwise cascade into a confusing
+                # OAuthToken.model_validate({}) error below; log the cause
+                # explicitly so debugging is possible.
+                logger.warning(
+                    "Token endpoint %s returned non-JSON body: %s",
+                    token_url,
+                    exc,
+                )
                 body = {}
             err = body.get("error")
             if err == "authorization_pending":
@@ -959,6 +1001,49 @@ async def _run_device_flow(
     raise RuntimeError(msg)
 
 
+def format_login_failure(exc: BaseException) -> str:
+    """Return a token-safe single-line summary of an OAuth-login exception.
+
+    OAuth handshakes commonly surface as `ExceptionGroup` (anyio task
+    groups) or as MCP-SDK errors whose `args`/`repr` may include an
+    `OAuthToken`. Never call `str()`/`repr()` on the raw exception for
+    display or logging — instead, prefer a known-safe nested
+    `MCPReauthRequiredError` message, fall back to the messages of our
+    own loopback-related exception types, and degrade to a class-name
+    chain for anything else.
+
+    Args:
+        exc: Root exception caught from the login worker.
+
+    Returns:
+        A user-displayable string that is safe to log and to render.
+    """
+    reauth = find_reauth_required(exc)
+    if reauth is not None:
+        return str(reauth)
+
+    safe_types = (
+        _LoopbackCallbackTimeoutError,
+        _LoopbackCallbackUnavailableError,
+    )
+    if isinstance(exc, safe_types):
+        return f"{type(exc).__name__}: {exc}"
+
+    parts: list[str] = []
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        parts.append(type(current).__name__)
+        if isinstance(current, BaseExceptionGroup):
+            parts.append(
+                "[" + ", ".join(type(e).__name__ for e in current.exceptions[:5]) + "]"
+            )
+            break
+        current = current.__cause__ or current.__context__
+    return " -> ".join(parts) if parts else type(exc).__name__
+
+
 def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     """Find an `MCPReauthRequiredError` anywhere inside `exc`'s tree.
 
@@ -980,9 +1065,8 @@ def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
         visited.add(id(current))
         if isinstance(current, MCPReauthRequiredError):
             return current
-        sub_exceptions = getattr(current, "exceptions", None)
-        if sub_exceptions:
-            stack.extend(sub_exceptions)
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
         cause = current.__cause__ or current.__context__
         if cause is not None:
             stack.append(cause)

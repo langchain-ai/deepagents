@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -1410,8 +1411,19 @@ async def _handle_interrupt_cleanup(
             await agent.aupdate_state(config, {"messages": [cancellation_msg]})
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
-    except Exception:
+    except Exception as exc:  # interrupt cleanup must not propagate
         logger.warning("Failed to save interrupted state", exc_info=True)
+        # Surface via the chat surface — silent file-only warnings have
+        # masked real state-write failures (validation, checkpointer
+        # corruption) in past incidents. The mount is best-effort; the
+        # adapter may already be tearing down.
+        with contextlib.suppress(Exception):
+            await adapter._mount_message(
+                AppMessage(
+                    f"Could not save interrupted state ({type(exc).__name__}). "
+                    "Subsequent turns may see stale state."
+                )
+            )
 
     # Mark tools as rejected AFTER saving state
     for tool_msg in list(adapter._current_tool_messages.values()):
@@ -1441,17 +1453,28 @@ async def _persist_context_tokens(
 ) -> None:
     """Best-effort persist of the context token count into graph state.
 
-    The `aupdate_state` call is wrapped in `tracing_context(enabled=False)` so
-    this purely-internal bookkeeping write does not surface as a separate
-    `UpdateState` run in LangSmith. `_context_tokens` is already marked
-    `PrivateStateAttr`, but `aupdate_state` itself creates its own traced run
-    that would otherwise clutter the project's traces.
+    For local agents, the `aupdate_state` call is wrapped in
+    `tracing_context(enabled=False)` so this purely-internal bookkeeping write
+    does not surface as a separate `UpdateState` run in LangSmith.
+    `_context_tokens` is already marked `PrivateStateAttr`, but `aupdate_state`
+    itself creates its own traced run that would otherwise clutter the project's
+    traces.
+
+    For remote agents (e.g. a `langgraph dev` server), `aupdate_state` goes
+    over HTTP and the server creates its own LangSmith trace that the client
+    cannot suppress with `tracing_context`. Skipping the call is safe because
+    persistence is best-effort — a stale count on resume is acceptable.
 
     Args:
         agent: The LangGraph agent (must support `aupdate_state`).
         config: Runnable config with `thread_id`.
         tokens: Total context tokens to persist.
     """
+    from deepagents_code.remote_client import RemoteAgent
+
+    if isinstance(agent, RemoteAgent):
+        return
+
     from langsmith import tracing_context
 
     try:

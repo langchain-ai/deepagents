@@ -25,6 +25,7 @@ from deepagents_code.textual_adapter import (
     _build_interrupted_ai_message,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
+    _persist_context_tokens,
     execute_task_textual,
     format_token_count,
     print_usage_table,
@@ -307,6 +308,45 @@ class TestInterruptCleanup:
         assert all(v is False for v in captured), (
             f"tracing was not disabled: {captured}"
         )
+
+
+class TestPersistContextTokens:
+    """Tests for `_persist_context_tokens`."""
+
+    async def test_skips_aupdate_state_for_remote_agent(self) -> None:
+        """Remote agents must not call aupdate_state for _context_tokens.
+
+        When the agent is a RemoteAgent, aupdate_state goes over HTTP to the
+        dev server, which creates its own LangSmith trace that the client
+        cannot suppress with tracing_context(enabled=False). Skipping the call
+        is safe because persistence is best-effort.
+        """
+        from deepagents_code.remote_client import RemoteAgent
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aupdate_state = AsyncMock()
+
+        await _persist_context_tokens(
+            agent, {"configurable": {"thread_id": "t-1"}}, 1234
+        )
+
+        agent.aupdate_state.assert_not_called()
+
+    async def test_calls_aupdate_state_for_local_agent(self) -> None:
+        """Local agents should still call aupdate_state for _context_tokens."""
+        called_with: list[object] = []
+
+        def _capture(*args: object, **_kwargs: object) -> None:
+            called_with.append(args[1])  # the values dict
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+
+        await _persist_context_tokens(
+            agent, {"configurable": {"thread_id": "t-2"}}, 9999
+        )
+
+        assert len(called_with) == 1
+        assert called_with[0] == {"_context_tokens": 9999}
 
 
 class TestBuildStreamConfig:

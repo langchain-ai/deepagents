@@ -8208,7 +8208,7 @@ class DeepAgentsApp(App):
             # token would never reach the MCP tool factory.
             self.notify(
                 "Cannot log into MCP servers against a remote server. "
-                "Relaunch deepagents locally to authenticate.",
+                "Relaunch dcode locally to authenticate.",
                 severity="warning",
                 markup=False,
             )
@@ -8332,18 +8332,25 @@ class DeepAgentsApp(App):
         except BaseException:
             # Worker cancelled or app shutdown — unblock the modal and
             # let the cancellation propagate.
-            if not screen._done:
+            if not screen.is_done:
                 screen.finish(success=False, message="Login interrupted.")
             if not outcome_future.done():
                 outcome_future.set_result(None)
             raise
 
         if login_error is not None:
-            logger.warning("MCP login for %r failed", server_name, exc_info=login_error)
-            screen.finish(success=False, message=f"Login failed: {login_error}")
+            from deepagents_code.mcp_auth import format_login_failure
+
+            # Token-safe: never `%r`, `str()`, or `exc_info=` on the raw
+            # exception — its `args`/repr may include an `OAuthToken` from
+            # the MCP SDK. `format_login_failure` unwraps `ExceptionGroup`
+            # roots and degrades to a class-name chain for unknown types.
+            summary = format_login_failure(login_error)
+            logger.warning("MCP login for %r failed: %s", server_name, summary)
+            screen.finish(success=False, message=f"Login failed: {summary}")
             await asyncio.wait_for(outcome_future, timeout=5.0)
             await self._mount_message(
-                ErrorMessage(f"MCP login for {server_name!r} failed: {login_error}"),
+                ErrorMessage(f"MCP login for {server_name!r} failed: {summary}"),
             )
             return
 
@@ -8377,7 +8384,7 @@ class DeepAgentsApp(App):
         if self._server_kwargs is None or server_proc is None:
             self.notify(
                 "Cannot restart the LangGraph server automatically; "
-                "relaunch deepagents to pick up the new MCP token.",
+                "relaunch dcode to pick up the new MCP token.",
                 severity="warning",
                 markup=False,
             )

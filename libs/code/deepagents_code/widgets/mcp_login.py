@@ -61,7 +61,13 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
-    """Esc requests cancellation. The login worker still owns shutdown."""
+    """Esc unblocks the worker; the worker performs the actual shutdown.
+
+    Cancellation completes any outstanding input future with
+    `MCPLoginCancelledError`. The worker (`_run_mcp_login_worker`) sees
+    that exception, calls `finish(success=False)`, and tears down the
+    OAuth handshake. Doing the teardown here would race the worker.
+    """
 
     CSS = """
     MCPLoginScreen {
@@ -151,13 +157,23 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
 
-        # Promise plumbing: each prompt method blocks on a fresh Future
-        # that the input submission resolves. Cancellation completes any
-        # outstanding future with MCPLoginCancelledError so the worker unblocks.
+        # Each prompt method blocks on a fresh Future; cancellation completes
+        # it with MCPLoginCancelledError so the worker unblocks rather than
+        # hanging on a dismissed modal.
         self._pending_input: asyncio.Future[str] | None = None
         self._cancelled = False
         self._done = False
         self._outcome: LoginOutcome | None = None
+
+    @property
+    def is_done(self) -> bool:
+        """`True` once the modal has been told to finish (success or failure).
+
+        Public accessor for callers that need to coordinate teardown from
+        outside the screen, e.g. the worker's `BaseException` branch that
+        unblocks dismiss without re-finishing.
+        """
+        return self._done
 
     def compose(self) -> ComposeResult:
         """Compose the modal body inside a `Vertical` container.
@@ -269,7 +285,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._append_history(message)
 
     async def show_error(self, message: str) -> None:
-        """Render a terminal error status line and append it to history."""
+        """Render a fatal (flow-ending) error status line and history entry."""
         self._set_status(message)
         self._append_history(message)
 
@@ -364,6 +380,9 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
     def finish(self, *, success: bool, message: str | None = None) -> None:
         """Close the modal from the worker, reporting the final outcome.
 
+        Dismiss is deferred by 0.6s so the user sees the final status
+        before the modal disappears.
+
         Args:
             success: `True` when login succeeded; drives the dismiss value.
             message: Optional final status line shown before close.
@@ -376,7 +395,6 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
             self._set_status(message)
             self._append_history(message)
         self._stop_spinner_timer()
-        # Mark spinner area with check / cross via status — no widget swap.
         glyphs = get_glyphs()
         marker = glyphs.checkmark if success else glyphs.error
         if self._title_widget is not None:
@@ -387,13 +405,12 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
                     marker=marker,
                 )
             )
-        # Defer dismiss so the user sees the final status briefly.
 
         def _deferred_dismiss() -> None:
-            # Must be a def (not a lambda) — Textual's _invoke auto-awaits any
-            # awaitable return value, and dismiss() returns AwaitComplete; awaiting
-            # it inside _flush_next_callbacks (the screen's own message pump) raises
-            # ScreenError. A None-returning def discards it instead.
+            # Must be a def (not a lambda): Textual's `_invoke` auto-awaits
+            # any awaitable return, and `dismiss()` returns `AwaitComplete`;
+            # awaiting it inside the screen's own message pump raises
+            # `ScreenError`. A `None`-returning def discards the awaitable.
             self.dismiss(self._outcome or "failed")
 
         self.set_timer(0.6, _deferred_dismiss)

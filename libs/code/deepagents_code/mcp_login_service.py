@@ -265,7 +265,7 @@ def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
     return (
         "Skipping untrusted project MCP config "
         f"(not yet approved or config changed): {skipped}. "
-        "Approve it by running `deepagents` in this project, or "
+        "Approve it by running `dcode` in this project, or "
         "pass --config <path> to use it explicitly."
     )
 

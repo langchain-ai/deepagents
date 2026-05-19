@@ -402,7 +402,15 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
                 )
             )
         # Defer dismiss so the user sees the final status briefly.
-        self.set_timer(0.6, lambda: self.dismiss(self._outcome or "failed"))
+
+        def _deferred_dismiss() -> None:
+            # Must be a def (not a lambda) — Textual's _invoke auto-awaits any
+            # awaitable return value, and dismiss() returns AwaitComplete; awaiting
+            # it inside _flush_next_callbacks (the screen's own message pump) raises
+            # ScreenError. A None-returning def discards it instead.
+            self.dismiss(self._outcome or "failed")
+
+        self.set_timer(0.6, _deferred_dismiss)
 
     def _tick_spinner(self) -> None:
         """Advance the title spinner while login is in progress."""

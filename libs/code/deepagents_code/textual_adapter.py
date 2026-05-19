@@ -1390,15 +1390,24 @@ async def _handle_interrupt_cleanup(
 
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
-    try:
-        if interrupted_msg:
-            await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+    from langsmith import tracing_context
 
-        cancellation_msg = HumanMessage(
-            content="[SYSTEM] Task interrupted by user. "
-            "Previous operation was cancelled."
-        )
-        await agent.aupdate_state(config, {"messages": [cancellation_msg]})
+    try:
+        # tracing_context(enabled=False) suppresses only the UpdateState traced
+        # run that each aupdate_state call would otherwise emit in LangSmith — it
+        # does not affect any other tracing in the surrounding turn. These writes
+        # are internal interrupt-recovery mechanics (partial AI message +
+        # cancellation notice), not user-driven agent activity; surfacing them as
+        # standalone peer runs alongside real agent turns clutters the trace view.
+        with tracing_context(enabled=False):
+            if interrupted_msg:
+                await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
+            cancellation_msg = HumanMessage(
+                content="[SYSTEM] Task interrupted by user. "
+                "Previous operation was cancelled."
+            )
+            await agent.aupdate_state(config, {"messages": [cancellation_msg]})
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception:

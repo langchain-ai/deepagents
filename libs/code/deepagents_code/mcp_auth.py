@@ -36,6 +36,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
+
 
 class _DeviceCodeResponse(BaseModel):
     """RFC 8628 §3.2 device-authorization response payload."""
@@ -627,57 +629,71 @@ def _make_reauth_required_handlers(
 
 
 def _make_paste_back_handlers(
-    *, extra_auth_params: dict[str, str] | None = None
+    *,
+    extra_auth_params: dict[str, str] | None = None,
+    ui: OAuthInteraction | None = None,
 ) -> tuple[RedirectHandler, CallbackHandler]:
     """Create paste-back redirect and callback handlers for OAuth.
 
     Args:
         extra_auth_params: Extra query params to append to the auth URL.
+        ui: Interaction surface for the auth URL display and the
+            pasted-back callback URL prompt.
 
     Returns:
         A tuple of `(redirect_handler, callback_handler)`.
     """
     extras = dict(extra_auth_params or {})
+    interaction = ui if ui is not None else _default_ui()
 
-    async def redirect(auth_url: str) -> None:  # noqa: RUF029
+    async def redirect(auth_url: str) -> None:
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
-        print(  # noqa: T201 - intentional user-facing prompt
-            "\nOpen this URL in a browser, approve access, then paste the full "
-            "callback URL back here:\n"
-            f"\n  {final_url}\n"
-        )
+        await interaction.show_authorize_url(final_url, opened_in_browser=False)
 
     async def callback() -> tuple[str, str | None]:
-        import asyncio
-
-        try:
-            raw = await asyncio.to_thread(input, "Callback URL: ")
-        except EOFError as exc:
-            msg = (
-                "No callback URL received (stdin closed). "
-                "Re-run `dcode mcp login <server>` and paste the URL."
-            )
-            raise RuntimeError(msg) from exc
-        url = raw.strip()
-        params = parse_qs(urlparse(url).query)
-        if "error" in params:
-            err_code = params["error"][0]
-            err_desc = (params.get("error_description") or [""])[0]
-            detail = f": {err_desc}" if err_desc else ""
-            msg = f"Authorization denied by provider: {err_code}{detail}"
-            raise RuntimeError(msg)
-        if "code" not in params or not params["code"]:
-            msg = "Callback URL is missing the 'code' parameter."
-            raise RuntimeError(msg)
-        return params["code"][0], (params.get("state") or [None])[0]
+        url = await interaction.request_callback_url()
+        return _parse_callback_url(url)
 
     return redirect, callback
+
+
+def _parse_callback_url(url: str) -> tuple[str, str | None]:
+    """Parse a provider callback URL into `(code, state)`.
+
+    Args:
+        url: Raw callback URL pasted by the user.
+
+    Returns:
+        The `code` and optional `state` query parameters.
+
+    Raises:
+        RuntimeError: If the URL contains `error=` or lacks `code`.
+    """
+    params = parse_qs(urlparse(url).query)
+    if "error" in params:
+        err_code = params["error"][0]
+        err_desc = (params.get("error_description") or [""])[0]
+        detail = f": {err_desc}" if err_desc else ""
+        msg = f"Authorization denied by provider: {err_code}{detail}"
+        raise RuntimeError(msg)
+    if "code" not in params or not params["code"]:
+        msg = "Callback URL is missing the 'code' parameter."
+        raise RuntimeError(msg)
+    return params["code"][0], (params.get("state") or [None])[0]
+
+
+def _default_ui() -> OAuthInteraction:
+    """Return the default `OAuthInteraction` implementation (CLI stdio)."""
+    from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
+
+    return CliOAuthInteraction()
 
 
 def _make_loopback_handlers(
     *,
     callback_server: _LoopbackOAuthCallbackServer,
     extra_auth_params: dict[str, str] | None = None,
+    ui: OAuthInteraction | None = None,
 ) -> tuple[RedirectHandler, CallbackHandler]:
     """Create browser loopback redirect and callback handlers for OAuth.
 
@@ -685,13 +701,16 @@ def _make_loopback_handlers(
         callback_server: Prepared local callback server for this login attempt.
             The socket is bound when the returned redirect handler is first called.
         extra_auth_params: Extra query params to append to the auth URL.
+        ui: Interaction surface for the browser-opened or fallback prompts.
 
     Returns:
         A tuple of `(redirect_handler, callback_handler)`.
     """
     extras = dict(extra_auth_params or {})
+    interaction = ui if ui is not None else _default_ui()
     _paste_redirect, paste_callback = _make_paste_back_handlers(
-        extra_auth_params=extra_auth_params
+        extra_auth_params=extra_auth_params,
+        ui=interaction,
     )
 
     async def redirect(auth_url: str) -> None:
@@ -709,11 +728,7 @@ def _make_loopback_handlers(
                     "No browser is available to complete the OAuth flow."
                 )
             )
-            print(  # noqa: T201 - intentional user-facing fallback
-                "\nOpen this URL in a browser, approve access, then paste the full "
-                "callback URL back here:\n"
-                f"\n  {final_url}\n"
-            )
+            await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
         try:
             callback_server.start()
@@ -725,18 +740,12 @@ def _make_loopback_handlers(
             )
             msg = "Local OAuth callback server could not be started."
             callback_server.fail(_LoopbackCallbackUnavailableError(msg))
-            print(  # noqa: T201 - intentional user-facing fallback
-                "\nCould not start the local OAuth callback server. "
-                "Open this URL in a browser, approve access, then paste "
-                "the full callback URL back here:\n"
-                f"\n  {final_url}\n"
+            await interaction.show_notice(
+                "Could not start the local OAuth callback server."
             )
+            await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
-        print(  # noqa: T201 - intentional user-facing prompt
-            "\nOpened your browser to approve MCP access. "
-            "If it did not open, visit this URL:\n"
-            f"\n  {final_url}\n"
-        )
+        await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
     async def callback() -> tuple[str, str | None]:
         try:
@@ -745,7 +754,7 @@ def _make_loopback_handlers(
             _LoopbackCallbackTimeoutError,
             _LoopbackCallbackUnavailableError,
         ) as exc:
-            print(  # noqa: T201 - intentional user-facing fallback
+            await interaction.show_notice(
                 f"{exc}\nPaste the full callback URL instead."
             )
             return await paste_callback()
@@ -773,6 +782,7 @@ def build_oauth_provider(
     storage: TokenStorage,
     extra_auth_params: dict[str, str] | None = None,
     interactive: bool = True,
+    ui: OAuthInteraction | None = None,
 ) -> OAuthClientProvider:
     """Construct an `OAuthClientProvider` for an MCP server.
 
@@ -782,6 +792,8 @@ def build_oauth_provider(
         storage: Token storage implementation for this server.
         extra_auth_params: Optional query params for the interactive auth URL.
         interactive: Whether the provider may prompt on stdin.
+        ui: Interaction surface used for URL display and paste-back
+            input in interactive mode.
 
     Returns:
         A configured `OAuthClientProvider`.
@@ -798,10 +810,12 @@ def build_oauth_provider(
             redirect, callback = _make_loopback_handlers(
                 callback_server=callback_server,
                 extra_auth_params=extra_auth_params,
+                ui=ui,
             )
         else:
             redirect, callback = _make_paste_back_handlers(
-                extra_auth_params=extra_auth_params
+                extra_auth_params=extra_auth_params,
+                ui=ui,
             )
     else:
         redirect, callback = _make_reauth_required_handlers(server_name=server_name)
@@ -827,6 +841,7 @@ async def _run_device_flow(
     token_url: str,
     client_id: str,
     scope: str | None = None,
+    ui: OAuthInteraction | None = None,
 ) -> OAuthToken:
     """Run OAuth 2.0 Device Authorization Grant and return the token.
 
@@ -835,6 +850,7 @@ async def _run_device_flow(
         token_url: Provider endpoint to poll for the access token.
         client_id: Registered OAuth client ID.
         scope: Optional space-delimited scope string.
+        ui: Interaction surface used to display the device code.
 
     Returns:
         The issued OAuth access token payload.
@@ -846,6 +862,8 @@ async def _run_device_flow(
     import asyncio
 
     import httpx
+
+    interaction = ui if ui is not None else _default_ui()
 
     init_data = {"client_id": client_id}
     if scope is not None:
@@ -874,9 +892,10 @@ async def _run_device_flow(
             )
             raise RuntimeError(msg) from exc
 
-        print(  # noqa: T201
-            f"\nVisit {device.verification_uri} and enter code: "
-            f"{device.user_code}\n(code expires in {device.expires_in}s)\n"
+        await interaction.show_device_code(
+            verification_uri=device.verification_uri,
+            user_code=device.user_code,
+            expires_in=device.expires_in,
         )
 
         interval = max(device.interval, 1)
@@ -974,12 +993,15 @@ async def login(
     *,
     server_name: str,
     server_config: McpServerSpec,
+    ui: OAuthInteraction,
 ) -> None:
     """Drive OAuth login for `server_name`, persisting tokens on success.
 
     Args:
         server_name: Name of the configured MCP server.
         server_config: Parsed server config for that entry.
+        ui: Interaction surface for all user prompts and progress messages
+            during the flow.
 
     Raises:
         ValueError: If `server_config` isn't an OAuth http/sse server.
@@ -1016,12 +1038,15 @@ async def login(
         server_name=server_name,
         server_url=server_config["url"],
         storage=storage,
+        ui=ui,
+    )
+
+    success_message = (
+        f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
     )
 
     if result.completed:
-        print(  # noqa: T201
-            f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
-        )
+        await ui.show_success(success_message)
         return
 
     provider = build_oauth_provider(
@@ -1029,6 +1054,7 @@ async def login(
         server_url=server_config["url"],
         storage=storage,
         extra_auth_params=result.extra_auth_params or None,
+        ui=ui,
     )
     conn: StreamableHttpConnection | SSEConnection
     if transport == "http":
@@ -1051,6 +1077,4 @@ async def login(
         )
 
     await _drive_handshake({server_name: conn})
-    print(  # noqa: T201
-        f"Logged in to MCP server '{server_name}'. Tokens saved to {storage.path}."
-    )
+    await ui.show_success(success_message)

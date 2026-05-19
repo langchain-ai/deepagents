@@ -10,7 +10,7 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 ```
 
-**110 evals** across **7 categories**
+**111 evals** across **7 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -118,10 +118,11 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L232) — `tests/evals/test_memory_multiturn.py:232`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L259) — `tests/evals/test_memory_multiturn.py:259`
 
-## Conversation (`conversation`) (2 evals)
+## Conversation (`conversation`) (3 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
+- [`test_exact_word_count_and_vowel_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L114) — `tests/evals/test_iterative_constraint_satisfaction.py:114`
 
 ## Summarization (`summarization`) (5 evals)
 

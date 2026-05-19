@@ -620,6 +620,9 @@ def test_grep_on_single_file_path(tmp_path: Path) -> None:
     Before #2732's fix, ripgrep was given the file path directly. Naively
     threading `cwd=base_full` would raise NotADirectoryError for file paths.
     """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
     target = tmp_path / "single.txt"
     target.write_text("hello single\n")
 
@@ -662,8 +665,38 @@ def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pyt
     matched = [m["path"] for m in result.matches]
     assert matched, "expected at least one match"
     for p in matched:
-        assert "via_link" in p, f"symlink form lost; got {p}"
-        assert "/real/" not in p, f"path was resolved through the symlink; got {p}"
+        assert str(link) in p, f"symlink form lost; got {p}"
+        assert str(real) not in p, f"path was resolved through the symlink; got {p}"
+
+
+def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: ripgrep results via symlinks that escape the root must be filtered.
+
+    A directory symlink inside `root` that points outside `root` gives ripgrep
+    access to files beyond the intended search boundary. The containment check
+    must drop those results so they never surface to callers.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("hello secret\n")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    escape = root / "escape"
+    try:
+        escape.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support directory symlinks")
+
+    monkeypatch.chdir(tmp_path)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.grep("hello", path=str(root))
+    matched = [m["path"] for m in (result.matches or [])]
+    assert not any("secret" in p for p in matched), f"containment check failed — escaping symlink leaked result: {matched}"
 
 
 class TestToVirtualPath:

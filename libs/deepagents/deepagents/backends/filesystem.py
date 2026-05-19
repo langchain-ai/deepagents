@@ -555,7 +555,7 @@ class FilesystemBackend(BackendProtocol):
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
         return GrepResult(matches=matches)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # Split except clauses for logging; dir/file + containment branches
+    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912  # C901: split except clauses for per-clause logging; PLR0912: dir/file cwd branch + containment check
         """Search using ripgrep with fixed-string (literal) mode.
 
         Args:
@@ -566,6 +566,8 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
                 Returns `None` if ripgrep is unavailable or times out.
+                Results whose resolved path lies outside `base_full` are silently
+                filtered regardless of `virtual_mode`.
         """
         cmd = ["rg", "--json", "-F"]  # -F enables fixed-string (literal) mode
         if include_glob:
@@ -574,15 +576,15 @@ class FilesystemBackend(BackendProtocol):
         # globs (e.g. "docs/*.md") silently match nothing if the process cwd
         # != search root (#2732). For a directory, set `cwd=base_full` and
         # use `.` as the search path so `--glob` resolves correctly. For a
-        # single file we keep the absolute path — chdir to a file would
-        # raise NotADirectoryError and globs are irrelevant there.
-        rg_cwd: str | None
+        # single file, leave `cwd` unset and keep the absolute path —
+        # `subprocess.run` would raise `NotADirectoryError` if passed a file
+        # path as `cwd`, and globs are irrelevant for single-file searches.
+        rg_cwd: str | None = None
         if base_full.is_dir():
             cmd.extend(["--", pattern, "."])
             rg_cwd = str(base_full)
         else:
             cmd.extend(["--", pattern, str(base_full)])
-            rg_cwd = None
 
         try:
             proc = subprocess.run(  # noqa: S603
@@ -597,6 +599,7 @@ class FilesystemBackend(BackendProtocol):
             return None
 
         results: dict[str, list[tuple[int, str]]] = {}
+        base_resolved = base_full.resolve()
         for line in proc.stdout.splitlines():
             try:
                 data = json.loads(line)
@@ -615,12 +618,17 @@ class FilesystemBackend(BackendProtocol):
             raw = Path(ftext)
             p = raw if raw.is_absolute() else (base_full / raw)
             # Defensive containment check: resolve both sides only for the
-            # comparison so symlinks inside base_full that escape the root
+            # comparison so symlinks that resolve to paths outside `base_full`
             # can't leak results, while `p` itself keeps its original shape.
+            # OSError guards against unresolvable symlink targets.
             try:
-                p.resolve().relative_to(base_full.resolve())
+                p.resolve().relative_to(base_resolved)
             except (ValueError, OSError):
-                logger.debug("Skipping grep result outside root: %s", p)
+                logger.warning(
+                    "Skipping ripgrep result outside search root: path=%s root=%s",
+                    p,
+                    base_full,
+                )
                 continue
             if self.virtual_mode:
                 try:

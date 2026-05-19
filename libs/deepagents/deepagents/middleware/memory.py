@@ -46,11 +46,16 @@ Common sections include:
 - Build/test commands
 - Code style guidelines
 - Architecture notes
+
+HTML comments (`<!-- ... -->`) are stripped before content is injected into the
+system prompt. They can be used for authoring notes or machine-managed markers
+without exposing them to the model.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Annotated, NotRequired, TypedDict
 
 if TYPE_CHECKING:
@@ -164,6 +169,13 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 """
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _strip_html_comments(text: str) -> str:
+    return _HTML_COMMENT_RE.sub("", text)
+
+
 class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     """Middleware for loading agent memory from `AGENTS.md` files.
 
@@ -270,7 +282,16 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         if not contents:
             return template.format(agent_memory="(No memory loaded)")
 
-        sections = [f"{path}\n\n{contents[path].rstrip()}" for path in self.sources if contents.get(path)]
+        sections = []
+        for path in self.sources:
+            raw = contents.get(path)
+            if not raw:
+                continue
+            stripped = _strip_html_comments(raw).rstrip()
+            if not stripped:
+                logger.debug("Memory source %s was empty after stripping HTML comments", path)
+                continue
+            sections.append(f"{path}\n\n{stripped}")
 
         if not sections:
             return template.format(agent_memory="(No memory loaded)")

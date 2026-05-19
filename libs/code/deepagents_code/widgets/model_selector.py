@@ -73,9 +73,7 @@ Used by the onboarding picker (`curated=True`) and by the in-`/model`
 "Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
 providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
 listed under each provider intentionally so the user can pick whichever
-provider they have credentials for. Keep this set in sync with the
-"Suggested models" table at
-https://docs.langchain.com/oss/python/deepagents/models.
+provider they have credentials for.
 """
 
 

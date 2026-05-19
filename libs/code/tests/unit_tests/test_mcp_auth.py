@@ -997,7 +997,15 @@ class TestLogin:
 
             async def show_notice(self, message: str) -> None: ...
 
-        assert isinstance(_CapturingUI(), OAuthInteraction)
+            async def show_error(self, message: str) -> None: ...
+
+        # Structural check: all required protocol methods are present.
+        protocol_methods = [
+            "show_authorize_url", "request_callback_url", "show_device_code",
+            "prompt_slack_team_id", "show_success", "show_notice", "show_error",
+        ]
+        ui_instance = _CapturingUI()
+        assert all(callable(getattr(ui_instance, m, None)) for m in protocol_methods)
 
         ui = _CapturingUI()
 

@@ -58,7 +58,7 @@ class OAuthProvider(ABC):
         return True
 
     def client_metadata(  # noqa: PLR6301  # subclass hook
-        self, *, redirect_uri: str | None = None
+        self, *, redirect_uri: str | None = None,
     ) -> OAuthClientMetadata:
         """Return the `OAuthClientMetadata` used to build the auth provider.
 

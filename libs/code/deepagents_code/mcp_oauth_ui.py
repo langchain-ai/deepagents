@@ -17,10 +17,9 @@ so leaks come from misuse, not from this interface's shape.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 
-@runtime_checkable
 class OAuthInteraction(Protocol):
     """User-facing OAuth interaction surface shared by CLI and TUI."""
 
@@ -91,6 +90,14 @@ class OAuthInteraction(Protocol):
         """
         ...
 
+    async def show_error(self, message: str) -> None:
+        """Report a terminal error in the flow.
+
+        Args:
+            message: Plain-text error description.
+        """
+        ...
+
 
 class CliOAuthInteraction:
     """Default `OAuthInteraction` that drives the flow via stdin/stdout.
@@ -100,7 +107,7 @@ class CliOAuthInteraction:
     """
 
     async def show_authorize_url(  # noqa: PLR6301
-        self, url: str, *, opened_in_browser: bool
+        self, url: str, *, opened_in_browser: bool,
     ) -> None:
         """Print the full authorize instruction block to stdout.
 
@@ -111,13 +118,13 @@ class CliOAuthInteraction:
             print(  # noqa: T201
                 "\nOpened your browser to approve MCP access. "
                 "If it did not open, visit this URL:\n"
-                f"\n  {url}\n"
+                f"\n  {url}\n",
             )
         else:
             print(  # noqa: T201
                 "\nOpen this URL in a browser, approve access, then paste the full "
                 "callback URL back here:\n"
-                f"\n  {url}\n"
+                f"\n  {url}\n",
             )
 
     async def request_callback_url(self) -> str:  # noqa: PLR6301
@@ -151,7 +158,7 @@ class CliOAuthInteraction:
         """Print RFC 8628 device-code instructions to stdout."""
         print(  # noqa: T201
             f"\nVisit {verification_uri} and enter code: "
-            f"{user_code}\n(code expires in {expires_in}s)\n"
+            f"{user_code}\n(code expires in {expires_in}s)\n",
         )
 
     async def prompt_slack_team_id(self) -> str | None:  # noqa: PLR6301
@@ -180,6 +187,12 @@ class CliOAuthInteraction:
     async def show_notice(self, message: str) -> None:  # noqa: PLR6301
         """Print progress notice to stdout."""
         print(message)  # noqa: T201
+
+    async def show_error(self, message: str) -> None:  # noqa: PLR6301
+        """Print error message to stderr."""
+        import sys
+
+        print(message, file=sys.stderr)  # noqa: T201
 
 
 __all__ = [

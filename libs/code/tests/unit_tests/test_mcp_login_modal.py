@@ -10,7 +10,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from deepagents_code.mcp_oauth_ui import OAuthInteraction
-from deepagents_code.widgets.mcp_login import MCPLoginScreen
+from deepagents_code.widgets.mcp_login import MCPLoginCancelledError, MCPLoginScreen
 
 
 class _LoginTestApp(App[None]):
@@ -44,7 +44,19 @@ async def _wait_for_prompt(screen: MCPLoginScreen) -> None:
 def test_mcp_login_screen_implements_oauth_interaction_protocol() -> None:
     """`MCPLoginScreen` satisfies the `OAuthInteraction` Protocol."""
     screen = MCPLoginScreen("notion")
-    assert isinstance(screen, OAuthInteraction)
+    protocol_methods = [
+        "show_authorize_url",
+        "request_callback_url",
+        "show_device_code",
+        "prompt_slack_team_id",
+        "show_success",
+        "show_notice",
+        "show_error",
+    ]
+    for method in protocol_methods:
+        assert callable(getattr(screen, method, None)), (
+            f"MCPLoginScreen missing protocol method: {method}"
+        )
 
 
 class TestMCPLoginScreen:
@@ -106,7 +118,7 @@ class TestMCPLoginScreen:
                 await pilot.press("escape")
 
             press_task = asyncio.create_task(press_escape_after_delay())
-            with pytest.raises(RuntimeError, match="cancelled"):
+            with pytest.raises(MCPLoginCancelledError, match="cancelled"):
                 await screen.request_callback_url()
             await press_task
 
@@ -215,11 +227,15 @@ class TestMCPLoginScreenWithLoginCoroutine:
                 for value in ("T01234567", "https://localhost/?code=abc"):
                     await _wait_for_prompt(screen)
                     input_widget = screen.query_one("#ml-input", Input)
+                    # Capture the pending future before submitting so we can
+                    # wait for it to resolve before driving the next prompt.
+                    pending = screen._pending_input
                     input_widget.value = value
                     input_widget.post_message(Input.Submitted(input_widget, value))
-                    # Yield so the prompt machinery completes one cycle.
-                    await asyncio.sleep(0)
-                    await asyncio.sleep(0)
+                    # Wait until the current prompt's future is resolved.
+                    if pending is not None:
+                        async with asyncio.timeout(2.0):
+                            await pending
 
             driver = asyncio.create_task(drive_prompts())
             await login(
@@ -234,3 +250,32 @@ class TestMCPLoginScreenWithLoginCoroutine:
             await driver
 
         assert captured_urls == ["abc"]
+
+
+class TestMCPLoginScreenEdgeCases:
+    """Guards and idempotency tests for `MCPLoginScreen`."""
+
+    async def test_await_input_raises_when_already_cancelled(self) -> None:
+        """Calling a prompt method on an already-cancelled screen raises immediately."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("notion")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._cancelled = True
+            with pytest.raises(MCPLoginCancelledError, match="cancelled before"):
+                await screen.request_callback_url()
+
+    async def test_finish_double_call_is_idempotent(self) -> None:
+        """A second call to `finish` is a no-op and does not raise."""
+        app = _LoginTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPLoginScreen("notion")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen.finish(success=True, message="Done.")
+            # Second call must not raise and must not change the outcome.
+            screen.finish(success=False, message="Should be ignored.")
+            assert screen._outcome == "success"

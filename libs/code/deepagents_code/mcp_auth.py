@@ -283,16 +283,14 @@ class FileTokenStorage(TokenStorage):
         except (OSError, json.JSONDecodeError) as exc:
             msg = (
                 f"Failed to read MCP token file {path}: {exc}. "
-                "Delete the file and re-run `dcode mcp login "
-                f"{self._server_name}` if it is corrupt."
+                f"Delete the file and log in to {self._server_name!r} again."
             )
             raise RuntimeError(msg) from exc
         if data.get("version") != _STORAGE_VERSION:
             msg = (
                 f"MCP token file {path} has unsupported version "
                 f"{data.get('version')!r} (expected {_STORAGE_VERSION}). "
-                "Delete it and re-run `dcode mcp login "
-                f"{self._server_name}`."
+                f"Delete it and log in to {self._server_name!r} again."
             )
             raise RuntimeError(msg)
         return data
@@ -496,7 +494,7 @@ class _LoopbackOAuthCallbackServer:
                 handler,
                 200,
                 _oauth_success_html(
-                    "MCP authorization complete. You can close this browser tab."
+                    "MCP authorization complete. You can close this browser tab.",
                 ),
             )
             return
@@ -504,7 +502,7 @@ class _LoopbackOAuthCallbackServer:
         parsed = urlparse(handler.path)
         if parsed.path != _LOOPBACK_CALLBACK_PATH:
             self._send_html(
-                handler, 404, _oauth_error_html("Callback route not found.")
+                handler, 404, _oauth_error_html("Callback route not found."),
             )
             return
 
@@ -529,7 +527,7 @@ class _LoopbackOAuthCallbackServer:
             handler,
             200,
             _oauth_success_html(
-                "MCP authorization complete. You can close this browser tab."
+                "MCP authorization complete. You can close this browser tab.",
             ),
         )
 
@@ -566,7 +564,7 @@ def _oauth_error_html(message: str) -> str:
 
 
 def _oauth_result_html(
-    *, title: str, heading: str, message: str, status: Literal["success", "error"]
+    *, title: str, heading: str, message: str, status: Literal["success", "error"],
 ) -> str:
     accent = "#137333" if status == "success" else "#b3261e"
     background = "#eef7f0" if status == "success" else "#fceeee"
@@ -606,7 +604,7 @@ class MCPReauthRequiredError(RuntimeError):
         self.server_name = server_name
         super().__init__(
             f"MCP server {server_name!r} needs re-authentication. "
-            f"Run: dcode mcp login {server_name}"
+            "Log in again to restore access.",
         )
 
 
@@ -725,8 +723,8 @@ def _make_loopback_handlers(
             # The socket is never bound because start() is not called.
             callback_server.fail(
                 _LoopbackCallbackUnavailableError(
-                    "No browser is available to complete the OAuth flow."
-                )
+                    "No browser is available to complete the OAuth flow.",
+                ),
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
@@ -741,7 +739,7 @@ def _make_loopback_handlers(
             msg = "Local OAuth callback server could not be started."
             callback_server.fail(_LoopbackCallbackUnavailableError(msg))
             await interaction.show_notice(
-                "Could not start the local OAuth callback server."
+                "Could not start the local OAuth callback server.",
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
@@ -755,7 +753,7 @@ def _make_loopback_handlers(
             _LoopbackCallbackUnavailableError,
         ) as exc:
             await interaction.show_notice(
-                f"{exc}\nPaste the full callback URL instead."
+                f"{exc}\nPaste the full callback URL instead.",
             )
             return await paste_callback()
         finally:
@@ -945,7 +943,7 @@ async def _run_device_flow(
                 )
                 raise RuntimeError(msg) from exc
 
-    msg = "Device flow timed out; re-run `dcode mcp login <server>`."
+    msg = "Device flow timed out. Try logging in again."
     raise RuntimeError(msg)
 
 

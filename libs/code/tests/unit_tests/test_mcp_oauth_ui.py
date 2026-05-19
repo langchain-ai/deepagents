@@ -9,12 +9,15 @@ end-to-end without touching `builtins.input`, `print`, or stdin.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from deepagents_code.mcp_auth import FileTokenStorage
-from deepagents_code.mcp_oauth_ui import OAuthInteraction
+
+if TYPE_CHECKING:
+    from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
 
 @pytest.fixture
@@ -57,6 +60,7 @@ class RecordingOAuthInteraction:
         self.device_codes: list[tuple[str, str, int]] = []
         self.successes: list[str] = []
         self.notices: list[str] = []
+        self.errors: list[str] = []
 
     async def show_authorize_url(self, url: str, *, opened_in_browser: bool) -> None:
         """Record the URL display call."""
@@ -93,10 +97,27 @@ class RecordingOAuthInteraction:
         """Record a progress notice."""
         self.notices.append(message)
 
+    async def show_error(self, message: str) -> None:
+        """Record an error message."""
+        self.errors.append(message)
+
 
 def test_recording_ui_satisfies_protocol() -> None:
-    """`RecordingOAuthInteraction` is a structural `OAuthInteraction`."""
-    assert isinstance(RecordingOAuthInteraction(), OAuthInteraction)
+    """`RecordingOAuthInteraction` structurally satisfies `OAuthInteraction`."""
+    protocol_methods = [
+        "show_authorize_url",
+        "request_callback_url",
+        "show_device_code",
+        "prompt_slack_team_id",
+        "show_success",
+        "show_notice",
+        "show_error",
+    ]
+    ui = RecordingOAuthInteraction()
+    for method in protocol_methods:
+        assert callable(getattr(ui, method, None)), (
+            f"RecordingOAuthInteraction missing protocol method: {method}"
+        )
 
 
 class TestLoginWithoutStdio:

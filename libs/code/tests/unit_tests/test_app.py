@@ -8399,7 +8399,7 @@ class TestMCPLoginCommand:
                     name="github",
                     transport="http",
                     status="unauthenticated",
-                    error="Run: dcode mcp login github",
+                    error="needs re-authentication",
                 ),
             ]
             with patch.object(app, "_start_mcp_login") as start_login:
@@ -8410,3 +8410,106 @@ class TestMCPLoginCommand:
                 viewer.dismiss("github")
                 await pilot.pause()
             start_login.assert_called_once_with("github")
+
+    async def test_mcp_login_rejects_while_connecting(self) -> None:
+        """`_connecting=True` prevents login until the server is ready."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._connecting = True
+            app._server_proc = MagicMock()
+            try:
+                with patch.object(app, "notify") as notify:
+                    app._start_mcp_login("notion")
+                notify.assert_called_once()
+                assert "server is ready" in notify.call_args.args[0].lower()
+                assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
+            finally:
+                app._connecting = False
+
+    async def test_mcp_login_rejects_while_server_proc_is_none(self) -> None:
+        """`_server_proc=None` prevents login until the server process exists."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._connecting = False
+            app._server_proc = None
+            with (
+                patch.object(app, "run_worker") as run_worker,
+                patch.object(app, "notify") as notify,
+            ):
+                app._start_mcp_login("notion")
+            run_worker.assert_not_called()
+            notify.assert_called_once()
+            assert "server is ready" in notify.call_args.args[0].lower()
+
+    async def test_mcp_login_rejects_while_agent_switching(self) -> None:
+        """`_agent_switching=True` refuses login with a distinct message."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._server_proc = MagicMock()
+            app._agent_switching = True
+            try:
+                with (
+                    patch.object(app, "run_worker") as run_worker,
+                    patch.object(app, "notify") as notify,
+                ):
+                    app._start_mcp_login("notion")
+                run_worker.assert_not_called()
+                assert not any(a.kind == "mcp_login" for a in app._deferred_actions)
+                notify.assert_called_once()
+                assert "agent switch" in notify.call_args.args[0].lower()
+            finally:
+                app._agent_switching = False
+
+    async def test_mcp_login_defers_while_shell_running(self) -> None:
+        """`_shell_running=True` also defers login via `DeferredAction`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._server_proc = MagicMock()
+            app._shell_running = True
+            try:
+                with patch.object(app, "run_worker") as run_worker:
+                    app._start_mcp_login("notion")
+                run_worker.assert_not_called()
+                assert any(a.kind == "mcp_login" for a in app._deferred_actions)
+            finally:
+                app._shell_running = False
+
+    async def test_mcp_unknown_subcommand_shows_help(self) -> None:
+        """An unknown `/mcp` subcommand surfaces an inline error message."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/mcp frobnicate")
+            await pilot.pause()
+            assert any(
+                "Unknown" in str(w._content) and "frobnicate" in str(w._content)
+                for w in app.query(AppMessage)
+            )

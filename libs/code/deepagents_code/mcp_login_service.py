@@ -1,11 +1,11 @@
 """UI-agnostic helpers for resolving an MCP login target.
 
-`run_mcp_login` historically inlined config discovery, trust gating,
+The MCP login flow historically inlined config discovery, trust gating,
 shape validation, and `print()`-based error reporting. The TUI cannot
-consume those print statements or `sys.exit` codes, so this module
-extracts the same logic into pure functions that return structured
-results (`ConfigResolution`, `ServerSelection`) plus a typed
-`ConfigResolutionError`. Callers decide how to render those results.
+consume those print statements, so this module extracts the same logic
+into pure functions that return structured results (`ConfigResolution`,
+`ServerSelection`) plus a typed `ConfigResolutionError`. Callers decide
+how to render those results.
 
 No `print()` calls live in this module. No imports happen at module
 top level beyond `dataclasses`/`typing`/`pathlib` so the CLI fast path
@@ -15,7 +15,7 @@ functions that need them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -104,7 +104,7 @@ class ServerSelection:
     server_name: str
     """Selected MCP server name (matches an `mcpServers` key)."""
 
-    server_config: McpServerSpec = field(default_factory=dict)
+    server_config: McpServerSpec
     """Validated server config payload for `mcp_auth.login`."""
 
     search_label: str = ""

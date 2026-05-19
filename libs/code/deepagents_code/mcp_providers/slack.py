@@ -44,18 +44,22 @@ def _is_slack_mcp_url(url: str) -> bool:
 
 
 async def _prompt_slack_team(ui: OAuthInteraction) -> str | None:
-    """Interactively ask the user which Slack workspace to install into.
+    """Return a Slack team ID when the interaction surface supports prompting.
 
-    Delegates to the supplied `OAuthInteraction` so the same flow drives
-    either the CLI stdin/stdout prompt or a TUI input widget.
+    CLI surfaces implement `prompt_slack_team_id` to interactively ask the
+    user which workspace to install into. TUI surfaces omit the method so
+    Slack's browser page handles workspace selection instead.
 
     Args:
         ui: Interaction surface to use.
 
     Returns:
-        The entered Slack team ID, or `None` if the prompt was left blank.
+        The entered Slack team ID, or `None` to let Slack's page decide.
     """
-    return await ui.prompt_slack_team_id()
+    fn = getattr(ui, "prompt_slack_team_id", None)
+    if fn is None:
+        return None
+    return await fn()
 
 
 async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:

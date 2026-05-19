@@ -3,11 +3,11 @@
 The OAuth login flow needs to ask the user a few things during the
 handshake — open or display the authorize URL, accept a pasted callback
 URL when the provider has no loopback redirect, show RFC 8628 device-code
-instructions, optionally collect a Slack team ID, and report success or
-failure. The CLI uses `print` and `input`; a TUI surface needs in-app
-widgets instead. `OAuthInteraction` is the small Protocol both
-implementations satisfy, and `CliOAuthInteraction` is the existing CLI
-behavior preserved as one implementation of that interface.
+instructions, and report success or failure. The CLI uses `print` and
+`input`; a TUI surface needs in-app widgets instead. `OAuthInteraction` is
+the small Protocol both implementations satisfy, and `CliOAuthInteraction`
+is the existing CLI behavior preserved as one implementation of that
+interface.
 
 Important: implementations must never embed access or refresh tokens
 in user-facing messages. The interaction surface only ever sees
@@ -59,14 +59,6 @@ class OAuthInteraction(Protocol):
             verification_uri: Provider URL the user visits in a browser.
             user_code: Short code the user enters on `verification_uri`.
             expires_in: Lifetime of the device code in seconds.
-        """
-        ...
-
-    async def prompt_slack_team_id(self) -> str | None:
-        """Ask the user which Slack workspace to install the app into.
-
-        Returns:
-            The entered Slack team ID, or `None` if the prompt was blank.
         """
         ...
 

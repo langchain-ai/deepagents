@@ -108,7 +108,6 @@ def test_recording_ui_satisfies_protocol() -> None:
         "show_authorize_url",
         "request_callback_url",
         "show_device_code",
-        "prompt_slack_team_id",
         "show_success",
         "show_notice",
         "show_error",

@@ -48,7 +48,6 @@ def test_mcp_login_screen_implements_oauth_interaction_protocol() -> None:
         "show_authorize_url",
         "request_callback_url",
         "show_device_code",
-        "prompt_slack_team_id",
         "show_success",
         "show_notice",
         "show_error",
@@ -57,6 +56,12 @@ def test_mcp_login_screen_implements_oauth_interaction_protocol() -> None:
         assert callable(getattr(screen, method, None)), (
             f"MCPLoginScreen missing protocol method: {method}"
         )
+
+
+def test_mcp_login_screen_has_no_slack_team_prompt() -> None:
+    """`MCPLoginScreen` does not implement `prompt_slack_team_id`; Slack's browser page picks the workspace."""
+    screen = MCPLoginScreen("notion")
+    assert not hasattr(screen, "prompt_slack_team_id")
 
 
 class TestMCPLoginScreen:
@@ -85,25 +90,6 @@ class TestMCPLoginScreen:
             result = await screen.request_callback_url()
             await submit_task
             assert result == "https://localhost/?code=abc&state=xyz"
-
-    async def test_slack_team_prompt_returns_none_when_blank(self) -> None:
-        """Submitting a blank Slack team ID resolves to `None`."""
-        app = _LoginTestApp()
-        async with app.run_test() as pilot:
-            screen = MCPLoginScreen("slack")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            async def submit_blank() -> None:
-                await _wait_for_prompt(screen)
-                input_widget = screen.query_one("#ml-input", Input)
-                input_widget.value = "  "
-                input_widget.post_message(Input.Submitted(input_widget, "  "))
-
-            task = asyncio.create_task(submit_blank())
-            result = await screen.prompt_slack_team_id()
-            await task
-            assert result is None
 
     async def test_escape_cancels_pending_prompt(self) -> None:
         """Pressing Escape mid-prompt raises `RuntimeError` for the worker."""
@@ -185,8 +171,8 @@ class TestMCPLoginScreenWithLoginCoroutine:
         """`mcp_auth.login` completes when the user pastes a callback URL.
 
         Stubs `_drive_handshake` so no network calls happen; the modal
-        receives URLs/team IDs from the user, the worker pastes the
-        callback URL, and login persists tokens.
+        only prompts for the callback URL (no Slack team ID — the TUI
+        defers workspace selection to Slack's browser page).
         """
         from mcp.shared.auth import OAuthToken
 
@@ -223,19 +209,16 @@ class TestMCPLoginScreenWithLoginCoroutine:
             await pilot.pause()
 
             async def drive_prompts() -> None:
-                # Two prompts: Slack team ID, then callback URL.
-                for value in ("T01234567", "https://localhost/?code=abc"):
-                    await _wait_for_prompt(screen)
-                    input_widget = screen.query_one("#ml-input", Input)
-                    # Capture the pending future before submitting so we can
-                    # wait for it to resolve before driving the next prompt.
-                    pending = screen._pending_input
-                    input_widget.value = value
-                    input_widget.post_message(Input.Submitted(input_widget, value))
-                    # Wait until the current prompt's future is resolved.
-                    if pending is not None:
-                        async with asyncio.timeout(2.0):
-                            await pending
+                # One prompt: callback URL only. No Slack team ID prompt in TUI.
+                await _wait_for_prompt(screen)
+                input_widget = screen.query_one("#ml-input", Input)
+                pending = screen._pending_input
+                value = "https://localhost/?code=abc"
+                input_widget.value = value
+                input_widget.post_message(Input.Submitted(input_widget, value))
+                if pending is not None:
+                    async with asyncio.timeout(2.0):
+                        await pending
 
             driver = asyncio.create_task(drive_prompts())
             await login(

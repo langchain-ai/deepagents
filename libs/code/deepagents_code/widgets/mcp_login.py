@@ -3,9 +3,9 @@
 `MCPLoginScreen` is both a Textual `ModalScreen` and an implementation of
 `OAuthInteraction`. The login worker awaits its interaction methods while
 the user sees and acts on the modal's widgets — authorize URLs become
-clickable links, paste-back callback URLs and Slack team IDs go through
-a single input row that swaps prompt text per call, device-code
-instructions render inline, and the modal closes itself on success.
+clickable links, paste-back callback URLs go through an inline input row,
+device-code instructions render inline, and the modal closes itself on
+success.
 
 The screen runs on the Textual event loop (same loop as the worker), so
 methods called from the worker can `await` modal-bound futures directly
@@ -46,10 +46,6 @@ class MCPLoginCancelledError(RuntimeError):
 
 
 _PROMPT_CALLBACK = "Paste the full callback URL after approving in the browser:"
-_PROMPT_SLACK_TEAM = (
-    "Slack team ID to install the app into "
-    "(e.g. T01234567 — leave blank to pick on Slack's page):"
-)
 
 
 class MCPLoginScreen(ModalScreen[LoginOutcome]):
@@ -57,9 +53,9 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
 
     Implements the `OAuthInteraction` Protocol structurally so a
     `mcp_auth.login(..., ui=screen)` call drives the same modal. Each
-    interaction method updates a status line, a clickable link area,
-    and an inline input prompt that flips between "callback URL" and
-    "Slack team ID" depending on the active stage.
+    interaction method updates a status line, a clickable link area, and
+    an inline input prompt for the callback URL. Slack workspace selection
+    is deferred to Slack's browser page rather than prompted inline.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -262,16 +258,6 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._append_history(
             f"Device code: visit {verification_uri} and enter {user_code}",
         )
-
-    async def prompt_slack_team_id(self) -> str | None:
-        """Ask the user for a Slack team ID, or `None` if left blank.
-
-        Returns:
-            The entered Slack team ID, or `None` when the prompt was blank.
-        """
-        value = await self._await_input(_PROMPT_SLACK_TEAM)
-        stripped = value.strip()
-        return stripped or None
 
     async def show_success(self, message: str) -> None:
         """Render a success status line and append it to the history pane."""

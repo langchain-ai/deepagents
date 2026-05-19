@@ -638,8 +638,9 @@ def _make_paste_back_handlers(
     Args:
         extra_auth_params: Extra query params to append to the auth URL.
         ui: Interaction surface for the auth URL display and the
-            pasted-back callback URL prompt. Defaults to the CLI
-            stdin/stdout implementation.
+            pasted-back callback URL prompt.
+
+            Defaults to the CLI stdin/stdout implementation.
 
     Returns:
         A tuple of `(redirect_handler, callback_handler)`.
@@ -703,6 +704,7 @@ def _make_loopback_handlers(
             The socket is bound when the returned redirect handler is first called.
         extra_auth_params: Extra query params to append to the auth URL.
         ui: Interaction surface for the browser-opened or fallback prompts.
+
             Defaults to the CLI stdin/stdout implementation.
 
     Returns:
@@ -795,8 +797,9 @@ def build_oauth_provider(
         extra_auth_params: Optional query params for the interactive auth URL.
         interactive: Whether the provider may prompt on stdin.
         ui: Interaction surface used for URL display and paste-back input
-            in interactive mode. Defaults to the CLI stdin/stdout
-            implementation.
+            in interactive mode.
+
+            Defaults to the CLI stdin/stdout implementation.
 
     Returns:
         A configured `OAuthClientProvider`.
@@ -853,8 +856,9 @@ async def _run_device_flow(
         token_url: Provider endpoint to poll for the access token.
         client_id: Registered OAuth client ID.
         scope: Optional space-delimited scope string.
-        ui: Interaction surface used to display the device code. Defaults
-            to the CLI stdin/stdout implementation.
+        ui: Interaction surface used to display the device code.
+
+            Defaults to the CLI stdin/stdout implementation.
 
     Returns:
         The issued OAuth access token payload.
@@ -1005,8 +1009,10 @@ async def login(
         server_name: Name of the configured MCP server.
         server_config: Parsed server config for that entry.
         ui: Interaction surface for all user prompts and progress
-            messages during the flow. Defaults to the CLI stdin/stdout
-            implementation, preserving prior `dcode mcp login` behavior.
+            messages during the flow.
+
+            Defaults to the CLI stdin/stdout implementation, preserving
+            prior `dcode mcp login` behavior.
 
     Raises:
         ValueError: If `server_config` isn't an OAuth http/sse server.

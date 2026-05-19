@@ -5,8 +5,7 @@ shape validation, and `print()`-based error reporting. The TUI cannot
 consume those print statements or `sys.exit` codes, so this module
 extracts the same logic into pure functions that return structured
 results (`ConfigResolution`, `ServerSelection`) plus a typed
-`ConfigResolutionError`. Callers — the CLI today, the TUI tomorrow —
-decide how to render those results.
+`ConfigResolutionError`. Callers decide how to render those results.
 
 No `print()` calls live in this module. No imports happen at module
 top level beyond `dataclasses`/`typing`/`pathlib` so the CLI fast path
@@ -111,7 +110,7 @@ def resolve_mcp_config(
 
     Returns:
         A `ConfigResolution` on success, or a `ConfigResolutionError`
-        describing why no usable config could be assembled.
+            describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
         classify_discovered_configs,
@@ -201,7 +200,7 @@ def select_server(
 
     Returns:
         A `ServerSelection` on success, or a `ConfigResolutionError`
-        describing why the server entry is unusable.
+            describing why the server entry is unusable.
     """
     from deepagents_code.mcp_tools import _validate_server_config
 

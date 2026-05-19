@@ -103,7 +103,7 @@ class SlackProvider(OAuthProvider):
     def client_metadata(  # noqa: PLR6301  # subclass hook
         self, *, redirect_uri: str | None = None
     ) -> OAuthClientMetadata:
-        """Return public-client metadata with Slack's static pre-registered redirect URI.
+        """Return public-client metadata with Slack's static pre-registered URI.
 
         Args:
             redirect_uri: Ignored; Slack requires its static pre-registered URI.

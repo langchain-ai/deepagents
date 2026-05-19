@@ -893,6 +893,89 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         raise RuntimeError(msg)
 
 
+def _normalize_mcp_tool_content(content: Any) -> Any:  # noqa: ANN401
+    """Flatten MCP-style content-block lists to a plain string when possible.
+
+    `langchain-mcp-adapters._convert_call_tool_result` may return tool content
+    as a list of content blocks shaped like `[{"type": "text", "text": ...}]`.
+    Anthropic accepts that directly, but other providers (OpenAI, Bedrock,
+    Gemini-via-OpenAI, etc.) validate `messages[].content` as a string and
+    reject the whole request with:
+
+        Input should be a valid string, field: 'messages[N].content.str'
+
+    The transform is conservative: it only touches list inputs whose every
+    element is a `{"type": "text", "text": <str>}` block, and only collapses
+    to a string when at least one text block is present. Non-text blocks
+    (`image`, `resource`, etc.) keep the list shape intact so providers that
+    do accept multimodal lists still see them. Anything else (already a
+    string, a single dict, etc.) is returned unchanged.
+
+    Args:
+        content: The first element of the tuple returned by
+            `_convert_call_tool_result` (i.e. the value that will become
+            `ToolMessage.content`).
+
+    Returns:
+        Either a joined plain string, or the original value unchanged.
+    """
+    if not isinstance(content, list) or not content:
+        return content
+    parts: list[str] = []
+    for block in content:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ):
+            parts.append(block["text"])
+            continue
+        # A non-text block (image / resource / unknown) — leave the list
+        # as-is so multimodal-capable providers still receive the structured
+        # payload.
+        return content
+    if not parts:
+        return content
+    return "".join(parts)
+
+
+def _wrap_stateless_tool_for_content_normalization(tool: BaseTool) -> BaseTool:
+    """Wrap a stateless MCP tool so its content is normalized before return.
+
+    `convert_mcp_tool_to_langchain_tool` produces a `StructuredTool` whose
+    `coroutine` returns the upstream `_convert_call_tool_result` tuple
+    unchanged. Re-bind that coroutine through `_normalize_mcp_tool_content`
+    so the stateless path benefits from the same provider-safety fix as
+    the cached path in `_build_cached_mcp_tool`.
+
+    Args:
+        tool: The stateless MCP-backed tool to wrap.
+
+    Returns:
+        The same tool with its `coroutine` patched in place. If the tool
+        does not expose a coroutine attribute (older adapter versions),
+        it is returned unchanged.
+    """
+    original = getattr(tool, "coroutine", None)
+    if original is None:
+        return tool
+
+    async def _wrapped(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        result = await original(*args, **kwargs)
+        if isinstance(result, tuple) and result:
+            normalized = _normalize_mcp_tool_content(result[0])
+            return (normalized, *result[1:])
+        return _normalize_mcp_tool_content(result)
+
+    try:
+        tool.coroutine = _wrapped  # type: ignore[attr-defined]
+    except (AttributeError, ValueError):
+        # Pydantic models can reject direct attribute assignment; fall back
+        # to leaving the tool untouched rather than crashing tool loading.
+        return tool
+    return tool
+
+
 async def _discover_tools(session: ClientSession) -> list[Any]:
     """Enumerate MCP tools from `session`, paginating until exhausted.
 
@@ -1035,7 +1118,15 @@ def _build_cached_mcp_tool(
                             exc_info=True,
                         )
 
-        return _convert_call_tool_result(result)
+        converted = _convert_call_tool_result(result)
+        # `response_format="content_and_artifact"` -> StructuredTool reads
+        # this as `(content, artifact)`. Normalize the content half so MCP
+        # content-block lists don't crash providers that require
+        # `messages[].content` to be a plain string.
+        if isinstance(converted, tuple) and converted:
+            normalized_content = _normalize_mcp_tool_content(converted[0])
+            return (normalized_content, *converted[1:])
+        return _normalize_mcp_tool_content(converted)
 
     return StructuredTool(
         name=lc_tool_name,
@@ -1322,12 +1413,14 @@ async def _load_tools_from_config(
 
         if runtime_manager is None:
             server_tools = [
-                convert_mcp_tool_to_langchain_tool(
-                    None,
-                    mcp_tool,
-                    connection=connections[server_name],
-                    server_name=server_name,
-                    tool_name_prefix=True,
+                _wrap_stateless_tool_for_content_normalization(
+                    convert_mcp_tool_to_langchain_tool(
+                        None,
+                        mcp_tool,
+                        connection=connections[server_name],
+                        server_name=server_name,
+                        tool_name_prefix=True,
+                    )
                 )
                 for mcp_tool in mcp_tools
             ]

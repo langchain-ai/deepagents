@@ -25,6 +25,7 @@ from deepagents_code.mcp_tools import (
     _check_remote_server,
     _check_stdio_server,
     _load_tools_from_config,
+    _normalize_mcp_tool_content,
     classify_discovered_configs,
     discover_mcp_configs,
     extract_project_server_summaries,
@@ -2426,3 +2427,43 @@ class TestToolFilterEndToEnd:
         assert names == ["api_search", "fs_read_file"]
         assert manager is not None
         await manager.cleanup()
+
+
+class TestNormalizeMCPToolContent:
+    """`_normalize_mcp_tool_content` keeps provider-required string shape."""
+
+    def test_single_text_block_collapses_to_string(self) -> None:
+        result = _normalize_mcp_tool_content(
+            [{"type": "text", "text": "# Search Results"}]
+        )
+        assert result == "# Search Results"
+
+    def test_multiple_text_blocks_join(self) -> None:
+        result = _normalize_mcp_tool_content(
+            [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ]
+        )
+        assert result == "firstsecond"
+
+    def test_plain_string_passthrough(self) -> None:
+        assert _normalize_mcp_tool_content("already a string") == "already a string"
+
+    def test_empty_list_passthrough(self) -> None:
+        # An empty content list is provider-rejecting either way; leave the
+        # shape unchanged rather than synthesizing data.
+        assert _normalize_mcp_tool_content([]) == []
+
+    def test_mixed_blocks_keep_list_shape(self) -> None:
+        mixed = [
+            {"type": "text", "text": "caption"},
+            {"type": "image", "data": "..."},
+        ]
+        assert _normalize_mcp_tool_content(mixed) is mixed
+
+    def test_non_string_text_field_keeps_list(self) -> None:
+        # Defensive: text-typed block carrying a non-string `.text` is not
+        # safe to collapse — keep the list so the upstream issue is visible.
+        weird = [{"type": "text", "text": 123}]
+        assert _normalize_mcp_tool_content(weird) is weird

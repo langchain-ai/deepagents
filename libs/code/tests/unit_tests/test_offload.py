@@ -288,14 +288,17 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             mock_agent = app._agent
-            # Two aupdate_state calls: _summarization_event + _context_tokens
-            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            # Single aupdate_state call: _summarization_event + _context_tokens
+            # ride along together to share a checkpoint and avoid a separate
+            # standalone `UpdateState` LangSmith run.
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
             assert event["cutoff_index"] == 4
             assert event["summary_message"] is not None
             assert event["file_path"] == "/conversation_history/test-thread.md"
+            assert "_context_tokens" in update_values
 
     async def test_offload_shows_feedback_message(self) -> None:
         """Should display feedback with message count and token change."""
@@ -513,7 +516,7 @@ class TestReOffload:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
@@ -598,7 +601,7 @@ class TestOffloadErrorHandling:
                 await pilot.pause()
 
             mock_agent = app._agent
-            assert mock_agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            assert mock_agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
 
             update_values = mock_agent.aupdate_state.call_args_list[0][0][1]  # type: ignore[union-attr]
             event = update_values["_summarization_event"]
@@ -1190,8 +1193,8 @@ class TestOffloadProfileOverride:
                 await app._handle_offload()
                 await pilot.pause()
 
-            # State should have been updated (offload + _context_tokens)
-            assert app._agent.aupdate_state.call_count == 2  # type: ignore[union-attr]
+            # Single state update folds offload + _context_tokens together.
+            assert app._agent.aupdate_state.call_count == 1  # type: ignore[union-attr]
             kwargs = mock_perform.call_args.kwargs
             assert kwargs["context_limit"] == 4096
 

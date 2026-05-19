@@ -1306,6 +1306,9 @@ async def execute_task_textual(
                     )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    # Model call already completed (HITL interrupt fires after
+                    # the model node); `TokenStateMiddleware.aafter_model`
+                    # persisted the count, so only refresh UI here.
                     await _report_and_persist_tokens(
                         adapter,
                         agent,
@@ -1313,6 +1316,7 @@ async def execute_task_textual(
                         captured_input_tokens,
                         captured_output_tokens,
                         shield=True,
+                        persist=False,
                     )
                     return turn_stats
 
@@ -1334,7 +1338,8 @@ async def execute_task_textual(
         )
         return turn_stats
 
-    # Update token count and return stats
+    # Update token count and return stats. Persistence is handled inside the
+    # graph by `TokenStateMiddleware.aafter_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     await _report_and_persist_tokens(
         adapter,
@@ -1342,6 +1347,7 @@ async def execute_task_textual(
         config,
         captured_input_tokens,
         captured_output_tokens,
+        persist=False,
     )
     return turn_stats
 
@@ -1504,8 +1510,15 @@ async def _report_and_persist_tokens(
     *,
     shield: bool = False,
     approximate: bool = False,
+    persist: bool = True,
 ) -> None:
-    """Update the token display and best-effort persist to graph state.
+    """Update the token display and optionally persist to graph state.
+
+    On normal end-of-turn completion, `TokenStateMiddleware.aafter_model`
+    already wrote `_context_tokens` inside the graph run, so callers can pass
+    `persist=False` to update only the UI. The persist path remains for
+    interrupt / rejection cleanup where `after_model` never ran on the partial
+    turn and a stale count would otherwise be surfaced on resume.
 
     Args:
         adapter: UI adapter with token callbacks.
@@ -1517,10 +1530,14 @@ async def _report_and_persist_tokens(
             persist call so that interrupt handlers can safely await this.
         approximate: When `True`, signal to the UI that the count is stale
             (e.g. after an interrupted generation) by appending "+".
+        persist: When `False`, skip the client-side persist (middleware
+            already wrote `_context_tokens` during the model node).
     """
     if captured_input_tokens or captured_output_tokens:
         if adapter._on_tokens_update:
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
+        if not persist:
+            return
         if shield:
             try:
                 await _persist_context_tokens(agent, config, captured_input_tokens)

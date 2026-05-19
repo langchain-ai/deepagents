@@ -5556,9 +5556,15 @@ class DeepAgentsApp(App):
 
             # Intentionally traced: the summarization event is a meaningful state
             # transition that should surface in LangSmith alongside real agent turns.
+            # The new `_context_tokens` count rides along on the same update so it
+            # shares a checkpoint with the offload and doesn't create a separate
+            # `UpdateState` run.
             await self._agent.aupdate_state(
                 config,
-                {"_summarization_event": result.new_event},
+                {
+                    "_summarization_event": result.new_event,
+                    "_context_tokens": result.tokens_after,
+                },
             )
 
             before = format_token_count(result.tokens_before)
@@ -5574,9 +5580,6 @@ class DeepAgentsApp(App):
             )
 
             self._on_tokens_update(result.tokens_after)
-            from deepagents_code.textual_adapter import _persist_context_tokens
-
-            await _persist_context_tokens(self._agent, config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)

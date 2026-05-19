@@ -1,3 +1,4 @@
+import shutil
 import warnings
 from pathlib import Path
 
@@ -557,6 +558,145 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     matches = be.grep(pattern, path="/").matches
     assert matches is not None
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
+
+
+def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732.
+
+    ripgrep `--glob` patterns with a directory component (e.g. `docs/*.md`)
+    must still match when the process cwd differs from the search root.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    root = tmp_path / "project"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "guide.md").write_text("hello world\n")
+    (root / "notes.md").write_text("hello world\n")
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+
+    matches = be.grep("hello", path=str(root), glob="docs/*.md").matches
+    assert matches is not None
+    matched_paths = [m["path"] for m in matches]
+    assert any(p.endswith("docs/guide.md") for p in matched_paths), f"expected docs/guide.md in {matched_paths}"
+    assert not any(p.endswith("notes.md") for p in matched_paths), f"glob should have excluded notes.md but matched {matched_paths}"
+
+
+def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732, virtual mode variant.
+
+    Exercises the relative-path re-anchoring through `_to_virtual_path` so a
+    regression in path handling can't silently drop results.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    root = tmp_path / "project"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "guide.md").write_text("hello world\n")
+    (root / "notes.md").write_text("hello world\n")
+
+    other_cwd = tmp_path / "elsewhere"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    matches = be.grep("hello", path="/", glob="docs/*.md").matches
+    assert matches is not None
+    matched_paths = [m["path"] for m in matches]
+    assert any(p == "/docs/guide.md" for p in matched_paths), f"expected /docs/guide.md in {matched_paths}"
+    assert not any("notes" in p for p in matched_paths), f"glob should have excluded notes.md but matched {matched_paths}"
+
+
+def test_grep_on_single_file_path(tmp_path: Path) -> None:
+    """Regression test: grep with `path` pointing at a single file must not crash.
+
+    Before #2732's fix, ripgrep was given the file path directly. Naively
+    threading `cwd=base_full` would raise NotADirectoryError for file paths.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    target = tmp_path / "single.txt"
+    target.write_text("hello single\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(target))
+    assert result.error is None, f"unexpected error: {result.error}"
+    assert result.matches is not None
+    assert any(m["path"].endswith("single.txt") for m in result.matches)
+
+
+def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2732: result paths must keep symlink form.
+
+    Pre-fix, ripgrep emitted absolute paths exactly as it crawled them — no
+    `.resolve()` was applied — so users saw the symlinked path they searched
+    under. The fix must preserve that behavior.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "target.txt").write_text("hello symlink\n")
+
+    root = tmp_path / "project"
+    root.mkdir()
+    link = root / "via_link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support directory symlinks")
+
+    monkeypatch.chdir(tmp_path)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.grep("hello", path=str(link))
+    assert result.error is None
+    assert result.matches is not None
+    matched = [m["path"] for m in result.matches]
+    assert matched, "expected at least one match"
+    for p in matched:
+        assert str(link) in p, f"symlink form lost; got {p}"
+        assert str(real) not in p, f"path was resolved through the symlink; got {p}"
+
+
+def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: ripgrep results via symlinks that escape the root must be filtered.
+
+    A directory symlink inside `root` that points outside `root` gives ripgrep
+    access to files beyond the intended search boundary. The containment check
+    must drop those results so they never surface to callers.
+    """
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep not installed")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("hello secret\n")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    escape = root / "escape"
+    try:
+        escape.symlink_to(outside, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support directory symlinks")
+
+    monkeypatch.chdir(tmp_path)
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
+    result = be.grep("hello", path=str(root))
+    matched = [m["path"] for m in (result.matches or [])]
+    assert not any("secret" in p for p in matched), f"containment check failed — escaping symlink leaked result: {matched}"
 
 
 class TestToVirtualPath:

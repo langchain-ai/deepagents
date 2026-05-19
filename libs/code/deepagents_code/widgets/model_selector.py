@@ -49,21 +49,48 @@ from the per-provider sections below.
 """
 
 
-_FRONTIER_RECOMMENDED_MODELS: frozenset[str] = frozenset(
+_RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+        "baseten:deepseek-ai/DeepSeek-V4-Pro",
         "baseten:moonshotai/Kimi-K2.6",
+        "baseten:zai-org/GLM-5",
+        "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+        "fireworks:accounts/fireworks/models/glm-5p1",
+        "fireworks:accounts/fireworks/models/kimi-k2p6",
+        "fireworks:accounts/fireworks/models/minimax-m2p7",
+        "fireworks:accounts/fireworks/models/qwen3p6-plus",
+        "google_genai:gemini-3-flash-preview",
         "google_genai:gemini-3.1-pro-preview",
+        "ollama:deepseek-v4-flash:cloud",
         "ollama:deepseek-v4-pro:cloud",
         "ollama:glm-5.1:cloud",
         "ollama:kimi-k2.6:cloud",
         "ollama:minimax-m2.7:cloud",
         "openai:gpt-5.4",
+        "openai:gpt-5.4-mini",
+        "openai:gpt-5.4-pro",
         "openai:gpt-5.5",
+        "openai:gpt-5.5-pro",
+        "openrouter:anthropic/claude-opus-4.6",
+        "openrouter:anthropic/claude-opus-4.7",
+        "openrouter:anthropic/claude-opus-4.7-fast",
+        "openrouter:anthropic/claude-sonnet-4.6",
+        "openrouter:deepseek/deepseek-v4-flash",
+        "openrouter:deepseek/deepseek-v4-flash:free",
         "openrouter:deepseek/deepseek-v4-pro",
+        "openrouter:google/gemini-3-flash-preview",
+        "openrouter:google/gemini-3.1-pro-preview",
         "openrouter:minimax/minimax-m2.7",
         "openrouter:moonshotai/kimi-k2.6",
+        "openrouter:openai/gpt-5.4",
+        "openrouter:openai/gpt-5.4-mini",
+        "openrouter:openai/gpt-5.4-pro",
+        "openrouter:openai/gpt-5.5",
+        "openrouter:openai/gpt-5.5-pro",
+        "openrouter:z-ai/glm-5",
         "openrouter:z-ai/glm-5.1",
     }
 )
@@ -527,7 +554,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         frontier = [
             (spec, provider)
             for spec, provider in all_models
-            if spec in _FRONTIER_RECOMMENDED_MODELS
+            if spec in _RECOMMENDED_MODELS
         ]
         return frontier or all_models
 

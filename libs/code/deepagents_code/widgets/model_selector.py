@@ -355,7 +355,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 "Showing recommended models — Ctrl+R for all",
             )
         return Content.styled(
-            "Showing models from installed providers — Ctrl+R for recommended",
+            "Showing all models from installed providers — Ctrl+R for recommended",
         )
 
     def _help_text(self) -> str:

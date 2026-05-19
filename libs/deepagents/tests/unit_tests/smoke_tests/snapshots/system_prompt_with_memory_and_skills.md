@@ -63,6 +63,8 @@ You have access to a skills library that provides specialized capabilities and d
 **User Skills**: `/skills/user/`
 **Project Skills**: `/skills/project/` (higher priority)
 
+Sources labeled "Deepagents" are specific to this agent tool; sources labeled "Agents" are shared across all agent tools on this machine.
+
 **Available Skills:**
 
 - **web-research**: Structured approach to conducting thorough web research on any topic

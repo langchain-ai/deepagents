@@ -42,6 +42,7 @@ _TIPS: dict[str, int] = {
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
     "Use /mcp to search your MCP servers and inspect tool parameters": 1,
+    "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Press ctrl+x to compose prompts in your external editor": 1,
@@ -385,7 +386,7 @@ class WelcomeBanner(Static):
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
             unauth_text = (
                 f"{self._mcp_unauthenticated} MCP {server_label} need login "
-                "— run `dcode mcp login <server>`\n"
+                "— open /mcp or run `/mcp login <server>`\n"
             )
             parts.extend(
                 [

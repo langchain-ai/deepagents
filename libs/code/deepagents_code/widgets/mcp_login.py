@@ -1,0 +1,388 @@
+"""In-TUI MCP OAuth login modal.
+
+`MCPLoginScreen` is both a Textual `ModalScreen` and an implementation of
+`OAuthInteraction`. The login worker awaits its interaction methods while
+the user sees and acts on the modal's widgets — authorize URLs become
+clickable links, paste-back callback URLs and Slack team IDs go through
+a single input row that swaps prompt text per call, device-code
+instructions render inline, and the modal closes itself on success.
+
+The screen runs on the Textual event loop (same loop as the worker), so
+methods called from the worker can `await` modal-bound futures directly
+without `app.call_from_thread`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import TYPE_CHECKING, ClassVar, Literal
+
+from textual.binding import Binding, BindingType
+from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
+from textual.screen import ModalScreen
+from textual.style import Style as TStyle
+from textual.widgets import Input, Static
+
+from deepagents_code import theme
+from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.widgets.loading import Spinner
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.timer import Timer
+
+
+LoginOutcome = Literal["success", "cancelled", "failed"]
+"""Discriminator returned by the modal when it dismisses."""
+
+
+_PROMPT_CALLBACK = "Paste the full callback URL after approving in the browser:"
+_PROMPT_SLACK_TEAM = (
+    "Slack team ID to install the app into "
+    "(e.g. T01234567 — leave blank to pick on Slack's page):"
+)
+
+
+class MCPLoginScreen(ModalScreen[LoginOutcome]):
+    """Modal that renders the OAuth login flow and collects user input.
+
+    Implements the `OAuthInteraction` Protocol structurally so a
+    `mcp_auth.login(..., ui=screen)` call drives the same modal. Each
+    interaction method updates a status line, a clickable link area,
+    and an inline input prompt that flips between "callback URL" and
+    "Slack team ID" depending on the active stage.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+    """Esc requests cancellation. The login worker still owns shutdown."""
+
+    CSS = """
+    MCPLoginScreen {
+        align: center middle;
+    }
+
+    MCPLoginScreen > Vertical {
+        width: 80;
+        max-width: 92%;
+        height: auto;
+        max-height: 85%;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    MCPLoginScreen .ml-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MCPLoginScreen .ml-status {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    MCPLoginScreen .ml-link {
+        height: auto;
+        color: $accent;
+        margin-bottom: 1;
+    }
+
+    MCPLoginScreen .ml-history {
+        height: auto;
+        max-height: 8;
+        background: $surface-lighten-1;
+        margin-bottom: 1;
+    }
+
+    MCPLoginScreen .ml-history-line {
+        height: 1;
+        color: $text-muted;
+        padding: 0 1;
+    }
+
+    MCPLoginScreen .ml-prompt {
+        height: 1;
+        color: $text;
+    }
+
+    MCPLoginScreen #ml-input {
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    MCPLoginScreen #ml-input:focus {
+        border: solid $primary;
+    }
+
+    MCPLoginScreen .ml-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, server_name: str) -> None:
+        """Initialize a login modal for `server_name`.
+
+        Args:
+            server_name: MCP server name shown in the modal title.
+        """
+        super().__init__()
+        self._server_name = server_name
+        self._status = f"Starting OAuth login for {server_name}…"
+        self._authorize_url: str | None = None
+        self._opened_in_browser = False
+        self._title_widget: Static | None = None
+        self._status_widget: Static | None = None
+        self._link_widget: Static | None = None
+        self._history_widget: VerticalScroll | None = None
+        self._prompt_widget: Static | None = None
+        self._input_widget: Input | None = None
+        self._help_widget: Static | None = None
+        self._spinner = Spinner()
+        self._spinner_timer: Timer | None = None
+
+        # Promise plumbing: each prompt method blocks on a fresh Future
+        # that the input submission resolves. Cancellation completes any
+        # outstanding future with a CancelledError so the worker unblocks.
+        self._pending_input: asyncio.Future[str] | None = None
+        self._cancelled = False
+        self._done = False
+        self._outcome: LoginOutcome | None = None
+
+    def compose(self) -> ComposeResult:
+        """Compose the modal body.
+
+        Yields:
+            Vertical container holding status, optional link, history,
+            prompt label, input, and a help footer.
+        """
+        with Vertical():
+            self._title_widget = Static(
+                f"MCP login: {self._server_name}", classes="ml-title"
+            )
+            yield self._title_widget
+            self._status_widget = Static(self._status, classes="ml-status")
+            yield self._status_widget
+            self._link_widget = Static("", classes="ml-link")
+            self._link_widget.display = False
+            yield self._link_widget
+            self._history_widget = VerticalScroll(classes="ml-history")
+            self._history_widget.display = False
+            yield self._history_widget
+            self._prompt_widget = Static("", classes="ml-prompt")
+            self._prompt_widget.display = False
+            yield self._prompt_widget
+            self._input_widget = Input(id="ml-input")
+            self._input_widget.display = False
+            yield self._input_widget
+            self._help_widget = Static("Esc to cancel", classes="ml-help")
+            yield self._help_widget
+
+    def on_mount(self) -> None:
+        """Apply ASCII border when configured and start the spinner ticker."""
+        if is_ascii_mode():
+            container = self.query_one(Vertical)
+            colors = theme.get_theme_colors(self)
+            container.styles.border = ("ascii", colors.primary)
+        self._spinner_timer = self.set_interval(0.1, self._tick_spinner)
+
+    # ------------------------------------------------------------------
+    # OAuthInteraction implementation.
+    # ------------------------------------------------------------------
+
+    async def show_authorize_url(self, url: str, *, opened_in_browser: bool) -> None:
+        """Render the authorize URL as a clickable link with surrounding text."""
+        self._authorize_url = url
+        self._opened_in_browser = opened_in_browser
+        if opened_in_browser:
+            self._set_status(
+                f"Opened your browser to approve access for {self._server_name}."
+            )
+        else:
+            self._set_status("Open the authorize URL below in a browser to continue.")
+        if self._link_widget is not None:
+            self._link_widget.display = True
+            self._link_widget.update(
+                Content.assemble(
+                    ("Authorize URL: ", "bold"),
+                    (url, TStyle(link=url, underline=True)),
+                )
+            )
+        self._append_history(f"Authorize URL: {url}")
+
+    async def request_callback_url(self) -> str:
+        """Wait for the user to paste back the OAuth callback URL.
+
+        Returns:
+            The trimmed callback URL.
+        """
+        return await self._await_input(_PROMPT_CALLBACK)
+
+    async def show_device_code(
+        self,
+        *,
+        verification_uri: str,
+        user_code: str,
+        expires_in: int,
+    ) -> None:
+        """Render RFC 8628 device-code instructions inline."""
+        self._set_status(
+            f"Visit the URL below and enter the code (expires in {expires_in}s):"
+        )
+        if self._link_widget is not None:
+            self._link_widget.display = True
+            self._link_widget.update(
+                Content.assemble(
+                    ("Verification URL: ", "bold"),
+                    (verification_uri, TStyle(link=verification_uri, underline=True)),
+                    ("\nUser code: ", "bold"),
+                    (user_code, "bold"),
+                )
+            )
+        self._append_history(
+            f"Device code: visit {verification_uri} and enter {user_code}"
+        )
+
+    async def prompt_slack_team_id(self) -> str | None:
+        """Ask the user for a Slack team ID, or `None` if left blank.
+
+        Returns:
+            The entered Slack team ID, or `None` when the prompt was blank.
+        """
+        value = await self._await_input(_PROMPT_SLACK_TEAM)
+        stripped = value.strip()
+        return stripped or None
+
+    async def show_success(self, message: str) -> None:
+        """Render a success line and stop the spinner."""
+        self._set_status(message)
+        self._append_history(message)
+
+    async def show_notice(self, message: str) -> None:
+        """Append a progress notice without disrupting the active prompt."""
+        self._append_history(message)
+
+    # ------------------------------------------------------------------
+    # Internal helpers.
+    # ------------------------------------------------------------------
+
+    def _set_status(self, message: str) -> None:
+        """Update the top status line."""
+        self._status = message
+        if self._status_widget is not None:
+            self._status_widget.update(message)
+
+    def _append_history(self, line: str) -> None:
+        """Append a line to the scrolling history pane."""
+        if self._history_widget is None:
+            return
+        self._history_widget.display = True
+        self._history_widget.mount(Static(line, classes="ml-history-line"))
+        self._history_widget.scroll_end(animate=False)
+
+    async def _await_input(self, prompt: str) -> str:
+        """Show `prompt`, wait for `Enter`, and return the typed value.
+
+        Returns:
+            The raw input value the user submitted, without stripping.
+
+        Raises:
+            RuntimeError: When the modal is cancelled before submission.
+        """
+        if self._cancelled:
+            msg = "MCP login was cancelled before the prompt could be shown."
+            raise RuntimeError(msg)
+        if self._pending_input is not None:
+            msg = (
+                "MCP login modal cannot have two concurrent input prompts; "
+                "the previous prompt was not resolved."
+            )
+            raise RuntimeError(msg)
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        self._pending_input = future
+        if self._prompt_widget is not None:
+            self._prompt_widget.display = True
+            self._prompt_widget.update(prompt)
+        if self._input_widget is not None:
+            self._input_widget.value = ""
+            self._input_widget.display = True
+            self._input_widget.focus()
+        try:
+            return await future
+        finally:
+            self._pending_input = None
+            if self._input_widget is not None:
+                self._input_widget.display = False
+            if self._prompt_widget is not None:
+                self._prompt_widget.display = False
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Resolve the active prompt with the submitted value."""
+        if event.input.id != "ml-input":
+            return
+        future = self._pending_input
+        if future is not None and not future.done():
+            future.set_result(event.value)
+
+    def action_cancel(self) -> None:
+        """Cancel the login flow.
+
+        Sets a cancelled flag, completes any outstanding prompt with a
+        `RuntimeError` so the worker unblocks, and dismisses the modal
+        with the `cancelled` outcome so the app can skip the restart.
+        """
+        if self._done:
+            return
+        self._cancelled = True
+        self._done = True
+        self._outcome = "cancelled"
+        future = self._pending_input
+        if future is not None and not future.done():
+            future.set_exception(RuntimeError("MCP login was cancelled by the user."))
+        self._stop_spinner_timer()
+        self.dismiss("cancelled")
+
+    def finish(self, *, success: bool, message: str | None = None) -> None:
+        """Close the modal from the worker, reporting the final outcome.
+
+        Args:
+            success: `True` when login succeeded; drives the dismiss value.
+            message: Optional final status line shown before close.
+        """
+        if self._done:
+            return
+        self._done = True
+        self._outcome = "success" if success else "failed"
+        if message is not None:
+            self._set_status(message)
+            self._append_history(message)
+        self._stop_spinner_timer()
+        # Mark spinner area with check / cross via status — no widget swap.
+        glyphs = get_glyphs()
+        marker = glyphs.checkmark if success else glyphs.error
+        if self._title_widget is not None:
+            self._title_widget.update(f"MCP login: {self._server_name} {marker}")
+        # Defer dismiss so the user sees the final status briefly.
+        self.set_timer(0.6, lambda: self.dismiss(self._outcome or "failed"))
+
+    def _tick_spinner(self) -> None:
+        """Advance the title spinner while login is in progress."""
+        if self._done or self._title_widget is None:
+            return
+        frame = self._spinner.next_frame()
+        self._title_widget.update(f"MCP login: {self._server_name} {frame}")
+
+    def _stop_spinner_timer(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None

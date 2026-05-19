@@ -721,6 +721,7 @@ DeferredActionKind = Literal[
     "thread_switch",
     "chat_output",
     "agent_switch",
+    "mcp_login",
 ]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
@@ -5036,6 +5037,10 @@ class DeepAgentsApp(App):
             await self._handle_skill_command(rewritten)
         elif cmd == "/mcp":
             await self._show_mcp_viewer()
+        elif cmd.startswith("/mcp "):
+            args = command.strip()[len("/mcp ") :].strip()
+            await self._mount_message(UserMessage(command))
+            await self._handle_mcp_subcommand(args)
         elif cmd in {"/auth", "/connect"}:
             await self._show_auth_manager()
         elif cmd == "/theme":
@@ -8042,8 +8047,42 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    async def _handle_mcp_subcommand(self, args: str) -> None:
+        """Dispatch `/mcp <subcommand>` strings.
+
+        Currently supports `login <server>`; unknown subcommands surface
+        an inline help message.
+
+        Args:
+            args: Everything after `/mcp ` (already stripped).
+        """
+        parts = args.split(maxsplit=1)
+        if not parts:
+            await self._show_mcp_viewer()
+            return
+        subcommand = parts[0].lower()
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if subcommand == "login":
+            if not rest:
+                await self._mount_message(AppMessage("Usage: /mcp login <server>"))
+                return
+            server_name = rest.split()[0]
+            self._start_mcp_login(server_name)
+            return
+        await self._mount_message(
+            AppMessage(
+                f"Unknown `/mcp` subcommand: {subcommand!r}. "
+                "Try `/mcp` or `/mcp login <server>`."
+            )
+        )
+
     async def _show_mcp_viewer(self) -> None:
-        """Show read-only MCP server/tool viewer as a modal screen."""
+        """Show the MCP server/tool viewer as a modal screen.
+
+        The viewer may dismiss with a server name (when the user activates
+        an `unauthenticated` header row to start in-TUI OAuth login) or
+        with `None` (close without action).
+        """
         from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
 
         screen = MCPViewerScreen(
@@ -8052,12 +8091,254 @@ class DeepAgentsApp(App):
         )
         self._active_mcp_viewer = screen
 
-        def handle_result(result: None) -> None:  # noqa: ARG001
+        def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
-            if self._chat_input:
+            if result:
+                # User picked an unauthenticated server — start login.
+                self._start_mcp_login(result)
+            elif self._chat_input:
                 self._chat_input.focus_input()
 
         self.push_screen(screen, handle_result)
+
+    def _start_mcp_login(self, server_name: str) -> None:
+        """Begin in-TUI OAuth login for `server_name`.
+
+        Guards against remote-server mode (no owned server to restart),
+        an absent local server, missing MCP config, an unknown server
+        name, and busy states. When the session is mid-run, the login
+        attempt is queued via `_defer_action` and runs once the user is
+        idle.
+
+        Args:
+            server_name: MCP server name from `mcpServers`.
+        """
+        if self._mcp_preload_kwargs is None:
+            self.notify(
+                "MCP is disabled in this session; nothing to log into.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._server_kwargs is None:
+            # Remote-server mode: we cannot restart the server, so the new
+            # token would never reach the MCP tool factory.
+            self.notify(
+                "Cannot log into MCP servers against a remote server. "
+                "Relaunch deepagents locally to authenticate.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._connecting or self._server_proc is None:
+            self.notify(
+                "MCP login is unavailable until the local server is ready.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_switching:
+            self.notify(
+                "An agent switch is in progress; try again once it completes.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        if self._agent_running or self._shell_running:
+            self.notify(
+                "MCP login will start once the current task completes.",
+                timeout=5,
+                markup=False,
+            )
+            self._defer_action(
+                DeferredAction(
+                    kind="mcp_login",
+                    execute=lambda: self._run_mcp_login_worker(server_name),
+                )
+            )
+            return
+
+        self.run_worker(
+            self._run_mcp_login_worker(server_name),
+            exclusive=False,
+            group=f"mcp-login-{server_name}",
+        )
+
+    async def _run_mcp_login_worker(self, server_name: str) -> None:
+        """Resolve config, run the login modal, and refresh on success.
+
+        Args:
+            server_name: MCP server name from `mcpServers`.
+        """
+        from deepagents_code.mcp_login_service import (
+            ConfigResolution,
+            ConfigResolutionError,
+            resolve_mcp_config,
+            select_server,
+        )
+
+        config_path = self._mcp_preload_kwargs.get("mcp_config_path")  # type: ignore[union-attr]
+        resolution = resolve_mcp_config(config_path)
+        if isinstance(resolution, ConfigResolutionError):
+            await self._mount_message(
+                ErrorMessage(f"MCP login failed: {resolution.message}")
+            )
+            return
+        if not isinstance(resolution, ConfigResolution):  # pragma: no cover - safety
+            return
+
+        selection = select_server(resolution, server_name)
+        if isinstance(selection, ConfigResolutionError):
+            await self._mount_message(
+                ErrorMessage(f"MCP login failed: {selection.message}")
+            )
+            return
+
+        if selection.server_config.get("auth") != "oauth":
+            await self._mount_message(
+                ErrorMessage(
+                    f"MCP server {server_name!r} does not use OAuth; "
+                    "nothing to log into."
+                )
+            )
+            return
+
+        from deepagents_code.mcp_auth import login as mcp_login
+        from deepagents_code.widgets.mcp_login import MCPLoginScreen
+
+        screen = MCPLoginScreen(server_name)
+        outcome_future: asyncio.Future[str | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        def _on_dismiss(outcome: str | None) -> None:
+            if not outcome_future.done():
+                outcome_future.set_result(outcome)
+
+        self.push_screen(screen, _on_dismiss)
+
+        # Pump one event loop iteration so `compose`/`on_mount` run before
+        # the worker awaits its first interaction method.
+        await asyncio.sleep(0)
+
+        login_error: Exception | None = None
+        try:
+            await mcp_login(
+                server_name=server_name,
+                server_config=selection.server_config,
+                ui=screen,
+            )
+        except RuntimeError as exc:
+            if "cancelled by the user" in str(exc):
+                screen.finish(success=False, message="Login cancelled.")
+                await outcome_future
+                await self._mount_message(
+                    AppMessage(f"MCP login for {server_name!r} cancelled.")
+                )
+                return
+            login_error = exc
+        except Exception as exc:  # noqa: BLE001  # surface unexpected errors
+            login_error = exc
+
+        if login_error is not None:
+            logger.warning("MCP login for %r failed", server_name, exc_info=login_error)
+            screen.finish(success=False, message=f"Login failed: {login_error}")
+            await outcome_future
+            await self._mount_message(
+                ErrorMessage(f"MCP login for {server_name!r} failed: {login_error}")
+            )
+            return
+
+        screen.finish(
+            success=True,
+            message=(
+                f"Logged in to {server_name!r}. Restarting server to load new tools…"
+            ),
+        )
+        await outcome_future
+
+        # Re-run the in-TUI restart so the LangGraph server rebuilds MCP
+        # tools with the freshly persisted token. The existing
+        # `_start_server_background` worker posts `ServerReady`, which the
+        # message handler routes back into MCP metadata, `/mcp` viewer,
+        # and welcome-banner refresh — no duplicate refresh code here.
+        await self._restart_server_for_mcp_refresh(server_name)
+
+    async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
+        """Restart the app-owned LangGraph server to pick up new MCP tokens.
+
+        Skips and notifies when the app does not own a server process.
+        Failures roll back to the previous state via `ServerStartFailed`
+        from `_start_server_background`.
+
+        Args:
+            server_name: Server whose login just completed — used in user
+                messages only.
+        """
+        server_proc = self._server_proc
+        if self._server_kwargs is None or server_proc is None:
+            self.notify(
+                "Cannot restart the LangGraph server automatically; "
+                "relaunch deepagents to pick up the new MCP token.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        try:
+            self._connecting = True
+            self._agent = None
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connecting()
+            except NoMatches:
+                pass
+
+            try:
+                await server_proc.restart()
+            except Exception as exc:
+                self._connecting = False
+                logger.exception(
+                    "Server restart after MCP login for %r failed", server_name
+                )
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+
+            from deepagents_code.main import _preload_session_mcp_server_info
+            from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
+
+            try:
+                mcp_info = await _preload_session_mcp_server_info(
+                    **self._mcp_preload_kwargs  # type: ignore[arg-type]
+                )
+            except Exception:
+                logger.warning(
+                    "MCP metadata preload after login refresh failed", exc_info=True
+                )
+                mcp_info = None
+
+            # `RemoteAgent` is intentionally exposed as `Any` so attribute
+            # access (`aget_state`, etc.) stays aligned with the union type
+            # the startup path assigns elsewhere — same pattern as
+            # `_restart_server_for_agent_swap._build_agent`.
+            def _build_agent(url: str) -> Any:  # noqa: ANN401  # see comment
+                return _RemoteAgent(url=url, graph_name="agent")
+
+            self._agent = _build_agent(server_proc.url)
+            self.post_message(
+                self.ServerReady(
+                    agent=self._agent,
+                    server_proc=server_proc,
+                    mcp_server_info=mcp_info,
+                )
+            )
+        finally:
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=not self._agent_running)
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""

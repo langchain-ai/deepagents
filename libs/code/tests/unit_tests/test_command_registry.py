@@ -137,6 +137,28 @@ class TestAgentsCommand:
         assert "/agents" in IMMEDIATE_UI
 
 
+class TestMCPCommand:
+    """Validate the `/mcp` entry specifically.
+
+    `/mcp` now accepts an optional `login <server>` subcommand, so the
+    entry must expose an argument hint that surfaces this in autocomplete
+    without breaking the bare-form viewer invocation.
+    """
+
+    def test_mcp_registered(self) -> None:
+        names = {cmd.name for cmd in COMMANDS}
+        assert "/mcp" in names
+
+    def test_mcp_argument_hint_advertises_login(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "login" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_oauth(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "oauth" in keywords or "authenticate" in keywords
+
+
 class TestCopyCommand:
     """Validate the `/copy` entry specifically."""
 

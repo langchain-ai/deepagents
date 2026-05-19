@@ -8288,3 +8288,125 @@ class TestSetSpinnerTerminalProgress:
             await pilot.pause()
             await app._set_spinner(None)
             await pilot.pause()
+
+
+class TestMCPLoginCommand:
+    """Tests for `/mcp login <server>` and the in-TUI login dispatch.
+
+    Worker execution itself is exercised by `test_mcp_login_modal.py`; here
+    we verify the guard behavior and command-parsing wiring on the app
+    surface so that:
+
+      - `/mcp login <name>` reaches `_start_mcp_login`.
+      - Bare `/mcp` still opens the viewer.
+      - Remote-server mode refuses login and tells the user.
+      - Busy state defers login via `DeferredAction(kind="mcp_login")`.
+      - The viewer's dismiss with a server name kicks off login.
+    """
+
+    async def test_mcp_login_command_routes_to_start_mcp_login(self) -> None:
+        """`/mcp login notion` calls `_start_mcp_login` with the server name."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_start_mcp_login") as start_login:
+                await app._handle_command("/mcp login notion")
+                await pilot.pause()
+            start_login.assert_called_once_with("notion")
+
+    async def test_mcp_login_without_server_prints_usage(self) -> None:
+        """`/mcp login` (no server) shows a usage line."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_start_mcp_login") as start_login:
+                await app._handle_command("/mcp login")
+                await pilot.pause()
+            start_login.assert_not_called()
+            assert any(
+                "Usage: /mcp login" in str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_bare_mcp_still_opens_viewer(self) -> None:
+        """`/mcp` with no args opens the viewer modal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_show_mcp_viewer") as show_viewer:
+                await app._handle_command("/mcp")
+                await pilot.pause()
+            show_viewer.assert_called_once()
+
+    async def test_mcp_login_rejects_when_mcp_disabled(self) -> None:
+        """Without `_mcp_preload_kwargs`, login is unavailable."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = None
+            with patch.object(app, "notify") as notify:
+                app._start_mcp_login("notion")
+            assert notify.called
+            message = notify.call_args.args[0]
+            assert "MCP is disabled" in message
+
+    async def test_mcp_login_rejects_remote_server_mode(self) -> None:
+        """Remote-server mode (no app-owned subprocess) cannot restart."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = None
+            with patch.object(app, "notify") as notify:
+                app._start_mcp_login("notion")
+            assert notify.called
+            message = notify.call_args.args[0]
+            assert "remote server" in message.lower()
+
+    async def test_mcp_login_defers_while_agent_running(self) -> None:
+        """Busy state queues the login via `DeferredAction(kind='mcp_login')`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+            app._server_kwargs = {"some": "kwarg"}
+            app._server_proc = MagicMock()
+            app._agent_running = True
+            try:
+                with patch.object(app, "run_worker") as run_worker:
+                    app._start_mcp_login("notion")
+                run_worker.assert_not_called()
+                assert any(a.kind == "mcp_login" for a in app._deferred_actions)
+            finally:
+                app._agent_running = False
+
+    async def test_viewer_dismiss_with_server_name_starts_login(self) -> None:
+        """Selecting an unauth server in the viewer kicks off `_start_mcp_login`."""
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_server_info = [
+                MCPServerInfo(
+                    name="github",
+                    transport="http",
+                    status="unauthenticated",
+                    error="Run: dcode mcp login github",
+                ),
+            ]
+            with patch.object(app, "_start_mcp_login") as start_login:
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                viewer = app._active_mcp_viewer
+                assert viewer is not None
+                viewer.dismiss("github")
+                await pilot.pause()
+            start_login.assert_called_once_with("github")

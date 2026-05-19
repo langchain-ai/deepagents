@@ -1111,3 +1111,88 @@ def test_modify_request_cache_control_runs_with_system_prompt_none() -> None:
     assert blocks[-1].get("cache_control") == {"type": "ephemeral"}
     # No memory fragment was appended on top of `base`.
     assert "agent_memory" not in blocks[-1].get("text", "")
+
+
+def test_html_comments_stripped_from_memory_before_injection(tmp_path: Path) -> None:
+    """HTML comment markers in memory files must not appear in the system prompt."""
+    source = str(tmp_path / "AGENTS.md")
+    (tmp_path / "AGENTS.md").write_text(
+        "<!-- deepagents:onboarding-name:start -->\n"
+        '- The user\'s preferred name is "Alice".\n'
+        "<!-- deepagents:onboarding-name:end -->\n"
+        "\nSome other memory.\n",
+        encoding="utf-8",
+    )
+    middleware = MemoryMiddleware(
+        backend=FilesystemBackend(),
+        sources=[source],
+        system_prompt="{agent_memory}",
+    )
+    request = ModelRequest(
+        model=_fake_anthropic(),
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "memory_contents": {source: (tmp_path / "AGENTS.md").read_text(encoding="utf-8")}},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    injected = _system_blocks(result.system_message)[-1].get("text", "")
+
+    assert "<!--" not in injected
+    assert "-->" not in injected
+    assert "Alice" in injected
+    assert "Some other memory." in injected
+
+
+def test_comment_only_memory_file_produces_no_phantom_section(tmp_path: Path) -> None:
+    """A memory file that is entirely HTML comments must not produce a ghost section header."""
+    source = str(tmp_path / "AGENTS.md")
+    (tmp_path / "AGENTS.md").write_text(
+        "<!-- deepagents:onboarding-name:start -->\n<!-- deepagents:onboarding-name:end -->\n",
+        encoding="utf-8",
+    )
+    middleware = MemoryMiddleware(
+        backend=FilesystemBackend(),
+        sources=[source],
+        system_prompt="{agent_memory}",
+    )
+    request = ModelRequest(
+        model=_fake_anthropic(),
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "memory_contents": {source: (tmp_path / "AGENTS.md").read_text(encoding="utf-8")}},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    injected = _system_blocks(result.system_message)[-1].get("text", "")
+
+    assert source not in injected
+    assert "(No memory loaded)" in injected
+
+
+def test_multiline_html_comment_stripped_from_memory(tmp_path: Path) -> None:
+    """Multi-line HTML comments require re.DOTALL; this test catches its accidental removal."""
+    source = str(tmp_path / "AGENTS.md")
+    (tmp_path / "AGENTS.md").write_text(
+        "preamble\n<!--\n  line one of comment\n  line two of comment\n-->\npostamble\n",
+        encoding="utf-8",
+    )
+    middleware = MemoryMiddleware(
+        backend=FilesystemBackend(),
+        sources=[source],
+        system_prompt="{agent_memory}",
+    )
+    request = ModelRequest(
+        model=_fake_anthropic(),
+        messages=[HumanMessage(content="hi")],
+        system_message=SystemMessage(content="base"),
+        state={"messages": [], "memory_contents": {source: (tmp_path / "AGENTS.md").read_text(encoding="utf-8")}},  # type: ignore[typeddict-unknown-key]
+    )
+
+    result = middleware.modify_request(request)
+    injected = _system_blocks(result.system_message)[-1].get("text", "")
+
+    assert "line one of comment" not in injected
+    assert "line two of comment" not in injected
+    assert "preamble" in injected
+    assert "postamble" in injected

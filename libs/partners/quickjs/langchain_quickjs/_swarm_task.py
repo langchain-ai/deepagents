@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+from deepagents._models import resolve_model
 from langchain.agents import create_agent
-from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models import BaseChatModel  # noqa: TC002
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
-from deepagents._models import resolve_model
+if TYPE_CHECKING:
+    from langchain_core.runnables import Runnable
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,9 @@ def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
     if _is_schema_node(props):
         normalized: dict[str, Any] = {}
         for key, value in props.items():
-            normalized[key] = normalize_schema(value) if _is_schema_node(value) else value
+            normalized[key] = (
+                normalize_schema(value) if _is_schema_node(value) else value
+            )
         result["properties"] = normalized
     return result
 
@@ -74,7 +77,8 @@ def _normalize_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Normalize a response schema and validate it has ``type: "object"``."""
     normalized = normalize_schema(schema)
     if normalized.get("type") != "object":
-        msg = f'response_schema must have type: "object", got: {json.dumps(normalized.get("type"))}'
+        got = json.dumps(normalized.get("type"))
+        msg = f'response_schema must have type: "object", got: {got}'
         raise ValueError(msg)
     return normalized
 
@@ -158,12 +162,21 @@ async def _invoke_with_structured_output(
     normalized = _normalize_response_schema(response_schema)
 
     if not hasattr(model, "bind_tools"):
-        msg = "invoke mode with response_schema requires a model that supports bind_tools()."
+        msg = (
+            "invoke mode with response_schema requires"
+            " a model that supports bind_tools()."
+        )
         raise ValueError(msg)
 
     tool_name = "structured_output"
     bound = model.bind_tools(
-        [{"name": tool_name, "description": "Return the structured result.", "parameters": normalized}],
+        [
+            {
+                "name": tool_name,
+                "description": "Return the structured result.",
+                "parameters": normalized,
+            }
+        ],
         tool_choice=tool_name,
     )
     response = await bound.ainvoke(messages)
@@ -244,7 +257,9 @@ async def _invoke_agent(
 class _SwarmTaskInput(BaseModel):
     """Input schema for the swarm_task tool."""
 
-    description: str = Field(description="The task to execute with the selected subagent.")
+    description: str = Field(
+        description="The task to execute with the selected subagent."
+    )
     subagent_type: str | None = Field(
         default=None,
         description="Name of the swarm subagent to use.",
@@ -255,7 +270,10 @@ class _SwarmTaskInput(BaseModel):
     )
     mode: SwarmTaskMode | None = Field(
         default=None,
-        description='Dispatch mode. "agent" (default) runs a full agentic loop. "invoke" makes a single model call.',
+        description=(
+            'Dispatch mode. "agent" (default) runs a full'
+            ' agentic loop. "invoke" makes a single model call.'
+        ),
     )
 
 
@@ -318,14 +336,18 @@ def create_swarm_task_tool(
             return await _invoke_model(default_model, description, response_schema)
 
         if subagent_type is None:
-            available = ", ".join(subagent_names) if subagent_names else "(none configured)"
+            available = (
+                ", ".join(subagent_names) if subagent_names else "(none configured)"
+            )
             msg = f"agent mode requires subagent_type. Available: {available}"
             raise ValueError(msg)
 
         entry = compiled.get(subagent_type)
         if entry is None:
             available = ", ".join(subagent_names)
-            msg = f'Unknown swarm subagent type "{subagent_type}". Available: {available}'
+            msg = (
+                f'Unknown swarm subagent type "{subagent_type}". Available: {available}'
+            )
             raise ValueError(msg)
 
         return await _invoke_agent(entry, description, response_schema, variant_cache)

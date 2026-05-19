@@ -215,9 +215,8 @@ async def test_subdirectory_entrypoint_with_js_imports(
                 'import { compute } from "./math.js";\n'
                 "export const result = compute(3, 4);\n"
             ),
-            f"{skill_dir}/scripts/math.ts": (
-                "export function compute(a: number, b: number): number { return a + b; }\n"
-            ),
+            f"{skill_dir}/scripts/math.ts": "export function compute("
+            "a: number, b: number): number { return a + b; }\n",
         },
     )
     meta = _metadata("subdir", path=f"{skill_dir}/SKILL.md", module="scripts/index.ts")

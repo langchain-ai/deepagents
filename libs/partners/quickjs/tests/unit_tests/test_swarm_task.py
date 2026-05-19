@@ -8,10 +8,9 @@ invoke mode, schema-constrained variant caching).
 from __future__ import annotations
 
 import json
-import time
-from collections.abc import Iterator
+from collections.abc import Iterator  # noqa: TC003
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -26,7 +25,6 @@ from langchain_quickjs._swarm_task import (
     normalize_schema,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -35,7 +33,9 @@ from langchain_quickjs._swarm_task import (
 class _FakeModel(GenericFakeChatModel):
     """Fake model that passes Pydantic validation on SwarmSubAgent.model."""
 
-    messages: Iterator[AIMessage | str] = Field(default_factory=lambda: iter([AIMessage(content="")]), exclude=True)
+    messages: Iterator[AIMessage | str] = Field(
+        default_factory=lambda: iter([AIMessage(content="")]), exclude=True
+    )
 
     def bind_tools(self, tools: Any, **_: Any) -> _FakeModel:
         return self
@@ -79,19 +79,23 @@ class TestNormalizeSchema:
     """Tests for the normalize_schema function."""
 
     def test_adds_additional_properties_false_to_top_level_object(self) -> None:
-        result = normalize_schema({
-            "type": "object",
-            "properties": {"x": {"type": "string"}},
-            "required": ["x"],
-        })
+        result = normalize_schema(
+            {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            }
+        )
         assert result["additionalProperties"] is False
 
     def test_preserves_existing_additional_properties_false(self) -> None:
-        result = normalize_schema({
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {},
-        })
+        result = normalize_schema(
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {},
+            }
+        )
         assert result["additionalProperties"] is False
 
     def test_recurses_into_nested_object_properties(self) -> None:
@@ -154,12 +158,29 @@ class TestNormalizeSchema:
         assert normalize_schema(schema) == {"type": "string"}
 
     def test_preserves_min_items_on_array_types(self) -> None:
-        assert normalize_schema({"type": "array", "minItems": 6, "items": {"type": "string"}})["minItems"] == 6
-        assert normalize_schema({"type": "array", "minItems": 0, "items": {"type": "string"}})["minItems"] == 0
-        assert normalize_schema({"type": "array", "minItems": 1, "items": {"type": "string"}})["minItems"] == 1
+        assert (
+            normalize_schema(
+                {"type": "array", "minItems": 6, "items": {"type": "string"}}
+            )["minItems"]
+            == 6
+        )
+        assert (
+            normalize_schema(
+                {"type": "array", "minItems": 0, "items": {"type": "string"}}
+            )["minItems"]
+            == 0
+        )
+        assert (
+            normalize_schema(
+                {"type": "array", "minItems": 1, "items": {"type": "string"}}
+            )["minItems"]
+            == 1
+        )
 
     def test_preserves_max_items_on_array_types(self) -> None:
-        result = normalize_schema({"type": "array", "maxItems": 10, "items": {"type": "string"}})
+        result = normalize_schema(
+            {"type": "array", "maxItems": 10, "items": {"type": "string"}}
+        )
         assert result["maxItems"] == 10
 
 
@@ -213,11 +234,18 @@ class TestVariantCache:
         cache = VariantCache(ttl_s=1.0)
 
         with patch("langchain_quickjs._swarm_task.time") as mock_time:
-            mock_time.monotonic = MagicMock(side_effect=[
-                0.0, 0.0,       # create key1 (sweep reads 0.0, set reads 0.0)
-                0.8, 0.8, 0.8,  # access at 0.8 (sweep reads 0.8 — not expired, get reads 0.8, update reads 0.8)
-                1.6, 1.6, 1.6,  # access at 1.6 (sweep reads 1.6 — last access was 0.8, diff=0.8 < 1.0, still alive)
-            ])
+            mock_time.monotonic = MagicMock(
+                side_effect=[
+                    0.0,
+                    0.0,  # create key1 (sweep reads 0.0, set reads 0.0)
+                    0.8,
+                    0.8,
+                    0.8,  # access at 0.8 — not expired
+                    1.6,
+                    1.6,
+                    1.6,  # access at 1.6 — diff=0.8 < 1.0, alive
+                ]
+            )
             cache.get_or_create("key1", lambda: "value1")
             cache.get_or_create("key1", lambda: "unused")
 
@@ -231,12 +259,18 @@ class TestVariantCache:
         cache = VariantCache(ttl_s=1.0)
 
         with patch("langchain_quickjs._swarm_task.time") as mock_time:
-            mock_time.monotonic = MagicMock(side_effect=[
-                0.0, 0.0,  # create a
-                0.0, 0.0,  # create b
-                0.0, 0.0,  # create c
-                1.5, 1.5,  # create d (sweep evicts a, b, c)
-            ])
+            mock_time.monotonic = MagicMock(
+                side_effect=[
+                    0.0,
+                    0.0,  # create a
+                    0.0,
+                    0.0,  # create b
+                    0.0,
+                    0.0,  # create c
+                    1.5,
+                    1.5,  # create d (sweep evicts a, b, c)
+                ]
+            )
             cache.get_or_create("a", lambda: "1")
             cache.get_or_create("b", lambda: "2")
             cache.get_or_create("c", lambda: "3")
@@ -250,11 +284,16 @@ class TestVariantCache:
         cache = VariantCache(ttl_s=1.0)
 
         with patch("langchain_quickjs._swarm_task.time") as mock_time:
-            mock_time.monotonic = MagicMock(side_effect=[
-                0.0, 0.0,  # create "old": sweep(now=0.0) + set(0.0)
-                0.8, 0.8,  # create "new": sweep(now=0.8, old@0.0 diff=0.8<1.0 ok) + set(0.8)
-                1.1, 1.1,  # create "trigger": sweep(now=1.1, old@0.0 diff=1.1>1.0 evicted, new@0.8 diff=0.3<1.0 ok) + set(1.1)
-            ])
+            mock_time.monotonic = MagicMock(
+                side_effect=[
+                    0.0,
+                    0.0,  # create "old": sweep(now=0.0) + set(0.0)
+                    0.8,
+                    0.8,  # create "new": old@0.0 diff<1.0, ok
+                    1.1,
+                    1.1,  # create "trigger": old evicted, new ok
+                ]
+            )
             cache.get_or_create("old", lambda: "stale")
             cache.get_or_create("new", lambda: "fresh")
             cache.get_or_create("trigger", lambda: "sweep")
@@ -271,19 +310,33 @@ class TestSubagentValidation:
     """Tests for subagent validation in create_swarm_task_tool."""
 
     async def test_throws_when_subagent_type_not_in_configured_list(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
             tool = create_swarm_task_tool(
                 subagents=[
-                    SwarmSubAgent(name="screener", description="A screener", system_prompt="Screen."),
+                    SwarmSubAgent(
+                        name="screener",
+                        description="A screener",
+                        system_prompt="Screen.",
+                    ),
                 ],
                 default_model=_make_mock_model(),
             )
 
-        with pytest.raises(Exception, match='Unknown swarm subagent type "nonexistent"'):
-            await tool.ainvoke({"description": "do work", "subagent_type": "nonexistent"})
+        with pytest.raises(
+            Exception, match='Unknown swarm subagent type "nonexistent"'
+        ):
+            await tool.ainvoke(
+                {"description": "do work", "subagent_type": "nonexistent"}
+            )
 
     async def test_includes_available_subagent_names_in_error_message(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(name="alpha", description="A", system_prompt="A."),
@@ -296,7 +349,10 @@ class TestSubagentValidation:
             await tool.ainvoke({"description": "do work", "subagent_type": "gamma"})
 
     async def test_agent_mode_requires_subagent_type(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(name="worker", description="W", system_prompt="W."),
@@ -338,7 +394,9 @@ class TestAgentMode:
             agent_idx += 1
             return agent
 
-        with patch("langchain_quickjs._swarm_task.create_agent", side_effect=mock_create_agent):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent", side_effect=mock_create_agent
+        ):
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(name="alpha", description="A", system_prompt="A."),
@@ -357,15 +415,22 @@ class TestAgentMode:
             async def run(state: dict[str, Any]) -> dict[str, Any]:
                 invoked_with.append(state)
                 return {"messages": [AIMessage(content="done")]}
+
             return _make_runnable(run)
 
-        with patch("langchain_quickjs._swarm_task.create_agent", side_effect=capture_agent):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent", side_effect=capture_agent
+        ):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
-        await tool.ainvoke({"description": "classify this trace", "subagent_type": "worker"})
+        await tool.ainvoke(
+            {"description": "classify this trace", "subagent_type": "worker"}
+        )
 
         state = invoked_with[-1]
         messages = state["messages"]
@@ -381,14 +446,20 @@ class TestAgentMode:
 
         with patch("langchain_quickjs._swarm_task.create_agent", return_value=agent):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
-        result = await tool.ainvoke({"description": "classify", "subagent_type": "worker"})
+        result = await tool.ainvoke(
+            {"description": "classify", "subagent_type": "worker"}
+        )
         assert json.loads(result) == {"label": "positive", "score": 0.95}
 
-    async def test_returns_last_message_content_when_no_structured_response(self) -> None:
+    async def test_returns_last_message_content_when_no_structured_response(
+        self,
+    ) -> None:
         async def run(_: Any) -> dict[str, Any]:
             return {
                 "messages": [
@@ -397,9 +468,14 @@ class TestAgentMode:
                 ],
             }
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_runnable(run)):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_runnable(run),
+        ):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
@@ -410,19 +486,33 @@ class TestAgentMode:
         async def run(_: Any) -> dict[str, Any]:
             return {"messages": []}
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_runnable(run)):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_runnable(run),
+        ):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
         result = await tool.ainvoke({"description": "work", "subagent_type": "worker"})
         assert result == "Task completed"
 
-    async def test_compiles_new_agent_with_response_format_when_schema_provided(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+    async def test_compiles_new_agent_with_response_format_when_schema_provided(
+        self,
+    ) -> None:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="Analyze.")],
+                subagents=[
+                    SwarmSubAgent(
+                        name="worker", description="W", system_prompt="Analyze."
+                    )
+                ],
                 default_model=_make_mock_model(),
             )
 
@@ -434,11 +524,13 @@ class TestAgentMode:
                 "required": ["label"],
             }
 
-            await tool.ainvoke({
-                "description": "classify",
-                "subagent_type": "worker",
-                "response_schema": schema,
-            })
+            await tool.ainvoke(
+                {
+                    "description": "classify",
+                    "subagent_type": "worker",
+                    "response_schema": schema,
+                }
+            )
 
             assert mock_create.call_count == 2
             last_call_kwargs = mock_create.call_args_list[-1]
@@ -450,9 +542,14 @@ class TestAgentMode:
             }
 
     async def test_does_not_compile_new_agent_when_schema_omitted(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
             assert mock_create.call_count == 1
@@ -461,37 +558,54 @@ class TestAgentMode:
             assert mock_create.call_count == 1
 
     async def test_validates_response_schema_must_have_type_object(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
         with pytest.raises(Exception, match='response_schema must have type: "object"'):
-            await tool.ainvoke({
-                "description": "work",
-                "subagent_type": "worker",
-                "response_schema": {"type": "array", "items": {"type": "string"}},
-            })
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {"type": "array", "items": {"type": "string"}},
+                }
+            )
 
     async def test_normalizes_schema_adding_additional_properties_false(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
-            await tool.ainvoke({
-                "description": "work",
-                "subagent_type": "worker",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {"x": {"type": "string"}},
-                },
-            })
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"x": {"type": "string"}},
+                    },
+                }
+            )
 
             last_call_kwargs = mock_create.call_args_list[-1]
-            assert last_call_kwargs.kwargs["response_format"]["additionalProperties"] is False
+            assert (
+                last_call_kwargs.kwargs["response_format"]["additionalProperties"]
+                is False
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +630,10 @@ class TestInvokeMode:
         assert messages[0].content == "classify this"
 
     async def test_does_not_call_create_agent_in_invoke_mode(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(
@@ -536,24 +653,34 @@ class TestInvokeMode:
     async def test_uses_bind_tools_when_response_schema_provided(self) -> None:
         structured_result = {"label": "positive"}
         bound_model = AsyncMock()
-        bound_model.ainvoke = AsyncMock(return_value=AIMessage(
-            content=[],
-            tool_calls=[{"name": "structured_output", "args": structured_result, "id": "tc_1"}],
-        ))
+        bound_model.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=[],
+                tool_calls=[
+                    {
+                        "name": "structured_output",
+                        "args": structured_result,
+                        "id": "tc_1",
+                    }
+                ],
+            )
+        )
 
         model = MagicMock()
         model.bind_tools = MagicMock(return_value=bound_model)
 
         tool = create_swarm_task_tool(subagents=[], default_model=model)
 
-        result = await tool.ainvoke({
-            "description": "work",
-            "mode": "invoke",
-            "response_schema": {
-                "type": "object",
-                "properties": {"label": {"type": "string"}},
-            },
-        })
+        result = await tool.ainvoke(
+            {
+                "description": "work",
+                "mode": "invoke",
+                "response_schema": {
+                    "type": "object",
+                    "properties": {"label": {"type": "string"}},
+                },
+            }
+        )
 
         model.bind_tools.assert_called_once_with(
             [
@@ -579,14 +706,16 @@ class TestInvokeMode:
         tool = create_swarm_task_tool(subagents=[], default_model=model)
 
         with pytest.raises(Exception, match="bind_tools"):
-            await tool.ainvoke({
-                "description": "work",
-                "mode": "invoke",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {"label": {"type": "string"}},
-                },
-            })
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "mode": "invoke",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}},
+                    },
+                }
+            )
 
     async def test_returns_string_content_from_model_response(self) -> None:
         model = _make_mock_model("the answer")
@@ -599,11 +728,13 @@ class TestInvokeMode:
         tool = create_swarm_task_tool(subagents=[], default_model=_make_mock_model())
 
         with pytest.raises(Exception, match='response_schema must have type: "object"'):
-            await tool.ainvoke({
-                "description": "work",
-                "mode": "invoke",
-                "response_schema": {"type": "array", "items": {"type": "string"}},
-            })
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "mode": "invoke",
+                    "response_schema": {"type": "array", "items": {"type": "string"}},
+                }
+            )
 
     async def test_works_without_response_schema(self) -> None:
         model = _make_mock_model("plain response")
@@ -627,9 +758,19 @@ class TestModeDefaulting:
         subagent_model = _FakeModel()
         default_model = _make_mock_model()
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()):
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ):
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.", model=subagent_model)],
+                subagents=[
+                    SwarmSubAgent(
+                        name="worker",
+                        description="W",
+                        system_prompt="W.",
+                        model=subagent_model,
+                    )
+                ],
                 default_model=default_model,
             )
 
@@ -651,7 +792,10 @@ class TestMultipleSubagents:
         screener_model = _FakeModel()
         default_model = _make_mock_model()
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             create_swarm_task_tool(
                 subagents=[
                     SwarmSubAgent(
@@ -670,9 +814,14 @@ class TestMultipleSubagents:
     def test_falls_back_to_default_model_when_subagent_has_no_model(self) -> None:
         default_model = _make_mock_model()
 
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=default_model,
             )
 
@@ -688,10 +837,17 @@ class TestMultipleSubagents:
 class TestTTLVariantCacheIntegration:
     """Tests for TTL-based variant caching in agent mode."""
 
-    async def test_reuses_compiled_agent_on_repeated_calls_with_same_schema(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+    async def test_reuses_compiled_agent_on_repeated_calls_with_same_schema(
+        self,
+    ) -> None:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
@@ -700,30 +856,63 @@ class TestTTLVariantCacheIntegration:
                 "properties": {"label": {"type": "string"}},
             }
 
-            await tool.ainvoke({"description": "row 1", "subagent_type": "worker", "response_schema": schema})
-            await tool.ainvoke({"description": "row 2", "subagent_type": "worker", "response_schema": schema})
-            await tool.ainvoke({"description": "row 3", "subagent_type": "worker", "response_schema": schema})
+            await tool.ainvoke(
+                {
+                    "description": "row 1",
+                    "subagent_type": "worker",
+                    "response_schema": schema,
+                }
+            )
+            await tool.ainvoke(
+                {
+                    "description": "row 2",
+                    "subagent_type": "worker",
+                    "response_schema": schema,
+                }
+            )
+            await tool.ainvoke(
+                {
+                    "description": "row 3",
+                    "subagent_type": "worker",
+                    "response_schema": schema,
+                }
+            )
 
             # 1 at construction + 1 for the schema variant (reused for rows 2 and 3)
             assert mock_create.call_count == 2
 
     async def test_compiles_separate_variants_for_distinct_schemas(self) -> None:
-        with patch("langchain_quickjs._swarm_task.create_agent", return_value=_make_fake_agent()) as mock_create:
+        with patch(
+            "langchain_quickjs._swarm_task.create_agent",
+            return_value=_make_fake_agent(),
+        ) as mock_create:
             tool = create_swarm_task_tool(
-                subagents=[SwarmSubAgent(name="worker", description="W", system_prompt="W.")],
+                subagents=[
+                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
+                ],
                 default_model=_make_mock_model(),
             )
 
-            await tool.ainvoke({
-                "description": "work",
-                "subagent_type": "worker",
-                "response_schema": {"type": "object", "properties": {"a": {"type": "string"}}},
-            })
-            await tool.ainvoke({
-                "description": "work",
-                "subagent_type": "worker",
-                "response_schema": {"type": "object", "properties": {"b": {"type": "number"}}},
-            })
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"a": {"type": "string"}},
+                    },
+                }
+            )
+            await tool.ainvoke(
+                {
+                    "description": "work",
+                    "subagent_type": "worker",
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"b": {"type": "number"}},
+                    },
+                }
+            )
 
             # 1 at construction + 2 schema variants
             assert mock_create.call_count == 3

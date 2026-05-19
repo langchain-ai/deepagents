@@ -345,7 +345,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             missing = [t for t in required if t not in ptc_names]
             if missing:
                 msg = (
-                    f"Skill '{skill['name']}' requires PTC tools that are not configured: "
+                    f"Skill '{skill['name']}' requires PTC tools"
+                    " that are not configured: "
                     f"{', '.join(missing)}. "
                     f"Add them to CodeInterpreterMiddleware(ptc=[...])."
                 )

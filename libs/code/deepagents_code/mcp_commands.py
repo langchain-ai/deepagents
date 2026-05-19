@@ -106,6 +106,11 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         return 2 if resolution.kind is ConfigErrorKind.NO_CONFIG_FOUND else 1
 
     if not isinstance(resolution, ConfigResolution):  # pragma: no cover - safety
+        print(  # noqa: T201
+            "Internal error: unexpected result from resolve_mcp_config. "
+            "Please report this bug.",
+            file=sys.stderr,
+        )
         return 1
 
     notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
@@ -140,7 +145,11 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
 
 
 def _print_resolution_error(error: ConfigResolutionError) -> None:
-    """Render a `ConfigResolutionError` to stderr in CLI format."""
+    """Print the untrusted-paths notice (if any) then `error.message` to stderr.
+
+    Note: the untrusted-paths notice is also surfaced independently for
+    successful resolutions in `run_mcp_login`.
+    """
     from deepagents_code.mcp_login_service import format_untrusted_project_notice
 
     notice = format_untrusted_project_notice(error.untrusted_project_paths)

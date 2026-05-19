@@ -640,8 +640,6 @@ def _make_paste_back_handlers(
         ui: Interaction surface for the auth URL display and the
             pasted-back callback URL prompt.
 
-            Defaults to the CLI stdin/stdout implementation.
-
     Returns:
         A tuple of `(redirect_handler, callback_handler)`.
     """
@@ -704,8 +702,6 @@ def _make_loopback_handlers(
             The socket is bound when the returned redirect handler is first called.
         extra_auth_params: Extra query params to append to the auth URL.
         ui: Interaction surface for the browser-opened or fallback prompts.
-
-            Defaults to the CLI stdin/stdout implementation.
 
     Returns:
         A tuple of `(redirect_handler, callback_handler)`.
@@ -796,10 +792,8 @@ def build_oauth_provider(
         storage: Token storage implementation for this server.
         extra_auth_params: Optional query params for the interactive auth URL.
         interactive: Whether the provider may prompt on stdin.
-        ui: Interaction surface used for URL display and paste-back input
-            in interactive mode.
-
-            Defaults to the CLI stdin/stdout implementation.
+        ui: Interaction surface used for URL display and paste-back
+            input in interactive mode.
 
     Returns:
         A configured `OAuthClientProvider`.
@@ -857,8 +851,6 @@ async def _run_device_flow(
         client_id: Registered OAuth client ID.
         scope: Optional space-delimited scope string.
         ui: Interaction surface used to display the device code.
-
-            Defaults to the CLI stdin/stdout implementation.
 
     Returns:
         The issued OAuth access token payload.
@@ -1001,18 +993,15 @@ async def login(
     *,
     server_name: str,
     server_config: McpServerSpec,
-    ui: OAuthInteraction | None = None,
+    ui: OAuthInteraction,
 ) -> None:
     """Drive OAuth login for `server_name`, persisting tokens on success.
 
     Args:
         server_name: Name of the configured MCP server.
         server_config: Parsed server config for that entry.
-        ui: Interaction surface for all user prompts and progress
-            messages during the flow.
-
-            Defaults to the CLI stdin/stdout implementation, preserving
-            prior `dcode mcp login` behavior.
+        ui: Interaction surface for all user prompts and progress messages
+            during the flow.
 
     Raises:
         ValueError: If `server_config` isn't an OAuth http/sse server.
@@ -1043,14 +1032,13 @@ async def login(
 
     from deepagents_code.mcp_providers import resolve_provider
 
-    interaction = ui if ui is not None else _default_ui()
     storage = FileTokenStorage(server_name, server_url=server_config["url"])
     policy = resolve_provider(server_config["url"])
     result = await policy.run_login(
         server_name=server_name,
         server_url=server_config["url"],
         storage=storage,
-        ui=interaction,
+        ui=ui,
     )
 
     success_message = (
@@ -1058,7 +1046,7 @@ async def login(
     )
 
     if result.completed:
-        await interaction.show_success(success_message)
+        await ui.show_success(success_message)
         return
 
     provider = build_oauth_provider(
@@ -1066,7 +1054,7 @@ async def login(
         server_url=server_config["url"],
         storage=storage,
         extra_auth_params=result.extra_auth_params or None,
-        ui=interaction,
+        ui=ui,
     )
     conn: StreamableHttpConnection | SSEConnection
     if transport == "http":
@@ -1089,4 +1077,4 @@ async def login(
         )
 
     await _drive_handshake({server_name: conn})
-    await interaction.show_success(success_message)
+    await ui.show_success(success_message)

@@ -43,22 +43,18 @@ def _is_slack_mcp_url(url: str) -> bool:
     return host == "slack.com" or host.endswith(".slack.com")
 
 
-async def _prompt_slack_team(ui: OAuthInteraction | None = None) -> str | None:
+async def _prompt_slack_team(ui: OAuthInteraction) -> str | None:
     """Interactively ask the user which Slack workspace to install into.
 
     Delegates to the supplied `OAuthInteraction` so the same flow drives
     either the CLI stdin/stdout prompt or a TUI input widget.
 
     Args:
-        ui: Interaction surface to use. Defaults to the CLI implementation.
+        ui: Interaction surface to use.
 
     Returns:
         The entered Slack team ID, or `None` if the prompt was left blank.
     """
-    if ui is None:
-        from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
-
-        ui = CliOAuthInteraction()
     return await ui.prompt_slack_team_id()
 
 

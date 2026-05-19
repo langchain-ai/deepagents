@@ -37,9 +37,14 @@ def _is_github_mcp_url(url: str) -> bool:
 
 
 async def _preseed_github_auth(
-    storage: FileTokenStorage, *, ui: OAuthInteraction | None = None
+    storage: FileTokenStorage, *, ui: OAuthInteraction
 ) -> None:
-    """Run GitHub Device Flow and persist the token and stub client info."""
+    """Run GitHub Device Flow and persist the token and stub client info.
+
+    Args:
+        storage: File-backed token storage for this server identity.
+        ui: Interaction surface that renders the device-code prompt.
+    """
     token = await _run_device_flow(
         device_code_url=_GITHUB_DEVICE_CODE_URL,
         token_url=_GITHUB_TOKEN_URL,

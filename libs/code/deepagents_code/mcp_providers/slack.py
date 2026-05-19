@@ -1,9 +1,9 @@
 """Slack-hosted MCP OAuth provider.
 
 Slack's hosted MCP endpoint uses the Authorization Code flow with a
-hardcoded public client ID and the loopback redirect URI. The user
-copy-pastes the redirected URL back into the app rather than running a
-local server, and an optional `team` query parameter selects the
+hardcoded public client ID and a static pre-registered redirect URI. The
+user copy-pastes the redirected URL back into the app rather than running
+a local server, and an optional `team` query parameter selects the
 workspace to install the app into.
 """
 
@@ -31,8 +31,9 @@ _SLACK_MCP_CLIENT_ID = "4518649543379.10944517634130"
 """Public OAuth client ID registered with Slack for the hosted MCP endpoint."""
 
 _SLACK_REDIRECT_URI = "https://localhost"
-"""Loopback redirect URI Slack hands the authorization code back to; the user
-copy-pastes the resulting URL into the app rather than running a local server."""
+"""Static pre-registered redirect URI Slack hands the authorization code back
+to; the user copy-pastes the resulting URL into the app rather than running a
+local server."""
 
 
 def _is_slack_mcp_url(url: str) -> bool:
@@ -102,10 +103,10 @@ class SlackProvider(OAuthProvider):
     def client_metadata(  # noqa: PLR6301  # subclass hook
         self, *, redirect_uri: str | None = None
     ) -> OAuthClientMetadata:
-        """Return public-client metadata with the Slack loopback redirect URI.
+        """Return public-client metadata with Slack's static pre-registered redirect URI.
 
         Args:
-            redirect_uri: Ignored; Slack requires its pre-registered redirect URI.
+            redirect_uri: Ignored; Slack requires its static pre-registered URI.
 
         Returns:
             Metadata configured for Slack's public OAuth client (no token secret).

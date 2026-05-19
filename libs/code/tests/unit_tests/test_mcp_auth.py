@@ -330,6 +330,12 @@ class TestBuildOAuthProvider:
         assert _is_slack_mcp_url("https://deep.slack.com/mcp")
         assert not _is_slack_mcp_url("https://mcp.notion.com/mcp")
 
+    def test_slack_provider_does_not_support_loopback(self) -> None:
+        """SlackProvider opts out of loopback so its static redirect URI is used."""
+        from deepagents_code.mcp_providers.slack import SlackProvider
+
+        assert SlackProvider().supports_loopback_callback() is False
+
     def test_slack_branch_sets_public_client_metadata(self) -> None:
         """Slack branch configures a public OAuth client (no token secret)."""
         from deepagents_code.mcp_auth import build_oauth_provider
@@ -440,6 +446,97 @@ class TestLoopbackHandlers:
         assert response.status_code == 400
         with pytest.raises(RuntimeError, match="access_denied"):
             await callback_handler()
+
+    async def test_loopback_callback_missing_code_raises(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """A callback URL missing the `code` parameter sends 400 and raises."""
+        import httpx
+
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        metadata = provider.context.client_metadata
+        assert metadata.redirect_uris is not None
+        redirect_uri = str(metadata.redirect_uris[0])
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{redirect_uri}?state=xyz")
+
+        assert response.status_code == 400
+        with pytest.raises(RuntimeError, match="missing the 'code' parameter"):
+            await callback_handler()
+
+    async def test_loopback_falls_back_when_browser_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the browser cannot open, callback() falls back to paste-back at once."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
+
+    async def test_loopback_falls_back_on_bind_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bind failure in redirect() causes callback() to fall back to paste-back."""
+        from deepagents_code.mcp_auth import (
+            _LoopbackOAuthCallbackServer,
+            build_oauth_provider,
+        )
+
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr(
+            _LoopbackOAuthCallbackServer,
+            "start",
+            lambda _self: (_ for _ in ()).throw(OSError("Address already in use")),
+        )
+        monkeypatch.setattr(
+            "builtins.input",
+            lambda _: "https://localhost/?code=fallback&state=s",
+        )
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+        )
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+
+        await redirect_handler("https://auth.example/authorize")
+        code, state = await callback_handler()
+        assert code == "fallback"
+        assert state == "s"
 
 
 @pytest.mark.usefixtures("fake_home")

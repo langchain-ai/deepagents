@@ -786,6 +786,8 @@ You have access to a skills library that provides specialized capabilities and d
 
 {skills_locations}{skills_load_warnings}
 
+Sources labeled "Deepagents" are specific to this agent tool; sources labeled "Agents" are shared across all agent tools on this machine.
+
 **Available Skills:**
 
 {skills_list}

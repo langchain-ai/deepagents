@@ -45,8 +45,24 @@ class OAuthProvider(ABC):
     def matches(self, server_url: str) -> bool:
         """Return `True` when this provider owns `server_url`."""
 
-    def client_metadata(self) -> OAuthClientMetadata:  # noqa: PLR6301  # subclass hook
+    def supports_loopback_callback(self) -> bool:  # noqa: PLR6301  # subclass hook
+        """Return whether this provider can use a runtime loopback redirect URI.
+
+        When `False`, `client_metadata()` ignores the `redirect_uri` argument
+        and uses the provider's own pre-registered static URI instead.
+
+        Returns:
+            `True` when the provider accepts dynamically registered redirect URIs.
+        """
+        return True
+
+    def client_metadata(  # noqa: PLR6301  # subclass hook
+        self, *, redirect_uri: str | None = None
+    ) -> OAuthClientMetadata:
         """Return the `OAuthClientMetadata` used to build the auth provider.
+
+        Args:
+            redirect_uri: Optional runtime redirect URI for CLI loopback auth.
 
         Returns:
             Metadata for the spec-compliant Authorization Code + PKCE +
@@ -54,7 +70,7 @@ class OAuthProvider(ABC):
         """
         return OAuthClientMetadata(
             client_name="deepagents-code",
-            redirect_uris=[AnyUrl("http://localhost/callback")],
+            redirect_uris=[AnyUrl(redirect_uri or "http://localhost/callback")],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
         )

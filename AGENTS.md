@@ -218,26 +218,6 @@ Always use the latest generally available models when referencing LLMs in docstr
 
 ## Package-specific guidance
 
-### Deep Agents CLI (`libs/cli/`)
-
-As of `deepagents-cli==0.1.0` this package contains only the deployment subcommands — `init`, `dev`, and `deploy`. The interactive Textual REPL moved to `libs/code/` (`deepagents-code`); see [Deep Agents Code](#deep-agents-code-libscode) below for Textual/widget/slash-command guidance.
-
-#### Surface
-
-- Entry points: `deepagents` and `deepagents-cli` console scripts → `deepagents_cli.cli_main`.
-- Subcommands: `init` (scaffold project), `dev` (`langgraph dev` against a bundled project), `deploy` (`langgraph deploy` to LangGraph Platform).
-- Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero.
-
-#### Layout
-
-- `deepagents_cli/main.py` — argparse wiring + `cli_main` dispatch.
-- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
-- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
-- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
-- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
-
-Everything else (REPL widgets, Textual app, MCP, skills, sandbox bootstrap, agent picker, slash commands, splash tips, help-screen drift test, model-provider drift test, SDK-pin check) lived under `libs/cli/` before 0.1.0 and now lives under `libs/code/`.
-
 ### Deep Agents Code (`libs/code/`)
 
 `deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split; treat the layout, conventions, and CI checks below as authoritative for this package.
@@ -329,6 +309,26 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 - `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
 
 Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.
+
+### Deep Agents CLI (`libs/cli/`)
+
+As of `deepagents-cli==0.1.0` this package contains only the deployment subcommands — `init`, `dev`, and `deploy`. The interactive Textual REPL moved to `libs/code/` (`deepagents-code`); see [Deep Agents Code](#deep-agents-code-libscode) above for Textual/widget/slash-command guidance.
+
+#### Surface
+
+- Entry points: `deepagents` and `deepagents-cli` console scripts → `deepagents_cli.cli_main`.
+- Subcommands: `init` (scaffold project), `dev` (`langgraph dev` against a bundled project), `deploy` (`langgraph deploy` to LangGraph Platform).
+- Bare `deepagents` invocations print a deprecation notice pointing at `deepagents-code` and exit non-zero.
+
+#### Layout
+
+- `deepagents_cli/main.py` — argparse wiring + `cli_main` dispatch.
+- `deepagents_cli/deploy/` — the entire deploy/dev/init pipeline (`commands.py`, `bundler.py`, `config.py`, `templates.py`, `context_hub.py`, `frontend_dist/`).
+- `deepagents_cli/config.py` — slim `_load_dotenv` helper used by deploy/dev.
+- `deepagents_cli/model_config.py` — slim `resolve_env_var` helper for the `DEEPAGENTS_CLI_` env-var prefix.
+- `deepagents_cli/_version.py` — `__version__` (managed by release-please).
+
+Everything else (REPL widgets, Textual app, MCP, skills, sandbox bootstrap, agent picker, slash commands, splash tips, help-screen drift test, model-provider drift test, SDK-pin check) lived under `libs/cli/` before 0.1.0 and now lives under `libs/code/`.
 
 ### Evals (`libs/evals/`)
 

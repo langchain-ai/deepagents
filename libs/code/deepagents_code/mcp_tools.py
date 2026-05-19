@@ -9,6 +9,7 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import copy
 import fnmatch
 import json
 import logging
@@ -40,6 +41,14 @@ class MCPToolInfo:
 
     description: str
     """Human-readable description of what the tool does."""
+
+    input_schema: dict[str, Any] | None = None
+    """Raw MCP `inputSchema` dict (JSON Schema), or `None` when unavailable.
+
+    Supplied directly from `mcp_tool.inputSchema` at tool-load time. The viewer
+    reads `properties` and `required` from this dict for parameter display;
+    `None` is rendered as "no parameters".
+    """
 
 
 MCPServerStatus = Literal["ok", "unauthenticated", "error"]
@@ -1217,7 +1226,7 @@ async def _load_tools_from_config(
                         server_url=server_config["url"],
                     )
                     if await storage.get_tokens() is None:
-                        auth_msg = f"Run: deepagents mcp login {server_name}"
+                        auth_msg = f"Run: dcode mcp login {server_name}"
                         logger.warning(
                             "MCP server '%s' skipped: not authenticated. %s",
                             server_name,
@@ -1335,14 +1344,57 @@ async def _load_tools_from_config(
 
         server_tools = _apply_tool_filter(server_tools, server_name, server_config)
         all_tools.extend(server_tools)
+
+        # Pair each tool's input_schema by its LangChain (server-prefixed)
+        # name — the same form `server_tools` carries — so the lookup needs
+        # no string surgery and stays correct if `tool_name_prefix` ever
+        # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
+        # but Python's `frozen=True` does not freeze nested mutables; a
+        # shared reference would let one holder mutate every other's view.
+        schemas: dict[str, dict[str, Any] | None] = {}
+        for mcp_tool in mcp_tools:
+            tool_name = getattr(mcp_tool, "name", "")
+            try:
+                raw_schema = getattr(mcp_tool, "inputSchema", None)
+                schema_copy = (
+                    copy.deepcopy(raw_schema) if raw_schema is not None else None
+                )
+            except (AttributeError, TypeError, RecursionError) as exc:
+                logger.warning(
+                    "MCP tool %r on server %r: inputSchema access raised %s: %s; "
+                    "rendering with no parameters",
+                    tool_name,
+                    server_name,
+                    exc.__class__.__name__,
+                    exc,
+                )
+                schema_copy = None
+            lc_name = f"{server_name}_{tool_name}"
+            schemas[lc_name] = schema_copy
+
+        tool_infos: list[MCPToolInfo] = []
+        for tool in server_tools:
+            schema = schemas.get(tool.name)
+            if schema is None and schemas:
+                logger.debug(
+                    "MCP tool %r on server %r: no schema matched in lookup "
+                    "(available keys: %s); rendering with no parameters",
+                    tool.name,
+                    server_name,
+                    list(schemas.keys())[:5],
+                )
+            tool_infos.append(
+                MCPToolInfo(
+                    name=tool.name,
+                    description=tool.description or "",
+                    input_schema=schema,
+                )
+            )
         server_infos.append(
             MCPServerInfo(
                 name=server_name,
                 transport=transport,
-                tools=tuple(
-                    MCPToolInfo(name=tool.name, description=tool.description or "")
-                    for tool in server_tools
-                ),
+                tools=tuple(tool_infos),
             )
         )
 

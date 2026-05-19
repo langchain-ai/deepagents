@@ -41,7 +41,7 @@ _TIPS: dict[str, int] = {
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest assistant message": 3,
-    "Use /mcp to see your loaded tools and servers": 1,
+    "Use /mcp to search your MCP servers and inspect tool parameters": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Press ctrl+x to compose prompts in your external editor": 1,
@@ -57,7 +57,6 @@ _TIPS: dict[str, int] = {
     "Press Shift+Tab to toggle auto-approve mode": 2,
     "Use --startup-cmd to run a shell command before the first prompt": 1,
     "Use !! for incognito shell commands that stay out of model context": 1,
-    "Run `deepagents mcp login <server>` to authorize a remote MCP server": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
 """Rotating tips shown in the welcome footer, with relative selection weights.
@@ -386,7 +385,7 @@ class WelcomeBanner(Static):
             server_label = "server" if self._mcp_unauthenticated == 1 else "servers"
             unauth_text = (
                 f"{self._mcp_unauthenticated} MCP {server_label} need login "
-                "— run `deepagents mcp login <server>`\n"
+                "— run `dcode mcp login <server>`\n"
             )
             parts.extend(
                 [

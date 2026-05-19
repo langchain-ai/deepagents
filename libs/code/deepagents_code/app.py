@@ -5514,6 +5514,8 @@ class DeepAgentsApp(App):
             if result.offload_warning:
                 await self._mount_message(ErrorMessage(result.offload_warning))
 
+            # Intentionally traced: the summarization event is a meaningful state
+            # transition that should surface in LangSmith alongside real agent turns.
             await self._agent.aupdate_state(
                 config, {"_summarization_event": result.new_event}
             )

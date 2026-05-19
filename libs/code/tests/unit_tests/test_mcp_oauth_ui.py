@@ -131,6 +131,8 @@ class TestLoginWithoutStdio:
 
         from deepagents_code.mcp_auth import login
 
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
+
         captured: list[str] = []
 
         async def _fake_handshake(connections: dict) -> None:
@@ -248,6 +250,8 @@ class TestLoginWithoutStdio:
         from mcp.shared.auth import OAuthToken
 
         from deepagents_code.mcp_auth import login
+
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
 
         secret = "super-secret-access-token"
 

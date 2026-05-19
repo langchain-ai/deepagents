@@ -972,8 +972,12 @@ class TestLogin:
         assert client_info is not None
         assert client_info.client_id == _GITHUB_MCP_CLIENT_ID
 
-    async def test_slack_login_routes_team_into_redirect_url(self) -> None:
+    async def test_slack_login_routes_team_into_redirect_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Slack login threads the entered team id into the interactive URL."""
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
+
         from mcp.shared.auth import OAuthToken
 
         from deepagents_code.mcp_auth import login

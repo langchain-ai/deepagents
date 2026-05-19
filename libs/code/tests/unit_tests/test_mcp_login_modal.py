@@ -174,6 +174,8 @@ class TestMCPLoginScreenWithLoginCoroutine:
         only prompts for the callback URL (no Slack team ID — the TUI
         defers workspace selection to Slack's browser page).
         """
+        monkeypatch.setattr("webbrowser.open", lambda _url: False)
+
         from mcp.shared.auth import OAuthToken
 
         from deepagents_code.mcp_auth import FileTokenStorage, login

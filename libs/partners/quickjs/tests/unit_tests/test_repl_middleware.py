@@ -769,3 +769,200 @@ def test_sync_path_still_works(repl: _ThreadREPL) -> None:
     """After the v0.2 split, the sync path continues to use ``ctx.eval``."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"
+
+
+# ---------------------------------------------------------------------------
+# required_ptc_tools validation
+# ---------------------------------------------------------------------------
+
+
+def _make_skill_metadata(
+    name: str,
+    *,
+    required_ptc_tools: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build a minimal SkillMetadata dict for testing."""
+    meta: dict[str, Any] = {
+        "name": name,
+        "description": "test",
+        "path": f"/skills/{name}/SKILL.md",
+        "metadata": {},
+        "license": None,
+        "compatibility": None,
+        "allowed_tools": [],
+    }
+    if required_ptc_tools is not None:
+        meta["required_ptc_tools"] = required_ptc_tools
+    return meta
+
+
+def _make_ptc_tool(name: str) -> StructuredTool:
+    """Create a minimal StructuredTool for PTC config."""
+    return StructuredTool.from_function(
+        name=name,
+        description=f"{name} tool",
+        func=lambda: "ok",
+    )
+
+
+def test_before_agent_raises_when_required_ptc_tools_missing() -> None:
+    """``before_agent`` raises ``ValueError`` when a skill needs PTC tools not in config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "read_file", "write_file"]),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task"):
+            mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+async def test_abefore_agent_raises_when_required_ptc_tools_missing() -> None:
+    """``abefore_agent`` raises ``ValueError`` when a skill needs PTC tools not in config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "read_file"]),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task"):
+            await mw.abefore_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_passes_when_all_required_ptc_tools_present() -> None:
+    """``before_agent`` succeeds when all required PTC tools are configured."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("swarm_task"), _make_ptc_tool("read_file"), _make_ptc_tool("write_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "read_file"]),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_passes_when_no_required_ptc_tools() -> None:
+    """``before_agent`` succeeds when skills have no required_ptc_tools."""
+    mw = CodeInterpreterMiddleware(skills_backend=MagicMock())
+    try:
+        state = {
+            "skills_metadata": [_make_skill_metadata("simple-skill")],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_skips_validation_when_no_skills_backend() -> None:
+    """``before_agent`` skips PTC validation when ``skills_backend`` is not set."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task"]),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_ptc_validation_accepts_string_entries() -> None:
+    """``_ptc_tool_names`` collects names from string entries in PTC config."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=["swarm_task", "read_file"],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "read_file"]),
+            ],
+        }
+        result = mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+        assert result is None
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_error_message_includes_all_missing_tools() -> None:
+    """Error message lists all missing tools, not just the first."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "write_file", "read_file"]),
+            ],
+        }
+        with pytest.raises(ValueError, match="swarm_task, write_file"):
+            mw.before_agent(state=state, runtime=MagicMock())  # type: ignore[arg-type]
+    finally:
+        mw._registry.close()
+
+
+def test_skills_for_eval_skips_skills_with_missing_ptc_tools(caplog: pytest.LogCaptureFixture) -> None:
+    """``_skills_for_eval`` filters out skills with unsatisfied PTC tool requirements."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("read_file")],
+    )
+    try:
+        runtime = MagicMock()
+        runtime.state = {
+            "skills_metadata": [
+                _make_skill_metadata("needs-swarm", required_ptc_tools=["swarm_task", "read_file"]),
+                _make_skill_metadata("plain-skill"),
+            ],
+        }
+        with caplog.at_level("WARNING"):
+            result = mw._skills_for_eval(runtime)
+
+        assert result is not None
+        assert "needs-swarm" not in result
+        assert "plain-skill" in result
+        assert "swarm_task" in caplog.text
+    finally:
+        mw._registry.close()
+
+
+def test_skills_for_eval_includes_skills_when_all_ptc_tools_present() -> None:
+    """``_skills_for_eval`` includes skills when all required PTC tools are configured."""
+    mw = CodeInterpreterMiddleware(
+        skills_backend=MagicMock(),
+        ptc=[_make_ptc_tool("swarm_task"), _make_ptc_tool("read_file")],
+    )
+    try:
+        runtime = MagicMock()
+        runtime.state = {
+            "skills_metadata": [
+                _make_skill_metadata("swarm", required_ptc_tools=["swarm_task", "read_file"]),
+            ],
+        }
+        result = mw._skills_for_eval(runtime)
+        assert result is not None
+        assert "swarm" in result
+    finally:
+        mw._registry.close()

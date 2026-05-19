@@ -230,6 +230,14 @@ def _build_scope_modules(
     installed_index = _pick_installed_index_name(entry_rel)
     entry_installed = False
 
+    # When the entrypoint lives in a subdirectory (e.g. "scripts/index.ts"),
+    # it gets flattened to root-level "index.<ext>" for quickjs-rs bare-
+    # specifier resolution.  All sibling files must be relocated the same
+    # way so that relative imports (e.g. `import "./table.js"` from the
+    # now-root-level index) still resolve.
+    entry_parent = str(PurePosixPath(entry_rel).parent)
+    strip_prefix = entry_parent + "/" if entry_parent != "." else ""
+
     for abs_path, raw in file_pairs:
         rel = _relative(skill_dir, abs_path)
         try:
@@ -239,19 +247,15 @@ def _build_scope_modules(
             raise SkillInstallError(msg) from exc
 
         if rel == entry_rel:
-            # Always install the entrypoint under the canonical
-            # `index.<ext>` key. If the author already named it
-            # `index.<ext>` at the root, this is a no-op rename.
             files[installed_index] = source
             entry_installed = True
-            # Also expose the file at its original key so relative
-            # imports (e.g. `import "./index.ts"` from inside a sub-
-            # directory) still resolve. Skipped when entry_rel already
-            # equals installed_index.
             if rel != installed_index:
                 files[rel] = source
         else:
-            files[rel] = source
+            relocated = rel.removeprefix(strip_prefix) if strip_prefix else rel
+            files[relocated] = source
+            if relocated != rel:
+                files[rel] = source
 
     if not entry_installed:
         msg = (
@@ -259,7 +263,48 @@ def _build_scope_modules(
             "did not match any file in the skill directory"
         )
         raise InvalidSkillScopeError(msg)
+
+    _rewrite_js_imports_to_ts(files)
     return files
+
+
+# Matches relative import specifiers ending in .js:
+#   from "./table.js"  /  from '../lib/utils.js'  /  import("./foo.js")
+_JS_IMPORT_RE = re.compile(
+    r"""((?:from\s+|import\s*\()\s*["'])(\.\.?/[^"']*?)\.js(["'])"""
+)
+
+
+def _rewrite_js_imports_to_ts(files: dict[str, str | ModuleScope]) -> None:
+    """Rewrite ``.js`` import specifiers to ``.ts`` when only the ``.ts`` key exists.
+
+    TypeScript convention uses ``.js`` extensions in import specifiers even
+    when the source files are ``.ts``. Quickjs-rs does exact key matching,
+    so ``import "./table.js"`` won't find ``table.ts``. This rewrites
+    specifiers in-place for cases where the ``.js`` key is missing but the
+    ``.ts`` key is present.
+    """
+    all_keys = set(files)
+
+    for key in list(files):
+        source = files[key]
+        if not isinstance(source, str):
+            continue
+
+        def _replace(m: re.Match[str], _dir: str = str(PurePosixPath(key).parent)) -> str:
+            prefix, rel_stem, suffix = m.group(1), m.group(2), m.group(3)
+            if _dir == ".":
+                resolved = rel_stem.lstrip("./") + ".js"
+            else:
+                resolved = str(PurePosixPath(_dir) / (rel_stem + ".js"))
+            ts_resolved = resolved[:-3] + ".ts"
+            if resolved not in all_keys and ts_resolved in all_keys:
+                return f"{prefix}{rel_stem}.ts{suffix}"
+            return m.group(0)
+
+        new_source = _JS_IMPORT_RE.sub(_replace, source)
+        if new_source is not source:
+            files[key] = new_source
 
 
 def _require_module_path(metadata: SkillMetadata) -> str:

@@ -2251,3 +2251,51 @@ Content
     result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert "required_ptc_tools" not in result
+
+
+def test_parse_skill_metadata_entrypoint_from_metadata() -> None:
+    """metadata.entrypoint is used as module path when module is absent."""
+    content = """---
+name: swarm
+description: Dispatch tasks in parallel
+metadata:
+  entrypoint: scripts/index.ts
+---
+
+# Swarm
+"""
+    result = _parse_skill_metadata(content, "/skills/swarm/SKILL.md", "swarm")
+    assert result is not None
+    assert result["module"] == "scripts/index.ts"
+
+
+def test_parse_skill_metadata_module_takes_precedence_over_entrypoint() -> None:
+    """Top-level module wins when both module and metadata.entrypoint are set."""
+    content = """---
+name: swarm
+description: Dispatch tasks in parallel
+module: ./custom.ts
+metadata:
+  entrypoint: scripts/index.ts
+---
+
+# Swarm
+"""
+    result = _parse_skill_metadata(content, "/skills/swarm/SKILL.md", "swarm")
+    assert result is not None
+    assert result["module"] == "custom.ts"
+
+
+def test_parse_skill_metadata_entrypoint_absent_when_metadata_not_dict() -> None:
+    """Non-dict metadata does not produce a module from entrypoint."""
+    content = """---
+name: test-skill
+description: A test skill
+metadata: just-a-string
+---
+
+Content
+"""
+    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    assert result is not None
+    assert "module" not in result

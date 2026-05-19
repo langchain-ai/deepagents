@@ -78,9 +78,7 @@ def show_help() -> None:
         "  dcode [OPTIONS]                           Start interactive thread"
     )
     console.print("  dcode agents <list|reset>                 Manage agents")
-    console.print(
-        "  dcode skills <list|create|info|delete>    Manage agent skills"
-    )
+    console.print("  dcode skills <list|create|info|delete>    Manage agent skills")
     console.print(
         "  dcode threads <list|delete>               Manage conversation threads"
     )

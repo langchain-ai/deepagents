@@ -245,8 +245,7 @@ def _list(
                 style=theme.MUTED,
             )
             console.print(
-                "\n[dim]Create your first skill:\n"
-                "  dcode skills create my-skill[/dim]",
+                "\n[dim]Create your first skill:\n  dcode skills create my-skill[/dim]",
                 style=theme.MUTED,
             )
             return

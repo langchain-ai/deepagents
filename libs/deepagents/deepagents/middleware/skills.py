@@ -288,30 +288,6 @@ class SkillMetadata(TypedDict):
     - Space-delimited list of tool names
     """
 
-<<<<<<< HEAD
-=======
-    module: NotRequired[str | None]
-    """Path to a JS/TS entrypoint file for a QuickJS REPL module, relative to the skill directory.
-
-    Warning: this is experimental.
-
-    When present, consumers of this metadata (notably `langchain-quickjs`'s
-    `CodeInterpreterMiddleware`) may install the skill as a dynamic-importable ES
-    module. The string is a POSIX path like `./index.ts` pointing at a
-    file inside the skill dir. This middleware only parses and validates
-    the field — it does not load or execute any JavaScript.
-    """
-
-    required_ptc_tools: NotRequired[list[str]]
-    """PTC tool names that must be present in the QuickJS middleware's ``ptc`` configuration
-    for this skill to function.
-
-    The middleware validates these at skill-load time and returns a descriptive error
-    if any are missing. Tool names should match the agent tool names as configured
-    in ``ptc`` (e.g. ``read_file``, not ``readFile``).
-    """
-
->>>>>>> 46df55e1 (add required ptc tools to skill metadata)
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
@@ -372,6 +348,27 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     if name != directory_name:
         return False, f"name '{name}' must match directory name '{directory_name}'"
     return True, ""
+
+
+def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
+    """Parse the ``allowed-tools`` frontmatter value into a list of tool names."""
+    if isinstance(raw_tools, str):
+        return [t.strip(",") for t in raw_tools.split() if t.strip(",")]
+    if raw_tools is not None:
+        logger.warning(
+            "Ignoring non-string 'allowed-tools' in %s (got %s)",
+            skill_path,
+            type(raw_tools).__name__,
+        )
+    return []
+
+
+def _parse_required_ptc_tools(metadata_obj: object) -> list[str]:
+    """Extract ``required-ptc-tools`` from the metadata mapping."""
+    if not isinstance(metadata_obj, dict):
+        return []
+    raw = metadata_obj.get("required-ptc-tools")
+    return str(raw).split() if raw else []
 
 
 def _parse_skill_metadata(  # noqa: C901
@@ -443,21 +440,7 @@ def _parse_skill_metadata(  # noqa: C901
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
-    raw_tools = frontmatter_data.get("allowed-tools")
-    if isinstance(raw_tools, str):
-        allowed_tools = [
-            t.strip(",")  # Support commas for compatibility with skills created for Claude Code.
-            for t in raw_tools.split()
-            if t.strip(",")
-        ]
-    else:
-        if raw_tools is not None:
-            logger.warning(
-                "Ignoring non-string 'allowed-tools' in %s (got %s)",
-                skill_path,
-                type(raw_tools).__name__,
-            )
-        allowed_tools = []
+    allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"), skill_path)
 
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:

@@ -701,6 +701,22 @@ def _make_loopback_handlers(
         import webbrowser
 
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
+        opened = await asyncio.to_thread(webbrowser.open, final_url)
+        if not opened:
+            # No browser available — poison the future so callback() falls
+            # through to paste_callback() immediately instead of waiting 300s.
+            # The socket is never bound because start() is not called.
+            callback_server.fail(
+                _LoopbackCallbackUnavailableError(
+                    "No browser is available to complete the OAuth flow."
+                )
+            )
+            print(  # noqa: T201 - intentional user-facing fallback
+                "\nOpen this URL in a browser, approve access, then paste the full "
+                "callback URL back here:\n"
+                f"\n  {final_url}\n"
+            )
+            return
         try:
             callback_server.start()
         except OSError as exc:
@@ -718,26 +734,11 @@ def _make_loopback_handlers(
                 f"\n  {final_url}\n"
             )
             return
-        opened = await asyncio.to_thread(webbrowser.open, final_url)
-        if opened:
-            print(  # noqa: T201 - intentional user-facing prompt
-                "\nOpened your browser to approve MCP access. "
-                "If it did not open, visit this URL:\n"
-                f"\n  {final_url}\n"
-            )
-        else:
-            # No browser available — poison the future so callback() falls
-            # through to paste_callback() immediately instead of waiting 300s.
-            callback_server.fail(
-                _LoopbackCallbackUnavailableError(
-                    "No browser is available to complete the OAuth flow."
-                )
-            )
-            print(  # noqa: T201 - intentional user-facing fallback
-                "\nOpen this URL in a browser, approve access, then paste the full "
-                "callback URL back here:\n"
-                f"\n  {final_url}\n"
-            )
+        print(  # noqa: T201 - intentional user-facing prompt
+            "\nOpened your browser to approve MCP access. "
+            "If it did not open, visit this URL:\n"
+            f"\n  {final_url}\n"
+        )
 
     async def callback() -> tuple[str, str | None]:
         try:

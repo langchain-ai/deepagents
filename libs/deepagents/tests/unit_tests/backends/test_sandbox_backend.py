@@ -772,6 +772,121 @@ def test_sandbox_grep_quotes_include_glob() -> None:
     assert "--include='x'\"'\"' ; echo injected ; #' -e needle /test" in sandbox.last_command
 
 
+# -- grep error propagation tests --------------------------------------------
+
+
+def test_sandbox_grep_returns_error_on_backend_exec_failure() -> None:
+    """Test that grep surfaces a backend exec failure as `GrepResult.error`.
+
+    Reproduces the failure mode from issue #3441: when the underlying
+    backend (e.g., a container exec) fails before the shell can run,
+    the `2>/dev/null || true` redirection inside the shell never takes
+    effect and the backend's own error text lands in `result.output`
+    with a non-zero `exit_code`. The previous implementation tried to
+    parse that text as `path:line:text` and crashed with
+    `ValueError: invalid literal for int() with base 10: ' exec failed'`.
+    """
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(
+            output="OCI runtime exec failed: container not found: exec failed",
+            exit_code=126,
+            truncated=False,
+        )
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+    result = sandbox.grep("TODO", path="/does-not-exist")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "/does-not-exist" in result.error
+    assert "exec failed" in result.error
+
+
+def test_sandbox_grep_error_includes_exit_code_when_output_empty() -> None:
+    """Test that grep falls back to the exit code when backend output is empty."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="", exit_code=137, truncated=False)
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+    result = sandbox.grep("TODO", path="/somewhere")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "exit code 137" in result.error
+
+
+def test_sandbox_grep_returns_error_on_unparseable_match_line() -> None:
+    """Test that grep rejects backend output whose line-number field is not an int.
+
+    Defense in depth: even if a backend signals success with `exit_code=0`
+    but leaks error text into stdout, we refuse to fabricate matches.
+    """
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(
+            output="OCI runtime exec failed: container not found: exec failed",
+            exit_code=0,
+            truncated=False,
+        )
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+    result = sandbox.grep("TODO", path="/test")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected backend output" in result.error
+
+
+def test_sandbox_grep_success_path_unaffected() -> None:
+    """Test that grep still returns matches normally when the backend behaves."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(
+            output="/test/a.py:1:hit one\n/test/b.py:42:hit two",
+            exit_code=0,
+            truncated=False,
+        )
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+    result = sandbox.grep("hit", path="/test")
+
+    assert result.error is None
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    assert result.matches[0] == {"path": "/test/a.py", "line": 1, "text": "hit one"}
+    assert result.matches[1] == {"path": "/test/b.py", "line": 42, "text": "hit two"}
+
+
+def test_sandbox_grep_empty_output_returns_empty_matches() -> None:
+    """Test that grep returns an empty match list when there are genuinely no matches."""
+    sandbox = MockSandbox()
+
+    def mock_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
+        sandbox.last_command = command
+        return ExecuteResponse(output="", exit_code=0, truncated=False)
+
+    sandbox.execute = mock_execute  # type: ignore[assignment]
+
+    result = sandbox.grep("needle", path="/test")
+
+    assert result.error is None
+    assert result.matches == []
+
+
 # -- upload/download failure tests --------------------------------------------
 
 

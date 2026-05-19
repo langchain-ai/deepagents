@@ -791,23 +791,41 @@ except PermissionError:
         cmd = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
         result = self.execute(cmd)
 
+        # `|| true` forces a 0 exit when the shell ran, so a non-zero code
+        # here means the backend itself failed (e.g., container exec error
+        # before the shell ever started). Surface that as an error instead
+        # of trying to parse backend-emitted text as grep output. Mirrors
+        # the error-surfacing convention used by ls/read/edit/glob.
+        if result.exit_code != 0:
+            detail = result.output.strip() or f"exit code {result.exit_code}"
+            return GrepResult(error=f"Path '{path or '.'}': {detail}")
+
         output = result.output.rstrip()
         if not output:
             return GrepResult(matches=[])
 
-        # Parse grep output into GrepMatch objects
+        # Parse grep output into GrepMatch objects. A line whose
+        # second `:`-field is not an integer indicates malformed input
+        # (typically backend-leaked error text that escaped the exit-code
+        # check above) — abort with an error rather than silently dropping
+        # the line, which could mask the failure.
         matches: list[GrepMatch] = []
         for line in output.split("\n"):
             # Format is: path:line_number:text
             parts = line.split(":", 2)
-            if len(parts) >= 3:  # noqa: PLR2004  # Grep output field count
-                matches.append(
-                    {
-                        "path": parts[0],
-                        "line": int(parts[1]),
-                        "text": parts[2],
-                    }
-                )
+            if len(parts) < 3:  # noqa: PLR2004  # Grep output field count
+                continue
+            try:
+                line_number = int(parts[1])
+            except ValueError:
+                return GrepResult(error=f"Path '{path or '.'}': unexpected backend output: {line[:200]}")
+            matches.append(
+                {
+                    "path": parts[0],
+                    "line": line_number,
+                    "text": parts[2],
+                }
+            )
 
         return GrepResult(matches=matches)
 

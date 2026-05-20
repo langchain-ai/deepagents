@@ -79,20 +79,6 @@ class VariantCache:
             del self._entries[k]
 
 
-def _content_to_string(content: Any) -> str:
-    """Convert message content (string or content-block list) to a plain string."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and "text" in block:
-                parts.append(str(block["text"]))
-            else:
-                parts.append(json.dumps(block))
-        return "\n".join(parts)
-    return json.dumps(content)
-
 
 async def _invoke_model(
     model: str | BaseChatModel,
@@ -110,7 +96,7 @@ async def _invoke_model(
     if isinstance(result, str):
         return result
     if isinstance(result, AIMessage):
-        return _content_to_string(result.content)
+        return str(result.text)
     return json.dumps(result)
 
 
@@ -206,8 +192,7 @@ async def _invoke_agent(
         last = messages[-1] if messages else None
         if last is None:
             return "Task completed"
-        content = last.content if hasattr(last, "content") else str(last)
-        return _content_to_string(content)
+        return str(last.text) if hasattr(last, "text") else str(last)
 
     return str(result)
 

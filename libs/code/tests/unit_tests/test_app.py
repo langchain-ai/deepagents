@@ -9600,7 +9600,7 @@ class TestRestartCommand:
             worker = MagicMock()
             app._agent_worker = worker
             app._agent_running = True
-            app._pending_messages.append(QueuedMessage(text="hi", mode="chat"))
+            app._pending_messages.append(QueuedMessage(text="hi", mode="normal"))
 
             from deepagents_code.config import settings
 

@@ -265,12 +265,9 @@ class TestMCPViewerScreen:
             headers = screen.query(".mcp-server-header")
             assert len(headers) == 2
             # Selection lands on the toggled server.
-            assert isinstance(
-                screen._row_widgets[screen._selected_index], MCPServerHeaderItem
-            )
-            assert (
-                screen._row_widgets[screen._selected_index].server.name == "filesystem"
-            )
+            selected_widget = screen._row_widgets[screen._selected_index]
+            assert isinstance(selected_widget, MCPServerHeaderItem)
+            assert selected_widget.server.name == "filesystem"
             # The other server's tools must still render.
             tools = screen.query(".mcp-tool-item")
             tool_text = " ".join(_widget_text(t) for t in tools)

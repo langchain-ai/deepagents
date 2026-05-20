@@ -55,6 +55,7 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id as sanitize_tool_call_id,
+    to_posix_path,
     truncate_if_too_long,
     validate_path,
 )
@@ -139,7 +140,7 @@ def _filter_paths_by_permission(
     """Filter paths, removing only those denied by a rule.
 
     Interrupt-mode paths pass through here: the interrupt fires at the HITL
-    stage *before* the tool runs (see :func:`_build_interrupt_on_from_permissions`
+    stage *before* the tool runs (see `_build_interrupt_on_from_permissions`
     and its scope-aware predicate), so by the time result-filtering runs the
     user has already approved (or no rule matched). Filtering interrupt-mode
     results out here would silently empty the listing the user just approved.
@@ -175,7 +176,7 @@ def _filter_file_infos_by_permission(
 ) -> list[FileInfo]:
     """Filter file-info entries, removing only those denied by a rule.
 
-    See :func:`_filter_paths_by_permission` for why interrupt-mode entries
+    See `_filter_paths_by_permission` for why interrupt-mode entries
     pass through.
     """
     return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) != "deny"]
@@ -189,7 +190,7 @@ def _filter_grep_matches_by_permission(
 ) -> list[GrepMatch]:
     """Filter grep matches, removing only those denied by a rule.
 
-    See :func:`_filter_paths_by_permission` for why interrupt-mode entries
+    See `_filter_paths_by_permission` for why interrupt-mode entries
     pass through.
     """
     return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
@@ -243,37 +244,36 @@ _GLOB_WILDCARD_CHARS = frozenset("*?[{")
 
 
 def _glob_anchor(pattern: str) -> str:
-    """Return the longest leading directory of ``pattern`` with no wildcards.
+    """Return the longest leading directory of `pattern` with no wildcards.
 
-    For ``/secrets/**`` returns ``/secrets``; for ``/a/*/b`` returns ``/a``;
-    for a wildcard at the root (``/**/secrets``, ``/*/foo``) falls back to
-    ``/``, which causes the bulk predicate to fire for *any* bulk call —
-    conservative over-gating, since we cannot statically pin down where the
-    rule could resolve. Users wanting precise gating should anchor the
-    rule's leading components. Mirrors the backslash-normalization used by
-    :meth:`FilesystemPermission.__post_init__`.
+    For `/secrets/**` returns `/secrets`; for `/a/*/b` returns `/a`; for a
+    pattern with a wildcard at or near the root (`/**/secrets`, `/*/foo`)
+    falls back to `/`. The root fallback causes the bulk predicate to fire
+    for *any* bulk call — conservative over-gating, since we cannot statically
+    pin down where the rule could resolve. Users wanting precise gating
+    should anchor the rule's leading components.
     """
-    norm = pattern.replace("\\", "/")
+    parts = PurePosixPath(to_posix_path(pattern)).parts
     safe: list[str] = []
-    for part in norm.split("/"):
+    for part in parts:
         if any(c in _GLOB_WILDCARD_CHARS for c in part):
             break
         safe.append(part)
-    return "/".join(safe) or "/"
+    if not safe:
+        return "/"
+    return str(PurePosixPath(*safe))
 
 
 def _paths_overlap(call_path: str, rule_anchor: str) -> bool:
-    """Return True iff a tool call rooted at ``call_path`` could touch ``rule_anchor``.
+    """Return True if the subtree at `call_path` intersects the subtree at `rule_anchor`.
 
-    Two subtrees overlap when one is a prefix of the other (or they're equal).
-    The root ``/`` overlaps with everything. Comparison is on path components,
-    not raw string prefix, so ``/secret`` does not overlap ``/secrets``.
+    Two subtrees overlap when one is a (component-wise) prefix of the other,
+    or they're equal. Comparison runs on `PurePosixPath` components, so
+    `/secret` does not overlap `/secrets`. The root `/` overlaps everything.
     """
-    a = call_path.rstrip("/") or "/"
-    b = rule_anchor.rstrip("/") or "/"
-    if a == "/" or b == "/":
-        return True
-    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+    a = PurePosixPath(call_path)
+    b = PurePosixPath(rule_anchor)
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 def _make_fs_when_predicate(
@@ -284,15 +284,15 @@ def _make_fs_when_predicate(
 ) -> Callable[[ToolCallRequest], bool]:
     """Build a `when` predicate that fires on interrupt-mode rule matches.
 
-    The predicate's behavior depends on the tool's :data:`ToolScope`:
+    The predicate's behavior depends on the tool's `ToolScope`:
 
-    * ``"exact"`` — fire iff the call's path matches an interrupt-mode rule
-      with normal first-match precedence (a preceding ``deny`` rule wins and
-      the interrupt does not fire; the tool will return a permission-denied
-      error instead).
-    * ``"bulk"`` — fire iff the call's search subtree could intersect an
-      interrupt-mode rule. With no path argument (``grep(path=None)``) we
-      cannot localize the call, so we fire unconditionally for any
+    - `"exact"`: fire iff the call's path matches an interrupt-mode rule
+      with normal first-match precedence. A preceding `deny` rule wins and
+      the interrupt does not fire — the tool returns a permission-denied
+      error instead.
+    - `"bulk"`: fire iff the call's search subtree could intersect an
+      interrupt-mode rule. With no path argument (e.g. `grep(path=None)`)
+      we cannot localize the call, so we fire unconditionally for any
       interrupt-mode rule on the operation.
     """
     if scope == "exact":

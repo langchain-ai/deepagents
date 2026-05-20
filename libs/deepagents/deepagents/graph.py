@@ -195,7 +195,7 @@ def _merge_fs_interrupt_on(
     """Merge fs-permission-derived configs with user-supplied `interrupt_on`.
 
     User-supplied entries override generated ones per tool name. Returns
-    ``None`` when both inputs are empty so callers can skip installing
+    `None` when both inputs are empty so callers can skip installing
     `HumanInTheLoopMiddleware`.
     """
     if not fs_interrupt_on and not user_interrupt_on:

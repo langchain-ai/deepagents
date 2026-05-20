@@ -6,7 +6,6 @@ from langchain_quickjs._swarm_task import (
     SwarmTaskMode,
     VariantCache,
     create_swarm_task_tool,
-    normalize_schema,
 )
 from langchain_quickjs.middleware import CodeInterpreterMiddleware
 
@@ -17,5 +16,4 @@ __all__ = [
     "SwarmTaskMode",
     "VariantCache",
     "create_swarm_task_tool",
-    "normalize_schema",
 ]

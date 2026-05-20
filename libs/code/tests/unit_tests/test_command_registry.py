@@ -10,7 +10,7 @@ from deepagents_code.command_registry import (
     ALWAYS_IMMEDIATE,
     BYPASS_WHEN_CONNECTING,
     COMMANDS,
-    HIDDEN_DEBUG,
+    HIDDEN_COMMANDS,
     IMMEDIATE_UI,
     QUEUE_BOUND,
     SIDE_EFFECT_FREE,
@@ -69,7 +69,7 @@ class TestBypassTiers:
             | IMMEDIATE_UI
             | SIDE_EFFECT_FREE
             | QUEUE_BOUND
-            | HIDDEN_DEBUG
+            | HIDDEN_COMMANDS
         )
 
     def test_aliases_in_correct_tier(self) -> None:
@@ -114,6 +114,23 @@ class TestSlashCommands:
         """SlashCommand.to_entry() produces the same entries as SLASH_COMMANDS."""
         for cmd, entry in zip(COMMANDS, SLASH_COMMANDS, strict=True):
             assert cmd.to_entry() == entry
+
+
+class TestHiddenCommands:
+    """`HIDDEN_COMMANDS` membership and autocomplete absence."""
+
+    def test_restart_is_hidden(self) -> None:
+        assert "/restart" in HIDDEN_COMMANDS
+
+    def test_debug_error_is_hidden(self) -> None:
+        assert "/debug-error" in HIDDEN_COMMANDS
+
+    def test_hidden_not_in_autocomplete(self) -> None:
+        names = {entry.name for entry in SLASH_COMMANDS}
+        for hidden in HIDDEN_COMMANDS:
+            assert hidden not in names, (
+                f"Hidden command {hidden!r} leaked into SLASH_COMMANDS"
+            )
 
 
 class TestAgentsCommand:

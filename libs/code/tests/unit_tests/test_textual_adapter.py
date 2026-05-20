@@ -25,7 +25,6 @@ from deepagents_code.textual_adapter import (
     _build_interrupted_ai_message,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
-    _persist_context_tokens,
     execute_task_textual,
     format_token_count,
     print_usage_table,
@@ -310,43 +309,109 @@ class TestInterruptCleanup:
         )
 
 
-class TestPersistContextTokens:
-    """Tests for `_persist_context_tokens`."""
+class TestInterruptCleanupTokenPersist:
+    """`_context_tokens` rides on the cancellation `aupdate_state` write."""
 
-    async def test_skips_aupdate_state_for_remote_agent(self) -> None:
-        """Remote agents must not call aupdate_state for _context_tokens.
+    async def test_includes_context_tokens_in_cancellation_update(self) -> None:
+        """The cancellation HumanMessage write carries the latest token count."""
+        captured: list[dict[str, Any]] = []
 
-        When the agent is a RemoteAgent, aupdate_state goes over HTTP to the
-        dev server, which creates its own LangSmith trace that the client
-        cannot suppress with tracing_context(enabled=False). Skipping the call
-        is safe because persistence is best-effort.
-        """
-        from deepagents_code.remote_client import RemoteAgent
-
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aupdate_state = AsyncMock()
-
-        await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-1"}}, 1234
-        )
-
-        agent.aupdate_state.assert_not_called()
-
-    async def test_calls_aupdate_state_for_local_agent(self) -> None:
-        """Local agents should still call aupdate_state for _context_tokens."""
-        called_with: list[object] = []
-
-        def _capture(*args: object, **_kwargs: object) -> None:
-            called_with.append(args[1])  # the values dict
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
-
-        await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-2"}}, 9999
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
         )
 
-        assert len(called_with) == 1
-        assert called_with[0] == {"_context_tokens": 9999}
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=4321,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        # Only the cancellation write happens (no partial AI message in this test);
+        # it carries both `messages` and `_context_tokens`.
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 4321
+        assert "messages" in captured[0]
+
+    async def test_omits_context_tokens_when_no_usage_captured(self) -> None:
+        """Zero tokens means we never saw `usage_metadata`; preserve the prior value."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert "_context_tokens" not in captured[0]
+
+    async def test_partial_ai_message_write_does_not_carry_tokens(self) -> None:
+        """Only the cancellation write carries `_context_tokens`."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        tool_widget = MagicMock()
+        tool_widget._tool_name = "read_file"
+        tool_widget._args = {"path": "notes.txt"}
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=7777,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 2
+        # First write is the interrupted AI message; should not be polluted.
+        assert "_context_tokens" not in captured[0]
+        # Second write is the cancellation HumanMessage; carries the token count.
+        assert captured[1]["_context_tokens"] == 7777
 
 
 class TestBuildStreamConfig:

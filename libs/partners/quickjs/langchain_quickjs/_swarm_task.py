@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 SwarmTaskMode = Literal["agent", "invoke"]
 
 _VARIANT_TTL_S = 60.0
+_VARIANT_MAX_ENTRIES = 64
+
+_SCHEMA_MAX_BYTES = 4096
+_SCHEMA_MAX_DEPTH = 5
+_SCHEMA_MAX_PROPERTIES = 32
 
 
 @dataclass
@@ -44,6 +49,34 @@ class SwarmSubAgent:
 
 
 
+def _validate_response_schema(schema: dict[str, Any]) -> None:
+    """Reject schemas that exceed size, depth, or property-count limits."""
+    serialized = json.dumps(schema)
+    if len(serialized) > _SCHEMA_MAX_BYTES:
+        msg = f"response_schema exceeds {_SCHEMA_MAX_BYTES} byte limit ({len(serialized)} bytes)"
+        raise ValueError(msg)
+
+    def _check(node: object, depth: int, prop_count: list[int]) -> None:
+        if depth > _SCHEMA_MAX_DEPTH:
+            msg = f"response_schema exceeds maximum nesting depth of {_SCHEMA_MAX_DEPTH}"
+            raise ValueError(msg)
+        if not isinstance(node, dict):
+            return
+        props = node.get("properties")
+        if isinstance(props, dict):
+            prop_count[0] += len(props)
+            if prop_count[0] > _SCHEMA_MAX_PROPERTIES:
+                msg = f"response_schema exceeds maximum of {_SCHEMA_MAX_PROPERTIES} properties"
+                raise ValueError(msg)
+            for v in props.values():
+                _check(v, depth + 1, prop_count)
+        items = node.get("items")
+        if isinstance(items, dict):
+            _check(items, depth + 1, prop_count)
+
+    _check(schema, 0, [0])
+
+
 class VariantCache:
     """TTL cache for compiled agent variants.
 
@@ -52,9 +85,14 @@ class VariantCache:
     are swept first. Cache hits refresh the timestamp.
     """
 
-    def __init__(self, ttl_s: float = _VARIANT_TTL_S) -> None:
+    def __init__(
+        self,
+        ttl_s: float = _VARIANT_TTL_S,
+        max_entries: int = _VARIANT_MAX_ENTRIES,
+    ) -> None:
         self._entries: dict[str, tuple[Any, float]] = {}
         self._ttl_s = ttl_s
+        self._max_entries = max_entries
 
     def get_or_create(self, key: str, factory: Any) -> Any:
         """Return a cached value or create one via `factory` on cache miss."""
@@ -64,6 +102,8 @@ class VariantCache:
             value, _ = entry
             self._entries[key] = (value, time.monotonic())
             return value
+        if len(self._entries) >= self._max_entries:
+            self._evict_lru()
         value = factory()
         self._entries[key] = (value, time.monotonic())
         return value
@@ -77,6 +117,12 @@ class VariantCache:
         expired = [k for k, (_, ts) in self._entries.items() if now - ts > self._ttl_s]
         for k in expired:
             del self._entries[k]
+
+    def _evict_lru(self) -> None:
+        if not self._entries:
+            return
+        oldest_key = min(self._entries, key=lambda k: self._entries[k][1])
+        del self._entries[oldest_key]
 
 
 
@@ -254,6 +300,8 @@ def create_swarm_task_tool(
         response_schema: dict[str, Any] | None = None,
         mode: SwarmTaskMode | None = None,
     ) -> str:
+        if response_schema is not None:
+            _validate_response_schema(response_schema)
         effective_mode = mode or "agent"
 
         if effective_mode == "invoke":

@@ -54,7 +54,12 @@ def _extract_context_tokens(message: AIMessage) -> int | None:
 
 
 class TokenStateMiddleware(AgentMiddleware[TokenTrackingState, ContextT]):
-    """Persists the latest context-token count after each model call."""
+    """Persists the latest context-token count after each model call.
+
+    See the module docstring for why this rides the model node's checkpoint
+    instead of a separate `aupdate_state` (avoids a standalone `UpdateState`
+    run in LangSmith and works identically against remote graphs).
+    """
 
     state_schema = TokenTrackingState
 
@@ -64,6 +69,10 @@ class TokenStateMiddleware(AgentMiddleware[TokenTrackingState, ContextT]):
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Write `_context_tokens` from the most recent `AIMessage.usage_metadata`.
+
+        Args:
+            state: Current agent state; only `messages` is inspected.
+            runtime: LangGraph runtime (unused; required by the hook signature).
 
         Returns:
             State update `{"_context_tokens": <int>}` when usage is reported on

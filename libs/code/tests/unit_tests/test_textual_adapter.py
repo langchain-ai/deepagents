@@ -375,6 +375,74 @@ class TestInterruptCleanupTokenPersist:
         assert len(captured) == 1
         assert "_context_tokens" not in captured[0]
 
+    async def test_includes_context_tokens_for_output_only_turn(self) -> None:
+        """Output-only AI turns (no input usage) still persist a count."""
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=500,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 500
+
+    async def test_remote_agent_interrupt_write_carries_context_tokens(self) -> None:
+        """Remote agents are not skipped on the interrupt-cleanup write.
+
+        Locks in the deletion of the old `_persist_context_tokens` `RemoteAgent`
+        short-circuit so a future refactor cannot silently re-introduce it.
+        """
+        from deepagents_code.remote_client import RemoteAgent
+
+        captured: list[dict[str, Any]] = []
+
+        async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            captured.append(values)
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aupdate_state = AsyncMock(side_effect=_capture)
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=1234,
+            captured_output_tokens=88,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert isinstance(agent, RemoteAgent)
+        assert len(captured) == 1
+        assert captured[0]["_context_tokens"] == 1322
+
     async def test_partial_ai_message_write_does_not_carry_tokens(self) -> None:
         """Only the cancellation write carries `_context_tokens`."""
         captured: list[dict[str, Any]] = []

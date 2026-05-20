@@ -1100,9 +1100,9 @@ def create_cli_agent(
     agent_middleware = []
     agent_middleware.append(ConfigurableModelMiddleware())
 
-    # Token state: adds _context_tokens to graph state (checkpointed, not
-    # passed to model).  Must be registered before any middleware that might
-    # read the channel.
+    # Token state: declares the `_context_tokens` channel and writes it from
+    # `aafter_model` based on the latest `AIMessage.usage_metadata`. The CLI
+    # reads it back from `state_values` on thread resume.
     from deepagents_code.token_state import TokenStateMiddleware
 
     agent_middleware.append(TokenStateMiddleware())

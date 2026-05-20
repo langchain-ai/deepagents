@@ -298,7 +298,7 @@ class TestOffloadSuccess:
             assert event["cutoff_index"] == 4
             assert event["summary_message"] is not None
             assert event["file_path"] == "/conversation_history/test-thread.md"
-            assert "_context_tokens" in update_values
+            assert update_values["_context_tokens"] == result.tokens_after
 
     async def test_offload_shows_feedback_message(self) -> None:
         """Should display feedback with message count and token change."""

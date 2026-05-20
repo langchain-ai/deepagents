@@ -1309,7 +1309,7 @@ async def execute_task_textual(
                     # Model call already completed (HITL interrupt fires after
                     # the model node); `TokenStateMiddleware.aafter_model`
                     # persisted the count, so only refresh UI here.
-                    await _report_tokens(
+                    _report_tokens(
                         adapter,
                         captured_input_tokens,
                         captured_output_tokens,
@@ -1337,7 +1337,7 @@ async def execute_task_textual(
     # Update token count and return stats. Persistence is handled inside the
     # graph by `TokenStateMiddleware.aafter_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_tokens(
+    _report_tokens(
         adapter,
         captured_input_tokens,
         captured_output_tokens,
@@ -1412,8 +1412,9 @@ async def _handle_interrupt_cleanup(
             # instead of issuing a separate `aupdate_state`. `aafter_model` never
             # ran on the partial turn, so without this the count would be stale
             # on resume.
-            if captured_input_tokens:
-                cancellation_values["_context_tokens"] = captured_input_tokens
+            captured_total = captured_input_tokens + captured_output_tokens
+            if captured_total:
+                cancellation_values["_context_tokens"] = captured_total
             await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
@@ -1441,7 +1442,7 @@ async def _handle_interrupt_cleanup(
     approximate = interrupted_msg is not None
 
     turn_stats.wall_time_seconds = time.monotonic() - start_time
-    await _report_tokens(
+    _report_tokens(
         adapter,
         captured_input_tokens,
         captured_output_tokens,
@@ -1449,7 +1450,7 @@ async def _handle_interrupt_cleanup(
     )
 
 
-async def _report_tokens(  # noqa: RUF029  # async to match callsite `await`; UI callbacks are sync.
+def _report_tokens(
     adapter: TextualUIAdapter,
     captured_input_tokens: int,
     captured_output_tokens: int,

@@ -1,8 +1,8 @@
 """Unit tests for the swarm_task PTC tool.
 
-Covers normalize_schema, VariantCache, and the tool created by
-create_swarm_task_tool (subagent validation, agent mode dispatch,
-invoke mode, schema-constrained variant caching).
+Covers VariantCache and the tool created by create_swarm_task_tool
+(subagent validation, agent mode dispatch, invoke mode,
+schema-constrained variant caching).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from langchain_quickjs._swarm_task import (
     SwarmSubAgent,
     VariantCache,
     create_swarm_task_tool,
-    normalize_schema,
 )
 
 # ---------------------------------------------------------------------------
@@ -68,120 +67,6 @@ def _make_fake_agent(
         return result
 
     return _make_runnable(_afunc)
-
-
-# ---------------------------------------------------------------------------
-# normalizeSchema
-# ---------------------------------------------------------------------------
-
-
-class TestNormalizeSchema:
-    """Tests for the normalize_schema function."""
-
-    def test_adds_additional_properties_false_to_top_level_object(self) -> None:
-        result = normalize_schema(
-            {
-                "type": "object",
-                "properties": {"x": {"type": "string"}},
-                "required": ["x"],
-            }
-        )
-        assert result["additionalProperties"] is False
-
-    def test_preserves_existing_additional_properties_false(self) -> None:
-        result = normalize_schema(
-            {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {},
-            }
-        )
-        assert result["additionalProperties"] is False
-
-    def test_recurses_into_nested_object_properties(self) -> None:
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "counts": {
-                    "type": "object",
-                    "properties": {"a": {"type": "number"}},
-                    "required": ["a"],
-                },
-            },
-            "required": ["counts"],
-        }
-        result = normalize_schema(schema)
-        counts = result["properties"]["counts"]
-        assert counts["additionalProperties"] is False
-
-    def test_recurses_into_array_items(self) -> None:
-        schema = {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"],
-            },
-        }
-        result = normalize_schema(schema)
-        items = result["items"]
-        assert items["additionalProperties"] is False
-
-    def test_handles_deeply_nested_objects(self) -> None:
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "results": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "counts": {
-                                "type": "object",
-                                "properties": {"a": {"type": "number"}},
-                            },
-                        },
-                    },
-                },
-            },
-        }
-        result = normalize_schema(schema)
-        items = result["properties"]["results"]["items"]
-        counts = items["properties"]["counts"]
-        assert counts["additionalProperties"] is False
-
-    def test_passes_through_non_object_array_types_unchanged(self) -> None:
-        schema = {"type": "string"}
-        assert normalize_schema(schema) == {"type": "string"}
-
-    def test_preserves_min_items_on_array_types(self) -> None:
-        assert (
-            normalize_schema(
-                {"type": "array", "minItems": 6, "items": {"type": "string"}}
-            )["minItems"]
-            == 6
-        )
-        assert (
-            normalize_schema(
-                {"type": "array", "minItems": 0, "items": {"type": "string"}}
-            )["minItems"]
-            == 0
-        )
-        assert (
-            normalize_schema(
-                {"type": "array", "minItems": 1, "items": {"type": "string"}}
-            )["minItems"]
-            == 1
-        )
-
-    def test_preserves_max_items_on_array_types(self) -> None:
-        result = normalize_schema(
-            {"type": "array", "maxItems": 10, "items": {"type": "string"}}
-        )
-        assert result["maxItems"] == 10
 
 
 # ---------------------------------------------------------------------------
@@ -534,12 +419,7 @@ class TestAgentMode:
 
             assert mock_create.call_count == 2
             last_call_kwargs = mock_create.call_args_list[-1]
-            assert last_call_kwargs.kwargs["response_format"] == {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {"label": {"type": "string"}},
-                "required": ["label"],
-            }
+            assert last_call_kwargs.kwargs["response_format"] == schema
 
     async def test_does_not_compile_new_agent_when_schema_omitted(self) -> None:
         with patch(
@@ -557,55 +437,7 @@ class TestAgentMode:
             await tool.ainvoke({"description": "work", "subagent_type": "worker"})
             assert mock_create.call_count == 1
 
-    async def test_validates_response_schema_must_have_type_object(self) -> None:
-        with patch(
-            "langchain_quickjs._swarm_task.create_agent",
-            return_value=_make_fake_agent(),
-        ):
-            tool = create_swarm_task_tool(
-                subagents=[
-                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
-                ],
-                default_model=_make_mock_model(),
-            )
 
-        with pytest.raises(Exception, match='response_schema must have type: "object"'):
-            await tool.ainvoke(
-                {
-                    "description": "work",
-                    "subagent_type": "worker",
-                    "response_schema": {"type": "array", "items": {"type": "string"}},
-                }
-            )
-
-    async def test_normalizes_schema_adding_additional_properties_false(self) -> None:
-        with patch(
-            "langchain_quickjs._swarm_task.create_agent",
-            return_value=_make_fake_agent(),
-        ) as mock_create:
-            tool = create_swarm_task_tool(
-                subagents=[
-                    SwarmSubAgent(name="worker", description="W", system_prompt="W.")
-                ],
-                default_model=_make_mock_model(),
-            )
-
-            await tool.ainvoke(
-                {
-                    "description": "work",
-                    "subagent_type": "worker",
-                    "response_schema": {
-                        "type": "object",
-                        "properties": {"x": {"type": "string"}},
-                    },
-                }
-            )
-
-            last_call_kwargs = mock_create.call_args_list[-1]
-            assert (
-                last_call_kwargs.kwargs["response_format"]["additionalProperties"]
-                is False
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +521,6 @@ class TestInvokeMode:
                     "description": "Return the structured result.",
                     "parameters": {
                         "type": "object",
-                        "additionalProperties": False,
                         "properties": {"label": {"type": "string"}},
                     },
                 },
@@ -723,18 +554,6 @@ class TestInvokeMode:
 
         result = await tool.ainvoke({"description": "work", "mode": "invoke"})
         assert result == "the answer"
-
-    async def test_validates_response_schema_must_have_type_object(self) -> None:
-        tool = create_swarm_task_tool(subagents=[], default_model=_make_mock_model())
-
-        with pytest.raises(Exception, match='response_schema must have type: "object"'):
-            await tool.ainvoke(
-                {
-                    "description": "work",
-                    "mode": "invoke",
-                    "response_schema": {"type": "array", "items": {"type": "string"}},
-                }
-            )
 
     async def test_works_without_response_schema(self) -> None:
         model = _make_mock_model("plain response")

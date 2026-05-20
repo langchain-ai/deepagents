@@ -43,45 +43,6 @@ class SwarmSubAgent:
     """Model override for this subagent. Falls back to the tool's `default_model`."""
 
 
-def _is_schema_node(value: object) -> bool:
-    """Check whether a value is a plain dict suitable for JSON Schema traversal."""
-    return isinstance(value, dict)
-
-
-def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Recursively add `additionalProperties: false` to every object-typed node."""
-    schema_type = schema.get("type")
-    if schema_type not in ("object", "array"):
-        return schema
-
-    if schema_type == "array":
-        result = {**schema}
-        items = result.get("items")
-        if isinstance(items, dict):
-            result["items"] = normalize_schema(items)
-        return result
-
-    result = {**schema, "additionalProperties": False}
-    props = schema.get("properties")
-    if isinstance(props, dict):
-        normalized: dict[str, Any] = {}
-        for key, value in props.items():
-            normalized[key] = (
-                normalize_schema(value) if _is_schema_node(value) else value
-            )
-        result["properties"] = normalized
-    return result
-
-
-def _normalize_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a response schema and validate it has `type: "object"`."""
-    normalized = normalize_schema(schema)
-    if normalized.get("type") != "object":
-        got = json.dumps(normalized.get("type"))
-        msg = f'response_schema must have type: "object", got: {got}'
-        raise ValueError(msg)
-    return normalized
-
 
 class VariantCache:
     """TTL cache for compiled agent variants.
@@ -159,8 +120,6 @@ async def _invoke_with_structured_output(
     response_schema: dict[str, Any],
 ) -> str:
     """Bind a structured output tool to the model and extract the result."""
-    normalized = _normalize_response_schema(response_schema)
-
     if not hasattr(model, "bind_tools"):
         msg = (
             "invoke mode with response_schema requires"
@@ -174,7 +133,7 @@ async def _invoke_with_structured_output(
             {
                 "name": tool_name,
                 "description": "Return the structured result.",
-                "parameters": normalized,
+                "parameters": response_schema,
             }
         ],
         tool_choice=tool_name,
@@ -223,8 +182,7 @@ async def _invoke_agent(
     agent = entry.agent
 
     if response_schema is not None:
-        normalized = _normalize_response_schema(response_schema)
-        cache_key = f"{entry.spec.name}::{json.dumps(normalized, sort_keys=True)}"
+        cache_key = f"{entry.spec.name}::{json.dumps(response_schema, sort_keys=True)}"
         agent = variant_cache.get_or_create(
             cache_key,
             lambda: create_agent(
@@ -232,7 +190,7 @@ async def _invoke_agent(
                 system_prompt=entry.spec.system_prompt,
                 tools=entry.spec.tools,
                 name=entry.spec.name,
-                response_format=normalized,
+                response_format=response_schema,
             ),
         )
 

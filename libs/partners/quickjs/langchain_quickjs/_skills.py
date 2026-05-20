@@ -1,14 +1,14 @@
 """Skill module loader for the REPL.
 
-Turns a skill's ``SkillMetadata`` (parsed by ``SkillsMiddleware``) plus a
-``BackendProtocol`` into a ``ModuleScope`` installable on a QuickJS
-context under the bare specifier ``@/skills/<name>``. The guest can
-then ``await import("@/skills/<name>")`` to pull the skill's entrypoint
+Turns a skill's `SkillMetadata` (parsed by `SkillsMiddleware`) plus a
+`BackendProtocol` into a `ModuleScope` installable on a QuickJS
+context under the bare specifier `@/skills/<name>`. The guest can
+then `await import("@/skills/<name>")` to pull the skill's entrypoint
 exports.
 
 This module is the enumeration + scope-build half; the install-cache
-and the pre-eval specifier scan live on ``_ThreadREPL`` in
-``_repl.py`` so they share the Context / Runtime locks.
+and the pre-eval specifier scan live on `_ThreadREPL` in
+`_repl.py` so they share the Context / Runtime locks.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class InvalidSkillScopeError(SkillLoadError):
     """Skill directory contains nothing installable.
 
     Either no module-extension files were found, or the frontmatter
-    ``module`` path doesn't match any of them.
+    `module` path doesn't match any of them.
     """
 
 
@@ -81,10 +81,10 @@ class LoadedSkill:
     Attributes:
         name: Spec-validated skill name (kebab-case).
         specifier: The bare specifier we install under. Always
-            ``"@/skills/<name>"``.
-        scope: A ``ModuleScope`` carrying every code file from the
+            `"@/skills/<name>"`.
+        scope: A `ModuleScope` carrying every code file from the
             skill directory, with the entrypoint renamed to
-            ``index.<ext>`` if the author picked a different name.
+            `index.<ext>` if the author picked a different name.
     """
 
     name: str
@@ -107,9 +107,9 @@ def _skill_specifier(name: str) -> str:
 
 
 def _skill_dir_from_metadata(metadata: SkillMetadata) -> str:
-    """Extract the skill directory from a ``SkillMetadata``.
+    """Extract the skill directory from a `SkillMetadata`.
 
-    ``path`` is the SKILL.md path; the skill dir is its parent.
+    `path` is the SKILL.md path; the skill dir is its parent.
     """
     return str(PurePosixPath(metadata["path"]).parent)
 
@@ -118,11 +118,11 @@ def _enumerate_code_files(
     backend: BackendProtocol,
     skill_dir: str,
 ) -> list[str]:
-    """List every code-extension file under ``skill_dir`` (recursive).
+    """List every code-extension file under `skill_dir` (recursive).
 
-    Makes one ``glob`` call per extension. We'd prefer one call with a
+    Makes one `glob` call per extension. We'd prefer one call with a
     brace-expansion pattern, but the backend protocol doesn't require
-    brace support and ``FilesystemBackend.glob`` uses ``pathlib.rglob``
+    brace support and `FilesystemBackend.glob` uses `pathlib.rglob`
     which doesn't expand them. Per-extension calls sidestep that cross-
     backend inconsistency. Paths are deduped (a single file can only
     match one extension) and sorted for determinism so the model's
@@ -216,7 +216,7 @@ def _build_scope_modules(
     file_pairs: list[tuple[str, bytes]],
     skill_name: str,
 ) -> dict[str, str | ModuleScope]:
-    """Build the ``ModuleScope`` contents dict for one skill.
+    """Build the `ModuleScope` contents dict for one skill.
 
     The dict has only `str` entries — no nested subscopes. That's the
     isolation guarantee from the spec: a skill scope can see only its
@@ -276,13 +276,13 @@ _JS_IMPORT_RE = re.compile(
 
 
 def _rewrite_js_imports_to_ts(files: dict[str, str | ModuleScope]) -> None:
-    """Rewrite ``.js`` import specifiers to ``.ts`` when only the ``.ts`` key exists.
+    """Rewrite `.js` import specifiers to `.ts` when only the `.ts` key exists.
 
-    TypeScript convention uses ``.js`` extensions in import specifiers even
-    when the source files are ``.ts``. Quickjs-rs does exact key matching,
-    so ``import "./table.js"`` won't find ``table.ts``. This rewrites
-    specifiers in-place for cases where the ``.js`` key is missing but the
-    ``.ts`` key is present.
+    TypeScript convention uses `.js` extensions in import specifiers even
+    when the source files are `.ts`. Quickjs-rs does exact key matching,
+    so `import "./table.js"` won't find `table.ts`. This rewrites
+    specifiers in-place for cases where the `.js` key is missing but the
+    `.ts` key is present.
     """
     all_keys = set(files)
 
@@ -324,7 +324,7 @@ def load_skill(
     metadata: SkillMetadata,
     backend: BackendProtocol,
 ) -> LoadedSkill:
-    """Load one skill into a ``LoadedSkill``.
+    """Load one skill into a `LoadedSkill`.
 
     Raises:
         InvalidSkillScopeError: Metadata has no `module` key, or the
@@ -398,9 +398,9 @@ _SKILL_SPECIFIER_RE = re.compile(
 def scan_skill_references(source: str) -> frozenset[str]:
     """Return the set of skill names the source imports from.
 
-    Extracts every literal ``"@/skills/<name>"`` specifier the source
+    Extracts every literal `"@/skills/<name>"` specifier the source
     contains. The caller is responsible for rejecting unknown names
-    with a ``SkillNotAvailable``-style error — this is a scan, not a
+    with a `SkillNotAvailable`-style error — this is a scan, not a
     validator.
 
     A returned name is not proof the skill exists or installs cleanly.

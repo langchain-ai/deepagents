@@ -301,12 +301,12 @@ class SkillMetadata(TypedDict):
     """
 
     required_ptc_tools: NotRequired[list[str]]
-    """PTC tool names that must be present in the QuickJS middleware's ``ptc`` configuration
+    """PTC tool names that must be present in the QuickJS middleware's `ptc` configuration
     for this skill to function.
 
     The middleware validates these at skill-load time and returns a descriptive error
     if any are missing. Tool names should match the agent tool names as configured
-    in ``ptc`` (e.g. ``read_file``, not ``readFile``).
+    in `ptc` (e.g. `read_file`, not `readFile`).
     """
 
 
@@ -372,7 +372,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
 
 
 def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
-    """Parse the ``allowed-tools`` frontmatter value into a list of tool names."""
+    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
     if isinstance(raw_tools, str):
         return [t.strip(",") for t in raw_tools.split() if t.strip(",")]
     if raw_tools is not None:
@@ -385,7 +385,7 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
 
 
 def _parse_required_ptc_tools(metadata_obj: Any) -> list[str]:  # noqa: ANN401
-    """Extract ``required-ptc-tools`` from the metadata mapping."""
+    """Extract `required-ptc-tools` from the metadata mapping."""
     if not isinstance(metadata_obj, dict):
         return []
     raw = metadata_obj.get("required-ptc-tools")

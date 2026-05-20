@@ -9449,3 +9449,107 @@ class TestParseReconnectArgs:
         from deepagents_code.app import _parse_reconnect_args
 
         assert _parse_reconnect_args(args) == (False, False)
+
+
+class TestRestartCommand:
+    """Hidden `/restart` slash command — config reload + server respawn."""
+
+    async def test_remote_server_mode_short_circuits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the app does not own a server, /restart must not attempt one."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = None
+            app._server_kwargs = None
+
+            called = False
+
+            async def _fail() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal called
+                called = True
+
+            monkeypatch.setattr(app, "_restart_server_manual", _fail)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Cannot restart" in m for m in app_msgs)
+
+    async def test_calls_server_restart_and_clears_caches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Happy path: reload + clear caches + respawn the subprocess."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}  # truthy
+
+            reload_called = False
+            clear_called = False
+            restart_called = False
+
+            def _reload() -> list[str]:
+                nonlocal reload_called
+                reload_called = True
+                return []
+
+            def _clear() -> None:
+                nonlocal clear_called
+                clear_called = True
+
+            async def _fake_restart() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal restart_called
+                restart_called = True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", _reload)
+            monkeypatch.setattr("deepagents_code.model_config.clear_caches", _clear)
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert reload_called
+            assert clear_called
+            assert restart_called
+
+    async def test_reload_failure_skips_restart(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reload error must not proceed to server.restart()."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            def _boom() -> list[str]:
+                msg = "bad .env"
+                raise OSError(msg)
+
+            restart_called = False
+
+            async def _fake_restart() -> None:  # noqa: RUF029  # awaited by handler
+                nonlocal restart_called
+                restart_called = True
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", _boom)
+            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            assert restart_called is False
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any("Failed to reload configuration" in m for m in app_msgs)

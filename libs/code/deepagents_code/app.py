@@ -4486,10 +4486,18 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
         """
-        from deepagents_code.command_registry import ALWAYS_IMMEDIATE
+        from deepagents_code.command_registry import (
+            ALWAYS_IMMEDIATE,
+            HIDDEN_COMMANDS,
+        )
+
+        # Hidden commands (`/restart`, `/debug-error`) are recovery /
+        # power-user escape hatches and must work even when the app is
+        # busy or wedged — treat them as always-immediate.
+        always_bypass = ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
         if force_bypass or (
-            mode == "command" and value.lower().strip() in ALWAYS_IMMEDIATE
+            mode == "command" and value.lower().strip() in always_bypass
         ):
             await self._process_message(value, mode)
             return
@@ -5305,7 +5313,7 @@ class DeepAgentsApp(App):
             await self._maybe_start_deferred_server_from_default()
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
-        # -- Hidden debug commands (not in COMMANDS / autocomplete) -----------
+        # -- Hidden commands (not in COMMANDS / autocomplete) -----------------
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -5313,6 +5321,8 @@ class DeepAgentsApp(App):
                     " exited with code 3",
                 ),
             )
+        elif cmd == "/restart":
+            await self._handle_restart_command(command)
         else:
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(f"Unknown command: {cmd}"))
@@ -8914,6 +8924,118 @@ class DeepAgentsApp(App):
         except BaseException:
             # Cancellation or unexpected error — ensure _connecting is reset
             # so the app does not remain stuck in connecting state.
+            self._connecting = False
+            raise
+        finally:
+            if self._chat_input:
+                self._chat_input.set_cursor_active(active=not self._agent_running)
+
+    async def _handle_restart_command(self, command: str) -> None:
+        """Drive the hidden `/restart` slash command.
+
+        Superset of `/reload`: re-reads `.env` / environment, clears
+        configuration caches, then respawns the app-owned LangGraph
+        server subprocess. Used as a recovery escape hatch when the
+        server wedges; intentionally hidden from autocomplete and help.
+
+        In-flight work on the agent is severed when the subprocess
+        restarts. Users invoking `/restart` accept that trade-off.
+
+        Args:
+            command: Raw command string for echoing back to chat.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import clear_caches
+
+        await self._mount_message(UserMessage(command))
+
+        try:
+            settings.reload_from_environment()
+            clear_caches()
+        except (OSError, ValueError):
+            logger.exception("Failed to reload configuration during /restart")
+            await self._mount_message(
+                AppMessage(
+                    "Failed to reload configuration. Check your .env file "
+                    "and environment variables for syntax errors, then try "
+                    "again.",
+                ),
+            )
+            return
+
+        if self._server_proc is None or self._server_kwargs is None:
+            await self._mount_message(
+                AppMessage(
+                    "Cannot restart: this app is connected to a remote "
+                    "LangGraph server (no owned subprocess). Configuration "
+                    "was reloaded; relaunch dcode to fully restart.",
+                ),
+            )
+            return
+
+        await self._mount_message(AppMessage("Restarting server…"))
+        await self._restart_server_manual()
+
+    async def _restart_server_manual(self) -> None:
+        """Respawn the app-owned LangGraph server for `/restart`.
+
+        Mirrors the server-side restart in `_restart_server_for_mcp_refresh`
+        without the MCP-pending-flag bookkeeping. Failures surface via
+        `ServerStartFailed` so the existing recovery UI takes over.
+        """
+        server_proc = self._server_proc
+        if self._server_kwargs is None or server_proc is None:
+            # Defensive — handler guards this already.
+            return
+
+        try:
+            self._connecting = True
+            self._agent = None
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.set_connecting()
+            except NoMatches:
+                pass
+
+            try:
+                await server_proc.restart()
+            except Exception as exc:
+                self._connecting = False
+                logger.exception("Manual /restart of server failed")
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+
+            from deepagents_code.main import _preload_session_mcp_server_info
+            from deepagents_code.remote_client import RemoteAgent as _RemoteAgent
+
+            mcp_info = None
+            try:
+                mcp_info = await _preload_session_mcp_server_info(
+                    **self._mcp_preload_kwargs,  # type: ignore[arg-type]
+                )
+            except Exception:
+                logger.warning(
+                    "MCP metadata preload after /restart failed",
+                    exc_info=True,
+                )
+                self.notify(
+                    "MCP tool metadata could not be refreshed. Use /mcp to check.",
+                    severity="warning",
+                    markup=False,
+                )
+
+            def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
+                return _RemoteAgent(url=url, graph_name="agent")
+
+            self._agent = _build_agent(server_proc.url)
+            self.post_message(
+                self.ServerReady(
+                    agent=self._agent,
+                    server_proc=server_proc,
+                    mcp_server_info=mcp_info,
+                ),
+            )
+        except BaseException:
             self._connecting = False
             raise
         finally:

@@ -136,6 +136,7 @@ if TYPE_CHECKING:
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.remote_client import RemoteAgent
     from deepagents_code.server import ServerProcess
     from deepagents_code.skills.load import ExtendedSkillMetadata
@@ -1471,6 +1472,16 @@ class DeepAgentsApp(App):
         recovery hint without string-matching on the formatted error.
         """
 
+        self._server_startup_missing_provider_package: (
+            MissingProviderPackageError | None
+        ) = None
+        """The exception itself when startup failed with
+        `MissingProviderPackageError`; `None` otherwise. Stashing the exception
+        rather than a tuple gives the hint builder named access to `.provider`
+        and `.package`, and gates the `pip install` / `/model` recovery hint
+        without string-matching on the formatted error.
+        """
+
         self._retry_status_widget: AppMessage | None = None
         """Transient "Retrying startup with X…" breadcrumb. Mounted via
         `_mount_before_queued` (not `_mount_message`) because it is ephemeral
@@ -2584,7 +2595,10 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         from deepagents_code.mcp_tools import MCPConfigError
-        from deepagents_code.model_config import MissingCredentialsError
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+        )
 
         self._connecting = False
         self._connection_ready_event.set()
@@ -2599,6 +2613,11 @@ class DeepAgentsApp(App):
         self._server_startup_missing_credentials_provider = (
             event.error.provider
             if isinstance(event.error, MissingCredentialsError)
+            else None
+        )
+        self._server_startup_missing_provider_package = (
+            event.error
+            if isinstance(event.error, MissingProviderPackageError)
             else None
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
@@ -2628,6 +2647,17 @@ class DeepAgentsApp(App):
                 "\n\nHint: run `/auth` to add a key for this provider, then "
                 "`/model <provider>:<model>` to retry startup. Or pick a "
                 "different provider directly with `/model`."
+            )
+        elif (
+            self._server_startup_missing_provider_package is not None
+            and self._server_kwargs is not None
+        ):
+            missing = self._server_startup_missing_provider_package
+            text += (
+                f"\n\nHint: install the package with "
+                f"`pip install {missing.package}`, then run "
+                f"`/model {missing.provider}:<model>` to retry. "
+                f"Or pick a different provider with `/model`."
             )
 
         async def _mount_failure() -> None:
@@ -9319,6 +9349,7 @@ class DeepAgentsApp(App):
 
         self._server_startup_error = None
         self._server_startup_missing_credentials_provider = None
+        self._server_startup_missing_provider_package = None
         self._server_startup_deferred = False
         self._connecting = True
         try:

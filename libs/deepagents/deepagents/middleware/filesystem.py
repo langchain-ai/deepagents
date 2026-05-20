@@ -94,6 +94,13 @@ class FilesystemPermission:
     - ``"deny"``: the tool returns a permission-denied error.
     - ``"interrupt"``: the call is paused for human approval via
       [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
+
+      Best paired with patterns that have a literal leading anchor (e.g.,
+      ``/secrets/**``, ``/projects/*/secrets/**``). Bulk tools
+      (``ls``/``glob``/``grep``) fire the interrupt based on whether their
+      search subtree could overlap the rule's anchored prefix, so a fully
+      unanchored pattern (``/**/secrets``) collapses to ``/`` and
+      conservatively over-fires for any bulk call.
     """
 
     def __post_init__(self) -> None:
@@ -239,8 +246,12 @@ def _glob_anchor(pattern: str) -> str:
     """Return the longest leading directory of ``pattern`` with no wildcards.
 
     For ``/secrets/**`` returns ``/secrets``; for ``/a/*/b`` returns ``/a``;
-    for a wildcard at the root (``/*/foo``) falls back to ``/``. Mirrors the
-    backslash-normalization used by :meth:`FilesystemPermission.__post_init__`.
+    for a wildcard at the root (``/**/secrets``, ``/*/foo``) falls back to
+    ``/``, which causes the bulk predicate to fire for *any* bulk call —
+    conservative over-gating, since we cannot statically pin down where the
+    rule could resolve. Users wanting precise gating should anchor the
+    rule's leading components. Mirrors the backslash-normalization used by
+    :meth:`FilesystemPermission.__post_init__`.
     """
     norm = pattern.replace("\\", "/")
     safe: list[str] = []
@@ -331,6 +342,13 @@ def _make_bulk_when_predicate(
             normalized = validate_path(raw_path)
         except ValueError:
             return False
+        # `validate_path` returns ``/.`` for current-directory aliases like
+        # ``"."``, ``""``, and ``"./"``. Those refer to the whole accessible
+        # tree just like a missing path arg, so collapse to ``/`` so the
+        # root-overlaps-everything branch in `_paths_overlap` fires.
+        # Without this, an agent could pass ``path="."`` to bypass HITL.
+        if normalized == "/.":
+            normalized = "/"
         return any(_paths_overlap(normalized, anchor) for anchor in interrupt_anchors)
 
     return when

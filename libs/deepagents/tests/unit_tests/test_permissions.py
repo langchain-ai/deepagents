@@ -284,6 +284,21 @@ class TestBuildInterruptOnFromPermissions:
         when = _make_fs_when_predicate([rule], "read", "path", "bulk")
         assert when(_FakeReq({"path": "/secrets/../etc/passwd"})) is False
 
+    def test_bulk_predicate_fires_on_current_dir_aliases(self):
+        """`path="."`/`""`/`"./"` must trigger the interrupt the same as `path=None`.
+
+        Regression: `validate_path` collapses current-dir aliases to ``/.``,
+        which doesn't string-prefix any anchor, so the predicate previously
+        returned False and an agent could call e.g. ``grep(pattern, path=".")``
+        to scan the entire tree (including interrupt-protected subtrees) with
+        no HITL prompt. The bulk predicate now treats every alias for
+        "current/whole tree" as unlocalized.
+        """
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        for alias in (".", "", "./", "/.", "/"):
+            assert when(_FakeReq({"path": alias})) is True, f"alias {alias!r} should fire"
+
 
 class TestGlobAnchorAndOverlap:
     def test_glob_anchor_strips_double_star(self):

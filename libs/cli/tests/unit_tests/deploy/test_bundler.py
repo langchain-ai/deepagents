@@ -207,6 +207,26 @@ class TestRenderDeployGraph:
         assert "_load_mcp_tools" not in result
         assert "pass  # no MCP servers configured" in result
 
+    def test_mcp_block_expands_env_vars(self) -> None:
+        """The emitted MCP loader must expand ``${VAR}`` in url + header values.
+
+        Mirrors the ``${VAR}`` substitution behavior of ``deepagents-code``'s
+        ``.mcp.json`` (per the docs). Without this, headers configured as
+        ``Authorization: Bearer ${TOKEN}`` reach MCP servers as the literal
+        string and auth fails silently.
+        """
+        config = _minimal_config()
+        result = _render_deploy_graph(config, mcp_present=True)
+
+        # The emitted helper must reference ``os.path.expandvars`` and apply it
+        # to both url and header values inside the loader.
+        assert "os.path.expandvars" in result
+        assert '"url": _expand(cfg["url"])' in result
+        assert (
+            'conn["headers"] = {k: _expand(v) for k, v in cfg["headers"].items()}'
+            in result
+        )
+
     def test_no_system_prompt_in_output(self) -> None:
         """AGENTS.md should not be baked into the deploy graph as a system prompt."""
         config = _minimal_config()

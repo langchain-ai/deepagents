@@ -409,9 +409,24 @@ AUTH_BLOCKS: dict[str, tuple[str, str | None]] = {
 
 MCP_TOOLS_TEMPLATE = '''\
 async def _load_mcp_tools():
-    """Load MCP tools from bundled config (http/sse only)."""
+    """Load MCP tools from bundled config (http/sse only).
+
+    ``url`` and ``headers`` values support ``${VAR}`` references which are
+    expanded against ``os.environ`` at activation time. This mirrors the
+    substitution behavior documented for ``deepagents-code``'s
+    ``.mcp.json`` (https://docs.langchain.com/oss/python/deepagents/code/mcp-tools).
+    Unset variables are left as-is so the resulting auth failure surfaces
+    a recognizable token at connect time.
+    """
     import json
+    import os
     from pathlib import Path
+
+    def _expand(value):
+        """Expand ``${VAR}`` references in strings; pass other types through."""
+        if isinstance(value, str):
+            return os.path.expandvars(value)
+        return value
 
     mcp_path = Path(__file__).parent / "_mcp.json"
     if not mcp_path.exists():
@@ -428,9 +443,9 @@ async def _load_mcp_tools():
     for name, cfg in servers.items():
         transport = cfg.get("type", cfg.get("transport", "stdio"))
         if transport in ("http", "sse"):
-            conn = {"transport": transport, "url": cfg["url"]}
+            conn = {"transport": transport, "url": _expand(cfg["url"])}
             if "headers" in cfg:
-                conn["headers"] = cfg["headers"]
+                conn["headers"] = {k: _expand(v) for k, v in cfg["headers"].items()}
             connections[name] = conn
 
     if not connections:

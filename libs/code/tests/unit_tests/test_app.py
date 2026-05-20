@@ -8411,6 +8411,60 @@ class TestMCPLoginCommand:
                 await pilot.pause()
             start_login.assert_called_once_with("github")
 
+    def test_optimistic_reenable_restores_pre_disable_server_info(self) -> None:
+        """Re-enabling before reconnect restores the server's original viewer state."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=True)
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0].status == "disabled"
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=False)
+
+        assert app._mcp_server_info == [original]
+        assert app._mcp_optimistic_original_server_info == {}
+
+    async def test_disable_then_reenable_before_reconnect_clears_pending_notice(
+        self,
+    ) -> None:
+        """Undoing a disable before reconnect does not tell the user to reconnect."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    side_effect=[False, True],
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=True,
+                ),
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("filesystem")
+                await app._toggle_mcp_server_disabled("filesystem")
+
+        assert app._pending_mcp_reconnect is False
+        assert notify.call_count == 2
+        assert "Run `/mcp reconnect`" in notify.call_args_list[0].args[0]
+        assert notify.call_args_list[1].args[0] == "MCP server 'filesystem' enabled."
+
     async def test_mcp_login_rejects_while_connecting(self) -> None:
         """`_connecting=True` prevents login until the server is ready."""
         app = DeepAgentsApp(agent=MagicMock())

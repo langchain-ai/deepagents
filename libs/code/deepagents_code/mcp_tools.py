@@ -55,8 +55,8 @@ MCPServerStatus = Literal["ok", "unauthenticated", "error", "disabled"]
 """Load states a configured MCP server can end up in.
 
 `disabled` is set when the user has turned the server off via the TUI
-(`/mcp` -> Ctrl+D). No connection is attempted and no tools are loaded,
-but the entry is still surfaced in the viewer so the user can re-enable it.
+(`/mcp` -> F2). No connection is attempted and no tools are loaded, but
+the entry is still surfaced in the viewer so the user can re-enable it.
 """
 
 
@@ -1592,7 +1592,7 @@ async def resolve_and_load_mcp_tools(
                         if isinstance(server_config, dict)
                         else "unknown",
                         status="disabled",
-                        error="Disabled by user (`/mcp` Ctrl+D to re-enable).",
+                        error="Disabled by user (`/mcp` F2 to re-enable).",
                     ),
                 )
             else:

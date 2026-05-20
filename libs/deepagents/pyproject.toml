@@ -65,6 +65,14 @@ test = [
 requires = ["setuptools>=73.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# Point `langchain` at the PR branch for https://github.com/langchain-ai/langchain/pull/37579,
+# which adds the `when` predicate on `InterruptOnConfig` that backs
+# `FilesystemPermission` `mode="interrupt"`. Drop this override once that PR is
+# merged and released, and bump the `langchain` pin in `dependencies` to the
+# release that includes it.
+[tool.uv.sources]
+langchain = { git = "https://github.com/langchain-ai/langchain.git", branch = "sr/hitl-refactor", subdirectory = "libs/langchain_v1" }
+
 [tool.setuptools.package-data]
 "*" = ["py.typed", "*.md"]
 

@@ -15,8 +15,10 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
     _all_paths_scoped_to_routes,
+    _build_interrupt_on_from_permissions,
     _check_fs_permission,
     _filter_paths_by_permission,
+    _make_fs_when_predicate,
 )
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
@@ -163,6 +165,81 @@ class TestFilesystemPermission:
         """
         rule = FilesystemPermission(operations=["read"], paths=["/workspace\\sub\\**"])
         assert rule.paths == ["/workspace\\sub\\**"]
+
+    def test_interrupt_mode_accepted(self):
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        assert rule.mode == "interrupt"
+
+
+class _FakeReq:
+    """Stand-in for ToolCallRequest; we only read `tool_call['args']` in the predicate."""
+
+    def __init__(self, args: dict) -> None:
+        self.tool_call = {"args": args}
+
+
+class TestCheckFsPermissionInterrupt:
+    def test_interrupt_returned_when_rule_matches(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
+        assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "interrupt"
+
+    def test_interrupt_not_returned_for_unrelated_path(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
+        assert _check_fs_permission(rules, "write", "/workspace/x.txt") == "allow"
+
+    def test_deny_rule_takes_precedence_when_listed_first(self):
+        """First-match wins; if deny is listed first, it beats a later interrupt rule."""
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt"),
+        ]
+        assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "deny"
+
+    def test_filter_paths_does_not_drop_interrupt_paths(self):
+        """Interrupt-mode paths must remain in result-filtered lists (only deny is filtered)."""
+        rules = [FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="interrupt")]
+        kept = _filter_paths_by_permission(rules, "read", ["/secret/a.txt", "/public/b.txt"])
+        assert kept == ["/secret/a.txt", "/public/b.txt"]
+
+
+class TestBuildInterruptOnFromPermissions:
+    def test_empty_when_no_rules(self):
+        assert _build_interrupt_on_from_permissions([]) == {}
+
+    def test_empty_when_no_interrupt_rules(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny")]
+        assert _build_interrupt_on_from_permissions(rules) == {}
+
+    def test_registers_only_tools_whose_op_could_interrupt(self):
+        """A write-only interrupt rule registers only the write-op tools."""
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        out = _build_interrupt_on_from_permissions([rule])
+        assert set(out) == {"write_file", "edit_file"}
+
+    def test_registers_read_tools_for_read_interrupt(self):
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        out = _build_interrupt_on_from_permissions([rule])
+        assert set(out) == {"ls", "read_file", "glob", "grep"}
+
+    def test_predicate_fires_on_matching_path(self):
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        out = _build_interrupt_on_from_permissions([rule])
+        when = out["write_file"]["when"]
+        assert when(_FakeReq({"file_path": "/secrets/key.pem"})) is True
+        assert when(_FakeReq({"file_path": "/workspace/x.txt"})) is False
+
+    def test_predicate_handles_missing_path_arg(self):
+        """Tools called without a path arg (e.g., grep with path=None) do not interrupt."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path")
+        assert when(_FakeReq({})) is False
+        assert when(_FakeReq({"path": None})) is False
+
+    def test_predicate_returns_false_on_invalid_path(self):
+        """Path-validation failures (e.g., `..`) short-circuit to no interrupt."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path")
+        assert when(_FakeReq({"path": "/secrets/../etc/passwd"})) is False
 
 
 class TestFilesystemMiddlewarePermissionInit:

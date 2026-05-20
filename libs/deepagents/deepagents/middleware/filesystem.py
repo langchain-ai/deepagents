@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
 
 import wcmatch.glob as wcglob
+from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -86,7 +87,14 @@ class FilesystemPermission:
 
     operations: list[FilesystemOperation]
     paths: list[str]
-    mode: Literal["allow", "deny"] = "allow"
+    mode: Literal["allow", "deny", "interrupt"] = "allow"
+    """Effect when a tool call matches this rule:
+
+    - ``"allow"`` (default): the call proceeds.
+    - ``"deny"``: the tool returns a permission-denied error.
+    - ``"interrupt"``: the call is paused for human approval via
+      [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
+    """
 
     def __post_init__(self) -> None:
         """Validate permission path patterns."""
@@ -107,7 +115,7 @@ def _check_fs_permission(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     path: str,
-) -> Literal["allow", "deny"]:
+) -> Literal["allow", "deny", "interrupt"]:
     for rule in rules:
         if operation not in rule.operations:
             continue
@@ -121,9 +129,15 @@ def _filter_paths_by_permission(
     operation: FilesystemOperation,
     paths: list[str],
 ) -> list[str]:
+    """Filter paths, removing only those denied by a rule.
+
+    Paths with ``mode == "interrupt"`` pass through here: the interrupt fires
+    at the HITL stage *before* the tool runs, so when result-filtering is
+    invoked the user has already approved (or no rule matched).
+    """
     if not rules:
         return paths
-    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
+    return [p for p in paths if _check_fs_permission(rules, operation, p) != "deny"]
 
 
 def _all_paths_scoped_to_routes(
@@ -150,8 +164,8 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[FileInfo]:
-    """Filter file-info entries according to filesystem permissions."""
-    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) == "allow"]
+    """Filter file-info entries, removing only those denied by a rule."""
+    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) != "deny"]
 
 
 def _filter_grep_matches_by_permission(
@@ -160,8 +174,8 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[GrepMatch]:
-    """Filter grep matches according to filesystem permissions."""
-    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
+    """Filter grep matches, removing only those denied by a rule."""
+    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
 def _apply_permissions_to_ls_results(
@@ -180,6 +194,72 @@ def _apply_permissions_to_glob_results(
     """Filter glob matches by permission and return their paths."""
     filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read")
     return [fi.get("path", "") for fi in filtered_infos]
+
+
+# Map filesystem tool name → (operation it performs, name of its path argument).
+# Drives `_build_interrupt_on_from_permissions` when synthesizing `when`
+# predicates per tool. `grep`'s path arg is optional; a `None` value here means
+# we cannot match against an interrupt-mode rule and the call proceeds normally.
+_FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str]] = {
+    "ls": ("read", "path"),
+    "read_file": ("read", "file_path"),
+    "write_file": ("write", "file_path"),
+    "edit_file": ("write", "file_path"),
+    "glob": ("read", "path"),
+    "grep": ("read", "path"),
+}
+
+
+def _make_fs_when_predicate(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    path_arg_name: str,
+) -> Callable[[ToolCallRequest], bool]:
+    """Build a `when` predicate that fires on interrupt-mode rule matches.
+
+    The predicate returns ``True`` iff the request's path argument resolves to
+    a rule with ``mode == "interrupt"`` for the given operation. Normal
+    first-match precedence applies, so a preceding ``deny`` rule wins and the
+    interrupt does not fire (the tool will return a permission-denied error).
+    """
+
+    def when(req: ToolCallRequest) -> bool:
+        raw_path = req.tool_call.get("args", {}).get(path_arg_name)
+        if not isinstance(raw_path, str):
+            return False
+        try:
+            normalized = validate_path(raw_path)
+        except ValueError:
+            return False
+        return _check_fs_permission(rules, operation, normalized) == "interrupt"
+
+    return when
+
+
+def _build_interrupt_on_from_permissions(
+    rules: list[FilesystemPermission],
+) -> dict[str, InterruptOnConfig]:
+    """Generate `interrupt_on` configs from interrupt-mode permissions.
+
+    Returns an entry for each filesystem tool whose operation could be triggered
+    by at least one interrupt-mode rule. Each entry uses a `when` predicate so
+    the interrupt only fires when the tool call's path argument matches an
+    interrupt-mode rule.
+    """
+    if not any(r.mode == "interrupt" for r in rules):
+        return {}
+
+    # Annotated so ty narrows to `list[DecisionType]` instead of `list[str]`.
+    allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "reject"]
+    result: dict[str, InterruptOnConfig] = {}
+    for tool_name, (op, arg) in _FS_TOOL_PATH_ARGS.items():
+        if not any(r.mode == "interrupt" and op in r.operations for r in rules):
+            continue
+        result[tool_name] = InterruptOnConfig(
+            allowed_decisions=allowed,
+            when=_make_fs_when_predicate(rules, op, arg),
+        )
+    return result
 
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"

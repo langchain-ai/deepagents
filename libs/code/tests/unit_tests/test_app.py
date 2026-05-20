@@ -5179,6 +5179,133 @@ class TestDeferredActions:
 
             assert app._server_startup_error == "RuntimeError: RuntimeError"
 
+    async def test_server_failure_missing_package_records_recovery_hint(
+        self,
+    ) -> None:
+        """`MissingProviderPackageError` stashes the exception and renders a hint.
+
+        Asserts both that the slot carries the exception itself (so the hint
+        builder gets named `.provider`/`.package` access) and that the hint
+        text actually lands in the mounted `ErrorMessage` widget — catching a
+        regression where the `elif` branch is dropped or `provider`/`package`
+        are swapped.
+        """
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_server_kwargs is not None` gates the hint — emulate a startup
+            # path where the user has a model selected.
+            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'fireworks'. "
+                "Install: pip install langchain-fireworks",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=error)
+            )
+            # Mount runs as a fire-and-forget task; let it land.
+            await pilot.pause()
+
+            stashed = app._server_startup_missing_provider_package
+            assert stashed is error
+            assert stashed.provider == "fireworks"
+            assert stashed.package == "langchain-fireworks"
+            # Credentials slot is a different recovery path; should stay clear.
+            assert app._server_startup_missing_credentials_provider is None
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "pip install langchain-fireworks" in rendered
+            assert "/model fireworks:<model>" in rendered
+
+    async def test_retry_startup_clears_missing_package_slot(self) -> None:
+        """`_retry_startup_with_model` must clear the package recovery slot.
+
+        Mirrors the credentials-slot reset directly above it. A regression
+        that drops the reset would leave a stale `pip install` hint visible
+        after a successful retry, or render the wrong hint on the next failure.
+        """
+        from deepagents_code.model_config import (
+            MissingProviderPackageError,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_startup_error = "stale"
+            app._server_startup_missing_provider_package = MissingProviderPackageError(
+                "stale",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app._server_startup_missing_credentials_provider = "stale"
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # type: ignore[assignment]
+            app.run_worker = MagicMock()  # type: ignore[assignment]
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.UNKNOWN,
+                    provider="anthropic",
+                    detail="credentials unknown",
+                ),
+            ):
+                await app._retry_startup_with_model("anthropic:claude-opus-4-7")
+
+            assert app._server_startup_missing_provider_package is None
+            assert app._server_startup_missing_credentials_provider is None
+            assert app._server_startup_error is None
+
+    async def test_server_failure_missing_credentials_clears_package_slot(
+        self,
+    ) -> None:
+        """A `MissingCredentialsError` failure must clear the package slot.
+
+        Guards the mutual-exclusion invariant: the two recovery hints route
+        through separate `if`/`elif` branches, so stale state from a prior
+        retry-failure must never bleed into the next failure type.
+        """
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "openai:gpt-4o"}  # type: ignore[typeddict-item]
+            # Seed a prior package failure so we can assert the next failure
+            # clears it.
+            app._server_startup_missing_provider_package = MissingProviderPackageError(
+                "stale",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app._connecting = True
+
+            error = MissingCredentialsError(
+                "OPENAI_API_KEY is not set",
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+            )
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=error)
+            )
+
+            assert app._server_startup_missing_provider_package is None
+            assert app._server_startup_missing_credentials_provider == "openai"
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()

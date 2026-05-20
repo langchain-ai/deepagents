@@ -8749,6 +8749,33 @@ class DeepAgentsApp(App):
                 timeout=8,
                 markup=False,
             )
+            # Defer is the "log into another server first" path, so route the
+            # user back to the switcher where the next unauthenticated server
+            # is one click away. Timeout and push_screen-failure fallbacks
+            # also land here (both set `choice = "later"`), so they share
+            # both the notify above and this navigation — acceptable
+            # degradation since the viewer push is itself best-effort.
+            try:
+                await self._show_mcp_viewer()
+            except Exception:
+                # Broad catch: real failures here are Textual mount/stack
+                # errors plus the deferred SDK import — none worth crashing
+                # the worker for, since the token is already on disk.
+                # Surface a toast so the user knows why the switcher didn't
+                # come back; without it, the "logged in" notify is the only
+                # signal and the missing viewer looks like a UI hang.
+                logger.exception(
+                    "Failed to reopen MCP viewer after deferring "
+                    "reconnect for %r",
+                    server_name,
+                )
+                self.notify(
+                    "Couldn't reopen the MCP viewer — run `/mcp` to open "
+                    "it manually.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.

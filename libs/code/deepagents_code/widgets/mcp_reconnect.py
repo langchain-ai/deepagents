@@ -115,6 +115,19 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         """Dismiss with `"later"`."""
         self.dismiss("later")
 
+    def action_cancel(self) -> None:
+        """Alias for `action_later` so the app-level Esc handler defers.
+
+        The app's `action_interrupt` (`escape` binding, `priority=True`)
+        fires before this screen's own `escape` binding. When the active
+        screen is a `ModalScreen`, it dispatches to `action_cancel` if
+        present, else falls through to `dismiss(None)`. Without this
+        alias, Esc would dismiss with `None`, which the caller treats as
+        a programmatic dismiss (no toast, no reopen) instead of an
+        explicit defer.
+        """
+        self.action_later()
+
 
 class MCPReconnectForceConfirmScreen(ModalScreen[bool]):
     """Confirmation overlay for `/mcp reconnect --force` with no pending login.

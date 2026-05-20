@@ -8868,7 +8868,11 @@ class TestMCPLoginCommand:
             assert app._pending_mcp_reconnect is False
 
     async def test_prompt_mcp_reconnect_later_choice_defers(self) -> None:
-        """Choosing `later` marks the reconnect pending and skips restart."""
+        """Choosing `later` marks the reconnect pending and reopens the switcher.
+
+        The viewer is the obvious launchpad for the next login, so deferring
+        routes the user back there instead of dropping them at the chat input.
+        """
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -8883,6 +8887,9 @@ class TestMCPLoginCommand:
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
                 patch.object(app, "notify") as notify,
+                patch.object(
+                    app, "_show_mcp_viewer", new=AsyncMock()
+                ) as show_viewer,
             ):
                 await app._prompt_mcp_reconnect("notion")
 
@@ -8892,6 +8899,7 @@ class TestMCPLoginCommand:
             message = notify.call_args.args[0]
             assert "notion" in message
             assert "/mcp reconnect" in message
+            show_viewer.assert_awaited_once()
 
     async def test_mcp_reconnect_subcommand_restarts_when_pending(self) -> None:
         """`/mcp reconnect` triggers a restart when a login is pending."""
@@ -9042,6 +9050,34 @@ class TestMCPLoginCommand:
                 await prompt_task
             restart.assert_awaited_once_with("notion")
 
+    async def test_prompt_mcp_reconnect_pilot_driven_escape_reopens_viewer(
+        self,
+    ) -> None:
+        """End-to-end: real Esc against `DeepAgentsApp` defers and reopens.
+
+        Guards the full chain that patch-based tests bypass:
+        `DeepAgentsApp.action_interrupt` (priority Esc binding) →
+        dispatch to `MCPReconnectPromptScreen.action_cancel` →
+        `dismiss("later")` → `_show_mcp_viewer`. A regression in any
+        link — removing `action_cancel`, the app routing the modal
+        differently, or the navigation never wiring up — fails here.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_show_mcp_viewer", new=AsyncMock()
+            ) as show_viewer:
+                prompt_task = asyncio.create_task(
+                    app._prompt_mcp_reconnect("notion"),
+                )
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                await prompt_task
+            assert app._pending_mcp_reconnect is True
+            show_viewer.assert_awaited_once()
+
     async def test_prompt_mcp_reconnect_none_dismiss_silent(self) -> None:
         """A `None` dismiss (programmatic) defers without a user notice.
 
@@ -9061,15 +9097,30 @@ class TestMCPLoginCommand:
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
                 patch.object(app, "notify") as notify,
+                patch.object(
+                    app, "_show_mcp_viewer", new=AsyncMock()
+                ) as show_viewer,
             ):
                 await app._prompt_mcp_reconnect("notion")
 
             restart.assert_not_called()
             assert app._pending_mcp_reconnect is True
             notify.assert_not_called()
+            # `None` is not an explicit user choice — don't navigate.
+            show_viewer.assert_not_called()
 
-    async def test_prompt_mcp_reconnect_push_screen_failure_defers(self) -> None:
-        """`push_screen` raising falls back to defer so the login isn't lost."""
+    async def test_prompt_mcp_reconnect_push_screen_failure_defers(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`push_screen` raising falls back to defer so the login isn't lost.
+
+        The fallback also routes through the new "reopen viewer" path
+        (since the fallback sets `choice = "later"`), which tries to push
+        the viewer and hits the same patched failure. The outer try/except
+        around `_show_mcp_viewer` must swallow that secondary failure and
+        log it — anything else would crash the worker after the token
+        has already been persisted to disk.
+        """
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -9082,10 +9133,22 @@ class TestMCPLoginCommand:
                 patch.object(
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
+                patch.object(app, "notify") as notify,
+                caplog.at_level("ERROR", logger="deepagents_code.app"),
             ):
                 await app._prompt_mcp_reconnect("notion")
             restart.assert_not_called()
             assert app._pending_mcp_reconnect is True
+            assert any(
+                "Failed to reopen MCP viewer" in record.getMessage()
+                for record in caplog.records
+            )
+            # Both notifies fire: the "logged in / run /mcp reconnect"
+            # primary and the secondary "couldn't reopen the MCP viewer"
+            # warning that closes the silent-failure gap.
+            messages = [call.args[0] for call in notify.call_args_list]
+            assert any("Run `/mcp reconnect`" in m for m in messages)
+            assert any("Couldn't reopen the MCP viewer" in m for m in messages)
 
     async def test_pending_reconnect_coalesces_multiple_defers(self) -> None:
         """Two deferred logins resolve via a single `/mcp reconnect`.
@@ -9107,6 +9170,7 @@ class TestMCPLoginCommand:
                 patch.object(
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
             ):
                 await app._prompt_mcp_reconnect("notion")
                 await app._prompt_mcp_reconnect("github")

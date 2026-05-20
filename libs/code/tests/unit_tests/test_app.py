@@ -9489,7 +9489,7 @@ class TestRestartCommand:
             await pilot.pause()
 
             app._server_proc = MagicMock()
-            app._server_kwargs = {}  # truthy
+            app._server_kwargs = {}
 
             reload_called = False
             clear_called = False
@@ -9553,3 +9553,222 @@ class TestRestartCommand:
             assert restart_called is False
             app_msgs = [str(w._content) for w in app.query(AppMessage)]
             assert any("Failed to reload configuration" in m for m in app_msgs)
+
+    async def test_reload_keyerror_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Widened catch handles non-OSError/ValueError reload failures."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            def _boom() -> list[str]:
+                msg = "missing config key"
+                raise KeyError(msg)
+
+            async def _noop_restart() -> None:  # noqa: RUF029  # awaited by handler
+                return
+
+            from deepagents_code.config import settings
+
+            monkeypatch.setattr(settings, "reload_from_environment", _boom)
+            monkeypatch.setattr(app, "_restart_server_manual", _noop_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            app_msgs = [str(w._content) for w in app.query(AppMessage)]
+            assert any(
+                "Failed to reload configuration" in m and "KeyError" in m
+                for m in app_msgs
+            )
+
+    async def test_cancels_inflight_worker_before_respawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Active agent worker is cancelled and queue drained before respawn."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            worker = MagicMock()
+            app._agent_worker = worker
+            app._agent_running = True
+            app._pending_messages.append(QueuedMessage(text="hi", mode="chat"))
+
+            from deepagents_code.config import settings
+
+            def _reload() -> list[str]:
+                return []
+
+            def _clear() -> None:
+                return
+
+            monkeypatch.setattr(settings, "reload_from_environment", _reload)
+            monkeypatch.setattr("deepagents_code.model_config.clear_caches", _clear)
+
+            async def _noop_restart() -> None:  # noqa: RUF029  # awaited by handler
+                return
+
+            monkeypatch.setattr(app, "_restart_server_manual", _noop_restart)
+
+            await app._handle_command("/restart")
+            await pilot.pause()
+
+            worker.cancel.assert_called_once()
+            assert app._agent_running is False
+            assert len(app._pending_messages) == 0
+
+    async def test_case_insensitive_bypass_when_busy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """/RESTART (any case, with whitespace) bypasses the queue while busy."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+            app._agent_running = True
+
+            handled: list[str] = []
+
+            async def _capture(value: str, mode: str) -> None:  # noqa: RUF029
+                handled.append(f"{mode}:{value}")
+
+            monkeypatch.setattr(app, "_process_message", _capture)
+
+            await app._submit_input("  /RESTART ", mode="command")
+            await pilot.pause()
+
+            assert handled == ["command:  /RESTART "]
+            assert len(app._pending_messages) == 0
+
+
+class TestRespawnServer:
+    """Direct coverage of `_respawn_server` — invoked via `_restart_server_manual`."""
+
+    async def _prepare(self, app: DeepAgentsApp) -> MagicMock:
+        """Wire up the minimal preconditions for `_respawn_server` to run."""
+        proc = MagicMock()
+        proc.url = "http://localhost:0/"
+        proc.restart = AsyncMock()
+        app._server_proc = proc
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = {}
+        return proc
+
+    async def test_happy_path_posts_server_ready(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Successful restart + preload posts `ServerReady` with mcp_info."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029
+                return ["info"]
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            await app._restart_server_manual()
+
+            proc.restart.assert_awaited_once()
+            ready = [m for m in posted if isinstance(m, app.ServerReady)]
+            assert len(ready) == 1
+            assert ready[0].mcp_server_info == ["info"]
+            assert app._connecting is False or app._agent is not None
+
+    async def test_subprocess_failure_posts_server_start_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`server_proc.restart()` raising surfaces as `ServerStartFailed`."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+            proc.restart = AsyncMock(side_effect=RuntimeError("boom"))
+
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            await app._restart_server_manual()
+
+            failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
+            assert len(failed) == 1
+            assert isinstance(failed[0].error, RuntimeError)
+            assert app._connecting is False
+
+    async def test_subprocess_timeout_posts_server_start_failed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hung `server_proc.restart()` times out and surfaces as failure."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+
+            async def _hang() -> None:
+                await asyncio.sleep(10)
+
+            proc.restart = _hang
+
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            await app._respawn_server(
+                log_message="restart timed out",
+                mcp_failure_log="",
+                mcp_failure_toast="",
+                restart_timeout=0.01,
+            )
+
+            failed = [m for m in posted if isinstance(m, app.ServerStartFailed)]
+            assert len(failed) == 1
+            assert isinstance(failed[0].error, asyncio.TimeoutError)
+            assert app._connecting is False
+
+    async def test_mcp_preload_failure_is_non_fatal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MCP preload error logs + toasts but `ServerReady` still posts."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            proc = await self._prepare(app)
+
+            async def _preload(**_: Any) -> list[str]:  # noqa: RUF029  # awaited by helper
+                msg = "mcp wedged"
+                raise RuntimeError(msg)
+
+            monkeypatch.setattr(
+                "deepagents_code.main._preload_session_mcp_server_info",
+                _preload,
+            )
+
+            posted: list[Any] = []
+            monkeypatch.setattr(app, "post_message", posted.append)
+
+            await app._restart_server_manual()
+
+            proc.restart.assert_awaited_once()
+            ready = [m for m in posted if isinstance(m, app.ServerReady)]
+            assert len(ready) == 1
+            assert ready[0].mcp_server_info is None

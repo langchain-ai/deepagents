@@ -35,7 +35,6 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "reconnect", "Reconnect", show=False, priority=True),
         Binding("escape", "later", "Later", show=False, priority=True),
-        Binding("l", "later", "Later", show=False, priority=True),
     ]
 
     CSS = """
@@ -77,8 +76,7 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         """Initialize the prompt.
 
         Args:
-            server_name: Server whose login just succeeded. Surfaced in the
-                modal title so the user knows which credential is queued.
+            server_name: Server whose login just succeeded.
         """
         super().__init__()
         self._server_name = server_name
@@ -87,7 +85,7 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         """Compose the confirmation dialog.
 
         Yields:
-            The vertical container holding the title, body, and help row.
+            Title, body, and help-row widgets parented inside a `Vertical`.
         """
         with Vertical():
             yield Static(
@@ -96,22 +94,23 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
                     name=self._server_name,
                 ),
                 classes="mcp-reconnect-title",
+                markup=False,
             )
             yield Static(
-                "Reconnect now to load the new MCP tools, or stay connected "
-                "and authenticate with additional servers first. You can "
-                "trigger the reconnect later from `/mcp`.",
+                "Reconnect to load new tools, or defer with `/mcp reconnect`.",
                 classes="mcp-reconnect-body",
+                markup=False,
             )
             yield Static(
-                "Enter to reconnect now, Esc/L for later",
+                "Enter to reconnect, Esc to defer",
                 classes="mcp-reconnect-help",
+                markup=False,
             )
 
     def action_reconnect(self) -> None:
-        """Confirm — caller will restart the server."""
+        """Dismiss with `"reconnect"`."""
         self.dismiss("reconnect")
 
     def action_later(self) -> None:
-        """Defer — caller leaves the running server in place."""
+        """Dismiss with `"later"`."""
         self.dismiss("later")

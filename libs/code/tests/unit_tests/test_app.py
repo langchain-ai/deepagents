@@ -8741,7 +8741,124 @@ class TestMCPLoginCommand:
                 await app._handle_command("/mcp reconnect")
                 await pilot.pause()
             restart.assert_not_called()
+            # The notice must not claim the tool set is fresh — pending
+            # state is session-scoped, so prior-run logins still need a
+            # full relaunch.
             assert any(
-                "No pending MCP reconnect" in str(w._content)
+                "No MCP login is queued" in str(w._content)
+                and "relaunch" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_prompt_mcp_reconnect_pilot_driven_happy_path(self) -> None:
+        """End-to-end: real modal mounts, `enter` keypress, restart fires.
+
+        Guards the wiring between `_prompt_mcp_reconnect`, the
+        `MCPReconnectPromptScreen`, and `_restart_server_for_mcp_refresh`
+        that the patch-based tests can't catch (they bypass the modal).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                prompt_task = asyncio.create_task(app._prompt_mcp_reconnect("notion"))
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                await prompt_task
+            restart.assert_awaited_once_with("notion")
+
+    async def test_prompt_mcp_reconnect_none_dismiss_silent(self) -> None:
+        """A `None` dismiss (programmatic) defers without a user notice.
+
+        The user didn't pick `later`, so we don't claim they did; the
+        token is still on disk, so we keep the pending flag set.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback(None)
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+
+            restart.assert_not_called()
+            assert app._pending_mcp_reconnect is True
+            notify.assert_not_called()
+
+    async def test_prompt_mcp_reconnect_push_screen_failure_defers(self) -> None:
+        """`push_screen` raising falls back to defer so the login isn't lost."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "push_screen",
+                    side_effect=RuntimeError("modal mount failed"),
+                ),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+            restart.assert_not_called()
+            assert app._pending_mcp_reconnect is True
+
+    async def test_pending_reconnect_coalesces_multiple_defers(self) -> None:
+        """Two deferred logins resolve via a single `/mcp reconnect`.
+
+        This is the PR's core motivation: back-to-back auths shouldn't
+        each pay a restart cost. After both defers, exactly one restart
+        fires when the user runs `/mcp reconnect`.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("later")
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(app, "notify"),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+                await app._prompt_mcp_reconnect("github")
+                assert app._pending_mcp_reconnect is True
+                restart.assert_not_called()
+
+                await app._handle_command("/mcp reconnect")
+                await pilot.pause()
+            restart.assert_awaited_once()
+
+    async def test_restart_for_mcp_refresh_clears_pending_flag(self) -> None:
+        """`_restart_server_for_mcp_refresh` clears `_pending_mcp_reconnect`.
+
+        Guards the flag reset against accidental removal: without it,
+        `/mcp reconnect` would keep claiming a login is queued after
+        every restart.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            # Force the early-return branch: no server proc means the
+            # method bails before touching restart state but should
+            # still clear the flag so we don't get stuck.
+            assert app._server_proc is None
+            await app._restart_server_for_mcp_refresh("notion")
+            assert app._pending_mcp_reconnect is False

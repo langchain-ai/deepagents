@@ -1254,6 +1254,33 @@ class TestModuleLevelHelpers:
         ordered = _sort_servers_for_display(info)
         assert [s.name for s in ordered] == [s.name for s in info]
 
+    def test_sort_servers_empty_list(self) -> None:
+        """Empty input yields an empty list."""
+        from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
+
+        assert _sort_servers_for_display([]) == []
+
+    def test_sort_servers_all_unauthenticated_preserves_order(self) -> None:
+        """When every server is unauthenticated, config order is preserved."""
+        from deepagents_code.widgets.mcp_viewer import _sort_servers_for_display
+
+        info = [
+            MCPServerInfo(
+                name="alpha",
+                transport="http",
+                status="unauthenticated",
+                error="login required",
+            ),
+            MCPServerInfo(
+                name="bravo",
+                transport="http",
+                status="unauthenticated",
+                error="login required",
+            ),
+        ]
+        ordered = _sort_servers_for_display(info)
+        assert [s.name for s in ordered] == ["alpha", "bravo"]
+
     # --- _sanitize_inline ---
 
     def test_sanitize_inline_plain_text_unchanged(self) -> None:

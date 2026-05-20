@@ -8149,11 +8149,18 @@ class DeepAgentsApp(App):
         """Restart the server to pick up any deferred MCP login tokens.
 
         No-op (with an inline notice) when nothing is pending so the
-        command is safe to run idempotently.
+        command is safe to run idempotently. The notice does not claim
+        the tool set is fresh: pending state is session-scoped, so a
+        login from a previous run still requires a manual restart even
+        though this command can't see it.
         """
         if not self._pending_mcp_reconnect:
             await self._mount_message(
-                AppMessage("No pending MCP reconnect — nothing to do."),
+                AppMessage(
+                    "No MCP login is queued in this session. "
+                    "If you logged in during an earlier run, relaunch "
+                    "dcode to pick up the token.",
+                ),
             )
             return
         await self._restart_server_for_mcp_refresh("pending login")
@@ -8387,7 +8394,24 @@ class DeepAgentsApp(App):
         # authenticate against additional MCP servers before paying the
         # restart cost. `/mcp reconnect` (or another login confirmed with
         # "reconnect") drives the restart later.
-        await self._prompt_mcp_reconnect(server_name)
+        try:
+            await self._prompt_mcp_reconnect(server_name)
+        except Exception:
+            # The token is already on disk — surface the failure and
+            # remember the pending state so `/mcp reconnect` still works
+            # even though the prompt never reached the user.
+            logger.exception(
+                "MCP reconnect prompt for %r raised after successful login",
+                server_name,
+            )
+            self._pending_mcp_reconnect = True
+            self.notify(
+                f"Logged in to {server_name!r} but the reconnect prompt "
+                "failed. Run `/mcp reconnect` when ready to load the new tools.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
 
     async def _prompt_mcp_reconnect(self, server_name: str) -> None:
         """Ask whether to restart now or defer after an MCP login succeeds.
@@ -8409,8 +8433,27 @@ class DeepAgentsApp(App):
             if not choice_future.done():
                 choice_future.set_result(result)
 
-        self.push_screen(MCPReconnectPromptScreen(server_name), _on_dismiss)
-        choice = await choice_future
+        choice: ReconnectChoice | None
+        try:
+            self.push_screen(MCPReconnectPromptScreen(server_name), _on_dismiss)
+        except Exception:
+            # Modal could not be mounted (e.g. another modal hijacked the
+            # stack). Fall back to defer so the login isn't silently lost.
+            logger.exception("Failed to mount MCP reconnect prompt for %r", server_name)
+            choice = "later"
+        else:
+            try:
+                # Watchdog: guard against a screen that never resolves
+                # (compose crash, programmatic teardown that skips the
+                # callback). 10 minutes is well past any human latency
+                # but bounds the worker if the modal is genuinely broken.
+                choice = await asyncio.wait_for(choice_future, timeout=600.0)
+            except TimeoutError:
+                logger.warning(
+                    "MCP reconnect prompt for %r timed out; defaulting to defer",
+                    server_name,
+                )
+                choice = "later"
 
         if choice == "reconnect":
             self._pending_mcp_reconnect = False
@@ -8418,16 +8461,20 @@ class DeepAgentsApp(App):
             return
 
         # Defer: keep the running server in place so the user can authenticate
-        # with additional MCP servers. Surface a notification so they remember
-        # the running session is still using the pre-login tool set.
+        # with additional MCP servers. The token is on disk either way, so
+        # remember the pending state regardless of how the modal closed.
+        # Only notify on an explicit "later" choice — `None` (programmatic
+        # dismiss / timeout) stays quiet to avoid telling the user about
+        # an action they didn't take.
         self._pending_mcp_reconnect = True
-        self.notify(
-            f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "
-            "to load the new tools.",
-            severity="information",
-            timeout=8,
-            markup=False,
-        )
+        if choice == "later":
+            self.notify(
+                f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "
+                "to load the new tools.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -8440,6 +8487,13 @@ class DeepAgentsApp(App):
             server_name: Server whose login just completed — used in user
                 messages only.
         """
+        # Clear the pending flag up front so deferred state can't leak
+        # past a no-op early return — e.g. the server died between defer
+        # and `/mcp reconnect`. The token is on disk; the user must
+        # relaunch dcode to pick it up, and `/mcp reconnect` shouldn't
+        # keep claiming there's something to do.
+        self._pending_mcp_reconnect = False
+
         server_proc = self._server_proc
         if self._server_kwargs is None or server_proc is None:
             self.notify(
@@ -8449,8 +8503,6 @@ class DeepAgentsApp(App):
                 markup=False,
             )
             return
-
-        self._pending_mcp_reconnect = False
 
         try:
             self._connecting = True

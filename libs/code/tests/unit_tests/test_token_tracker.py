@@ -1,9 +1,16 @@
 """Tests for token state persistence and display callbacks."""
 
 from types import SimpleNamespace
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.token_state import TokenStateMiddleware, TokenTrackingState
+from deepagents_code.token_state import (
+    TokenStateMiddleware,
+    TokenTrackingState,
+    _extract_context_tokens,
+)
 
 
 class TestTokenTrackingState:
@@ -15,6 +22,121 @@ class TestTokenTrackingState:
     def test_middleware_exposes_state_schema(self):
         """TokenStateMiddleware registers the correct state schema."""
         assert TokenStateMiddleware.state_schema is TokenTrackingState
+
+
+class TestExtractContextTokens:
+    """Tests for `_extract_context_tokens`."""
+
+    def test_prefers_input_plus_output(self) -> None:
+        msg = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 25,
+                "total_tokens": 200,  # deliberately inconsistent
+            },
+        )
+        assert _extract_context_tokens(msg) == 125
+
+    def test_falls_back_to_total_tokens(self) -> None:
+        msg = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 999,
+            },
+        )
+        assert _extract_context_tokens(msg) == 999
+
+    def test_returns_none_without_usage_metadata(self) -> None:
+        msg = AIMessage(content="hi")
+        assert _extract_context_tokens(msg) is None
+
+    def test_returns_none_for_zero_usage(self) -> None:
+        msg = AIMessage(
+            content="hi",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        assert _extract_context_tokens(msg) is None
+
+
+class TestAfterModelHook:
+    """Tests for the `after_model` persistence hook."""
+
+    async def test_writes_context_tokens_from_last_ai_message(self) -> None:
+        middleware = TokenStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 1500,
+                        "output_tokens": 200,
+                        "total_tokens": 1700,
+                    },
+                ),
+            ],
+        }
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        assert result == {"_context_tokens": 1700}
+
+    async def test_returns_none_when_no_ai_message(self) -> None:
+        middleware = TokenStateMiddleware()
+        state: dict[str, Any] = {"messages": [HumanMessage(content="hi")]}
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        assert result is None
+
+    async def test_returns_none_when_last_ai_lacks_usage(self) -> None:
+        middleware = TokenStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(content="no usage info"),
+            ],
+        }
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        assert result is None
+
+    async def test_handles_empty_messages(self) -> None:
+        middleware = TokenStateMiddleware()
+        result = middleware.after_model({"messages": []}, runtime=None)  # type: ignore[arg-type]
+        assert result is None
+
+    async def test_skips_intervening_tool_messages(self) -> None:
+        """Picks up the most recent AIMessage even when followed by tool turns."""
+        from langchain_core.messages import ToolMessage
+
+        middleware = TokenStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="older",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                        "total_tokens": 110,
+                    },
+                ),
+                ToolMessage(content="tool out", tool_call_id="t1"),
+                AIMessage(
+                    content="newer",
+                    usage_metadata={
+                        "input_tokens": 500,
+                        "output_tokens": 50,
+                        "total_tokens": 550,
+                    },
+                ),
+            ],
+        }
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
+        assert result == {"_context_tokens": 550}
 
 
 class TestTokenDisplayCallbacks:
@@ -93,58 +215,3 @@ class TestTokenDisplayCallbacks:
 
         assert app._context_tokens == 0
         assert display_calls == [0]
-
-
-class TestPersistContextTokens:
-    """Tests for the `_persist_context_tokens` helper."""
-
-    async def test_calls_aupdate_state_with_token_count(self):
-        """Happy path: persists the count via `aupdate_state`."""
-        from unittest.mock import AsyncMock
-
-        from deepagents_code.textual_adapter import _persist_context_tokens
-
-        agent = AsyncMock()
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        await _persist_context_tokens(agent, config, 4200)  # type: ignore[arg-type]
-
-        agent.aupdate_state.assert_awaited_once_with(config, {"_context_tokens": 4200})
-
-    async def test_suppresses_exceptions(self):
-        """Failures should be swallowed (non-critical persistence)."""
-        from unittest.mock import AsyncMock
-
-        from deepagents_code.textual_adapter import _persist_context_tokens
-
-        agent = AsyncMock()
-        agent.aupdate_state.side_effect = RuntimeError("checkpointer down")
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        # Should not raise
-        await _persist_context_tokens(agent, config, 1000)  # type: ignore[arg-type]
-
-    async def test_disables_tracing_during_update(self):
-        """`aupdate_state` should run with LangSmith tracing disabled.
-
-        The token-count write is a private bookkeeping update; surfacing it as a
-        standalone `UpdateState` run in LangSmith clutters traces.
-        """
-        from unittest.mock import AsyncMock
-
-        from langsmith import get_tracing_context
-
-        from deepagents_code.textual_adapter import _persist_context_tokens
-
-        captured: dict[str, object] = {}
-
-        async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029  # AsyncMock side_effect must be a coroutine function
-            captured["enabled"] = get_tracing_context().get("enabled")
-
-        agent = AsyncMock()
-        agent.aupdate_state.side_effect = _capture
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        await _persist_context_tokens(agent, config, 4200)  # type: ignore[arg-type]
-
-        assert captured["enabled"] is False

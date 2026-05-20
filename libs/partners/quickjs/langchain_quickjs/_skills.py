@@ -254,7 +254,9 @@ def _build_scope_modules(
         else:
             relocated = rel.removeprefix(strip_prefix) if strip_prefix else rel
             if relocated.startswith(("/", "../")) or "/../" in relocated:
-                msg = f"skill {skill_name!r}: relocated path {relocated!r} escapes scope"
+                msg = (
+                    f"skill {skill_name!r}: relocated path {relocated!r} escapes scope"
+                )
                 raise SkillInstallError(msg)
             files[relocated] = source
             if relocated != rel:

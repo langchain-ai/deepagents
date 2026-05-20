@@ -411,22 +411,25 @@ MCP_TOOLS_TEMPLATE = '''\
 async def _load_mcp_tools():
     """Load MCP tools from bundled config (http/sse only).
 
-    ``url`` and ``headers`` values support ``${VAR}`` references which are
-    expanded against ``os.environ`` at activation time. This mirrors the
-    substitution behavior documented for ``deepagents-code``'s
-    ``.mcp.json`` (https://docs.langchain.com/oss/python/deepagents/code/mcp-tools).
-    Unset variables are left as-is so the resulting auth failure surfaces
-    a recognizable token at connect time.
+    The `url` and `headers` values support `${VAR}` references which are
+    expanded against `os.environ` when the deployed graph loads. This
+    mirrors the substitution behavior documented for `deepagents-code`'s
+    `.mcp.json` (https://docs.langchain.com/oss/python/deepagents/code/mcp-tools).
+    Unset variables are left as the literal `${VAR}` so the resulting auth
+    failure surfaces a recognizable token rather than an empty header.
     """
     import json
     import os
+    import re
     from pathlib import Path
 
     def _expand(value):
-        """Expand ``${VAR}`` references in strings; pass other types through."""
+        """Expand `${VAR}` references in strings; pass other types through."""
         if isinstance(value, str):
             return os.path.expandvars(value)
         return value
+
+    unresolved_re = re.compile(r"\\$\\{[^}]+\\}")
 
     mcp_path = Path(__file__).parent / "_mcp.json"
     if not mcp_path.exists():
@@ -445,7 +448,21 @@ async def _load_mcp_tools():
         if transport in ("http", "sse"):
             conn = {"transport": transport, "url": _expand(cfg["url"])}
             if "headers" in cfg:
-                conn["headers"] = {k: _expand(v) for k, v in cfg["headers"].items()}
+                conn["headers"] = {
+                    k: _expand(v) for k, v in cfg["headers"].items()
+                }
+            unresolved = sorted({
+                match
+                for value in (conn["url"], *conn.get("headers", {}).values())
+                if isinstance(value, str)
+                for match in unresolved_re.findall(value)
+            })
+            if unresolved:
+                logger.warning(
+                    "MCP server %r has unresolved environment reference(s): %s",
+                    name,
+                    ", ".join(unresolved),
+                )
             connections[name] = conn
 
     if not connections:
@@ -456,11 +473,10 @@ async def _load_mcp_tools():
 
         client = MultiServerMCPClient(connections)
         return await client.get_tools()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Failed to load MCP tools from %d server(s): %s",
+    except Exception:
+        logger.exception(
+            "Failed to load MCP tools from %d server(s)",
             len(connections),
-            exc,
         )
         return []
 '''

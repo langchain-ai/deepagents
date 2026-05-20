@@ -8866,9 +8866,7 @@ class DeepAgentsApp(App):
             return
 
         await self._respawn_server(
-            log_message=(
-                f"Server restart after MCP login for {server_name!r} failed"
-            ),
+            log_message=(f"Server restart after MCP login for {server_name!r} failed"),
             mcp_failure_log="MCP metadata preload after login refresh failed",
             mcp_failure_toast=(
                 "MCP tool metadata could not be refreshed after login. "
@@ -8989,9 +8987,7 @@ class DeepAgentsApp(App):
                 pass
 
             try:
-                await asyncio.wait_for(
-                    server_proc.restart(), timeout=restart_timeout
-                )
+                await asyncio.wait_for(server_proc.restart(), timeout=restart_timeout)
             except (Exception, TimeoutError) as exc:
                 self._connecting = False
                 logger.exception(log_message)

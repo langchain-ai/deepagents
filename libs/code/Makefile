@@ -66,6 +66,7 @@ lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+	uv run --all-groups python scripts/generate_commands_catalog.py --check
 
 type: ## Run type checker
 type typecheck:

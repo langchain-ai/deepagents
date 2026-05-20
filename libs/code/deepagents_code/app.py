@@ -2515,6 +2515,27 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
+        # Refresh the status bar model so a successful retry after a failed
+        # startup (e.g. `/model` switching providers after `ModelConfigError`)
+        # surfaces the now-active model. `StatusBar.on_mount` only runs once,
+        # and `_retry_startup_with_model` updates `settings` via
+        # `apply_to_settings` without pushing into the widget.
+        if self._status_bar is None:
+            logger.warning("Status bar not found during server ready transition")
+        else:
+            from deepagents_code.config import settings
+
+            provider = settings.model_provider or ""
+            model = settings.model_name or ""
+            if not provider or not model:
+                logger.warning(
+                    "Settings missing model identity at server ready "
+                    "(provider=%r, model=%r); status bar will render blank",
+                    provider,
+                    model,
+                )
+            self._status_bar.set_model(provider=provider, model=model)
+
         if self._active_mcp_viewer is not None:
             viewer = self._active_mcp_viewer
 

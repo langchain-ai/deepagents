@@ -167,6 +167,109 @@ class TestInitialPromptOnMount:
 
         assert submitted == [("code-review", "review this diff", None)]
 
+    async def test_server_ready_refreshes_status_bar_model(self) -> None:
+        """ServerReady should push current settings into the StatusBar model display.
+
+        Regression for the case where `/model` recovers from a failed startup
+        (`ModelConfigError`) — the status bar was only seeded at mount and
+        never refreshed when `_retry_startup_with_model` swapped the provider.
+        `spec=StatusBar` makes the test fail if `set_model`'s keyword-only
+        signature drifts.
+        """
+        from deepagents_code.widgets.status import StatusBar
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        status_bar = MagicMock(spec=StatusBar)
+        app._status_bar = status_bar
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_provider = "anthropic"
+            mock_settings.model_name = "claude-opus-4-7"
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        status_bar.set_model.assert_called_once_with(
+            provider="anthropic", model="claude-opus-4-7"
+        )
+
+    async def test_server_ready_warns_when_status_bar_missing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missing `_status_bar` at ServerReady is a defect — surface it.
+
+        Mirrors the welcome-banner branch which logs on `NoMatches`.
+        """
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app._status_bar = None
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        assert any(
+            "Status bar not found" in record.message for record in caplog.records
+        )
+
+    async def test_server_ready_warns_when_settings_model_missing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Missing model identity at ServerReady should warn, not silently blank."""
+        from deepagents_code.widgets.status import StatusBar
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        status_bar = MagicMock(spec=StatusBar)
+        app._status_bar = status_bar
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+        ):
+            mock_settings.model_provider = None
+            mock_settings.model_name = None
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        # Still calls set_model with the falsy-coerced strings so the widget
+        # doesn't render stale state — but emits a warning so the misconfig
+        # isn't invisible.
+        status_bar.set_model.assert_called_once_with(provider="", model="")
+        assert any(
+            "Settings missing model identity" in record.message
+            for record in caplog.records
+        )
+
     async def test_deferred_start_preserves_initial_prompt_until_server_ready(
         self,
     ) -> None:

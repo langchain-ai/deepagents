@@ -10,17 +10,15 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
+from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _make_fs_when_predicate
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemPermission,
     _all_paths_scoped_to_routes,
-    _build_interrupt_on_from_permissions,
     _check_fs_permission,
     _filter_paths_by_permission,
-    _glob_anchor,
-    _make_fs_when_predicate,
-    _paths_overlap,
 )
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 

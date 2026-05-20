@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
 
 import wcmatch.glob as wcglob
-from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -55,7 +54,6 @@ from deepagents.backends.utils import (
     format_content_with_line_numbers,
     format_grep_matches,
     sanitize_tool_call_id as sanitize_tool_call_id,
-    to_posix_path,
     truncate_if_too_long,
     validate_path,
 )
@@ -212,172 +210,6 @@ def _apply_permissions_to_glob_results(
     """Filter glob matches by permission and return their paths."""
     filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read")
     return [fi.get("path", "") for fi in filtered_infos]
-
-
-# Scope of a filesystem tool's path argument:
-#   - "exact": the call operates on exactly the named path (read_file, write_file,
-#     edit_file). Interrupt fires iff that path matches an interrupt-mode rule.
-#   - "bulk":  the call's path argument names a search root and the call may
-#     surface any descendant (ls, glob, grep). Interrupt fires whenever the
-#     search subtree intersects an interrupt-mode rule's pattern, and — when
-#     the path argument is omitted (`grep(path=None)`) — fires unconditionally
-#     for any interrupt-mode rule, because a pathless bulk call can touch
-#     anything.
-ToolScope = Literal["exact", "bulk"]
-
-# Map filesystem tool name → (operation, name of its path argument, scope).
-# Drives `_build_interrupt_on_from_permissions` when synthesizing `when`
-# predicates per tool.
-_FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str, ToolScope]] = {
-    "ls": ("read", "path", "bulk"),
-    "read_file": ("read", "file_path", "exact"),
-    "write_file": ("write", "file_path", "exact"),
-    "edit_file": ("write", "file_path", "exact"),
-    "glob": ("read", "path", "bulk"),
-    "grep": ("read", "path", "bulk"),
-}
-
-
-# Characters that mark a glob path component as a wildcard segment for the
-# purposes of `_glob_anchor`. Keep in sync with `_FS_WCMATCH_FLAGS` semantics.
-_GLOB_WILDCARD_CHARS = frozenset("*?[{")
-
-
-def _glob_anchor(pattern: str) -> str:
-    """Return the longest leading directory of `pattern` with no wildcards.
-
-    For `/secrets/**` returns `/secrets`; for `/a/*/b` returns `/a`; for a
-    pattern with a wildcard at or near the root (`/**/secrets`, `/*/foo`)
-    falls back to `/`. The root fallback causes the bulk predicate to fire
-    for *any* bulk call — conservative over-gating, since we cannot statically
-    pin down where the rule could resolve. Users wanting precise gating
-    should anchor the rule's leading components.
-    """
-    parts = PurePosixPath(to_posix_path(pattern)).parts
-    safe: list[str] = []
-    for part in parts:
-        if any(c in _GLOB_WILDCARD_CHARS for c in part):
-            break
-        safe.append(part)
-    if not safe:
-        return "/"
-    return str(PurePosixPath(*safe))
-
-
-def _paths_overlap(call_path: str, rule_anchor: str) -> bool:
-    """Return True if the subtree at `call_path` intersects the subtree at `rule_anchor`.
-
-    Two subtrees overlap when one is a (component-wise) prefix of the other,
-    or they're equal. Comparison runs on `PurePosixPath` components, so
-    `/secret` does not overlap `/secrets`. The root `/` overlaps everything.
-    """
-    a = PurePosixPath(call_path)
-    b = PurePosixPath(rule_anchor)
-    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
-
-
-def _make_fs_when_predicate(
-    rules: list[FilesystemPermission],
-    operation: FilesystemOperation,
-    path_arg_name: str,
-    scope: ToolScope,
-) -> Callable[[ToolCallRequest], bool]:
-    """Build a `when` predicate that fires on interrupt-mode rule matches.
-
-    The predicate's behavior depends on the tool's `ToolScope`:
-
-    - `"exact"`: fire iff the call's path matches an interrupt-mode rule
-      with normal first-match precedence. A preceding `deny` rule wins and
-      the interrupt does not fire — the tool returns a permission-denied
-      error instead.
-    - `"bulk"`: fire iff the call's search subtree could intersect an
-      interrupt-mode rule. With no path argument (e.g. `grep(path=None)`)
-      we cannot localize the call, so we fire unconditionally for any
-      interrupt-mode rule on the operation.
-    """
-    if scope == "exact":
-        return _make_exact_when_predicate(rules, operation, path_arg_name)
-    return _make_bulk_when_predicate(rules, operation, path_arg_name)
-
-
-def _make_exact_when_predicate(
-    rules: list[FilesystemPermission],
-    operation: FilesystemOperation,
-    path_arg_name: str,
-) -> Callable[[ToolCallRequest], bool]:
-    def when(req: ToolCallRequest) -> bool:
-        raw_path = req.tool_call.get("args", {}).get(path_arg_name)
-        if not isinstance(raw_path, str):
-            return False
-        try:
-            normalized = validate_path(raw_path)
-        except ValueError:
-            return False
-        return _check_fs_permission(rules, operation, normalized) == "interrupt"
-
-    return when
-
-
-def _make_bulk_when_predicate(
-    rules: list[FilesystemPermission],
-    operation: FilesystemOperation,
-    path_arg_name: str,
-) -> Callable[[ToolCallRequest], bool]:
-    # Precompute interrupt-mode rule anchors for this op so the predicate is
-    # a single pass per call.
-    interrupt_anchors: list[str] = [
-        _glob_anchor(pattern) for rule in rules if rule.mode == "interrupt" and operation in rule.operations for pattern in rule.paths
-    ]
-
-    def when(req: ToolCallRequest) -> bool:
-        if not interrupt_anchors:
-            return False
-        raw_path = req.tool_call.get("args", {}).get(path_arg_name)
-        if raw_path is None:
-            # Pathless bulk call — fire because we cannot localize the access.
-            return True
-        if not isinstance(raw_path, str):
-            return False
-        try:
-            normalized = validate_path(raw_path)
-        except ValueError:
-            return False
-        # `validate_path` returns ``/.`` for current-directory aliases like
-        # ``"."``, ``""``, and ``"./"``. Those refer to the whole accessible
-        # tree just like a missing path arg, so collapse to ``/`` so the
-        # root-overlaps-everything branch in `_paths_overlap` fires.
-        # Without this, an agent could pass ``path="."`` to bypass HITL.
-        if normalized == "/.":
-            normalized = "/"
-        return any(_paths_overlap(normalized, anchor) for anchor in interrupt_anchors)
-
-    return when
-
-
-def _build_interrupt_on_from_permissions(
-    rules: list[FilesystemPermission],
-) -> dict[str, InterruptOnConfig]:
-    """Generate `interrupt_on` configs from interrupt-mode permissions.
-
-    Returns an entry for each filesystem tool whose operation could be triggered
-    by at least one interrupt-mode rule. Each entry uses a `when` predicate so
-    the interrupt only fires when the tool call's path argument matches an
-    interrupt-mode rule.
-    """
-    if not any(r.mode == "interrupt" for r in rules):
-        return {}
-
-    # Annotated so ty narrows to `list[DecisionType]` instead of `list[str]`.
-    allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "reject"]
-    result: dict[str, InterruptOnConfig] = {}
-    for tool_name, (op, arg, scope) in _FS_TOOL_PATH_ARGS.items():
-        if not any(r.mode == "interrupt" and op in r.operations for r in rules):
-            continue
-        result[tool_name] = InterruptOnConfig(
-            allowed_decisions=allowed,
-            when=_make_fs_when_predicate(rules, op, arg, scope),
-        )
-    return result
 
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"

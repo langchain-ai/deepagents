@@ -31,31 +31,41 @@ class TestGetDisabledServers:
         cfg.write_text('[mcp_disabled]\nservers = ["ok", ""]\n')
         assert get_disabled_servers(config_path=cfg) == {"ok"}
 
+    def test_returns_empty_on_corrupt_toml(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("this is not valid toml = = =\n")
+        assert get_disabled_servers(config_path=cfg) == set()
+
 
 class TestSetServerDisabled:
     """Tests for `set_server_disabled`."""
 
     def test_disable_new_server(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
-        assert set_server_disabled("github", True, config_path=cfg)
+        ok, detail = set_server_disabled("github", True, config_path=cfg)
+        assert ok
+        assert detail is None
         assert is_server_disabled("github", config_path=cfg)
 
     def test_disable_is_idempotent(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
         set_server_disabled("github", True, config_path=cfg)
-        assert set_server_disabled("github", True, config_path=cfg)
+        ok, _ = set_server_disabled("github", True, config_path=cfg)
+        assert ok
         assert get_disabled_servers(config_path=cfg) == {"github"}
 
     def test_enable_removes_entry(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
         set_server_disabled("github", True, config_path=cfg)
         set_server_disabled("slack", True, config_path=cfg)
-        assert set_server_disabled("github", False, config_path=cfg)
+        ok, _ = set_server_disabled("github", False, config_path=cfg)
+        assert ok
         assert get_disabled_servers(config_path=cfg) == {"slack"}
 
     def test_enable_missing_is_noop(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
-        assert set_server_disabled("nonexistent", False, config_path=cfg)
+        ok, _ = set_server_disabled("nonexistent", False, config_path=cfg)
+        assert ok
         assert get_disabled_servers(config_path=cfg) == set()
 
     def test_preserves_other_sections(self, tmp_path: Path) -> None:
@@ -80,6 +90,22 @@ class TestSetServerDisabled:
         z_idx = contents.index("zeta")
         assert a_idx < m_idx < z_idx
 
+    def test_refuses_to_overwrite_corrupt_config(self, tmp_path: Path) -> None:
+        """Corrupt config must not be silently overwritten.
+
+        A transient parse failure could otherwise truncate sibling
+        sections (e.g. `[mcp_trust]`) the next time the user toggles a
+        disable state.
+        """
+        cfg = tmp_path / "config.toml"
+        corrupt = "this is not valid toml = = =\n"
+        cfg.write_text(corrupt)
+        ok, detail = set_server_disabled("github", True, config_path=cfg)
+        assert not ok
+        assert detail is not None
+        # File contents preserved verbatim.
+        assert cfg.read_text() == corrupt
+
 
 class TestIsServerDisabled:
     """Tests for `is_server_disabled`."""
@@ -92,3 +118,8 @@ class TestIsServerDisabled:
         cfg = tmp_path / "config.toml"
         set_server_disabled("github", True, config_path=cfg)
         assert is_server_disabled("github", config_path=cfg)
+
+    def test_returns_false_on_corrupt_toml(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config.toml"
+        cfg.write_text("this is not valid toml = = =\n")
+        assert not is_server_disabled("github", config_path=cfg)

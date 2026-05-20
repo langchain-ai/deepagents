@@ -68,14 +68,16 @@ class MCPServerInfo:
     """Server name from the MCP configuration."""
 
     transport: str
-    """Transport identifier — `stdio`, `sse`, `http`, or the synthetic
-    `config` value used for entries surfacing a bad config file."""
+    """Transport identifier — `stdio`, `sse`, `http`, the synthetic
+    `config` value used for entries surfacing a bad config file, or
+    `unknown` for a disabled server whose original config could not be
+    classified."""
 
     tools: tuple[MCPToolInfo, ...] = ()
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
-    """Load status — `ok`, `unauthenticated`, or `error`."""
+    """Load status — `ok`, `unauthenticated`, `error`, or `disabled`."""
 
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""

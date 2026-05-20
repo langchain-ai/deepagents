@@ -45,7 +45,7 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     (`✓ ⚠ ✗` -> `[OK] [!] [X]`). No new glyph definitions needed.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error`.
+        status: One of `ok` / `unauthenticated` / `error` / `disabled`.
         glyphs: Active `Glyphs` table (Unicode or ASCII).
 
     Returns:
@@ -64,12 +64,13 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
     """Map a server `status` onto a semantic theme color.
 
     `ok` -> success (green); `unauthenticated` -> warning (yellow);
-    `error` -> error (red). Returning the theme's hex string lets callers
-    pass the value to `Content.styled()` or `Content.assemble()` so a
-    theme switch recolors the indicator without code changes.
+    `error` -> error (red); `disabled` -> muted. Returning the theme's
+    hex string lets callers pass the value to `Content.styled()` or
+    `Content.assemble()` so a theme switch recolors the indicator
+    without code changes.
 
     Args:
-        status: One of `ok` / `unauthenticated` / `error`.
+        status: One of `ok` / `unauthenticated` / `error` / `disabled`.
         colors: Active theme palette (typically from `theme.get_theme_colors`).
 
     Returns:
@@ -565,12 +566,15 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
     Displays servers grouped by name with transport type and tool count.
     Navigate with arrow keys, Enter to expand/collapse tool descriptions
-    or start in-app OAuth login for an unauthenticated server, Escape
-    to close.
+    or start in-app OAuth login for an unauthenticated server, Ctrl+R to
+    request a reconnect, F2 on a server header to toggle its disabled
+    state, and Escape to close.
 
-    Dismisses with `None` when closed without action, or with the server
-    name to drive an in-TUI OAuth login when the user activates an
-    `unauthenticated` server header.
+    Dismisses with `None` when closed without action, the server name to
+    drive an in-TUI OAuth login when the user activates an
+    `unauthenticated` server header, `MCP_VIEWER_RECONNECT_REQUEST` for
+    a reconnect, or `MCP_VIEWER_TOGGLE_DISABLE_PREFIX + server_name` for
+    a disable toggle.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [

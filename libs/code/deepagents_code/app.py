@@ -8190,9 +8190,8 @@ class DeepAgentsApp(App):
 
     def _sync_pending_mcp_reconnect(self) -> None:
         """Refresh the aggregate MCP reconnect flag from tracked reasons."""
-        self._pending_mcp_reconnect = (
-            self._pending_mcp_login_reconnect
-            or bool(self._pending_mcp_disable_reconnect_servers)
+        self._pending_mcp_reconnect = self._pending_mcp_login_reconnect or bool(
+            self._pending_mcp_disable_reconnect_servers
         )
 
     async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
@@ -8259,6 +8258,18 @@ class DeepAgentsApp(App):
                 return
             if result and result.startswith(MCP_VIEWER_TOGGLE_DISABLE_PREFIX):
                 server_name = result[len(MCP_VIEWER_TOGGLE_DISABLE_PREFIX) :]
+                if not server_name:
+                    logger.warning(
+                        "Empty server name in MCP disable sentinel; ignoring",
+                    )
+                    return
+                known_names = {info.name for info in self._mcp_server_info or ()}
+                if server_name not in known_names:
+                    logger.warning(
+                        "Unknown server %r in MCP disable sentinel; ignoring",
+                        server_name,
+                    )
+                    return
                 self.call_later(self._toggle_mcp_server_disabled, server_name)
                 return
             if result:
@@ -8301,13 +8312,21 @@ class DeepAgentsApp(App):
             set_server_disabled,
         )
 
-        currently_disabled = is_server_disabled(server_name)
+        currently_disabled = await asyncio.to_thread(is_server_disabled, server_name)
         new_state = not currently_disabled
-        ok = set_server_disabled(server_name, new_state)
+        ok, detail = await asyncio.to_thread(
+            set_server_disabled,
+            server_name,
+            new_state,
+        )
         if not ok:
+            message = f"Could not persist disabled state for {server_name!r}"
+            if detail:
+                message += f": {detail}"
+            else:
+                message += "."
             self.notify(
-                f"Could not persist disabled state for {server_name!r}. "
-                "Check `~/.deepagents/config.toml` permissions.",
+                message,
                 severity="error",
                 markup=False,
             )
@@ -8319,8 +8338,7 @@ class DeepAgentsApp(App):
         if new_state:
             self._pending_mcp_disable_reconnect_servers.add(server_name)
             message = (
-                f"MCP server {server_name!r} {verb}. "
-                "Run `/mcp reconnect` to apply."
+                f"MCP server {server_name!r} {verb}. Run `/mcp reconnect` to apply."
             )
         else:
             message = f"MCP server {server_name!r} {verb}."
@@ -8387,13 +8405,14 @@ class DeepAgentsApp(App):
                     updated.append(original)
                 else:
                     # Best-effort re-enable when the app started with this
-                    # server disabled. Real status (`ok` / `unauthenticated` /
-                    # `error`) will be recomputed by the reconnect.
+                    # server disabled. Keep `status="disabled"` so the muted
+                    # pause glyph is shown instead of a red error badge —
+                    # the real status will be recomputed by the reconnect.
                     updated.append(
                         MCPServerInfo(
                             name=entry.name,
                             transport=entry.transport,
-                            status="error",
+                            status="disabled",
                             error="Re-enabled — run `/mcp reconnect` to load.",
                         ),
                     )

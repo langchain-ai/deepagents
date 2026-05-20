@@ -1,14 +1,14 @@
 """Persistent store of MCP server names the user has disabled.
 
-DRAFT proposal — see issue #3474. Disabled servers are skipped at config
-merge time so their tools never reach the agent and no connection is
-attempted. State lives under `[mcp_disabled]` in `~/.deepagents/config.toml`,
-mirroring the layout used by `mcp_trust.py`.
+Disabled servers are skipped at config merge time so their tools never
+reach the agent and no connection is attempted. State lives under
+`[mcp_disabled]` in `~/.deepagents/config.toml`, mirroring the layout
+used by `mcp_trust.py`.
 
 The store keys on server *name* alone. Two configs that both declare a
-`github` server will both be disabled by a single entry — intentional, since
-the agent cannot distinguish overlapping names at runtime anyway (later
-configs in the merge order win).
+`github` server will both be disabled by a single entry — intentional,
+since the agent cannot distinguish overlapping names at runtime anyway
+(later configs in the merge order win).
 """
 
 from __future__ import annotations
@@ -28,22 +28,43 @@ _SECTION = "mcp_disabled"
 _KEY = "servers"
 
 
+class _ConfigLoadError(Exception):
+    """Raised when the config exists but cannot be parsed or read.
+
+    Distinct from "file does not exist" so callers can refuse to
+    overwrite a config they could not parse — otherwise a transient
+    read error or a hand-edit typo would silently truncate sibling
+    sections (e.g. `[mcp_trust]`) on the next write.
+    """
+
+
 def _load_config(config_path: Path) -> dict[str, Any]:
     """Read the TOML config file.
 
+    Args:
+        config_path: Path to the TOML config file.
+
     Returns:
-        Parsed TOML data, or an empty dict on failure.
+        Parsed TOML data, or an empty dict if the file does not exist.
+
+    Raises:
+        _ConfigLoadError: If the file exists but cannot be read or parsed.
     """
     import tomllib
 
+    if not config_path.exists():
+        return {}
     try:
-        if not config_path.exists():
-            return {}
         with config_path.open("rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        logger.debug("Could not read config %s", config_path, exc_info=True)
-        return {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning(
+            "Could not read MCP disabled config at %s: %s",
+            config_path,
+            exc,
+        )
+        msg = f"could not load {config_path}: {exc}"
+        raise _ConfigLoadError(msg) from exc
 
 
 def _save_config(data: dict[str, Any], config_path: Path) -> bool:
@@ -83,7 +104,10 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
     """
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
-    data = _load_config(config_path)
+    try:
+        data = _load_config(config_path)
+    except _ConfigLoadError:
+        return set()
     section = data.get(_SECTION)
     if not isinstance(section, dict):
         return set()
@@ -94,7 +118,16 @@ def get_disabled_servers(*, config_path: Path | None = None) -> set[str]:
 
 
 def is_server_disabled(server_name: str, *, config_path: Path | None = None) -> bool:
-    """Return `True` when `server_name` is in the disabled set."""
+    """Return `True` when `server_name` is in the disabled set.
+
+    Args:
+        server_name: MCP server name from `mcpServers` config.
+        config_path: Override the default config location; intended for tests.
+
+    Returns:
+        `True` when the server is recorded as disabled, `False` otherwise
+        (including when the config cannot be read).
+    """
     return server_name in get_disabled_servers(config_path=config_path)
 
 
@@ -103,8 +136,12 @@ def set_server_disabled(
     disabled: bool,
     *,
     config_path: Path | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Add or remove `server_name` from the persistent disabled set.
+
+    Refuses to write when the existing config cannot be parsed so a
+    corrupt or permission-denied file is not silently overwritten —
+    that would discard sibling sections such as `[mcp_trust]`.
 
     Args:
         server_name: MCP server name from `mcpServers` config.
@@ -112,11 +149,16 @@ def set_server_disabled(
         config_path: Override the default config location; intended for tests.
 
     Returns:
-        `True` on success, `False` if the config could not be written.
+        Tuple of `(ok, error_detail)`. `ok` is `True` on success; on
+        failure `error_detail` is a short user-facing string suitable
+        for a toast.
     """
     if config_path is None:
         config_path = _DEFAULT_CONFIG_PATH
-    data = _load_config(config_path)
+    try:
+        data = _load_config(config_path)
+    except _ConfigLoadError as exc:
+        return False, str(exc)
     section = data.get(_SECTION)
     if not isinstance(section, dict):
         section = {}
@@ -132,7 +174,9 @@ def set_server_disabled(
     else:
         current.discard(server_name)
     if current == set(entries):
-        return True
+        return True, None
     section[_KEY] = sorted(current)
     data[_SECTION] = section
-    return _save_config(data, config_path)
+    if _save_config(data, config_path):
+        return True, None
+    return False, f"could not write {config_path}"

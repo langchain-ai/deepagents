@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents._models import resolve_model
@@ -22,7 +23,8 @@ SwarmTaskMode = Literal["agent", "invoke"]
 _VARIANT_TTL_S = 60.0
 
 
-class SwarmSubAgent(BaseModel):
+@dataclass
+class SwarmSubAgent:
     """Subagent specification for swarm dispatch targets."""
 
     name: str
@@ -34,13 +36,11 @@ class SwarmSubAgent(BaseModel):
     system_prompt: str
     """System prompt injected at the start of the subagent's conversation."""
 
-    tools: list[BaseTool] = Field(default_factory=list)
+    tools: list[BaseTool] = field(default_factory=list)
     """Tools available to this subagent."""
 
     model: str | BaseChatModel | None = None
     """Model override for this subagent. Falls back to the tool's `default_model`."""
-
-    model_config = {"arbitrary_types_allowed": True}
 
 
 def _is_schema_node(value: object) -> bool:

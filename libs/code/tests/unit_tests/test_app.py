@@ -8887,9 +8887,7 @@ class TestMCPLoginCommand:
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
                 patch.object(app, "notify") as notify,
-                patch.object(
-                    app, "_show_mcp_viewer", new=AsyncMock()
-                ) as show_viewer,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer,
             ):
                 await app._prompt_mcp_reconnect("notion")
 
@@ -9065,9 +9063,7 @@ class TestMCPLoginCommand:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(
-                app, "_show_mcp_viewer", new=AsyncMock()
-            ) as show_viewer:
+            with patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer:
                 prompt_task = asyncio.create_task(
                     app._prompt_mcp_reconnect("notion"),
                 )
@@ -9097,9 +9093,7 @@ class TestMCPLoginCommand:
                     app, "_restart_server_for_mcp_refresh", new=AsyncMock()
                 ) as restart,
                 patch.object(app, "notify") as notify,
-                patch.object(
-                    app, "_show_mcp_viewer", new=AsyncMock()
-                ) as show_viewer,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer,
             ):
                 await app._prompt_mcp_reconnect("notion")
 

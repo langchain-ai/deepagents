@@ -8765,13 +8765,11 @@ class DeepAgentsApp(App):
                 # come back; without it, the "logged in" notify is the only
                 # signal and the missing viewer looks like a UI hang.
                 logger.exception(
-                    "Failed to reopen MCP viewer after deferring "
-                    "reconnect for %r",
+                    "Failed to reopen MCP viewer after deferring reconnect for %r",
                     server_name,
                 )
                 self.notify(
-                    "Couldn't reopen the MCP viewer — run `/mcp` to open "
-                    "it manually.",
+                    "Couldn't reopen the MCP viewer — run `/mcp` to open it manually.",
                     severity="warning",
                     timeout=8,
                     markup=False,

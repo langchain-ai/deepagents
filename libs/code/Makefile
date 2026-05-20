@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage commands-catalog commands-catalog-check
 
 .DEFAULT_GOAL := help
 
@@ -66,6 +66,7 @@ lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff check $(PYTHON_FILES)
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
+	uv run --all-groups python scripts/generate_commands_catalog.py --check
 
 type: ## Run type checker
 type typecheck:
@@ -79,6 +80,12 @@ format format_diff:
 check_imports: ## Check imports
 check_imports: $(shell find deepagents_code -name '*.py')
 	uv run --all-groups python ./scripts/check_imports.py $^
+
+commands-catalog: ## Regenerate COMMANDS.md from the slash-command registry
+	uv run --all-groups python scripts/generate_commands_catalog.py
+
+commands-catalog-check: ## Verify COMMANDS.md matches the slash-command registry
+	uv run --all-groups python scripts/generate_commands_catalog.py --check
 
 ######################
 # HELP

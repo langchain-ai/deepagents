@@ -8973,7 +8973,6 @@ class DeepAgentsApp(App):
             )
             return
 
-        await self._mount_message(AppMessage("Restarting server…"))
         await self._restart_server_manual()
 
     async def _restart_server_manual(self) -> None:

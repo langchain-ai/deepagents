@@ -22,6 +22,7 @@ import re
 import secrets
 import stat
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
@@ -110,6 +111,14 @@ risking a circular import. Keep both regexes in sync."""
 _STORAGE_VERSION = 1
 """Schema version stamped into persisted credential files; bump on incompatible
 shape changes so `_load_*` can reject or migrate older payloads."""
+
+_REFRESH_SAFETY_MARGIN_SECONDS = 30.0
+"""Refresh access tokens this many seconds before their advertised expiry.
+
+Absorbs clock skew and request latency so a token deemed valid locally isn't
+rejected as expired by the server — without the margin, a 401 sends the SDK
+into the full re-auth (browser) flow instead of the cheaper refresh grant.
+"""
 
 
 def resolve_headers(
@@ -234,10 +243,20 @@ class FileTokenStorage(TokenStorage):
         return OAuthToken.model_validate(raw)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Persist `tokens` to disk, preserving any stored client info."""
+        """Persist `tokens` to disk, preserving any stored client info.
+
+        Also records the absolute Unix-epoch expiry as a sidecar so a
+        cold-started provider can detect a stale access token and trigger
+        the SDK's `refresh_token` grant instead of a full browser re-auth.
+        Cleared when `expires_in` is absent so the sidecar can't go stale.
+        """
         data = self._read() or {}
         data["version"] = _STORAGE_VERSION
         data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
+        if tokens.expires_in is not None:
+            data["expires_at"] = time.time() + tokens.expires_in
+        else:
+            data.pop("expires_at", None)
         self._write(data)
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
@@ -271,7 +290,40 @@ class FileTokenStorage(TokenStorage):
         data["version"] = _STORAGE_VERSION
         data["tokens"] = json.loads(tokens.model_dump_json(exclude_none=True))
         data["client_info"] = json.loads(client_info.model_dump_json(exclude_none=True))
+        if tokens.expires_in is not None:
+            data["expires_at"] = time.time() + tokens.expires_in
+        else:
+            data.pop("expires_at", None)
         self._write(data)
+
+    async def get_expires_at(self) -> float | None:
+        """Return the stored absolute token expiry (Unix epoch), or `None`.
+
+        Returns `None` for token files written before this field existed,
+        for tokens whose provider omitted `expires_in`, or when the sidecar
+        value fails to coerce to `float`. Callers should treat `None` as
+        "expiry unknown" and decide policy (skip, assume-expired, etc.).
+        """
+        data = self._read()
+        if data is None:
+            return None
+        raw = data.get("expires_at")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            # Log the value's type, never the value itself — the sidecar lives
+            # next to the bearer token in the same JSON envelope, so a
+            # misplaced token string would land here.
+            logger.warning(
+                "MCP token sidecar 'expires_at' for %s is not numeric (%s); "
+                "treating as unknown. The next request will trigger a refresh "
+                "or browser re-auth.",
+                self._server_name,
+                type(raw).__name__,
+            )
+            return None
 
     def _read(self) -> dict | None:
         path = self.path
@@ -816,6 +868,67 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
     return urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
 
 
+class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
+    """`OAuthClientProvider` that restores `token_expiry_time` from storage.
+
+    Upstream `_initialize` loads stored tokens but leaves
+    `context.token_expiry_time` at `None`, which makes `is_token_valid`
+    report any stored access token — even one that expired hours ago —
+    as valid. The SDK then sends a stale `Bearer`, gets a 401, and falls
+    into a full re-auth (browser) instead of the `refresh_token` grant.
+
+    Restoring the persisted absolute expiry to the context after load
+    lets the SDK's refresh-when-invalid-and-refreshable branch fire on
+    the first request after a cold start. When the sidecar is absent
+    (older token files written before this field existed), assume the
+    token is expired so the refresh path still gets a chance before
+    falling back to 401.
+    """
+
+    async def _initialize(self) -> None:
+        # Overrides a leading-underscore SDK method; behavior depends on
+        # `super()._initialize()` populating `context.current_tokens` from
+        # storage. If an upstream rename or refactor breaks that contract,
+        # the test suite's TestExpiryAwareOAuthClientProvider cases will
+        # fail loudly rather than silently regress to the 401-on-restart
+        # bug this class exists to prevent.
+        await super()._initialize()
+        get_expires_at = getattr(self.context.storage, "get_expires_at", None)
+        if get_expires_at is None:
+            return
+        expires_at = await get_expires_at()
+        tokens = self.context.current_tokens
+        if expires_at is None:
+            # Use 1.0 (one second after the Unix epoch) rather than 0.0 so the
+            # SDK's `not self.token_expiry_time` falsy-zero check doesn't treat
+            # the sentinel as "no expiry known" and mark the token valid again.
+            if tokens is not None and tokens.refresh_token:
+                self.context.token_expiry_time = 1.0
+            elif tokens is not None and tokens.access_token:
+                # Legacy file with no refresh_token: nothing we can do to
+                # pre-empt expiry. Surface a structural breadcrumb so the
+                # 401-then-browser-reauth flow isn't completely silent.
+                logger.info(
+                    "Legacy MCP token file for %s has no refresh_token; "
+                    "cannot pre-empt expiry. The next 401 will trigger "
+                    "browser re-auth.",
+                    self.context.server_url,
+                )
+            return
+        if expires_at - time.time() < _REFRESH_SAFETY_MARGIN_SECONDS:
+            # Token already inside its safety margin (or past it) — likely a
+            # cold start after a long pause, or a misconfigured server issuing
+            # sub-margin lifetimes. Log only the duration, never any token
+            # material.
+            logger.debug(
+                "MCP token for %s is within %.0fs of expiry on load; "
+                "scheduling refresh on next request.",
+                self.context.server_url,
+                _REFRESH_SAFETY_MARGIN_SECONDS,
+            )
+        self.context.token_expiry_time = expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+
+
 def build_oauth_provider(
     *,
     server_name: str,
@@ -870,7 +983,7 @@ def build_oauth_provider(
         else policy.client_metadata()
     )
 
-    return OAuthClientProvider(
+    return _ExpiryAwareOAuthClientProvider(
         server_url=server_url,
         client_metadata=metadata,
         storage=storage,

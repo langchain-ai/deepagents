@@ -136,6 +136,7 @@ if TYPE_CHECKING:
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.remote_client import RemoteAgent
     from deepagents_code.server import ServerProcess
     from deepagents_code.skills.load import ExtendedSkillMetadata
@@ -681,6 +682,30 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
 
 
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
+
+_RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
+
+
+def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
+    """Parse the argument tail of `/mcp reconnect [force]`.
+
+    Trailing tokens after `force` reject because the user's intent is
+    unclear.
+
+    Args:
+        rest: Everything after `/mcp reconnect` (already stripped).
+
+    Returns:
+        `(force, valid)`. `valid=False` means the caller should surface
+        the usage message and skip the handler.
+    """
+    tokens = rest.split()
+    if not tokens:
+        return False, True
+    if len(tokens) == 1 and tokens[0].lower() in _RECONNECT_FORCE_TOKENS:
+        return True, True
+    return False, False
+
 
 _TYPING_IDLE_THRESHOLD_SECONDS: float = 2.0
 """Seconds since the last keystroke after which the user is considered idle and
@@ -1264,6 +1289,15 @@ class DeepAgentsApp(App):
         self._mcp_server_info = mcp_server_info
         """MCP server metadata surfaced in the `/mcp` viewer."""
 
+        self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
+        """Pre-disable server metadata for optimistic viewer toggles."""
+
+        self._pending_mcp_login_reconnect = False
+        """Whether a successful MCP login is waiting for reconnect."""
+
+        self._pending_mcp_disable_reconnect_servers: set[str] = set()
+        """MCP servers with disable-state changes waiting for reconnect."""
+
         self._mcp_tool_count = sum(len(s.tools) for s in (mcp_server_info or []))
         """Total tool count across MCP servers, displayed in the status bar."""
 
@@ -1279,6 +1313,11 @@ class DeepAgentsApp(App):
 
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
+
+        self._pending_mcp_reconnect: bool = False
+        """Set after a successful MCP login when the user defers the server
+        restart. Cleared by the next reconnect or restart so multiple deferred
+        logins coalesce into a single user-driven restart."""
 
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
@@ -1431,6 +1470,16 @@ class DeepAgentsApp(App):
         """Set to the offending provider name when startup failed with
         `MissingCredentialsError`; `None` otherwise. Gates the `/model`
         recovery hint without string-matching on the formatted error.
+        """
+
+        self._server_startup_missing_provider_package: (
+            MissingProviderPackageError | None
+        ) = None
+        """The exception itself when startup failed with
+        `MissingProviderPackageError`; `None` otherwise. Stashing the exception
+        rather than a tuple gives the hint builder named access to `.provider`
+        and `.package`, and gates the `pip install` / `/model` recovery hint
+        without string-matching on the formatted error.
         """
 
         self._retry_status_widget: AppMessage | None = None
@@ -2432,6 +2481,10 @@ class DeepAgentsApp(App):
         self._agent = event.agent
         self._server_proc = event.server_proc
         self._mcp_server_info = event.mcp_server_info
+        self._mcp_optimistic_original_server_info.clear()
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._sync_pending_mcp_reconnect()
 
         # Drop transient failure-state widgets — banner state and the agent
         # response now convey "connected", so the prior error and breadcrumb
@@ -2473,9 +2526,42 @@ class DeepAgentsApp(App):
         except NoMatches:
             logger.warning("Welcome banner not found during server ready transition")
 
+        # Refresh the status bar model so a successful retry after a failed
+        # startup (e.g. `/model` switching providers after `ModelConfigError`)
+        # surfaces the now-active model. `StatusBar.on_mount` only runs once,
+        # and `_retry_startup_with_model` updates `settings` via
+        # `apply_to_settings` without pushing into the widget.
+        if self._status_bar is None:
+            logger.warning("Status bar not found during server ready transition")
+        else:
+            from deepagents_code.config import settings
+
+            provider = settings.model_provider or ""
+            model = settings.model_name or ""
+            if not provider or not model:
+                logger.warning(
+                    "Settings missing model identity at server ready "
+                    "(provider=%r, model=%r); status bar will render blank",
+                    provider,
+                    model,
+                )
+            self._status_bar.set_model(provider=provider, model=model)
+
         if self._active_mcp_viewer is not None:
-            with suppress(Exception):
-                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
+            viewer = self._active_mcp_viewer
+
+            async def _refresh_viewer() -> None:
+                # No local `suppress` — the `_log_task_exception` done
+                # callback is the single error sink. Silencing here
+                # would make that callback dead code (its `task.result()`
+                # call could never see a raised exception) and a real
+                # `DuplicateIds` / `AttributeError` would leave the
+                # viewer stuck on the connecting placeholder with no
+                # signal in the logs.
+                await viewer.refresh_server_info(self._mcp_server_info or [])
+
+            task = asyncio.create_task(_refresh_viewer())
+            task.add_done_callback(_log_task_exception)
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -2509,7 +2595,10 @@ class DeepAgentsApp(App):
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
         from deepagents_code.mcp_tools import MCPConfigError
-        from deepagents_code.model_config import MissingCredentialsError
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+        )
 
         self._connecting = False
         self._connection_ready_event.set()
@@ -2524,6 +2613,11 @@ class DeepAgentsApp(App):
         self._server_startup_missing_credentials_provider = (
             event.error.provider
             if isinstance(event.error, MissingCredentialsError)
+            else None
+        )
+        self._server_startup_missing_provider_package = (
+            event.error
+            if isinstance(event.error, MissingProviderPackageError)
             else None
         )
         logger.error("Server startup failed: %s", event.error, exc_info=event.error)
@@ -2553,6 +2647,17 @@ class DeepAgentsApp(App):
                 "\n\nHint: run `/auth` to add a key for this provider, then "
                 "`/model <provider>:<model>` to retry startup. Or pick a "
                 "different provider directly with `/model`."
+            )
+        elif (
+            self._server_startup_missing_provider_package is not None
+            and self._server_kwargs is not None
+        ):
+            missing = self._server_startup_missing_provider_package
+            text += (
+                f"\n\nHint: install the package with "
+                f"`pip install {missing.package}`, then run "
+                f"`/model {missing.provider}:<model>` to retry. "
+                f"Or pick a different provider with `/model`."
             )
 
         async def _mount_failure() -> None:
@@ -8133,12 +8238,62 @@ class DeepAgentsApp(App):
             server_name = rest.split()[0]
             self._start_mcp_login(server_name)
             return
+        if subcommand == "reconnect":
+            force, valid = _parse_reconnect_args(rest)
+            if not valid:
+                await self._mount_message(
+                    AppMessage("Usage: /mcp reconnect [force]"),
+                )
+                return
+            await self._handle_mcp_reconnect_command(force=force)
+            return
         await self._mount_message(
             AppMessage(
                 f"Unknown `/mcp` subcommand: {subcommand!r}. "
-                "Try `/mcp` or `/mcp login <server>`.",
+                "Try `/mcp`, `/mcp login <server>`, or `/mcp reconnect`.",
             ),
         )
+
+    def _sync_pending_mcp_reconnect(self) -> None:
+        """Refresh the aggregate MCP reconnect flag from tracked reasons."""
+        self._pending_mcp_reconnect = self._pending_mcp_login_reconnect or bool(
+            self._pending_mcp_disable_reconnect_servers
+        )
+
+    async def _handle_mcp_reconnect_command(self, *, force: bool = False) -> None:
+        """Restart the server to pick up any deferred MCP login tokens.
+
+        No-op (with an inline notice) when nothing is pending so the
+        command is safe to run idempotently. `force=True` bypasses the
+        no-op guard via a confirmation modal — the escape hatch for
+        stale-cache or externally-edited-config cases where the server
+        needs a fresh load even though no login is queued in this
+        session.
+
+        Args:
+            force: When `True`, prompt to restart unconditionally even
+                if no MCP login is queued.
+        """
+        if self._pending_mcp_reconnect:
+            await self._restart_server_for_mcp_refresh("pending login")
+            return
+        if not force:
+            await self._mount_message(
+                AppMessage(
+                    "No MCP login is queued in this session. "
+                    "If you logged in during an earlier run, relaunch "
+                    "dcode to pick up the token. "
+                    "Run `/mcp reconnect force` to restart anyway.",
+                ),
+            )
+            return
+        from deepagents_code.widgets.mcp_reconnect import (
+            MCPReconnectForceConfirmScreen,
+        )
+
+        confirmed = await self._push_screen_wait(MCPReconnectForceConfirmScreen())
+        if confirmed:
+            await self._restart_server_for_mcp_refresh("forced reconnect")
 
     async def _show_mcp_viewer(self) -> None:
         """Show the MCP server/tool viewer as a modal screen.
@@ -8147,16 +8302,26 @@ class DeepAgentsApp(App):
         an `unauthenticated` header row to start in-TUI OAuth login) or
         with `None` (close without action).
         """
-        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+        from deepagents_code.widgets.mcp_viewer import (
+            MCP_VIEWER_RECONNECT_REQUEST,
+            MCPViewerScreen,
+        )
 
         screen = MCPViewerScreen(
             server_info=self._mcp_server_info or [],
             connecting=self._connecting,
+            pending_reconnect=self._pending_mcp_reconnect,
+            on_toggle_disable=self._toggle_mcp_server_disabled,
         )
         self._active_mcp_viewer = screen
 
         def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
+            if result == MCP_VIEWER_RECONNECT_REQUEST:
+                # `action_reconnect` gates dismiss on pending state, so
+                # `force=False` is correct.
+                self.call_later(self._reconnect_from_viewer_safe)
+                return
             if result:
                 # User picked an unauthenticated server — start login.
                 self._start_mcp_login(result)
@@ -8164,6 +8329,190 @@ class DeepAgentsApp(App):
                 self._chat_input.focus_input()
 
         self.push_screen(screen, handle_result)
+
+    async def _reconnect_from_viewer_safe(self) -> None:
+        """Run the post-viewer reconnect and surface unexpected failures.
+
+        `call_later` schedules this on Textual's message pump, which
+        logs but does not display exceptions. Re-checks pending state
+        so a flip between dismiss and the pump tick silently no-ops
+        instead of degrading to the CLI no-op notice.
+        """
+        if not self._pending_mcp_reconnect:
+            return
+        try:
+            await self._handle_mcp_reconnect_command()
+        except Exception as exc:
+            logger.exception("Reconnect after viewer dismiss failed")
+            await self._mount_message(
+                ErrorMessage(f"Reconnect failed: {type(exc).__name__}: {exc}"),
+            )
+
+    async def _toggle_mcp_server_disabled(self, server_name: str) -> None:
+        """Flip the persistent disabled state for `server_name` and signal a reconnect.
+
+        Looks up the current state from the loaded `MCPServerInfo` list so
+        the toggle is correct regardless of whether the server was disabled
+        in a previous session or by an external edit of `config.toml`.
+        Persists the new value, updates pending reconnect state, and
+        refreshes the open viewer in-place — keeping the cursor on the
+        same server header — so the user sees the updated status without
+        a screen-swap flicker.
+
+        Args:
+            server_name: Name of the MCP server to toggle. Empty names
+                are impossible by construction (the only caller pulls
+                from `MCPServerHeaderItem.server.name`) and silently
+                no-op as defense-in-depth. Unknown names — possible if
+                config was reloaded between the viewer opening and F2 —
+                surface a toast so the user knows F2 didn't take effect.
+        """
+        if not server_name:
+            logger.debug("Empty server name in disable toggle; ignoring")
+            return
+        known_names = {info.name for info in self._mcp_server_info or ()}
+        if server_name not in known_names:
+            logger.warning(
+                "Unknown server %r in disable toggle; ignoring",
+                server_name,
+            )
+            self.notify(
+                f"MCP server {server_name!r} is no longer configured.",
+                severity="warning",
+                markup=False,
+            )
+            return
+
+        from deepagents_code.mcp_disabled import (
+            is_server_disabled,
+            set_server_disabled,
+        )
+
+        currently_disabled = await asyncio.to_thread(is_server_disabled, server_name)
+        new_state = not currently_disabled
+        ok, detail = await asyncio.to_thread(
+            set_server_disabled,
+            server_name,
+            new_state,
+        )
+        if not ok:
+            message = f"Could not persist disabled state for {server_name!r}"
+            if detail:
+                message += f": {detail}"
+            else:
+                message += "."
+            self.notify(
+                message,
+                severity="error",
+                markup=False,
+            )
+            return
+
+        had_original = server_name in self._mcp_optimistic_original_server_info
+        verb = "disabled" if new_state else "enabled"
+        self._apply_optimistic_disabled_state(server_name, disabled=new_state)
+        if new_state:
+            self._pending_mcp_disable_reconnect_servers.add(server_name)
+            message = (
+                f"MCP server {server_name!r} {verb}. Run `/mcp reconnect` to apply."
+            )
+        else:
+            message = f"MCP server {server_name!r} {verb}."
+            if had_original:
+                self._pending_mcp_disable_reconnect_servers.discard(server_name)
+            else:
+                self._pending_mcp_disable_reconnect_servers.add(server_name)
+                message += " Run `/mcp reconnect` to apply."
+        self._sync_pending_mcp_reconnect()
+        self.notify(message, markup=False)
+        # Refresh the viewer in place so the new status glyph and the
+        # `Ctrl+R` reconnect hint appear without tearing the screen
+        # down. Persistence already succeeded and the user has seen
+        # the toast, so a failed in-place patch is non-fatal — but log
+        # with traceback so a real bug (e.g. signature drift,
+        # `DuplicateIds`) isn't masked the way `suppress(Exception)`
+        # would have masked it.
+        viewer = self._active_mcp_viewer
+        if viewer is not None:
+            try:
+                await viewer.apply_server_disable_toggle(
+                    self._mcp_server_info or [],
+                    toggled_server=server_name,
+                    pending_reconnect=self._pending_mcp_reconnect,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to refresh MCP viewer in place after toggle "
+                    "of %r; state has been persisted but the open "
+                    "viewer will not reflect it until reopened",
+                    server_name,
+                    exc_info=True,
+                )
+
+    def _apply_optimistic_disabled_state(
+        self,
+        server_name: str,
+        *,
+        disabled: bool,
+    ) -> None:
+        """Update `_mcp_server_info` so the viewer reflects the toggle immediately.
+
+        The authoritative state is recomputed on the next reconnect; this is
+        purely cosmetic so the user sees their action take effect without
+        waiting for the server restart.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            if disabled:
+                self._mcp_server_info = [
+                    MCPServerInfo(
+                        name=server_name,
+                        transport="unknown",
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                ]
+            return
+
+        updated: list[MCPServerInfo] = []
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            if disabled:
+                if entry.status != "disabled":
+                    self._mcp_optimistic_original_server_info[server_name] = entry
+                updated.append(
+                    MCPServerInfo(
+                        name=entry.name,
+                        transport=entry.transport,
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                )
+            else:
+                original = self._mcp_optimistic_original_server_info.pop(
+                    server_name,
+                    None,
+                )
+                if original is not None:
+                    updated.append(original)
+                else:
+                    # Best-effort re-enable when the app started with this
+                    # server disabled. Keep `status="disabled"` so the muted
+                    # pause glyph is shown instead of a red error badge —
+                    # the real status will be recomputed by the reconnect.
+                    updated.append(
+                        MCPServerInfo(
+                            name=entry.name,
+                            transport=entry.transport,
+                            status="disabled",
+                            error="Re-enabled — run `/mcp reconnect` to load.",
+                        ),
+                    )
+        self._mcp_server_info = updated
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Surface login worker failures that escaped the inner error handling."""
@@ -8360,17 +8709,125 @@ class DeepAgentsApp(App):
         screen.finish(
             success=True,
             message=(
-                f"Logged in to {server_name!r}. Restarting server to load new tools…"
+                f"Logged in to {server_name!r}. Reconnect required to load new tools."
             ),
         )
         await asyncio.wait_for(outcome_future, timeout=5.0)
 
-        # Re-run the in-TUI restart so the LangGraph server rebuilds MCP
-        # tools with the freshly persisted token. The existing
-        # `_start_server_background` worker posts `ServerReady`, which the
-        # message handler routes back into MCP metadata, `/mcp` viewer,
-        # and welcome-banner refresh — no duplicate refresh code here.
-        await self._restart_server_for_mcp_refresh(server_name)
+        # Ask the user whether to restart now or defer. Deferring lets them
+        # authenticate against additional MCP servers before paying the
+        # restart cost. `/mcp reconnect` (or another login confirmed with
+        # "reconnect") drives the restart later.
+        try:
+            await self._prompt_mcp_reconnect(server_name)
+        except Exception:
+            # The token is already on disk — surface the failure and
+            # remember the pending state so `/mcp reconnect` still works
+            # even though the prompt never reached the user.
+            logger.exception(
+                "MCP reconnect prompt for %r raised after successful login",
+                server_name,
+            )
+            self._pending_mcp_login_reconnect = True
+            self._sync_pending_mcp_reconnect()
+            self.notify(
+                f"Logged in to {server_name!r} but the reconnect prompt "
+                "failed. Run `/mcp reconnect` when ready to load the new tools.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+
+    async def _prompt_mcp_reconnect(self, server_name: str) -> None:
+        """Ask whether to restart now or defer after an MCP login succeeds.
+
+        Args:
+            server_name: Server whose login just completed — surfaced in the
+                modal title and downstream messages only.
+        """
+        from deepagents_code.widgets.mcp_reconnect import (
+            MCPReconnectPromptScreen,
+            ReconnectChoice,
+        )
+
+        choice_future: asyncio.Future[ReconnectChoice | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        def _on_dismiss(result: ReconnectChoice | None) -> None:
+            if not choice_future.done():
+                choice_future.set_result(result)
+
+        choice: ReconnectChoice | None
+        try:
+            self.push_screen(MCPReconnectPromptScreen(server_name), _on_dismiss)
+        except Exception:
+            # Modal could not be mounted (e.g. another modal hijacked the
+            # stack). Fall back to defer so the login isn't silently lost.
+            logger.exception("Failed to mount MCP reconnect prompt for %r", server_name)
+            choice = "later"
+        else:
+            try:
+                # Watchdog: guard against a screen that never resolves
+                # (compose crash, programmatic teardown that skips the
+                # callback). 10 minutes is well past any human latency
+                # but bounds the worker if the modal is genuinely broken.
+                choice = await asyncio.wait_for(choice_future, timeout=600.0)
+            except TimeoutError:
+                logger.warning(
+                    "MCP reconnect prompt for %r timed out; defaulting to defer",
+                    server_name,
+                )
+                choice = "later"
+
+        if choice == "reconnect":
+            self._pending_mcp_login_reconnect = False
+            self._pending_mcp_disable_reconnect_servers.clear()
+            self._sync_pending_mcp_reconnect()
+            await self._restart_server_for_mcp_refresh(server_name)
+            return
+
+        # Defer: keep the running server in place so the user can authenticate
+        # with additional MCP servers. The token is on disk either way, so
+        # remember the pending state regardless of how the modal closed.
+        # Only notify on an explicit "later" choice — `None` (programmatic
+        # dismiss / timeout) stays quiet to avoid telling the user about
+        # an action they didn't take.
+        self._pending_mcp_login_reconnect = True
+        self._sync_pending_mcp_reconnect()
+        if choice == "later":
+            self.notify(
+                f"Logged in to {server_name!r}. Run `/mcp reconnect` when ready "
+                "to load the new tools.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
+            # Defer is the "log into another server first" path, so route the
+            # user back to the switcher where the next unauthenticated server
+            # is one click away. Timeout and push_screen-failure fallbacks
+            # also land here (both set `choice = "later"`), so they share
+            # both the notify above and this navigation — acceptable
+            # degradation since the viewer push is itself best-effort.
+            try:
+                await self._show_mcp_viewer()
+            except Exception:
+                # Broad catch: real failures here are Textual mount/stack
+                # errors plus the deferred SDK import — none worth crashing
+                # the worker for, since the token is already on disk.
+                # Surface a toast so the user knows why the switcher didn't
+                # come back; without it, the "logged in" notify is the only
+                # signal and the missing viewer looks like a UI hang.
+                logger.exception(
+                    "Failed to reopen MCP viewer after deferring reconnect for %r",
+                    server_name,
+                )
+                self.notify(
+                    "Couldn't reopen the MCP viewer — run `/mcp` to open it manually.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
 
     async def _restart_server_for_mcp_refresh(self, server_name: str) -> None:
         """Restart the app-owned LangGraph server to pick up new MCP tokens.
@@ -8383,6 +8840,15 @@ class DeepAgentsApp(App):
             server_name: Server whose login just completed — used in user
                 messages only.
         """
+        # Clear the pending flag up front so deferred state can't leak
+        # past a no-op early return — e.g. the server died between defer
+        # and `/mcp reconnect`. The token is on disk; the user must
+        # relaunch dcode to pick it up, and `/mcp reconnect` shouldn't
+        # keep claiming there's something to do.
+        self._pending_mcp_login_reconnect = False
+        self._pending_mcp_disable_reconnect_servers.clear()
+        self._sync_pending_mcp_reconnect()
+
         server_proc = self._server_proc
         if self._server_kwargs is None or server_proc is None:
             self.notify(
@@ -8886,6 +9352,7 @@ class DeepAgentsApp(App):
 
         self._server_startup_error = None
         self._server_startup_missing_credentials_provider = None
+        self._server_startup_missing_provider_package = None
         self._server_startup_deferred = False
         self._connecting = True
         try:

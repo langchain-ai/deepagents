@@ -2498,17 +2498,23 @@ class TestCreateModelViaInitImportError:
     @patch("langchain.chat_models.init_chat_model")
     def test_missing_package_error(self, mock_init: Mock) -> None:
         """Shows install hint when provider package is not installed."""
+        from deepagents_code.model_config import MissingProviderPackageError
+
         mock_init.side_effect = ImportError(
             "No module named 'langchain_nvidia_ai_endpoints'"
         )
         with (
             patch("importlib.util.find_spec", return_value=None),
             pytest.raises(
-                ModelConfigError,
+                MissingProviderPackageError,
                 match="Missing package for provider 'nvidia'",
-            ),
+            ) as exc_info,
         ):
             _create_model_via_init("nemotron", "nvidia", {})
+        assert exc_info.value.provider == "nvidia"
+        assert exc_info.value.package == "langchain-nvidia-ai-endpoints"
+        # Subclasses ModelConfigError so existing handlers keep working.
+        assert isinstance(exc_info.value, ModelConfigError)
 
     @patch("langchain.chat_models.init_chat_model")
     def test_installed_but_broken_import(self, mock_init: Mock) -> None:

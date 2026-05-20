@@ -158,6 +158,15 @@ class TestMCPCommand:
         keywords = mcp_cmd.hidden_keywords.split()
         assert "oauth" in keywords or "authenticate" in keywords
 
+    def test_mcp_argument_hint_advertises_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        assert "reconnect" in mcp_cmd.argument_hint
+
+    def test_mcp_hidden_keywords_cover_reconnect(self) -> None:
+        mcp_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/mcp")
+        keywords = mcp_cmd.hidden_keywords.split()
+        assert "reconnect" in keywords
+
 
 class TestCopyCommand:
     """Validate the `/copy` entry specifically."""

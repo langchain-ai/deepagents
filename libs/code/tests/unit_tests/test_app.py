@@ -167,6 +167,109 @@ class TestInitialPromptOnMount:
 
         assert submitted == [("code-review", "review this diff", None)]
 
+    async def test_server_ready_refreshes_status_bar_model(self) -> None:
+        """ServerReady should push current settings into the StatusBar model display.
+
+        Regression for the case where `/model` recovers from a failed startup
+        (`ModelConfigError`) — the status bar was only seeded at mount and
+        never refreshed when `_retry_startup_with_model` swapped the provider.
+        `spec=StatusBar` makes the test fail if `set_model`'s keyword-only
+        signature drifts.
+        """
+        from deepagents_code.widgets.status import StatusBar
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        status_bar = MagicMock(spec=StatusBar)
+        app._status_bar = status_bar
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_provider = "anthropic"
+            mock_settings.model_name = "claude-opus-4-7"
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        status_bar.set_model.assert_called_once_with(
+            provider="anthropic", model="claude-opus-4-7"
+        )
+
+    async def test_server_ready_warns_when_status_bar_missing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missing `_status_bar` at ServerReady is a defect — surface it.
+
+        Mirrors the welcome-banner branch which logs on `NoMatches`.
+        """
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        app._status_bar = None
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        assert any(
+            "Status bar not found" in record.message for record in caplog.records
+        )
+
+    async def test_server_ready_warns_when_settings_model_missing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Missing model identity at ServerReady should warn, not silently blank."""
+        from deepagents_code.widgets.status import StatusBar
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        app._connecting = True
+        app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # type: ignore[assignment]
+        app.call_after_refresh = lambda cb: cb()  # type: ignore[assignment]
+        status_bar = MagicMock(spec=StatusBar)
+        app._status_bar = status_bar
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+        ):
+            mock_settings.model_provider = None
+            mock_settings.model_name = None
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=[],
+                )
+            )
+            for _ in range(3):
+                await asyncio.sleep(0)
+
+        # Still calls set_model with the falsy-coerced strings so the widget
+        # doesn't render stale state — but emits a warning so the misconfig
+        # isn't invisible.
+        status_bar.set_model.assert_called_once_with(provider="", model="")
+        assert any(
+            "Settings missing model identity" in record.message
+            for record in caplog.records
+        )
+
     async def test_deferred_start_preserves_initial_prompt_until_server_ready(
         self,
     ) -> None:
@@ -5076,6 +5179,133 @@ class TestDeferredActions:
 
             assert app._server_startup_error == "RuntimeError: RuntimeError"
 
+    async def test_server_failure_missing_package_records_recovery_hint(
+        self,
+    ) -> None:
+        """`MissingProviderPackageError` stashes the exception and renders a hint.
+
+        Asserts both that the slot carries the exception itself (so the hint
+        builder gets named `.provider`/`.package` access) and that the hint
+        text actually lands in the mounted `ErrorMessage` widget — catching a
+        regression where the `elif` branch is dropped or `provider`/`package`
+        are swapped.
+        """
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_server_kwargs is not None` gates the hint — emulate a startup
+            # path where the user has a model selected.
+            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'fireworks'. "
+                "Install: pip install langchain-fireworks",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=error)
+            )
+            # Mount runs as a fire-and-forget task; let it land.
+            await pilot.pause()
+
+            stashed = app._server_startup_missing_provider_package
+            assert stashed is error
+            assert stashed.provider == "fireworks"
+            assert stashed.package == "langchain-fireworks"
+            # Credentials slot is a different recovery path; should stay clear.
+            assert app._server_startup_missing_credentials_provider is None
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert "pip install langchain-fireworks" in rendered
+            assert "/model fireworks:<model>" in rendered
+
+    async def test_retry_startup_clears_missing_package_slot(self) -> None:
+        """`_retry_startup_with_model` must clear the package recovery slot.
+
+        Mirrors the credentials-slot reset directly above it. A regression
+        that drops the reset would leave a stale `pip install` hint visible
+        after a successful retry, or render the wrong hint on the next failure.
+        """
+        from deepagents_code.model_config import (
+            MissingProviderPackageError,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "fireworks:fake"}  # type: ignore[typeddict-item]
+            app._server_startup_error = "stale"
+            app._server_startup_missing_provider_package = MissingProviderPackageError(
+                "stale",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app._server_startup_missing_credentials_provider = "stale"
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # type: ignore[assignment]
+            app.run_worker = MagicMock()  # type: ignore[assignment]
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.UNKNOWN,
+                    provider="anthropic",
+                    detail="credentials unknown",
+                ),
+            ):
+                await app._retry_startup_with_model("anthropic:claude-opus-4-7")
+
+            assert app._server_startup_missing_provider_package is None
+            assert app._server_startup_missing_credentials_provider is None
+            assert app._server_startup_error is None
+
+    async def test_server_failure_missing_credentials_clears_package_slot(
+        self,
+    ) -> None:
+        """A `MissingCredentialsError` failure must clear the package slot.
+
+        Guards the mutual-exclusion invariant: the two recovery hints route
+        through separate `if`/`elif` branches, so stale state from a prior
+        retry-failure must never bleed into the next failure type.
+        """
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "openai:gpt-4o"}  # type: ignore[typeddict-item]
+            # Seed a prior package failure so we can assert the next failure
+            # clears it.
+            app._server_startup_missing_provider_package = MissingProviderPackageError(
+                "stale",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            app._connecting = True
+
+            error = MissingCredentialsError(
+                "OPENAI_API_KEY is not set",
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+            )
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=error)
+            )
+
+            assert app._server_startup_missing_provider_package is None
+            assert app._server_startup_missing_credentials_provider == "openai"
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()
@@ -8411,6 +8641,183 @@ class TestMCPLoginCommand:
                 await pilot.pause()
             start_login.assert_called_once_with("github")
 
+    def test_optimistic_reenable_restores_pre_disable_server_info(self) -> None:
+        """Re-enabling before reconnect restores the server's original viewer state."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=True)
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0].status == "disabled"
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=False)
+
+        assert app._mcp_server_info == [original]
+        assert app._mcp_optimistic_original_server_info == {}
+
+    async def test_disable_then_reenable_before_reconnect_clears_pending_notice(
+        self,
+    ) -> None:
+        """Undoing a disable before reconnect does not tell the user to reconnect."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    side_effect=[False, True],
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(True, None),
+                ),
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("filesystem")
+                await app._toggle_mcp_server_disabled("filesystem")
+
+        assert app._pending_mcp_reconnect is False
+        assert notify.call_count == 2
+        assert "Run `/mcp reconnect`" in notify.call_args_list[0].args[0]
+        assert notify.call_args_list[1].args[0] == "MCP server 'filesystem' enabled."
+
+    async def test_toggle_disable_notify_surfaces_persistence_error(self) -> None:
+        """A failed persist surfaces the underlying detail and skips state flip."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(False, "could not write /tmp/config.toml"),
+                ),
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("filesystem")
+
+        notify.assert_called_once()
+        message = notify.call_args.args[0]
+        assert "filesystem" in message
+        assert "could not write /tmp/config.toml" in message
+        assert notify.call_args.kwargs.get("severity") == "error"
+        assert notify.call_args.kwargs.get("markup") is False
+        # In-memory state must not flip on persistence failure.
+        assert app._mcp_server_info == [original]
+        assert app._pending_mcp_reconnect is False
+
+    async def test_server_ready_refreshes_open_viewer_via_task(self) -> None:
+        """A server-ready event refreshes an already-open MCP viewer.
+
+        Covers the `asyncio.create_task(_refresh_viewer())` path added
+        when `refresh_server_info` became async: without it, a user who
+        opened `/mcp` before the server finished starting would stare at
+        the connecting placeholder forever.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+
+        ready_info = [
+            MCPServerInfo(
+                name="filesystem",
+                transport="stdio",
+                tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+            )
+        ]
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            viewer = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(viewer)
+            app._active_mcp_viewer = viewer
+            await pilot.pause()
+
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=ready_info,
+                )
+            )
+            for _ in range(3):
+                await pilot.pause()
+
+            assert viewer._server_info == ready_info
+            assert viewer._connecting is False
+
+    async def test_toggle_disable_rejects_empty_server_name(self) -> None:
+        """An empty server name must not reach the persistence layer."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("")
+            set_disabled.assert_not_called()
+            notify.assert_not_called()
+
+    async def test_toggle_disable_rejects_unknown_server_name(self) -> None:
+        """A server name absent from the loaded config notifies and stops.
+
+        Surfaces the rejection to the user via `notify` (rather than a
+        silent log) so an F2 that does nothing isn't mistaken for a
+        toggle that succeeded — covers the config-reload race where the
+        viewer holds a stale server reference.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        known = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[known])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("stranger")
+            set_disabled.assert_not_called()
+            notify.assert_called_once()
+            args, kwargs = notify.call_args
+            assert "stranger" in args[0]
+            assert kwargs.get("severity") == "warning"
+            assert kwargs.get("markup") is False
+
     async def test_mcp_login_rejects_while_connecting(self) -> None:
         """`_connecting=True` prevents login until the server is ready."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -8608,3 +9015,437 @@ class TestMCPLoginCommand:
             rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
             assert sentinel not in rendered
             assert "_FakeMcpError" in rendered or "FakeMcpError" in rendered
+
+    async def test_mcp_login_success_invokes_reconnect_prompt(self) -> None:
+        """A successful login routes through `_prompt_mcp_reconnect`.
+
+        The worker no longer auto-restarts the LangGraph server: the user
+        is given the choice via a modal so multiple back-to-back logins
+        can be batched into a single reconnect.
+        """
+        from pathlib import Path as _Path
+
+        from deepagents_code.mcp_login_service import (
+            ConfigResolution,
+            ServerSelection,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+
+            resolution = ConfigResolution(
+                config={"mcpServers": {"notion": {"type": "http", "auth": "oauth"}}},
+                used_paths=(_Path("/tmp/mcp.json"),),
+            )
+            selection = ServerSelection(
+                server_name="notion",
+                server_config={
+                    "type": "http",
+                    "auth": "oauth",
+                    "url": "https://example",
+                },
+            )
+
+            async def _ok_login(**_: object) -> None:
+                await asyncio.sleep(0)
+
+            with (
+                patch(
+                    "deepagents_code.mcp_login_service.resolve_mcp_config",
+                    return_value=resolution,
+                ),
+                patch(
+                    "deepagents_code.mcp_login_service.select_server",
+                    return_value=selection,
+                ),
+                patch("deepagents_code.mcp_auth.login", _ok_login),
+                patch.object(app, "_prompt_mcp_reconnect", new=AsyncMock()) as prompt,
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+            ):
+                await app._run_mcp_login_worker("notion")
+                await pilot.pause()
+
+            prompt.assert_awaited_once_with("notion")
+            restart.assert_not_called()
+
+    async def test_prompt_mcp_reconnect_restart_choice_restarts(self) -> None:
+        """Choosing `reconnect` triggers `_restart_server_for_mcp_refresh`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("reconnect")
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+
+            restart.assert_awaited_once_with("notion")
+            assert app._pending_mcp_reconnect is False
+
+    async def test_prompt_mcp_reconnect_later_choice_defers(self) -> None:
+        """Choosing `later` marks the reconnect pending and reopens the switcher.
+
+        The viewer is the obvious launchpad for the next login, so deferring
+        routes the user back there instead of dropping them at the chat input.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._pending_mcp_reconnect is False
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("later")
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "notify") as notify,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+
+            restart.assert_not_called()
+            assert app._pending_mcp_reconnect is True
+            notify.assert_called_once()
+            message = notify.call_args.args[0]
+            assert "notion" in message
+            assert "/mcp reconnect" in message
+            show_viewer.assert_awaited_once()
+
+    async def test_mcp_reconnect_subcommand_restarts_when_pending(self) -> None:
+        """`/mcp reconnect` triggers a restart when a login is pending."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._handle_command("/mcp reconnect")
+                await pilot.pause()
+            restart.assert_awaited_once()
+
+    async def test_mcp_reconnect_subcommand_noop_when_not_pending(self) -> None:
+        """`/mcp reconnect` surfaces a notice and does nothing when idle."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._pending_mcp_reconnect is False
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._handle_command("/mcp reconnect")
+                await pilot.pause()
+            restart.assert_not_called()
+            # The notice must not claim the tool set is fresh — pending
+            # state is session-scoped, so prior-run logins still need a
+            # full relaunch.
+            assert any(
+                "No MCP login is queued" in str(w._content)
+                and "relaunch" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_mcp_reconnect_force_confirm_restarts(self) -> None:
+        """`/mcp reconnect force` restarts after the confirm modal accepts."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._pending_mcp_reconnect is False
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(
+                    app, "_push_screen_wait", new=AsyncMock(return_value=True)
+                ),
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_awaited_once_with("forced reconnect")
+
+    async def test_mcp_reconnect_force_cancel_skips_restart(self) -> None:
+        """`/mcp reconnect force` does nothing when the confirm modal is cancelled."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(
+                    app, "_push_screen_wait", new=AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_not_called()
+
+    async def test_mcp_reconnect_force_skips_confirm_when_pending(self) -> None:
+        """`/mcp reconnect force` restarts directly when a login is queued."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "_push_screen_wait", new=AsyncMock()) as push_screen,
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_awaited_once_with("pending login")
+            push_screen.assert_not_called()
+
+    async def test_mcp_reconnect_invalid_arg_surfaces_usage(self) -> None:
+        """Invalid args route to the usage notice without invoking the handler.
+
+        Pure parser coverage lives in `TestParseReconnectArgs`; this test
+        only guards the wire from invalid parse → usage message.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_handle_mcp_reconnect_command", new=AsyncMock()
+            ) as handler:
+                await app._handle_command("/mcp reconnect force extra")
+                await pilot.pause()
+            handler.assert_not_called()
+            assert any(
+                "Usage: /mcp reconnect" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_viewer_ctrl_r_routes_to_reconnect_handler(self) -> None:
+        """End-to-end: Ctrl+R in the viewer triggers the restart path.
+
+        Guards the wire from `MCPViewerScreen` (which dismisses with
+        `MCP_VIEWER_RECONNECT_REQUEST`) through `_show_mcp_viewer`'s
+        `handle_result` callback and the deferred
+        `_reconnect_from_viewer_safe` coroutine. A regression that
+        changes the sentinel string or drops the `call_later` would
+        show up here even though the unit tests pass.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+            restart.assert_awaited_once_with("pending login")
+
+    async def test_prompt_mcp_reconnect_pilot_driven_happy_path(self) -> None:
+        """End-to-end: real modal mounts, `enter` keypress, restart fires.
+
+        Guards the wiring between `_prompt_mcp_reconnect`, the
+        `MCPReconnectPromptScreen`, and `_restart_server_for_mcp_refresh`
+        that the patch-based tests can't catch (they bypass the modal).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                prompt_task = asyncio.create_task(app._prompt_mcp_reconnect("notion"))
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                await prompt_task
+            restart.assert_awaited_once_with("notion")
+
+    async def test_prompt_mcp_reconnect_pilot_driven_escape_reopens_viewer(
+        self,
+    ) -> None:
+        """End-to-end: real Esc against `DeepAgentsApp` defers and reopens.
+
+        Guards the full chain that patch-based tests bypass:
+        `DeepAgentsApp.action_interrupt` (priority Esc binding) →
+        dispatch to `MCPReconnectPromptScreen.action_cancel` →
+        `dismiss("later")` → `_show_mcp_viewer`. A regression in any
+        link — removing `action_cancel`, the app routing the modal
+        differently, or the navigation never wiring up — fails here.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer:
+                prompt_task = asyncio.create_task(
+                    app._prompt_mcp_reconnect("notion"),
+                )
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                await prompt_task
+            assert app._pending_mcp_reconnect is True
+            show_viewer.assert_awaited_once()
+
+    async def test_prompt_mcp_reconnect_none_dismiss_silent(self) -> None:
+        """A `None` dismiss (programmatic) defers without a user notice.
+
+        The user didn't pick `later`, so we don't claim they did; the
+        token is still on disk, so we keep the pending flag set.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback(None)
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "notify") as notify,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()) as show_viewer,
+            ):
+                await app._prompt_mcp_reconnect("notion")
+
+            restart.assert_not_called()
+            assert app._pending_mcp_reconnect is True
+            notify.assert_not_called()
+            # `None` is not an explicit user choice — don't navigate.
+            show_viewer.assert_not_called()
+
+    async def test_prompt_mcp_reconnect_push_screen_failure_defers(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`push_screen` raising falls back to defer so the login isn't lost.
+
+        The fallback also routes through the new "reopen viewer" path
+        (since the fallback sets `choice = "later"`), which tries to push
+        the viewer and hits the same patched failure. The outer try/except
+        around `_show_mcp_viewer` must swallow that secondary failure and
+        log it — anything else would crash the worker after the token
+        has already been persisted to disk.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "push_screen",
+                    side_effect=RuntimeError("modal mount failed"),
+                ),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "notify") as notify,
+                caplog.at_level("ERROR", logger="deepagents_code.app"),
+            ):
+                await app._prompt_mcp_reconnect("notion")
+            restart.assert_not_called()
+            assert app._pending_mcp_reconnect is True
+            assert any(
+                "Failed to reopen MCP viewer" in record.getMessage()
+                for record in caplog.records
+            )
+            # Both notifies fire: the "logged in / run /mcp reconnect"
+            # primary and the secondary "couldn't reopen the MCP viewer"
+            # warning that closes the silent-failure gap.
+            messages = [call.args[0] for call in notify.call_args_list]
+            assert any("Run `/mcp reconnect`" in m for m in messages)
+            assert any("Couldn't reopen the MCP viewer" in m for m in messages)
+
+    async def test_pending_reconnect_coalesces_multiple_defers(self) -> None:
+        """Two deferred logins resolve via a single `/mcp reconnect`.
+
+        This is the PR's core motivation: back-to-back auths shouldn't
+        each pay a restart cost. After both defers, exactly one restart
+        fires when the user runs `/mcp reconnect`.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _push_screen(_screen: object, callback: Any) -> None:  # noqa: ANN401  # callback signature matches Textual's variant
+                callback("later")
+
+            with (
+                patch.object(app, "push_screen", side_effect=_push_screen),
+                patch.object(app, "notify"),
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+            ):
+                await app._prompt_mcp_reconnect("notion")
+                await app._prompt_mcp_reconnect("github")
+                assert app._pending_mcp_reconnect is True
+                restart.assert_not_called()
+
+                await app._handle_command("/mcp reconnect")
+                await pilot.pause()
+            restart.assert_awaited_once()
+
+    async def test_restart_for_mcp_refresh_clears_pending_flag(self) -> None:
+        """`_restart_server_for_mcp_refresh` clears `_pending_mcp_reconnect`.
+
+        Guards the flag reset against accidental removal: without it,
+        `/mcp reconnect` would keep claiming a login is queued after
+        every restart.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            # Force the early-return branch: no server proc means the
+            # method bails before touching restart state but should
+            # still clear the flag so we don't get stuck.
+            assert app._server_proc is None
+            await app._restart_server_for_mcp_refresh("notion")
+            assert app._pending_mcp_reconnect is False
+
+
+class TestParseReconnectArgs:
+    """Pure-function tests for `/mcp reconnect` argument parsing."""
+
+    @pytest.mark.parametrize("token", ["force", "--force", "-f", "FORCE", "Force"])
+    def test_force_spellings(self, token: str) -> None:
+        """All accepted spellings and case variants set `force=True`."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args(token) == (True, True)
+
+    def test_empty_is_valid_no_force(self) -> None:
+        """No args is the idempotent path."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args("") == (False, True)
+
+    @pytest.mark.parametrize(
+        "args",
+        ["bogus", "force extra", "--force trailing", "force-stop"],
+    )
+    def test_invalid_args_reject(self, args: str) -> None:
+        """Unknown tokens and trailing-token-after-force route to usage."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args(args) == (False, False)

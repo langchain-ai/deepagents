@@ -36,8 +36,9 @@ regenerate after editing the registry.
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version |
 
-## Hidden (1)
+## Hidden (2)
 
-Hidden debug commands not exposed in autocomplete or help. See the `HIDDEN_DEBUG` docstring in the registry for context.
+Hidden commands not exposed in autocomplete or help. See the `HIDDEN_COMMANDS` docstring in the registry for context.
 
 - `/debug-error`
+- `/restart`

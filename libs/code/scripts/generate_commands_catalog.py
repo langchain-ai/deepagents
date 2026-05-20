@@ -19,7 +19,7 @@ sys.path.insert(0, str(_CODE_DIR))
 
 from deepagents_code.command_registry import (  # noqa: E402
     COMMANDS,
-    HIDDEN_DEBUG,
+    HIDDEN_COMMANDS,
 )
 
 _OUTPUT = _CODE_DIR / "COMMANDS.md"
@@ -36,7 +36,11 @@ regenerate after editing the registry.
 
 
 def _fmt_cell(text: str) -> str:
-    """Escape pipes so cell content is table-safe."""
+    """Escape pipes so cell content is table-safe.
+
+    Returns:
+        The text with `|` characters escaped, or an empty string if `text` is falsy.
+    """
     return text.replace("|", "\\|") if text else ""
 
 
@@ -45,36 +49,46 @@ def generate() -> str:
     lines: list[str] = [_HEADER, ""]
 
     public = sorted(COMMANDS, key=lambda c: c.name)
-    lines.append(f"## Public ({len(public)})\n")
-    lines.append("| Command | Aliases | Description |")
-    lines.append("| --- | --- | --- |")
+    lines.extend(
+        [
+            f"## Public ({len(public)})\n",
+            "| Command | Aliases | Description |",
+            "| --- | --- | --- |",
+        ]
+    )
     for cmd in public:
         aliases = ", ".join(f"`{a}`" for a in cmd.aliases) if cmd.aliases else ""
         lines.append(
             "| "
             + " | ".join(
-                _fmt_cell(c)
-                for c in (f"`{cmd.name}`", aliases, cmd.description)
+                _fmt_cell(c) for c in (f"`{cmd.name}`", aliases, cmd.description)
             )
             + " |"
         )
     lines.append("")
 
-    hidden = sorted(HIDDEN_DEBUG)
-    lines.append(f"## Hidden ({len(hidden)})\n")
-    lines.append(
-        "Hidden debug commands not exposed in autocomplete or help. See the "
-        "`HIDDEN_DEBUG` docstring in the registry for context.\n"
+    hidden = sorted(HIDDEN_COMMANDS)
+    lines.extend(
+        [
+            f"## Hidden ({len(hidden)})\n",
+            (
+                "Hidden commands not exposed in autocomplete or help. See the "
+                "`HIDDEN_COMMANDS` docstring in the registry for context.\n"
+            ),
+        ]
     )
-    for name in hidden:
-        lines.append(f"- `{name}`")
+    lines.extend(f"- `{name}`" for name in hidden)
     lines.append("")
 
     return "\n".join(lines)
 
 
 def main() -> None:
-    """Entry point."""
+    """Entry point.
+
+    Raises:
+        SystemExit: When `--check` is passed and `COMMANDS.md` is missing or stale.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--check",

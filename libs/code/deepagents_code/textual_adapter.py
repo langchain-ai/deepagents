@@ -1307,7 +1307,7 @@ async def execute_task_textual(
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     # Model call already completed (HITL interrupt fires after
-                    # the model node); `TokenStateMiddleware.aafter_model`
+                    # the model node); `TokenStateMiddleware.after_model`
                     # persisted the count, so only refresh UI here.
                     _report_tokens(
                         adapter,
@@ -1335,7 +1335,7 @@ async def execute_task_textual(
         return turn_stats
 
     # Update token count and return stats. Persistence is handled inside the
-    # graph by `TokenStateMiddleware.aafter_model`, so this only refreshes UI.
+    # graph by `TokenStateMiddleware.after_model`, so this only refreshes UI.
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     _report_tokens(
         adapter,
@@ -1409,7 +1409,7 @@ async def _handle_interrupt_cleanup(
             )
             cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
             # Piggy-back the latest token count on this already-required write
-            # instead of issuing a separate `aupdate_state`. `aafter_model` never
+            # instead of issuing a separate `aupdate_state`. `after_model` never
             # ran on the partial turn, so without this the count would be stale
             # on resume.
             captured_total = captured_input_tokens + captured_output_tokens
@@ -1459,7 +1459,7 @@ def _report_tokens(
 ) -> None:
     """Refresh the token-count UI display.
 
-    Persistence into graph state is owned by `TokenStateMiddleware.aafter_model`
+    Persistence into graph state is owned by `TokenStateMiddleware.after_model`
     (normal turns), `_handle_offload` (offload turns), and the interrupt-cleanup
     `aupdate_state` write (partial turns) — never this helper.
 

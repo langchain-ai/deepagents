@@ -66,7 +66,7 @@ class TestExtractContextTokens:
 
 
 class TestAfterModelHook:
-    """Tests for the `aafter_model` persistence hook."""
+    """Tests for the `after_model` persistence hook."""
 
     async def test_writes_context_tokens_from_last_ai_message(self) -> None:
         middleware = TokenStateMiddleware()
@@ -83,13 +83,13 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = await middleware.aafter_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
         assert result == {"_context_tokens": 1700}
 
     async def test_returns_none_when_no_ai_message(self) -> None:
         middleware = TokenStateMiddleware()
         state: dict[str, Any] = {"messages": [HumanMessage(content="hi")]}
-        result = await middleware.aafter_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
         assert result is None
 
     async def test_returns_none_when_last_ai_lacks_usage(self) -> None:
@@ -100,12 +100,12 @@ class TestAfterModelHook:
                 AIMessage(content="no usage info"),
             ],
         }
-        result = await middleware.aafter_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
         assert result is None
 
     async def test_handles_empty_messages(self) -> None:
         middleware = TokenStateMiddleware()
-        result = await middleware.aafter_model({"messages": []}, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model({"messages": []}, runtime=None)  # type: ignore[arg-type]
         assert result is None
 
     async def test_skips_intervening_tool_messages(self) -> None:
@@ -135,7 +135,7 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        result = await middleware.aafter_model(state, runtime=None)  # type: ignore[arg-type]
+        result = middleware.after_model(state, runtime=None)  # type: ignore[arg-type]
         assert result == {"_context_tokens": 550}
 
 

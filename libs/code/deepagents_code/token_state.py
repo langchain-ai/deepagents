@@ -63,7 +63,7 @@ class TokenStateMiddleware(AgentMiddleware[TokenTrackingState, ContextT]):
 
     state_schema = TokenTrackingState
 
-    async def aafter_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
+    def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
         self,
         state: TokenTrackingState,
         runtime: Runtime[ContextT],  # noqa: ARG002

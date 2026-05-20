@@ -965,8 +965,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
     ) -> None:
         """Scroll so `widget.region.bottom` aligns with the viewport bottom.
 
-        Used when jumping upward to the previous row: lands the user at
-        the bottom of that row so the next `Up` press immediately
+        Used when jumping upward into a row taller than the viewport: lands
+        the user at the bottom of that row so the next `Up` press immediately
         line-scrolls upward through its content rather than jumping again.
         """
         scroll = self.query_one(".mcp-list", VerticalScroll)
@@ -976,14 +976,44 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if delta:
             scroll.scroll_relative(y=delta, animate=False)
 
+    def _reveal_selection(
+        self,
+        widget: MCPToolItem | MCPServerHeaderItem,
+        *,
+        direction: int,
+    ) -> None:
+        """Bring `widget` into view after a selection change.
+
+        Only force-anchors rows taller than the viewport — these need a
+        deliberate edge alignment so subsequent arrow presses can line-scroll
+        through the row's body. For normal rows, defers to `scroll_visible`,
+        which is a no-op when the row is already fully visible. Matches
+        `/model` switcher behavior where short, in-view rows don't tug the
+        viewport on every keypress.
+
+        Args:
+            widget: The newly selected row.
+            direction: `+1` when moving down (anchor top for tall rows),
+                `-1` when moving up (anchor bottom for tall rows).
+        """
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        if widget.region.height > scroll.region.height:
+            if direction > 0:
+                widget.scroll_visible(top=True)
+            else:
+                self._scroll_widget_bottom_to_view(widget)
+        else:
+            widget.scroll_visible()
+
     def action_move_up(self) -> None:
         """Smart up: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's top edge is already inside the viewport, jump
-        to the previous row (header or tool) and pin its **bottom** to the
-        viewport so the next `Up` resumes line-stepping through that row.
-        Otherwise scroll the viewport up by one row. `Tab` / `Shift+Tab`
-        skip the smart check AND skip header rows (see `action_jump_up`).
+        to the previous row (header or tool). For rows taller than the
+        viewport, pin the new selection's **bottom** to the viewport so the
+        next `Up` resumes line-stepping through that row; otherwise just
+        ensure the row is visible. `Tab` / `Shift+Tab` skip the smart check
+        AND skip header rows (see `action_jump_up`).
         """
         if not self._row_widgets:
             return
@@ -993,8 +1023,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
             old = self._selected_index
             self._move_selection(-1)
             if self._selected_index != old:
-                self._scroll_widget_bottom_to_view(
-                    self._row_widgets[self._selected_index]
+                self._reveal_selection(
+                    self._row_widgets[self._selected_index], direction=-1
                 )
         else:
             scroll.scroll_relative(y=-1, animate=False)
@@ -1003,10 +1033,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         """Smart down: scroll one row inside a tall expanded row, else jump.
 
         If the selected row's bottom edge is already inside the viewport,
-        jump to the next row (header or tool) and pin its top to the
-        viewport. Otherwise scroll the viewport down by one row. `Tab` /
-        `Shift+Tab` skip the smart check AND skip header rows (see
-        `action_jump_down`).
+        jump to the next row (header or tool). For rows taller than the
+        viewport, pin the new selection's top to the viewport; otherwise
+        just ensure the row is visible. `Tab` / `Shift+Tab` skip the smart
+        check AND skip header rows (see `action_jump_down`).
         """
         if not self._row_widgets:
             return
@@ -1018,25 +1048,27 @@ class MCPViewerScreen(ModalScreen[str | None]):
             old = self._selected_index
             self._move_selection(1)
             if self._selected_index != old:
-                self._row_widgets[self._selected_index].scroll_visible(top=True)
+                self._reveal_selection(
+                    self._row_widgets[self._selected_index], direction=1
+                )
         else:
             scroll.scroll_relative(y=1, animate=False)
 
     def action_jump_up(self) -> None:
-        """Jump to the previous tool (Shift+Tab); skips headers; pin bottom."""
+        """Jump to the previous tool (Shift+Tab); skips headers."""
         target = self._next_tool_row(self._selected_index, -1)
         if target is None:
             return
         self._move_to(target)
-        self._scroll_widget_bottom_to_view(self._row_widgets[target])
+        self._reveal_selection(self._row_widgets[target], direction=-1)
 
     def action_jump_down(self) -> None:
-        """Jump to the next tool (Tab); skips headers; pin top."""
+        """Jump to the next tool (Tab); skips headers."""
         target = self._next_tool_row(self._selected_index, +1)
         if target is None:
             return
         self._move_to(target)
-        self._row_widgets[target].scroll_visible(top=True)
+        self._reveal_selection(self._row_widgets[target], direction=1)
 
     def action_toggle_expand(self) -> None:
         """Toggle expand on a tool row, or start login on an unauth header.
@@ -1051,6 +1083,10 @@ class MCPViewerScreen(ModalScreen[str | None]):
         row = self._row_widgets[self._selected_index]
         if isinstance(row, MCPToolItem):
             row.toggle_expand()
+            # The new height isn't reflected until after the next layout
+            # pass, so defer the visibility scroll. Without this, expanding
+            # a row near the viewport bottom leaves its new body off-screen.
+            self.call_after_refresh(row.scroll_visible)
             return
         server = row.server
         if server.status == "unauthenticated":
@@ -1071,14 +1107,54 @@ class MCPViewerScreen(ModalScreen[str | None]):
             widget.set_expanded(any_collapsed)
 
     def action_page_up(self) -> None:
-        """Scroll up by one page."""
+        """Scroll up by one page and snap selection to the topmost visible row.
+
+        Without the selection snap, `_selected_index` would still point at
+        the now-offscreen row, and a subsequent `Up`/`Down` press would
+        yank the viewport back to it (see `action_move_up` / `_move_down`,
+        which scroll the offscreen selection back into view).
+        """
+        if not self._row_widgets:
+            return
         scroll = self.query_one(".mcp-list", VerticalScroll)
         scroll.scroll_page_up()
+        self.call_after_refresh(self._snap_selection_to_topmost_visible)
 
     def action_page_down(self) -> None:
-        """Scroll down by one page."""
+        """Scroll down by one page and snap selection to the bottommost visible row.
+
+        Mirror of `action_page_up`: prevents a subsequent arrow key from
+        scrolling the viewport back to a now-offscreen selection.
+        """
+        if not self._row_widgets:
+            return
         scroll = self.query_one(".mcp-list", VerticalScroll)
         scroll.scroll_page_down()
+        self.call_after_refresh(self._snap_selection_to_bottommost_visible)
+
+    def _snap_selection_to_topmost_visible(self) -> None:
+        """Move selection to the first row whose top is at or below the viewport top."""
+        if not self._row_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        top = scroll.region.y
+        for idx, widget in enumerate(self._row_widgets):
+            if widget.region.y >= top:
+                self._move_to(idx)
+                return
+
+    def _snap_selection_to_bottommost_visible(self) -> None:
+        """Move selection to the last row whose bottom fits inside the viewport."""
+        if not self._row_widgets:
+            return
+        scroll = self.query_one(".mcp-list", VerticalScroll)
+        bottom = scroll.region.y + scroll.region.height
+        target: int | None = None
+        for idx, widget in enumerate(self._row_widgets):
+            if widget.region.y + widget.region.height <= bottom:
+                target = idx
+        if target is not None:
+            self._move_to(target)
 
     def action_cancel(self) -> None:
         """Close the viewer without selecting a server to log into."""

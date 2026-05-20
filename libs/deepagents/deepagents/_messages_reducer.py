@@ -22,7 +22,7 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 
-def _messages_delta_reducer(  # noqa: C901
+def _messages_delta_reducer(  # noqa: C901, PLR0912
     state: list[AnyMessage], writes: list[list[AnyMessage]]
 ) -> list[AnyMessage]:
     """Batch reducer for use with `DeltaChannel` on the messages key.

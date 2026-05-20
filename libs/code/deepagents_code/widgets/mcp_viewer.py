@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
+
+logger = logging.getLogger(__name__)
 
 MCP_VIEWER_RECONNECT_REQUEST = "\x00__mcp_reconnect__"
 """Sentinel returned by `MCPViewerScreen.dismiss` to request a reconnect.
@@ -373,12 +376,12 @@ class MCPToolItem(Static):
         """Re-render with correct truncation once width is known.
 
         Defers via `call_after_refresh` so the first paint happens AFTER
-        the layout pass — at `on_mount` time `self.size.width` is still 0,
-        which makes `_format_collapsed` skip its `avail > 0` guard and
-        render the full description un-truncated for one frame. The
-        subsequent resize re-render then snaps an ellipsis in, producing
-        a visible overflow flicker on every mount (initial open, filter
-        rebuild, F2 toggle rebuild).
+        the layout pass. At `on_mount` time `self.size.width` is still
+        0, which short-circuits `_format_collapsed`'s `avail > 0` guard
+        and emits the full description un-truncated for one frame. The
+        subsequent resize re-render then snaps an ellipsis in,
+        producing a visible overflow flicker on every mount (initial
+        open, filter rebuild, F2 toggle rebuild).
         """
         self.call_after_refresh(self._rerender)
 
@@ -891,9 +894,14 @@ class MCPViewerScreen(ModalScreen[str | None]):
         )
 
         if new_server is None or header_idx is None or visible_tools is None:
-            # Fallback: structure changed in a way the in-place patch
-            # cannot express (server vanished, hidden by filter, or
-            # filter now eliminates it).
+            logger.debug(
+                "apply_server_disable_toggle fallback for %r: "
+                "new_server=%s header_idx=%s visible_tools=%s",
+                toggled_server,
+                new_server is not None,
+                header_idx,
+                visible_tools is not None,
+            )
             await self.refresh_server_info(
                 server_info,
                 pending_reconnect=pending_reconnect,
@@ -903,8 +911,14 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
         header = self._row_widgets[header_idx]
         if not isinstance(header, MCPServerHeaderItem):
-            # `header_idx` came from a filter that selected only header
-            # rows, so this is unreachable — narrow the type for mypy.
+            # The lookup above filters by isinstance, so this branch
+            # should be unreachable. Log loudly rather than silently
+            # returning so a future invariant break is visible.
+            logger.warning(
+                "apply_server_disable_toggle: expected header at index %d, got %r",
+                header_idx,
+                type(header).__name__,
+            )
             return
         next_header_idx = next(
             (
@@ -915,18 +929,16 @@ class MCPViewerScreen(ModalScreen[str | None]):
             len(self._row_widgets),
         )
 
-        # Tear down only this server's tool rows. Batched through the
-        # parent's `remove_children` so every row vanishes in the same
-        # refresh — awaiting `widget.remove()` per row yields back to
-        # Textual between calls, which renders the tool list shrinking
-        # one entry at a time.
+        # `remove_children(to_remove)` removes the listed widgets
+        # atomically in one refresh; awaiting `widget.remove()` per
+        # row would yield to Textual between each, animating the
+        # tool list shrinking one entry at a time.
         scroll = self.query_one(".mcp-list", VerticalScroll)
         to_remove = self._row_widgets[header_idx + 1 : next_header_idx]
         if to_remove:
             await scroll.remove_children(to_remove)
         del self._row_widgets[header_idx + 1 : next_header_idx]
 
-        # Update the header (status glyph / color / tool count).
         colors = theme.get_theme_colors(self)
         glyphs = get_glyphs()
         header.refresh_from_server(
@@ -937,7 +949,6 @@ class MCPViewerScreen(ModalScreen[str | None]):
             glyphs,
         )
 
-        # Mount new tool rows directly after the header.
         if visible_tools:
             new_widgets: list[MCPToolItem] = [
                 MCPToolItem(
@@ -952,13 +963,17 @@ class MCPViewerScreen(ModalScreen[str | None]):
             await scroll.mount(*new_widgets, after=header)
             self._row_widgets[header_idx + 1 : header_idx + 1] = new_widgets
 
-        # Renumber every row so click handlers and selection math agree.
+        # `MCPToolItem.on_click` calls `screen._move_to(self.index)`,
+        # so every row's stored index must match its position after
+        # the splice — otherwise clicks land on the wrong row.
         for idx, widget in enumerate(self._row_widgets):
             widget.index = idx
         if self._selected_index >= len(self._row_widgets):
             self._selected_index = max(0, len(self._row_widgets) - 1)
 
-        # Sync the footer if `Ctrl+R reconnect` visibility changed.
+        # `_build_help_text` is cheap and reads `_pending_reconnect`,
+        # so re-render the footer whenever the caller supplied a new
+        # value — saves comparing against the prior state.
         if pending_reconnect is not None:
             help_static = self.query_one(".mcp-viewer-help", Static)
             help_static.update(self._build_help_text(glyphs))

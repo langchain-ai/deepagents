@@ -8501,6 +8501,46 @@ class TestMCPLoginCommand:
         assert app._mcp_server_info == [original]
         assert app._pending_mcp_reconnect is False
 
+    async def test_server_ready_refreshes_open_viewer_via_task(self) -> None:
+        """A server-ready event refreshes an already-open MCP viewer.
+
+        Covers the `asyncio.create_task(_refresh_viewer())` path added
+        when `refresh_server_info` became async: without it, a user who
+        opened `/mcp` before the server finished starting would stare at
+        the connecting placeholder forever.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+
+        ready_info = [
+            MCPServerInfo(
+                name="filesystem",
+                transport="stdio",
+                tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+            )
+        ]
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            viewer = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(viewer)
+            app._active_mcp_viewer = viewer
+            await pilot.pause()
+
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=ready_info,
+                )
+            )
+            for _ in range(3):
+                await pilot.pause()
+
+            assert viewer._server_info == ready_info
+            assert viewer._connecting is False
+
     async def test_toggle_disable_rejects_empty_server_name(self) -> None:
         """An empty server name must not reach the persistence layer."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -8517,7 +8557,13 @@ class TestMCPLoginCommand:
             notify.assert_not_called()
 
     async def test_toggle_disable_rejects_unknown_server_name(self) -> None:
-        """A server name absent from the loaded config is silently ignored."""
+        """A server name absent from the loaded config notifies and stops.
+
+        Surfaces the rejection to the user via `notify` (rather than a
+        silent log) so an F2 that does nothing isn't mistaken for a
+        toggle that succeeded — covers the config-reload race where the
+        viewer holds a stale server reference.
+        """
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 
         known = MCPServerInfo(
@@ -8536,7 +8582,11 @@ class TestMCPLoginCommand:
             ):
                 await app._toggle_mcp_server_disabled("stranger")
             set_disabled.assert_not_called()
-            notify.assert_not_called()
+            notify.assert_called_once()
+            args, kwargs = notify.call_args
+            assert "stranger" in args[0]
+            assert kwargs.get("severity") == "warning"
+            assert kwargs.get("markup") is False
 
     async def test_mcp_login_rejects_while_connecting(self) -> None:
         """`_connecting=True` prevents login until the server is ready."""

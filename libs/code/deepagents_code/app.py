@@ -2519,8 +2519,14 @@ class DeepAgentsApp(App):
             viewer = self._active_mcp_viewer
 
             async def _refresh_viewer() -> None:
-                with suppress(Exception):
-                    await viewer.refresh_server_info(self._mcp_server_info or [])
+                # No local `suppress` — the `_log_task_exception` done
+                # callback is the single error sink. Silencing here
+                # would make that callback dead code (its `task.result()`
+                # call could never see a raised exception) and a real
+                # `DuplicateIds` / `AttributeError` would leave the
+                # viewer stuck on the connecting placeholder with no
+                # signal in the logs.
+                await viewer.refresh_server_info(self._mcp_server_info or [])
 
             task = asyncio.create_task(_refresh_viewer())
             task.add_done_callback(_log_task_exception)
@@ -8300,19 +8306,26 @@ class DeepAgentsApp(App):
         a screen-swap flicker.
 
         Args:
-            server_name: Name of the MCP server to toggle. Empty or
-                unknown names are rejected with a warning log; this
-                guards against a stale viewer reference holding a name
-                that has since been removed from the config.
+            server_name: Name of the MCP server to toggle. Empty names
+                are impossible by construction (the only caller pulls
+                from `MCPServerHeaderItem.server.name`) and silently
+                no-op as defense-in-depth. Unknown names — possible if
+                config was reloaded between the viewer opening and F2 —
+                surface a toast so the user knows F2 didn't take effect.
         """
         if not server_name:
-            logger.warning("Empty server name in disable toggle; ignoring")
+            logger.debug("Empty server name in disable toggle; ignoring")
             return
         known_names = {info.name for info in self._mcp_server_info or ()}
         if server_name not in known_names:
             logger.warning(
                 "Unknown server %r in disable toggle; ignoring",
                 server_name,
+            )
+            self.notify(
+                f"MCP server {server_name!r} is no longer configured.",
+                severity="warning",
+                markup=False,
             )
             return
 
@@ -8360,14 +8373,26 @@ class DeepAgentsApp(App):
         self.notify(message, markup=False)
         # Refresh the viewer in place so the new status glyph and the
         # `Ctrl+R` reconnect hint appear without tearing the screen
-        # down. `suppress` matches the precedent at the server-ready
-        # refresh site: a stale viewer reference is non-fatal.
-        if self._active_mcp_viewer is not None:
-            with suppress(Exception):
-                await self._active_mcp_viewer.apply_server_disable_toggle(
+        # down. Persistence already succeeded and the user has seen
+        # the toast, so a failed in-place patch is non-fatal — but log
+        # with traceback so a real bug (e.g. signature drift,
+        # `DuplicateIds`) isn't masked the way `suppress(Exception)`
+        # would have masked it.
+        viewer = self._active_mcp_viewer
+        if viewer is not None:
+            try:
+                await viewer.apply_server_disable_toggle(
                     self._mcp_server_info or [],
                     toggled_server=server_name,
                     pending_reconnect=self._pending_mcp_reconnect,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to refresh MCP viewer in place after toggle "
+                    "of %r; state has been persisted but the open "
+                    "viewer will not reflect it until reopened",
+                    server_name,
+                    exc_info=True,
                 )
 
     def _apply_optimistic_disabled_state(

@@ -208,9 +208,7 @@ class TestMCPViewerScreen:
 
             async def on_toggle(server_name: str) -> None:
                 toggled.append(server_name)
-                # `await asyncio.sleep(0)` keeps the coroutine actually async
-                # so the lint check confirms callback signature matches.
-                await asyncio.sleep(0)
+                await asyncio.sleep(0)  # async signature required by callback protocol
 
             screen = MCPViewerScreen(
                 server_info=_sample_info(), on_toggle_disable=on_toggle
@@ -231,7 +229,6 @@ class TestMCPViewerScreen:
         """After F2 + in-place refresh, headers and tools still render."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
-            screen = MCPViewerScreen(server_info=_sample_info())
 
             async def on_toggle(server_name: str) -> None:
                 # Simulate the app's "disable" path: rebuild the server
@@ -288,7 +285,6 @@ class TestMCPViewerScreen:
         """
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
-            screen = MCPViewerScreen(server_info=_sample_info())
 
             async def on_toggle(server_name: str) -> None:
                 updated = [
@@ -397,6 +393,203 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert "Ctrl+R reconnect" in _widget_text(help_static)
+
+    async def test_f2_falls_back_when_server_missing_from_refreshed_info(
+        self,
+    ) -> None:
+        """Toggle falls back to full rebuild when the server vanishes.
+
+        Guards the `new_server is None` branch in
+        `apply_server_disable_toggle` — a regression that skipped the
+        fallback would leave the viewer showing stale rows for the
+        missing server.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+
+            async def on_toggle(server_name: str) -> None:
+                # Drop the toggled server entirely from the new list,
+                # forcing the in-place patch into its fallback path.
+                updated = [
+                    info for info in _sample_info() if info.name != server_name
+                ]
+                await screen.apply_server_disable_toggle(
+                    updated,
+                    toggled_server=server_name,
+                    pending_reconnect=True,
+                )
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            headers = screen.query(".mcp-server-header")
+            # `filesystem` vanished, `remote-api` remains.
+            assert len(headers) == 1
+            remaining = screen._row_widgets[0]
+            assert isinstance(remaining, MCPServerHeaderItem)
+            assert remaining.server.name == "remote-api"
+
+    async def test_f2_renumbers_indices_so_clicks_resolve_correctly(self) -> None:
+        """Every widget's `index` matches its `_row_widgets` position post-F2.
+
+        Click handlers call `screen._move_to(self.index)`; a stale
+        index would land selection on the wrong row (or out of bounds).
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+
+            async def on_toggle(server_name: str) -> None:
+                # Disable: drops the server's tool rows, shrinking the list.
+                updated = [
+                    MCPServerInfo(
+                        name=info.name,
+                        transport=info.transport,
+                        status="disabled" if info.name == server_name else info.status,
+                        tools=() if info.name == server_name else info.tools,
+                        error=(
+                            "Disabled by user (pending reconnect)."
+                            if info.name == server_name
+                            else None
+                        ),
+                    )
+                    for info in _sample_info()
+                ]
+                await screen.apply_server_disable_toggle(
+                    updated,
+                    toggled_server=server_name,
+                    pending_reconnect=True,
+                )
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            for position, widget in enumerate(screen._row_widgets):
+                assert widget.index == position, (
+                    f"stale index at position {position}: widget.index={widget.index}"
+                )
+
+    async def test_f2_clamps_selected_index_when_list_shrinks(self) -> None:
+        """`_selected_index` must clamp into bounds after a shrink.
+
+        Defensive guard: if `_selected_index` ever points past the new
+        list end, the next arrow keypress would `IndexError`. Exercises
+        the `max(0, len(self._row_widgets) - 1)` clamp directly because
+        the F2 happy path leaves selection on the (still-present)
+        header.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            updated = [
+                MCPServerInfo(
+                    name=info.name,
+                    transport=info.transport,
+                    status="disabled" if info.name == "filesystem" else info.status,
+                    tools=() if info.name == "filesystem" else info.tools,
+                    error=(
+                        "Disabled by user (pending reconnect)."
+                        if info.name == "filesystem"
+                        else None
+                    ),
+                )
+                for info in _sample_info()
+            ]
+            screen._selected_index = 9999  # well past any plausible row count
+            await screen.apply_server_disable_toggle(
+                updated, toggled_server="filesystem", pending_reconnect=True
+            )
+
+            assert 0 <= screen._selected_index < len(screen._row_widgets)
+
+    async def test_tool_description_truncated_on_first_paint(self) -> None:
+        """First paint has ellipsis truncation, not the full description.
+
+        `MCPToolItem.on_mount` defers via `call_after_refresh` so this
+        passes; a regression to a synchronous `_rerender()` in
+        `on_mount` would render the un-truncated description for one
+        frame because `self.size.width == 0` short-circuits the
+        truncation guard.
+        """
+        long_desc = "x" * 500
+        info = [
+            MCPServerInfo(
+                name="filesystem",
+                transport="stdio",
+                tools=(MCPToolInfo(name="tool", description=long_desc),),
+            )
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=info)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            tool_widget = next(
+                w for w in screen._row_widgets if isinstance(w, MCPToolItem)
+            )
+            rendered = _widget_text(tool_widget)
+            assert "(...)" in rendered
+            assert long_desc not in rendered
+
+    async def test_refresh_from_server_preserves_selected_state(self) -> None:
+        """`refresh_from_server` must keep the header's selected class.
+
+        The in-place patch invokes this on the toggled header; if it
+        dropped `_selected` (or rendered without `selected=True`), the
+        cursor would visually deselect on every F2 even though the
+        user's intent was to stay put.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+
+            header = screen._row_widgets[0]
+            assert isinstance(header, MCPServerHeaderItem)
+            header.set_selected(True)
+
+            from deepagents_code import theme
+            from deepagents_code.config import get_glyphs
+            from deepagents_code.widgets.mcp_viewer import (
+                _status_color,
+                _status_glyph,
+            )
+
+            new_server = MCPServerInfo(
+                name=header.server.name,
+                transport=header.server.transport,
+                status="disabled",
+                tools=(),
+                error="Disabled by user (pending reconnect).",
+            )
+            glyphs = get_glyphs()
+            colors = theme.get_theme_colors(screen)
+            header.refresh_from_server(
+                new_server,
+                _status_glyph(new_server.status, glyphs),
+                _status_color(new_server.status, colors),
+                (),
+                glyphs,
+            )
+
+            assert header._selected is True
+            assert header.has_class("mcp-header-selected")
 
     async def test_f2_is_noop_without_callback(self) -> None:
         """Without a callback the screen stays mounted and nothing fires."""

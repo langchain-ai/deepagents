@@ -1,0 +1,15 @@
+[project]
+name = "muapi-creative-agent"
+version = "0.1.0"
+description = "A generative-media Deep Agent powered by muapi.ai"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.3.5",
+    "muapi-langchain>=0.1.0",
+    "langchain-anthropic>=0.3.0",
+    "pyyaml>=6.0.0",
+    "rich>=13.0.0",
+]
+
+[dependency-groups]
+dev = []

@@ -111,8 +111,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/mcp",
         description=(
             "Show MCP servers; `/mcp login <server>` to authenticate, "
-            "`/mcp reconnect` to load deferred logins, Ctrl+D in the "
-            "viewer to disable/enable a server"
+            "`/mcp reconnect` to load deferred logins, F2 in the viewer "
+            "to disable/enable a server"
         ),
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="servers oauth authenticate reconnect disable enable",

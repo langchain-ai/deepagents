@@ -7,6 +7,7 @@ from textual.widgets import Static
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.widgets.mcp_viewer import (
     MCP_VIEWER_RECONNECT_REQUEST,
+    MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
     MCPServerHeaderItem,
     MCPToolItem,
     MCPViewerScreen,
@@ -193,6 +194,44 @@ class TestMCPViewerScreen:
             await pilot.press("escape")
             await pilot.pause()
             assert dismissed
+
+    async def test_f2_dismisses_with_disable_toggle_sentinel_on_header(self) -> None:
+        """F2 on a server header requests a disable/enable toggle."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                outcomes.append(result)
+
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            assert outcomes == [f"{MCP_VIEWER_TOGGLE_DISABLE_PREFIX}filesystem"]
+
+    async def test_f2_is_noop_on_tool_row(self) -> None:
+        """F2 only toggles server headers, not individual tools."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                outcomes.append(result)
+
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("down")
+            await pilot.press("f2")
+            await pilot.pause()
+
+            assert isinstance(screen._row_widgets[screen._selected_index], MCPToolItem)
+            assert outcomes == []
 
     async def test_single_server_singular_labels(self) -> None:
         """Title uses singular forms for 1 server and 1 tool."""
@@ -1127,6 +1166,7 @@ class TestMCPViewerScreen:
             text = _widget_text(help_widgets[0]).lower()
             assert "navigate" in text
             assert "enter" in text
+            assert "f2" in text
             assert "ctrl+e" in text
             assert "filter" in text
             assert "esc" in text

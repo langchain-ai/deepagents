@@ -33,8 +33,8 @@ MCP_VIEWER_TOGGLE_DISABLE_PREFIX = "\x00__mcp_toggle_disable__:"
 """Sentinel prefix for a server-disable toggle request from the viewer.
 
 `MCPViewerScreen.dismiss` returns `MCP_VIEWER_TOGGLE_DISABLE_PREFIX +
-server_name` when the user presses Ctrl+D on a server header. The null
-byte keeps the value un-collidable with any valid `MCPServerInfo.name`.
+server_name` when the user presses F2 on a server header. The null byte
+keeps the value un-collidable with any valid `MCPServerInfo.name`.
 """
 
 
@@ -586,9 +586,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("ctrl+r", "reconnect", "Reconnect", show=False, priority=True),
-        Binding(
-            "ctrl+d", "toggle_disable", "Toggle disable", show=False, priority=True
-        ),
+        Binding("f2", "toggle_disable", "Toggle disable", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
     """Key bindings for navigation, expansion, and cancel.
@@ -832,7 +830,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
             "Enter expand/login",
-            "Ctrl+D disable/enable",
+            "F2 disable/enable",
             "Ctrl+E expand all",
         ]
         if self._pending_reconnect:
@@ -1099,7 +1097,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
     def action_toggle_disable(self) -> None:
         """Dismiss with a toggle-disable request for the selected server.
 
-        Only fires when a server header is selected — pressing Ctrl+D on a
+        Only fires when a server header is selected — pressing F2 on a
         tool row is a no-op. The app handles persistence and reconnect
         state; the viewer just signals the request.
         """

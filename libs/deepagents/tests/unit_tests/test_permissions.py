@@ -18,7 +18,9 @@ from deepagents.middleware.filesystem import (
     _build_interrupt_on_from_permissions,
     _check_fs_permission,
     _filter_paths_by_permission,
+    _glob_anchor,
     _make_fs_when_predicate,
+    _paths_overlap,
 )
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
@@ -195,19 +197,19 @@ class TestCheckFsPermissionInterrupt:
         ]
         assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "deny"
 
-    def test_filter_paths_strips_interrupt_paths(self):
-        """Interrupt-mode paths must NOT leak through result filters.
+    def test_filter_paths_does_not_drop_interrupt_paths(self):
+        """Interrupt-mode paths must remain in result-filtered lists.
 
-        The pre-execution `when` predicate can be bypassed for tools that accept
-        a missing or parent-directory path (e.g., pathless `grep`, `ls /`), so
-        the result-stage filter has to act as a defense-in-depth check and drop
-        interrupt-mode matches alongside deny-mode ones. Per-path tools
-        (`read_file`/`write_file`/`edit_file`) still trigger HITL correctly
-        because they require an explicit path that the predicate can evaluate.
+        The pre-execution `when` predicate is scope-aware: it fires before the
+        tool runs for both exact-path tools and bulk-path tools (including the
+        pathless and parent-path cases), so by the time result-filtering runs
+        the user has either approved or the call was rejected. Stripping
+        interrupt-mode results here would silently empty out a listing the
+        user just approved.
         """
         rules = [FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="interrupt")]
         kept = _filter_paths_by_permission(rules, "read", ["/secret/a.txt", "/public/b.txt"])
-        assert kept == ["/public/b.txt"]
+        assert kept == ["/secret/a.txt", "/public/b.txt"]
 
 
 class TestBuildInterruptOnFromPermissions:
@@ -229,25 +231,92 @@ class TestBuildInterruptOnFromPermissions:
         out = _build_interrupt_on_from_permissions([rule])
         assert set(out) == {"ls", "read_file", "glob", "grep"}
 
-    def test_predicate_fires_on_matching_path(self):
+    def test_exact_predicate_fires_on_matching_path(self):
+        """Exact-scope tools (write_file) only fire on the literal path arg."""
         rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
         out = _build_interrupt_on_from_permissions([rule])
         when = out["write_file"]["when"]
         assert when(_FakeReq({"file_path": "/secrets/key.pem"})) is True
         assert when(_FakeReq({"file_path": "/workspace/x.txt"})) is False
 
-    def test_predicate_handles_missing_path_arg(self):
-        """Tools called without a path arg (e.g., grep with path=None) do not interrupt."""
+    def test_exact_predicate_does_not_fire_on_parent_path(self):
+        """`write_file("/secrets")` itself doesn't match `/secrets/**`."""
+        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "write", "file_path", "exact")
+        assert when(_FakeReq({"file_path": "/secrets"})) is False
+
+    def test_bulk_predicate_fires_on_pathless_call(self):
+        """grep(path=None) under interrupt rules must fire — we can't localize it."""
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path")
-        assert when(_FakeReq({})) is False
-        assert when(_FakeReq({"path": None})) is False
+        out = _build_interrupt_on_from_permissions([rule])
+        when = out["grep"]["when"]
+        assert when(_FakeReq({"path": None})) is True
+        assert when(_FakeReq({})) is True
+
+    def test_bulk_predicate_fires_when_call_path_is_ancestor(self):
+        """`ls /` with rule on /secrets/** must fire — listing surfaces protected children."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        assert when(_FakeReq({"path": "/"})) is True
+        assert when(_FakeReq({"path": "/secrets"})) is True
+
+    def test_bulk_predicate_fires_when_call_path_is_descendant(self):
+        """`ls /secrets/sub` with rule on /secrets/** must fire — inside the protected subtree."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        assert when(_FakeReq({"path": "/secrets/sub"})) is True
+
+    def test_bulk_predicate_does_not_fire_on_unrelated_path(self):
+        """`ls /workspace` with rule on /secrets/** is fine."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        assert when(_FakeReq({"path": "/workspace"})) is False
+
+    def test_bulk_predicate_does_not_confuse_prefix_lookalikes(self):
+        """`/secret` (singular) must not overlap a rule on `/secrets/**`."""
+        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
+        assert when(_FakeReq({"path": "/secret"})) is False
 
     def test_predicate_returns_false_on_invalid_path(self):
         """Path-validation failures (e.g., `..`) short-circuit to no interrupt."""
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path")
+        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
         assert when(_FakeReq({"path": "/secrets/../etc/passwd"})) is False
+
+
+class TestGlobAnchorAndOverlap:
+    def test_glob_anchor_strips_double_star(self):
+        assert _glob_anchor("/secrets/**") == "/secrets"
+
+    def test_glob_anchor_strips_single_star_segment(self):
+        assert _glob_anchor("/a/*/b") == "/a"
+
+    def test_glob_anchor_no_wildcards_is_identity(self):
+        assert _glob_anchor("/secrets/key.pem") == "/secrets/key.pem"
+
+    def test_glob_anchor_falls_back_to_root_for_leading_wildcard(self):
+        assert _glob_anchor("/*/foo") == "/"
+
+    def test_paths_overlap_equal(self):
+        assert _paths_overlap("/a/b", "/a/b") is True
+
+    def test_paths_overlap_call_inside_rule(self):
+        assert _paths_overlap("/a/b/c", "/a/b") is True
+
+    def test_paths_overlap_rule_inside_call(self):
+        assert _paths_overlap("/a", "/a/b") is True
+
+    def test_paths_overlap_root_overlaps_everything(self):
+        assert _paths_overlap("/", "/anywhere") is True
+        assert _paths_overlap("/anywhere", "/") is True
+
+    def test_paths_overlap_does_not_confuse_prefix_lookalikes(self):
+        assert _paths_overlap("/secret", "/secrets") is False
+        assert _paths_overlap("/secrets", "/secret") is False
+
+    def test_paths_overlap_disjoint(self):
+        assert _paths_overlap("/workspace", "/secrets") is False
 
 
 class TestFilesystemMiddlewarePermissionInit:
@@ -835,28 +904,6 @@ class TestGrepToolPermissions:
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
-
-    def test_grep_path_none_does_not_leak_interrupt_paths(self):
-        """Pathless grep must not surface interrupt-mode matches.
-
-        Regression for HITL-bypass: with ``path=None`` the `when` predicate has
-        no path to evaluate and the interrupt never fires, so the post-execution
-        filter must drop interrupt-mode matches the same way it drops deny-mode
-        ones. Otherwise an agent could call ``grep(pattern, path=None)`` and
-        silently receive content from interrupt-protected paths.
-        """
-        backend = _make_backend(
-            {
-                "/public/a.txt": "keyword here",
-                "/secrets/b.txt": "keyword there",
-            }
-        )
-        middleware = FilesystemMiddleware(backend=backend)
-        grep_tool = next(t for t in middleware.tools if t.name == "grep")
-        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")]
-        result = _invoke_with_permissions(grep_tool, {"pattern": "keyword", "path": None}, rules)
-        assert "/secrets/b.txt" not in result
-        assert "/public/a.txt" in result
 
     async def test_grep_denied_on_restricted_path_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret data"})

@@ -129,20 +129,17 @@ def _filter_paths_by_permission(
     operation: FilesystemOperation,
     paths: list[str],
 ) -> list[str]:
-    """Filter paths, removing any that match a ``deny`` or ``interrupt`` rule.
+    """Filter paths, removing only those denied by a rule.
 
-    Stripping interrupt-mode paths defends against HITL bypass when the calling
-    tool can run without a path argument (e.g., ``grep(path=None)``): the
-    pre-execution ``when`` predicate sees no path to evaluate and the interrupt
-    never fires, so we must not let interrupt-protected paths leak through the
-    post-execution result. For tools called with an explicit path, the
-    interrupt fires correctly before the tool runs and the result filter is a
-    no-op (the rule matched at the call site, so no rule matches the entries
-    returned).
+    Interrupt-mode paths pass through here: the interrupt fires at the HITL
+    stage *before* the tool runs (see :func:`_build_interrupt_on_from_permissions`
+    and its scope-aware predicate), so by the time result-filtering runs the
+    user has already approved (or no rule matched). Filtering interrupt-mode
+    results out here would silently empty the listing the user just approved.
     """
     if not rules:
         return paths
-    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
+    return [p for p in paths if _check_fs_permission(rules, operation, p) != "deny"]
 
 
 def _all_paths_scoped_to_routes(
@@ -169,16 +166,12 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[FileInfo]:
-    """Filter file-info entries, removing any matching a ``deny`` or ``interrupt`` rule.
+    """Filter file-info entries, removing only those denied by a rule.
 
-    Interrupt-mode entries are stripped here because the pre-execution ``when``
-    predicate can be bypassed when the calling tool runs with no path argument
-    (e.g., a pathless ``grep``) or with a parent-directory path that doesn't
-    match the rule's pattern but whose listing surfaces protected children.
-    Per-path tools (``read_file``/``write_file``/``edit_file``) still trigger
-    HITL correctly because they require an explicit path.
+    See :func:`_filter_paths_by_permission` for why interrupt-mode entries
+    pass through.
     """
-    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) == "allow"]
+    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) != "deny"]
 
 
 def _filter_grep_matches_by_permission(
@@ -187,12 +180,12 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[GrepMatch]:
-    """Filter grep matches, removing any matching a ``deny`` or ``interrupt`` rule.
+    """Filter grep matches, removing only those denied by a rule.
 
-    See :func:`_filter_file_infos_by_permission` for why interrupt-mode entries
-    are stripped (HITL-bypass defense for pathless / parent-path calls).
+    See :func:`_filter_paths_by_permission` for why interrupt-mode entries
+    pass through.
     """
-    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
+    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
 
 
 def _apply_permissions_to_ls_results(
@@ -213,33 +206,94 @@ def _apply_permissions_to_glob_results(
     return [fi.get("path", "") for fi in filtered_infos]
 
 
-# Map filesystem tool name → (operation it performs, name of its path argument).
+# Scope of a filesystem tool's path argument:
+#   - "exact": the call operates on exactly the named path (read_file, write_file,
+#     edit_file). Interrupt fires iff that path matches an interrupt-mode rule.
+#   - "bulk":  the call's path argument names a search root and the call may
+#     surface any descendant (ls, glob, grep). Interrupt fires whenever the
+#     search subtree intersects an interrupt-mode rule's pattern, and — when
+#     the path argument is omitted (`grep(path=None)`) — fires unconditionally
+#     for any interrupt-mode rule, because a pathless bulk call can touch
+#     anything.
+ToolScope = Literal["exact", "bulk"]
+
+# Map filesystem tool name → (operation, name of its path argument, scope).
 # Drives `_build_interrupt_on_from_permissions` when synthesizing `when`
-# predicates per tool. `grep`'s path arg is optional; a `None` value here means
-# we cannot match against an interrupt-mode rule and the call proceeds normally.
-_FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str]] = {
-    "ls": ("read", "path"),
-    "read_file": ("read", "file_path"),
-    "write_file": ("write", "file_path"),
-    "edit_file": ("write", "file_path"),
-    "glob": ("read", "path"),
-    "grep": ("read", "path"),
+# predicates per tool.
+_FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str, ToolScope]] = {
+    "ls": ("read", "path", "bulk"),
+    "read_file": ("read", "file_path", "exact"),
+    "write_file": ("write", "file_path", "exact"),
+    "edit_file": ("write", "file_path", "exact"),
+    "glob": ("read", "path", "bulk"),
+    "grep": ("read", "path", "bulk"),
 }
+
+
+# Characters that mark a glob path component as a wildcard segment for the
+# purposes of `_glob_anchor`. Keep in sync with `_FS_WCMATCH_FLAGS` semantics.
+_GLOB_WILDCARD_CHARS = frozenset("*?[{")
+
+
+def _glob_anchor(pattern: str) -> str:
+    """Return the longest leading directory of ``pattern`` with no wildcards.
+
+    For ``/secrets/**`` returns ``/secrets``; for ``/a/*/b`` returns ``/a``;
+    for a wildcard at the root (``/*/foo``) falls back to ``/``. Mirrors the
+    backslash-normalization used by :meth:`FilesystemPermission.__post_init__`.
+    """
+    norm = pattern.replace("\\", "/")
+    safe: list[str] = []
+    for part in norm.split("/"):
+        if any(c in _GLOB_WILDCARD_CHARS for c in part):
+            break
+        safe.append(part)
+    return "/".join(safe) or "/"
+
+
+def _paths_overlap(call_path: str, rule_anchor: str) -> bool:
+    """Return True iff a tool call rooted at ``call_path`` could touch ``rule_anchor``.
+
+    Two subtrees overlap when one is a prefix of the other (or they're equal).
+    The root ``/`` overlaps with everything. Comparison is on path components,
+    not raw string prefix, so ``/secret`` does not overlap ``/secrets``.
+    """
+    a = call_path.rstrip("/") or "/"
+    b = rule_anchor.rstrip("/") or "/"
+    if a == "/" or b == "/":
+        return True
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 
 def _make_fs_when_predicate(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     path_arg_name: str,
+    scope: ToolScope,
 ) -> Callable[[ToolCallRequest], bool]:
     """Build a `when` predicate that fires on interrupt-mode rule matches.
 
-    The predicate returns ``True`` iff the request's path argument resolves to
-    a rule with ``mode == "interrupt"`` for the given operation. Normal
-    first-match precedence applies, so a preceding ``deny`` rule wins and the
-    interrupt does not fire (the tool will return a permission-denied error).
-    """
+    The predicate's behavior depends on the tool's :data:`ToolScope`:
 
+    * ``"exact"`` — fire iff the call's path matches an interrupt-mode rule
+      with normal first-match precedence (a preceding ``deny`` rule wins and
+      the interrupt does not fire; the tool will return a permission-denied
+      error instead).
+    * ``"bulk"`` — fire iff the call's search subtree could intersect an
+      interrupt-mode rule. With no path argument (``grep(path=None)``) we
+      cannot localize the call, so we fire unconditionally for any
+      interrupt-mode rule on the operation.
+    """
+    if scope == "exact":
+        return _make_exact_when_predicate(rules, operation, path_arg_name)
+    return _make_bulk_when_predicate(rules, operation, path_arg_name)
+
+
+def _make_exact_when_predicate(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    path_arg_name: str,
+) -> Callable[[ToolCallRequest], bool]:
     def when(req: ToolCallRequest) -> bool:
         raw_path = req.tool_call.get("args", {}).get(path_arg_name)
         if not isinstance(raw_path, str):
@@ -249,6 +303,35 @@ def _make_fs_when_predicate(
         except ValueError:
             return False
         return _check_fs_permission(rules, operation, normalized) == "interrupt"
+
+    return when
+
+
+def _make_bulk_when_predicate(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    path_arg_name: str,
+) -> Callable[[ToolCallRequest], bool]:
+    # Precompute interrupt-mode rule anchors for this op so the predicate is
+    # a single pass per call.
+    interrupt_anchors: list[str] = [
+        _glob_anchor(pattern) for rule in rules if rule.mode == "interrupt" and operation in rule.operations for pattern in rule.paths
+    ]
+
+    def when(req: ToolCallRequest) -> bool:
+        if not interrupt_anchors:
+            return False
+        raw_path = req.tool_call.get("args", {}).get(path_arg_name)
+        if raw_path is None:
+            # Pathless bulk call — fire because we cannot localize the access.
+            return True
+        if not isinstance(raw_path, str):
+            return False
+        try:
+            normalized = validate_path(raw_path)
+        except ValueError:
+            return False
+        return any(_paths_overlap(normalized, anchor) for anchor in interrupt_anchors)
 
     return when
 
@@ -269,12 +352,12 @@ def _build_interrupt_on_from_permissions(
     # Annotated so ty narrows to `list[DecisionType]` instead of `list[str]`.
     allowed: list[Literal["approve", "edit", "reject", "respond"]] = ["approve", "reject"]
     result: dict[str, InterruptOnConfig] = {}
-    for tool_name, (op, arg) in _FS_TOOL_PATH_ARGS.items():
+    for tool_name, (op, arg, scope) in _FS_TOOL_PATH_ARGS.items():
         if not any(r.mode == "interrupt" and op in r.operations for r in rules):
             continue
         result[tool_name] = InterruptOnConfig(
             allowed_decisions=allowed,
-            when=_make_fs_when_predicate(rules, op, arg),
+            when=_make_fs_when_predicate(rules, op, arg, scope),
         )
     return result
 

@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from mcp.client.auth import TokenStorage
+from mcp.shared.auth import OAuthToken
 
 from deepagents_code.mcp_auth import (
     FileTokenStorage,
@@ -70,8 +73,6 @@ class TestResolveHeaders:
 
 
 def _make_tokens(access_token: str = "at"):
-    from mcp.shared.auth import OAuthToken
-
     return OAuthToken(
         access_token=access_token,
         token_type="Bearer",
@@ -186,6 +187,233 @@ class TestFileTokenStorage:
         """
         with pytest.raises(ValueError, match="Invalid MCP server name"):
             FileTokenStorage(name)
+
+    async def test_set_tokens_records_absolute_expiry(self) -> None:
+        """`set_tokens` writes an `expires_at` sidecar derived from `expires_in`."""
+        storage = FileTokenStorage("notion")
+        before = time.time()
+        await storage.set_tokens(_make_tokens())
+        after = time.time()
+
+        got = await storage.get_expires_at()
+        assert got is not None
+        # 3600 from `_make_tokens`; widen the wall-clock window to absorb
+        # GC pauses on busy CI runners.
+        assert before + 3600 <= got <= after + 3600 + 1.0
+
+    async def test_set_tokens_and_client_info_records_expiry(self) -> None:
+        """The combined writer also persists `expires_at`."""
+        storage = FileTokenStorage("notion")
+        before = time.time()
+        await storage.set_tokens_and_client_info(_make_tokens(), _make_client_info())
+        after = time.time()
+
+        got = await storage.get_expires_at()
+        assert got is not None
+        assert before + 3600 <= got <= after + 3600 + 1.0
+
+    async def test_get_expires_at_returns_none_for_legacy_file(
+        self, fake_home: Path
+    ) -> None:
+        """Token files written before this field existed return `None`."""
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"version": 1, "tokens": {"access_token": "x"}}))
+        storage = FileTokenStorage("notion")
+
+        assert await storage.get_expires_at() is None
+
+    async def test_get_expires_at_rejects_non_numeric(self, fake_home: Path) -> None:
+        """A garbage sidecar value falls back to `None` rather than raising."""
+        path = fake_home / ".deepagents" / ".state" / "mcp-tokens" / "notion.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "tokens": {"access_token": "x"},
+                    "expires_at": "soon",
+                }
+            )
+        )
+        storage = FileTokenStorage("notion")
+
+        assert await storage.get_expires_at() is None
+
+    async def test_set_tokens_clears_stale_expiry_when_expires_in_absent(self) -> None:
+        """Writing a token without `expires_in` removes any prior `expires_at`."""
+        storage = FileTokenStorage("notion")
+        await storage.set_tokens(_make_tokens())
+        assert await storage.get_expires_at() is not None
+
+        # Some providers omit `expires_in` on refresh; the sidecar must not
+        # linger from the prior write or the next cold start will use a
+        # bogus expiry.
+        await storage.set_tokens(
+            OAuthToken(access_token="x2", token_type="Bearer", refresh_token="rt2")
+        )
+        assert await storage.get_expires_at() is None
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestExpiryAwareOAuthClientProvider:
+    """Tests for cold-start expiry restoration on the OAuth client provider."""
+
+    async def test_initialize_restores_expiry_minus_safety_margin(self) -> None:
+        """A live `expires_at` is loaded into `context.token_expiry_time`."""
+        from deepagents_code.mcp_auth import (
+            _REFRESH_SAFETY_MARGIN_SECONDS,
+            build_oauth_provider,
+        )
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+        expected_expires_at = await storage.get_expires_at()
+        assert expected_expires_at is not None
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        assert provider.context.token_expiry_time == (
+            expected_expires_at - _REFRESH_SAFETY_MARGIN_SECONDS
+        )
+        assert provider.context.is_token_valid() is True
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_treats_expired_token_as_invalid(self) -> None:
+        """A past `expires_at` makes the loaded token report as invalid."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+        path = storage.path
+        data = json.loads(path.read_text())
+        data["expires_at"] = time.time() - 60  # already expired
+        path.write_text(json.dumps(data))
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        assert provider.context.is_token_valid() is False
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_legacy_file_forces_refresh_when_refresh_token_present(
+        self,
+    ) -> None:
+        """No sidecar + refresh token => assume expired so refresh path fires."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        # Write a legacy-format file (no `expires_at`).
+        path = storage.path
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": json.loads(
+                        _make_client_info().model_dump_json(exclude_none=True)
+                    ),
+                    "tokens": json.loads(
+                        _make_tokens().model_dump_json(exclude_none=True)
+                    ),
+                }
+            )
+        )
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        # The exact sentinel float is documented in the source; assert the
+        # observable behavior (token invalid, refresh path reachable) rather
+        # than pinning the magic value.
+        assert provider.context.is_token_valid() is False
+        assert provider.context.can_refresh_token() is True
+
+    async def test_initialize_legacy_file_without_refresh_token_leaves_expiry_unset(
+        self,
+    ) -> None:
+        """Legacy file without `refresh_token` cannot pre-empt expiry."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        path = storage.path
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "client_info": json.loads(
+                        _make_client_info().model_dump_json(exclude_none=True)
+                    ),
+                    "tokens": {"access_token": "stale", "token_type": "Bearer"},
+                }
+            )
+        )
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+        )
+        await provider._initialize()
+
+        # No refresh_token means there's nothing to refresh with, so the
+        # provider must leave token_expiry_time at its default (None). The
+        # stale Bearer will go out, hit 401, and fall into the SDK's full
+        # re-auth path — there's no shortcut available.
+        assert provider.context.token_expiry_time is None
+        assert provider.context.can_refresh_token() is False
+
+    async def test_initialize_with_storage_lacking_get_expires_at(self) -> None:
+        """Custom `TokenStorage` impls without `get_expires_at` still initialize."""
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        class _MinimalStorage(TokenStorage):
+            """`TokenStorage` that omits the optional `get_expires_at` method."""
+
+            def __init__(self) -> None:
+                self._tokens: OAuthToken | None = _make_tokens()
+                self._client_info = _make_client_info()
+
+            async def get_tokens(self) -> OAuthToken | None:
+                return self._tokens
+
+            async def set_tokens(self, tokens: OAuthToken) -> None:
+                self._tokens = tokens
+
+            async def get_client_info(self):
+                return self._client_info
+
+            async def set_client_info(self, client_info) -> None:
+                self._client_info = client_info
+
+        provider = build_oauth_provider(
+            server_name="custom",
+            server_url="https://mcp.example.com/mcp",
+            storage=_MinimalStorage(),
+        )
+        await provider._initialize()
+
+        # Without the optional sidecar accessor, the provider falls back to
+        # the upstream SDK's behavior: no expiry known, token treated as
+        # valid until a 401 forces re-auth.
+        assert provider.context.token_expiry_time is None
+        assert provider.context.current_tokens is not None
 
 
 class TestFindReauthRequired:

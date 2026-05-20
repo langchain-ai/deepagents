@@ -21,13 +21,6 @@ curl -LsSf https://langch.in/dcode | bash
 DEEPAGENTS_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
-Or install directly with `uv`:
-
-```bash
-# Install with chosen model providers
-uv tool install 'deepagents-code[nvidia,ollama]'
-```
-
 Run:
 
 ```bash

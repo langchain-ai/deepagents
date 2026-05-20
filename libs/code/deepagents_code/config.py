@@ -2104,11 +2104,18 @@ def _create_model_via_init(
             `init_chat_model` also fails to infer one. Carries the
             model spec and docs URL as attributes so the UI can render
             a clickable link.
+        MissingProviderPackageError: When the provider's LangChain package
+            is not installed. Carries the `provider` and `package` to install
+            so the UI can render a targeted recovery hint.
         ModelConfigError: On other import, value, or runtime errors.
     """
     from langchain.chat_models import init_chat_model
 
-    from deepagents_code.model_config import ModelConfigError, UnknownProviderError
+    from deepagents_code.model_config import (
+        MissingProviderPackageError,
+        ModelConfigError,
+        UnknownProviderError,
+    )
 
     try:
         if provider:
@@ -2129,7 +2136,15 @@ def _create_model_via_init(
         module_name = package.replace("-", "_")
         try:
             spec_found = importlib.util.find_spec(module_name) is not None
-        except (ImportError, ValueError):
+        except (ImportError, ValueError) as spec_exc:
+            # A broken finder is indistinguishable from "not installed" here;
+            # log so a real corruption doesn't masquerade as the missing-package
+            # hint without leaving a trail.
+            logger.debug(
+                "find_spec failed for %s; treating provider package as missing: %s",
+                module_name,
+                spec_exc,
+            )
             spec_found = False
         if spec_found:
             # Package is installed but an internal import failed — surface
@@ -2143,6 +2158,9 @@ def _create_model_via_init(
                 f"Missing package for provider '{provider}'. "
                 f"Install: pip install {package}"
             )
+            raise MissingProviderPackageError(
+                msg, provider=provider, package=package
+            ) from e
         raise ModelConfigError(msg) from e
     except (ValueError, TypeError) as e:
         if not provider:

@@ -46,6 +46,12 @@ repos:
         entry: make -C libs/acp format lint
         files: ^libs/acp/
         pass_filenames: false
+      - id: commands-catalog
+        name: regenerate deepagents-code COMMANDS.md
+        language: system
+        entry: make -C libs/code commands-catalog
+        files: ^libs/code/(deepagents_code/command_registry\.py|COMMANDS\.md|scripts/generate_commands_catalog\.py)$
+        pass_filenames: false
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system

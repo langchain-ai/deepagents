@@ -105,32 +105,13 @@ async def _invoke_with_structured_output(
     messages: list[HumanMessage],
     response_schema: dict[str, Any],
 ) -> str:
-    """Bind a structured output tool to the model and extract the result."""
-    if not hasattr(model, "bind_tools"):
-        msg = (
-            "invoke mode with response_schema requires"
-            " a model that supports bind_tools()."
-        )
-        raise ValueError(msg)
-
-    tool_name = "structured_output"
-    bound = model.bind_tools(
-        [
-            {
-                "name": tool_name,
-                "description": "Return the structured result.",
-                "parameters": response_schema,
-            }
-        ],
-        tool_choice=tool_name,
-    )
-    response = await bound.ainvoke(messages)
-
-    if not isinstance(response, AIMessage) or not response.tool_calls:
-        msg = "invoke mode with response_schema: model did not return structured output"
-        raise ValueError(msg)
-
-    return json.dumps(response.tool_calls[0]["args"])
+    """Use the model's structured output support to return validated JSON."""
+    schema = response_schema
+    if "title" not in schema:
+        schema = {**schema, "title": "structured_output"}
+    structured_model = model.with_structured_output(schema)
+    result = await structured_model.ainvoke(messages)
+    return json.dumps(result)
 
 
 class _AgentSpec:

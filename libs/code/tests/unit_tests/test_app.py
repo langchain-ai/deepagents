@@ -8411,6 +8411,183 @@ class TestMCPLoginCommand:
                 await pilot.pause()
             start_login.assert_called_once_with("github")
 
+    def test_optimistic_reenable_restores_pre_disable_server_info(self) -> None:
+        """Re-enabling before reconnect restores the server's original viewer state."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=True)
+        assert app._mcp_server_info is not None
+        assert app._mcp_server_info[0].status == "disabled"
+
+        app._apply_optimistic_disabled_state("filesystem", disabled=False)
+
+        assert app._mcp_server_info == [original]
+        assert app._mcp_optimistic_original_server_info == {}
+
+    async def test_disable_then_reenable_before_reconnect_clears_pending_notice(
+        self,
+    ) -> None:
+        """Undoing a disable before reconnect does not tell the user to reconnect."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    side_effect=[False, True],
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(True, None),
+                ),
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("filesystem")
+                await app._toggle_mcp_server_disabled("filesystem")
+
+        assert app._pending_mcp_reconnect is False
+        assert notify.call_count == 2
+        assert "Run `/mcp reconnect`" in notify.call_args_list[0].args[0]
+        assert notify.call_args_list[1].args[0] == "MCP server 'filesystem' enabled."
+
+    async def test_toggle_disable_notify_surfaces_persistence_error(self) -> None:
+        """A failed persist surfaces the underlying detail and skips state flip."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(False, "could not write /tmp/config.toml"),
+                ),
+                patch.object(app, "_show_mcp_viewer", new=AsyncMock()),
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("filesystem")
+
+        notify.assert_called_once()
+        message = notify.call_args.args[0]
+        assert "filesystem" in message
+        assert "could not write /tmp/config.toml" in message
+        assert notify.call_args.kwargs.get("severity") == "error"
+        assert notify.call_args.kwargs.get("markup") is False
+        # In-memory state must not flip on persistence failure.
+        assert app._mcp_server_info == [original]
+        assert app._pending_mcp_reconnect is False
+
+    async def test_server_ready_refreshes_open_viewer_via_task(self) -> None:
+        """A server-ready event refreshes an already-open MCP viewer.
+
+        Covers the `asyncio.create_task(_refresh_viewer())` path added
+        when `refresh_server_info` became async: without it, a user who
+        opened `/mcp` before the server finished starting would stare at
+        the connecting placeholder forever.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.widgets.mcp_viewer import MCPViewerScreen
+
+        ready_info = [
+            MCPServerInfo(
+                name="filesystem",
+                transport="stdio",
+                tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+            )
+        ]
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            viewer = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(viewer)
+            app._active_mcp_viewer = viewer
+            await pilot.pause()
+
+            app.on_deep_agents_app_server_ready(
+                app.ServerReady(
+                    agent=MagicMock(),
+                    server_proc=None,
+                    mcp_server_info=ready_info,
+                )
+            )
+            for _ in range(3):
+                await pilot.pause()
+
+            assert viewer._server_info == ready_info
+            assert viewer._connecting is False
+
+    async def test_toggle_disable_rejects_empty_server_name(self) -> None:
+        """An empty server name must not reach the persistence layer."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("")
+            set_disabled.assert_not_called()
+            notify.assert_not_called()
+
+    async def test_toggle_disable_rejects_unknown_server_name(self) -> None:
+        """A server name absent from the loaded config notifies and stops.
+
+        Surfaces the rejection to the user via `notify` (rather than a
+        silent log) so an F2 that does nothing isn't mistaken for a
+        toggle that succeeded — covers the config-reload race where the
+        viewer holds a stale server reference.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        known = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[known])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("stranger")
+            set_disabled.assert_not_called()
+            notify.assert_called_once()
+            args, kwargs = notify.call_args
+            assert "stranger" in args[0]
+            assert kwargs.get("severity") == "warning"
+            assert kwargs.get("markup") is False
+
     async def test_mcp_login_rejects_while_connecting(self) -> None:
         """`_connecting=True` prevents login until the server is ready."""
         app = DeepAgentsApp(agent=MagicMock())

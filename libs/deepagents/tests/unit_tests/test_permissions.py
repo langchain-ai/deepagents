@@ -181,13 +181,16 @@ class _FakeReq:
 
 
 class TestCheckFsPermissionInterrupt:
-    def test_interrupt_returned_when_rule_matches(self):
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            ("/secrets/x.txt", "interrupt"),
+            ("/workspace/x.txt", "allow"),
+        ],
+    )
+    def test_interrupt_rule_resolution(self, path, expected):
         rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
-        assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "interrupt"
-
-    def test_interrupt_not_returned_for_unrelated_path(self):
-        rules = [FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")]
-        assert _check_fs_permission(rules, "write", "/workspace/x.txt") == "allow"
+        assert _check_fs_permission(rules, "write", path) == expected
 
     def test_deny_rule_takes_precedence_when_listed_first(self):
         """First-match wins; if deny is listed first, it beats a later interrupt rule."""
@@ -231,107 +234,96 @@ class TestBuildInterruptOnFromPermissions:
         out = _build_interrupt_on_from_permissions([rule])
         assert set(out) == {"ls", "read_file", "glob", "grep"}
 
-    def test_exact_predicate_fires_on_matching_path(self):
-        """Exact-scope tools (write_file) only fire on the literal path arg."""
-        rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
-        out = _build_interrupt_on_from_permissions([rule])
-        when = out["write_file"]["when"]
-        assert when(_FakeReq({"file_path": "/secrets/key.pem"})) is True
-        assert when(_FakeReq({"file_path": "/workspace/x.txt"})) is False
-
-    def test_exact_predicate_does_not_fire_on_parent_path(self):
-        """`write_file("/secrets")` itself doesn't match `/secrets/**`."""
+    @pytest.mark.parametrize(
+        ("file_path", "expected"),
+        [
+            # literal match inside the rule's subtree
+            ("/secrets/key.pem", True),
+            # outside the rule
+            ("/workspace/x.txt", False),
+            # the parent dir itself doesn't match `/secrets/**` (** requires content after the slash)
+            ("/secrets", False),
+        ],
+    )
+    def test_exact_predicate(self, file_path, expected):
+        """Exact-scope tools fire iff the literal path arg matches the rule."""
         rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
         when = _make_fs_when_predicate([rule], "write", "file_path", "exact")
-        assert when(_FakeReq({"file_path": "/secrets"})) is False
+        assert when(_FakeReq({"file_path": file_path})) is expected
 
-    def test_bulk_predicate_fires_on_pathless_call(self):
-        """grep(path=None) under interrupt rules must fire — we can't localize it."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        out = _build_interrupt_on_from_permissions([rule])
-        when = out["grep"]["when"]
-        assert when(_FakeReq({"path": None})) is True
-        assert when(_FakeReq({})) is True
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [
+            # pathless: can't localize → fire
+            ({"path": None}, True),
+            ({}, True),
+            # current-dir aliases collapse to root → fire
+            ({"path": "."}, True),
+            ({"path": ""}, True),
+            ({"path": "./"}, True),
+            ({"path": "/."}, True),
+            ({"path": "/"}, True),
+            # ancestor of the rule's anchor → fire (listing surfaces protected children)
+            ({"path": "/secrets"}, True),
+            # inside the rule's subtree → fire
+            ({"path": "/secrets/sub"}, True),
+            # unrelated subtree → no fire
+            ({"path": "/workspace"}, False),
+            # prefix lookalike — component-aware match, not string prefix
+            ({"path": "/secret"}, False),
+            # path-validation failure short-circuits to no interrupt
+            ({"path": "/secrets/../etc/passwd"}, False),
+        ],
+    )
+    def test_bulk_predicate(self, args, expected):
+        """Bulk-scope tools fire when the call subtree could intersect a rule.
 
-    def test_bulk_predicate_fires_when_call_path_is_ancestor(self):
-        """`ls /` with rule on /secrets/** must fire — listing surfaces protected children."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        assert when(_FakeReq({"path": "/"})) is True
-        assert when(_FakeReq({"path": "/secrets"})) is True
-
-    def test_bulk_predicate_fires_when_call_path_is_descendant(self):
-        """`ls /secrets/sub` with rule on /secrets/** must fire — inside the protected subtree."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        assert when(_FakeReq({"path": "/secrets/sub"})) is True
-
-    def test_bulk_predicate_does_not_fire_on_unrelated_path(self):
-        """`ls /workspace` with rule on /secrets/** is fine."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        assert when(_FakeReq({"path": "/workspace"})) is False
-
-    def test_bulk_predicate_does_not_confuse_prefix_lookalikes(self):
-        """`/secret` (singular) must not overlap a rule on `/secrets/**`."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        assert when(_FakeReq({"path": "/secret"})) is False
-
-    def test_predicate_returns_false_on_invalid_path(self):
-        """Path-validation failures (e.g., `..`) short-circuit to no interrupt."""
-        rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
-        when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        assert when(_FakeReq({"path": "/secrets/../etc/passwd"})) is False
-
-    def test_bulk_predicate_fires_on_current_dir_aliases(self):
-        """`path="."`/`""`/`"./"` must trigger the interrupt the same as `path=None`.
-
-        Regression: `validate_path` collapses current-dir aliases to ``/.``,
-        which doesn't string-prefix any anchor, so the predicate previously
-        returned False and an agent could call e.g. ``grep(pattern, path=".")``
-        to scan the entire tree (including interrupt-protected subtrees) with
-        no HITL prompt. The bulk predicate now treats every alias for
-        "current/whole tree" as unlocalized.
+        Covers the HITL-bypass regressions for pathless calls and current-dir
+        aliases like ``"."``/``""``/``"./"``: `validate_path` collapses those to
+        ``/.``, which doesn't string-prefix any anchor, so the predicate
+        previously returned False and an agent could call e.g. ``grep(pattern,
+        path=".")`` to read interrupt-protected paths with no HITL prompt.
         """
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
         when = _make_fs_when_predicate([rule], "read", "path", "bulk")
-        for alias in (".", "", "./", "/.", "/"):
-            assert when(_FakeReq({"path": alias})) is True, f"alias {alias!r} should fire"
+        assert when(_FakeReq(args)) is expected
 
 
 class TestGlobAnchorAndOverlap:
-    def test_glob_anchor_strips_double_star(self):
-        assert _glob_anchor("/secrets/**") == "/secrets"
+    @pytest.mark.parametrize(
+        ("pattern", "expected"),
+        [
+            ("/secrets/**", "/secrets"),
+            ("/a/*/b", "/a"),
+            ("/secrets/key.pem", "/secrets/key.pem"),
+            ("/*/foo", "/"),
+            ("/**/secrets", "/"),
+        ],
+    )
+    def test_glob_anchor(self, pattern, expected):
+        assert _glob_anchor(pattern) == expected
 
-    def test_glob_anchor_strips_single_star_segment(self):
-        assert _glob_anchor("/a/*/b") == "/a"
-
-    def test_glob_anchor_no_wildcards_is_identity(self):
-        assert _glob_anchor("/secrets/key.pem") == "/secrets/key.pem"
-
-    def test_glob_anchor_falls_back_to_root_for_leading_wildcard(self):
-        assert _glob_anchor("/*/foo") == "/"
-
-    def test_paths_overlap_equal(self):
-        assert _paths_overlap("/a/b", "/a/b") is True
-
-    def test_paths_overlap_call_inside_rule(self):
-        assert _paths_overlap("/a/b/c", "/a/b") is True
-
-    def test_paths_overlap_rule_inside_call(self):
-        assert _paths_overlap("/a", "/a/b") is True
-
-    def test_paths_overlap_root_overlaps_everything(self):
-        assert _paths_overlap("/", "/anywhere") is True
-        assert _paths_overlap("/anywhere", "/") is True
-
-    def test_paths_overlap_does_not_confuse_prefix_lookalikes(self):
-        assert _paths_overlap("/secret", "/secrets") is False
-        assert _paths_overlap("/secrets", "/secret") is False
-
-    def test_paths_overlap_disjoint(self):
-        assert _paths_overlap("/workspace", "/secrets") is False
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            # equal
+            ("/a/b", "/a/b", True),
+            # call inside rule
+            ("/a/b/c", "/a/b", True),
+            # rule inside call
+            ("/a", "/a/b", True),
+            # root overlaps everything, either direction
+            ("/", "/anywhere", True),
+            ("/anywhere", "/", True),
+            # component-aware: prefix lookalikes don't overlap
+            ("/secret", "/secrets", False),
+            ("/secrets", "/secret", False),
+            # disjoint
+            ("/workspace", "/secrets", False),
+        ],
+    )
+    def test_paths_overlap(self, a, b, expected):
+        assert _paths_overlap(a, b) is expected
 
 
 class TestFilesystemMiddlewarePermissionInit:

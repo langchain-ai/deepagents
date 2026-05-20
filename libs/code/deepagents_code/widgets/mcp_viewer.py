@@ -876,9 +876,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if pending_reconnect is not None:
             self._pending_reconnect = pending_reconnect
 
-        new_server = next(
-            (s for s in server_info if s.name == toggled_server), None
-        )
+        new_server = next((s for s in server_info if s.name == toggled_server), None)
         header_idx = next(
             (
                 i

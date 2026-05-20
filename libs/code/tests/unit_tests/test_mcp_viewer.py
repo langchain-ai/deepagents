@@ -410,9 +410,7 @@ class TestMCPViewerScreen:
             async def on_toggle(server_name: str) -> None:
                 # Drop the toggled server entirely from the new list,
                 # forcing the in-place patch into its fallback path.
-                updated = [
-                    info for info in _sample_info() if info.name != server_name
-                ]
+                updated = [info for info in _sample_info() if info.name != server_name]
                 await screen.apply_server_disable_toggle(
                     updated,
                     toggled_server=server_name,

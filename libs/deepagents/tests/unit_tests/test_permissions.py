@@ -195,11 +195,19 @@ class TestCheckFsPermissionInterrupt:
         ]
         assert _check_fs_permission(rules, "write", "/secrets/x.txt") == "deny"
 
-    def test_filter_paths_does_not_drop_interrupt_paths(self):
-        """Interrupt-mode paths must remain in result-filtered lists (only deny is filtered)."""
+    def test_filter_paths_strips_interrupt_paths(self):
+        """Interrupt-mode paths must NOT leak through result filters.
+
+        The pre-execution `when` predicate can be bypassed for tools that accept
+        a missing or parent-directory path (e.g., pathless `grep`, `ls /`), so
+        the result-stage filter has to act as a defense-in-depth check and drop
+        interrupt-mode matches alongside deny-mode ones. Per-path tools
+        (`read_file`/`write_file`/`edit_file`) still trigger HITL correctly
+        because they require an explicit path that the predicate can evaluate.
+        """
         rules = [FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="interrupt")]
         kept = _filter_paths_by_permission(rules, "read", ["/secret/a.txt", "/public/b.txt"])
-        assert kept == ["/secret/a.txt", "/public/b.txt"]
+        assert kept == ["/public/b.txt"]
 
 
 class TestBuildInterruptOnFromPermissions:
@@ -827,6 +835,28 @@ class TestGrepToolPermissions:
         assert "/secrets/b.txt" not in result
         assert "/public/a.txt" in result
         assert "/secrets" not in result
+
+    def test_grep_path_none_does_not_leak_interrupt_paths(self):
+        """Pathless grep must not surface interrupt-mode matches.
+
+        Regression for HITL-bypass: with ``path=None`` the `when` predicate has
+        no path to evaluate and the interrupt never fires, so the post-execution
+        filter must drop interrupt-mode matches the same way it drops deny-mode
+        ones. Otherwise an agent could call ``grep(pattern, path=None)`` and
+        silently receive content from interrupt-protected paths.
+        """
+        backend = _make_backend(
+            {
+                "/public/a.txt": "keyword here",
+                "/secrets/b.txt": "keyword there",
+            }
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_tool = next(t for t in middleware.tools if t.name == "grep")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")]
+        result = _invoke_with_permissions(grep_tool, {"pattern": "keyword", "path": None}, rules)
+        assert "/secrets/b.txt" not in result
+        assert "/public/a.txt" in result
 
     async def test_grep_denied_on_restricted_path_async(self):
         backend = _make_backend({"/secrets/key.txt": "top secret data"})

@@ -129,15 +129,20 @@ def _filter_paths_by_permission(
     operation: FilesystemOperation,
     paths: list[str],
 ) -> list[str]:
-    """Filter paths, removing only those denied by a rule.
+    """Filter paths, removing any that match a ``deny`` or ``interrupt`` rule.
 
-    Paths with ``mode == "interrupt"`` pass through here: the interrupt fires
-    at the HITL stage *before* the tool runs, so when result-filtering is
-    invoked the user has already approved (or no rule matched).
+    Stripping interrupt-mode paths defends against HITL bypass when the calling
+    tool can run without a path argument (e.g., ``grep(path=None)``): the
+    pre-execution ``when`` predicate sees no path to evaluate and the interrupt
+    never fires, so we must not let interrupt-protected paths leak through the
+    post-execution result. For tools called with an explicit path, the
+    interrupt fires correctly before the tool runs and the result filter is a
+    no-op (the rule matched at the call site, so no rule matches the entries
+    returned).
     """
     if not rules:
         return paths
-    return [p for p in paths if _check_fs_permission(rules, operation, p) != "deny"]
+    return [p for p in paths if _check_fs_permission(rules, operation, p) == "allow"]
 
 
 def _all_paths_scoped_to_routes(
@@ -164,8 +169,16 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[FileInfo]:
-    """Filter file-info entries, removing only those denied by a rule."""
-    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) != "deny"]
+    """Filter file-info entries, removing any matching a ``deny`` or ``interrupt`` rule.
+
+    Interrupt-mode entries are stripped here because the pre-execution ``when``
+    predicate can be bypassed when the calling tool runs with no path argument
+    (e.g., a pathless ``grep``) or with a parent-directory path that doesn't
+    match the rule's pattern but whose listing surfaces protected children.
+    Per-path tools (``read_file``/``write_file``/``edit_file``) still trigger
+    HITL correctly because they require an explicit path.
+    """
+    return [fi for fi in infos if _check_fs_permission(rules, operation, fi.get("path", "")) == "allow"]
 
 
 def _filter_grep_matches_by_permission(
@@ -174,8 +187,12 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
 ) -> list[GrepMatch]:
-    """Filter grep matches, removing only those denied by a rule."""
-    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) != "deny"]
+    """Filter grep matches, removing any matching a ``deny`` or ``interrupt`` rule.
+
+    See :func:`_filter_file_infos_by_permission` for why interrupt-mode entries
+    are stripped (HITL-bypass defense for pathless / parent-path calls).
+    """
+    return [m for m in matches if _check_fs_permission(rules, operation, m.get("path", "")) == "allow"]
 
 
 def _apply_permissions_to_ls_results(

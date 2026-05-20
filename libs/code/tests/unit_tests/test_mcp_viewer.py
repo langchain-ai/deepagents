@@ -6,6 +6,7 @@ from textual.widgets import Static
 
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.widgets.mcp_viewer import (
+    MCP_VIEWER_RECONNECT_REQUEST,
     MCPServerHeaderItem,
     MCPToolItem,
     MCPViewerScreen,
@@ -102,6 +103,78 @@ class TestMCPViewerScreen:
 
             empty = screen.query_one(".mcp-empty", Static)
             assert "--mcp-config" in _widget_text(empty)
+
+    async def test_reconnect_hint_hidden_when_no_pending(self) -> None:
+        """Footer hint omits the `Ctrl+R` chip when nothing is queued."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=False,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Ctrl+R" not in _widget_text(help_widget)
+
+    async def test_reconnect_hint_shown_when_pending(self) -> None:
+        """Footer hint surfaces `Ctrl+R` when a reconnect is queued."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".mcp-viewer-help", Static)
+            assert "Ctrl+R reconnect" in _widget_text(help_widget)
+
+    async def test_ctrl_r_dismisses_with_reconnect_sentinel_when_pending(
+        self,
+    ) -> None:
+        """`Ctrl+R` dismisses with the reconnect sentinel when pending."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                outcomes.append(result)
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=True,
+            )
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert outcomes == [MCP_VIEWER_RECONNECT_REQUEST]
+
+    async def test_ctrl_r_is_noop_when_not_pending(self) -> None:
+        """`Ctrl+R` does nothing when no reconnect is queued."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[str | None] = []
+
+            def on_dismiss(result: str | None) -> None:
+                outcomes.append(result)
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=False,
+            )
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+
+            assert outcomes == []
 
     async def test_escape_dismisses(self) -> None:
         """Pressing Escape closes the viewer."""

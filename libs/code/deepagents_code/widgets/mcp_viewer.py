@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 from deepagents_code import theme
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 
+MCP_VIEWER_RECONNECT_REQUEST = "\x00__mcp_reconnect__"
+"""Sentinel returned by `MCPViewerScreen.dismiss` to request a reconnect.
+
+The null-byte prefix makes the value un-collidable with any valid MCP
+server name returned by `MCPServerInfo.name`, so callers can branch on
+this exact string without weakening the existing server-name dispatch.
+"""
+
 
 def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     """Return the glyph character for a server `status`.
@@ -565,6 +573,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Binding("ctrl+e", "toggle_all", "Toggle all", show=False, priority=True),
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
+        Binding("ctrl+r", "reconnect", "Reconnect", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
     """Key bindings for navigation, expansion, and cancel.
@@ -677,6 +686,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         server_info: list[MCPServerInfo],
         *,
         connecting: bool = False,
+        pending_reconnect: bool = False,
     ) -> None:
         """Initialize the MCP viewer screen.
 
@@ -686,10 +696,15 @@ class MCPViewerScreen(ModalScreen[str | None]):
                 "connecting..." placeholder instead of the "no servers"
                 message; the screen refreshes when `refresh_server_info`
                 is called after the server startup completes.
+            pending_reconnect: `True` when a deferred MCP login is queued
+                and a restart will pick it up. Surfaces the `Ctrl+R`
+                reconnect hint in the footer; the keybind itself is a
+                no-op when this is `False`.
         """
         super().__init__()
         self._server_info = server_info
         self._connecting = connecting
+        self._pending_reconnect = pending_reconnect
         # All cursor-navigable rows in render order: server headers + tool
         # items intermixed. `_selected_index` indexes into this list.
         self._row_widgets: list[MCPToolItem | MCPServerHeaderItem] = []
@@ -799,13 +814,15 @@ class MCPViewerScreen(ModalScreen[str | None]):
         container.mount(scroll)
         self._populate_scroll(scroll, self._query)
 
-        help_text = (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
-            f" {glyphs.bullet} Enter expand/login"
-            f" {glyphs.bullet} Ctrl+E expand all"
-            f" {glyphs.bullet} type to filter"
-            f" {glyphs.bullet} Esc close"
-        )
+        help_parts = [
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Enter expand/login",
+            "Ctrl+E expand all",
+        ]
+        if self._pending_reconnect:
+            help_parts.append("Ctrl+R reconnect")
+        help_parts.extend(["type to filter", "Esc close"])
+        help_text = f" {glyphs.bullet} ".join(help_parts)
         container.mount(Static(help_text, classes="mcp-viewer-help"))
 
     def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
@@ -1052,3 +1069,13 @@ class MCPViewerScreen(ModalScreen[str | None]):
     def action_cancel(self) -> None:
         """Close the viewer without selecting a server to log into."""
         self.dismiss(None)
+
+    def action_reconnect(self) -> None:
+        """Dismiss with the reconnect sentinel when a login is pending.
+
+        Bindings are static, so the keybind is always bound; this guard
+        is what makes it a no-op when nothing is queued.
+        """
+        if not self._pending_reconnect:
+            return
+        self.dismiss(MCP_VIEWER_RECONNECT_REQUEST)

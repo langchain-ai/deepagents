@@ -8750,6 +8750,101 @@ class TestMCPLoginCommand:
                 for w in app.query(AppMessage)
             )
 
+    async def test_mcp_reconnect_force_confirm_restarts(self) -> None:
+        """`/mcp reconnect force` restarts after the confirm modal accepts."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._pending_mcp_reconnect is False
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(
+                    app, "_push_screen_wait", new=AsyncMock(return_value=True)
+                ),
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_awaited_once_with("forced reconnect")
+
+    async def test_mcp_reconnect_force_cancel_skips_restart(self) -> None:
+        """`/mcp reconnect force` does nothing when the confirm modal is cancelled."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(
+                    app, "_push_screen_wait", new=AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_not_called()
+
+    async def test_mcp_reconnect_force_skips_confirm_when_pending(self) -> None:
+        """`/mcp reconnect force` restarts directly when a login is queued."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with (
+                patch.object(
+                    app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+                ) as restart,
+                patch.object(app, "_push_screen_wait", new=AsyncMock()) as push_screen,
+            ):
+                await app._handle_command("/mcp reconnect force")
+                await pilot.pause()
+            restart.assert_awaited_once_with("pending login")
+            push_screen.assert_not_called()
+
+    async def test_mcp_reconnect_invalid_arg_surfaces_usage(self) -> None:
+        """Invalid args route to the usage notice without invoking the handler.
+
+        Pure parser coverage lives in `TestParseReconnectArgs`; this test
+        only guards the wire from invalid parse → usage message.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_handle_mcp_reconnect_command", new=AsyncMock()
+            ) as handler:
+                await app._handle_command("/mcp reconnect force extra")
+                await pilot.pause()
+            handler.assert_not_called()
+            assert any(
+                "Usage: /mcp reconnect" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_viewer_ctrl_r_routes_to_reconnect_handler(self) -> None:
+        """End-to-end: Ctrl+R in the viewer triggers the restart path.
+
+        Guards the wire from `MCPViewerScreen` (which dismisses with
+        `MCP_VIEWER_RECONNECT_REQUEST`) through `_show_mcp_viewer`'s
+        `handle_result` callback and the deferred
+        `_reconnect_from_viewer_safe` coroutine. A regression that
+        changes the sentinel string or drops the `call_later` would
+        show up here even though the unit tests pass.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_reconnect = True
+            with patch.object(
+                app, "_restart_server_for_mcp_refresh", new=AsyncMock()
+            ) as restart:
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("ctrl+r")
+                await pilot.pause()
+            restart.assert_awaited_once_with("pending login")
+
     async def test_prompt_mcp_reconnect_pilot_driven_happy_path(self) -> None:
         """End-to-end: real modal mounts, `enter` keypress, restart fires.
 
@@ -8862,3 +8957,30 @@ class TestMCPLoginCommand:
             assert app._server_proc is None
             await app._restart_server_for_mcp_refresh("notion")
             assert app._pending_mcp_reconnect is False
+
+
+class TestParseReconnectArgs:
+    """Pure-function tests for `/mcp reconnect` argument parsing."""
+
+    @pytest.mark.parametrize("token", ["force", "--force", "-f", "FORCE", "Force"])
+    def test_force_spellings(self, token: str) -> None:
+        """All accepted spellings and case variants set `force=True`."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args(token) == (True, True)
+
+    def test_empty_is_valid_no_force(self) -> None:
+        """No args is the idempotent path."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args("") == (False, True)
+
+    @pytest.mark.parametrize(
+        "args",
+        ["bogus", "force extra", "--force trailing", "force-stop"],
+    )
+    def test_invalid_args_reject(self, args: str) -> None:
+        """Unknown tokens and trailing-token-after-force route to usage."""
+        from deepagents_code.app import _parse_reconnect_args
+
+        assert _parse_reconnect_args(args) == (False, False)

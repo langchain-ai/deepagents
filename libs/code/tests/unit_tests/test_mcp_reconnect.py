@@ -5,7 +5,10 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from deepagents_code.widgets.mcp_reconnect import MCPReconnectPromptScreen
+from deepagents_code.widgets.mcp_reconnect import (
+    MCPReconnectForceConfirmScreen,
+    MCPReconnectPromptScreen,
+)
 
 
 class _ReconnectTestApp(App[None]):
@@ -60,3 +63,41 @@ class TestMCPReconnectPromptScreen:
             titles = app.screen.query(".mcp-reconnect-title")
             assert len(titles) == 1
             assert "notion" in str(titles.first().render())
+
+
+class TestMCPReconnectForceConfirmScreen:
+    """Behavior tests for `MCPReconnectForceConfirmScreen`."""
+
+    async def test_enter_dismisses_with_true(self) -> None:
+        """Enter confirms the force-reconnect."""
+        app = _ReconnectTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+
+            def on_dismiss(result: bool | None) -> None:
+                outcomes.append(result)
+
+            app.push_screen(MCPReconnectForceConfirmScreen(), on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert outcomes == [True]
+
+    async def test_escape_dismisses_with_false(self) -> None:
+        """Esc cancels the force-reconnect."""
+        app = _ReconnectTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+
+            def on_dismiss(result: bool | None) -> None:
+                outcomes.append(result)
+
+            app.push_screen(MCPReconnectForceConfirmScreen(), on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert outcomes == [False]

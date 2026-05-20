@@ -114,3 +114,82 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
     def action_later(self) -> None:
         """Dismiss with `"later"`."""
         self.dismiss("later")
+
+
+class MCPReconnectForceConfirmScreen(ModalScreen[bool]):
+    """Confirmation overlay for `/mcp reconnect --force` with no pending login.
+
+    Guards a fat-fingered force-restart when nothing is actually queued.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Confirm", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    CSS = """
+    MCPReconnectForceConfirmScreen {
+        align: center middle;
+    }
+
+    MCPReconnectForceConfirmScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $warning;
+        padding: 1 2;
+    }
+
+    MCPReconnectForceConfirmScreen .mcp-reconnect-title {
+        text-style: bold;
+        color: $warning;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MCPReconnectForceConfirmScreen .mcp-reconnect-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    MCPReconnectForceConfirmScreen .mcp-reconnect-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual requires an instance method
+        """Compose the force-reconnect confirmation dialog.
+
+        Yields:
+            Title, body, and help-row widgets parented inside a `Vertical`.
+        """
+        with Vertical():
+            yield Static(
+                "Force reconnect?",
+                classes="mcp-reconnect-title",
+                markup=False,
+            )
+            yield Static(
+                "No MCP login is queued. Restart will drop the current "
+                "session and reload all servers.",
+                classes="mcp-reconnect-body",
+                markup=False,
+            )
+            yield Static(
+                "Enter to restart, Esc to cancel",
+                classes="mcp-reconnect-help",
+                markup=False,
+            )
+
+    def action_confirm(self) -> None:
+        """Dismiss with `True`."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Dismiss with `False`."""
+        self.dismiss(False)

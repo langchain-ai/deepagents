@@ -59,12 +59,13 @@ def _messages_delta_reducer(  # noqa: C901
         state_msgs = []
         msgs = msgs[remove_all_idx + 1 :]
 
+    result: list[AnyMessage | None] = []
     index: dict[str, int] = {}
-    for i, m in enumerate(state_msgs):
+    for m in state_msgs:
         if m.id is None:
             m.id = str(uuid.uuid4())
-        index[m.id] = i
-    result: list[AnyMessage | None] = list(state_msgs)
+        index[m.id] = len(result)
+        result.append(m)
     for msg in msgs:
         mid = msg.id
         if mid is None:

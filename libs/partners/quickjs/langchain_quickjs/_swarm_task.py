@@ -38,7 +38,7 @@ class SwarmSubAgent(BaseModel):
     """Tools available to this subagent."""
 
     model: str | BaseChatModel | None = None
-    """Model override for this subagent. Falls back to the tool's ``default_model``."""
+    """Model override for this subagent. Falls back to the tool's `default_model`."""
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -49,7 +49,7 @@ def _is_schema_node(value: object) -> bool:
 
 
 def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Recursively add ``additionalProperties: false`` to every object-typed node."""
+    """Recursively add `additionalProperties: false` to every object-typed node."""
     schema_type = schema.get("type")
     if schema_type not in ("object", "array"):
         return schema
@@ -74,7 +74,7 @@ def normalize_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_response_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a response schema and validate it has ``type: "object"``."""
+    """Normalize a response schema and validate it has `type: "object"`."""
     normalized = normalize_schema(schema)
     if normalized.get("type") != "object":
         got = json.dumps(normalized.get("type"))
@@ -87,7 +87,7 @@ class VariantCache:
     """TTL cache for compiled agent variants.
 
     Stores values keyed by string with a last-accessed timestamp. On every
-    ``get_or_create`` call, entries that haven't been accessed within ``ttl_s``
+    `get_or_create` call, entries that haven't been accessed within `ttl_s`
     are swept first. Cache hits refresh the timestamp.
     """
 
@@ -96,7 +96,7 @@ class VariantCache:
         self._ttl_s = ttl_s
 
     def get_or_create(self, key: str, factory: Any) -> Any:
-        """Return a cached value or create one via ``factory`` on cache miss."""
+        """Return a cached value or create one via `factory` on cache miss."""
         self._sweep()
         entry = self._entries.get(key)
         if entry is not None:
@@ -285,22 +285,22 @@ def create_swarm_task_tool(
     """Create a PTC-only tool for swarm subagent dispatch.
 
     The returned tool is designed to be passed into the CodeInterpreterMiddleware's
-    ``ptc`` list. It is never exposed to the LLM — only callable from QuickJS skill
-    code via ``tools.swarmTask()``.
+    `ptc` list. It is never exposed to the LLM — only callable from QuickJS skill
+    code via `tools.swarmTask()`.
 
     Supports two dispatch modes:
 
-    - ``agent`` (default): Full agentic loop with tools. Schema-constrained
+    - `agent` (default): Full agentic loop with tools. Schema-constrained
       agents are cached with a TTL.
-    - ``invoke``: Direct model call with structured output. No tools, no iteration.
+    - `invoke`: Direct model call with structured output. No tools, no iteration.
 
     Args:
         subagents: Subagent specifications for swarm dispatch targets.
         default_model: Default model used for subagents that don't specify their own,
-            and for ``invoke`` mode direct model calls.
+            and for `invoke` mode direct model calls.
 
     Returns:
-        A ``BaseTool`` suitable for the ``ptc`` config.
+        A `BaseTool` suitable for the `ptc` config.
     """
     subs = subagents or []
     compiled: dict[str, _CompiledAgent] = {}

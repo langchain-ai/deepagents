@@ -351,7 +351,7 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
 
 
 def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
-    """Parse the ``allowed-tools`` frontmatter value into a list of tool names."""
+    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
     if isinstance(raw_tools, str):
         return [t.strip(",") for t in raw_tools.split() if t.strip(",")]
     if raw_tools is not None:
@@ -364,7 +364,7 @@ def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
 
 
 def _parse_required_ptc_tools(metadata_obj: Any) -> list[str]:  # noqa: ANN401
-    """Extract ``required-ptc-tools`` from the metadata mapping."""
+    """Extract `required-ptc-tools` from the metadata mapping."""
     if not isinstance(metadata_obj, dict):
         return []
     raw = metadata_obj.get("required-ptc-tools")

@@ -737,7 +737,7 @@ class _ThreadREPL:
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
             # the result surfaces as ``[object]`` rather than the
-            # awaited value. Issue #3424.
+            # awaited value.
             handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
             try:
                 if handle.is_promise():

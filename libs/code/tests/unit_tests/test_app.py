@@ -8501,34 +8501,24 @@ class TestMCPLoginCommand:
         assert app._mcp_server_info == [original]
         assert app._pending_mcp_reconnect is False
 
-    async def test_toggle_disable_rejects_empty_sentinel_name(self) -> None:
-        """Viewer dismissal with an empty server name must not persist anything."""
-        from deepagents_code.widgets.mcp_viewer import (
-            MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
-        )
-
+    async def test_toggle_disable_rejects_empty_server_name(self) -> None:
+        """An empty server name must not reach the persistence layer."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch.object(app, "_toggle_mcp_server_disabled") as toggle,
-                patch.object(app, "_show_mcp_viewer") as show,
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
             ):
-                show.side_effect = None
-                await app._show_mcp_viewer()
-                await pilot.pause()
-                viewer = app._active_mcp_viewer
-                if viewer is not None:
-                    viewer.dismiss(MCP_VIEWER_TOGGLE_DISABLE_PREFIX)
-                    await pilot.pause()
-            toggle.assert_not_called()
+                await app._toggle_mcp_server_disabled("")
+            set_disabled.assert_not_called()
+            notify.assert_not_called()
 
-    async def test_toggle_disable_rejects_unknown_sentinel_name(self) -> None:
-        """A sentinel referring to an unknown server name is ignored."""
+    async def test_toggle_disable_rejects_unknown_server_name(self) -> None:
+        """A server name absent from the loaded config is silently ignored."""
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-        from deepagents_code.widgets.mcp_viewer import (
-            MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
-        )
 
         known = MCPServerInfo(
             name="filesystem",
@@ -8538,14 +8528,15 @@ class TestMCPLoginCommand:
         app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[known])
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(app, "_toggle_mcp_server_disabled") as toggle:
-                await app._show_mcp_viewer()
-                await pilot.pause()
-                viewer = app._active_mcp_viewer
-                assert viewer is not None
-                viewer.dismiss(f"{MCP_VIEWER_TOGGLE_DISABLE_PREFIX}stranger")
-                await pilot.pause()
-            toggle.assert_not_called()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled"
+                ) as set_disabled,
+                patch.object(app, "notify") as notify,
+            ):
+                await app._toggle_mcp_server_disabled("stranger")
+            set_disabled.assert_not_called()
+            notify.assert_not_called()
 
     async def test_mcp_login_rejects_while_connecting(self) -> None:
         """`_connecting=True` prevents login until the server is ready."""

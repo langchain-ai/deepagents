@@ -2516,8 +2516,14 @@ class DeepAgentsApp(App):
             logger.warning("Welcome banner not found during server ready transition")
 
         if self._active_mcp_viewer is not None:
-            with suppress(Exception):
-                self._active_mcp_viewer.refresh_server_info(self._mcp_server_info or [])
+            viewer = self._active_mcp_viewer
+
+            async def _refresh_viewer() -> None:
+                with suppress(Exception):
+                    await viewer.refresh_server_info(self._mcp_server_info or [])
+
+            task = asyncio.create_task(_refresh_viewer())
+            task.add_done_callback(_log_task_exception)
 
         # Session-start sequence: load resumed history, run `--startup-cmd`
         # (if any), then dispatch the initial prompt/skill and drain
@@ -8238,7 +8244,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.widgets.mcp_viewer import (
             MCP_VIEWER_RECONNECT_REQUEST,
-            MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
             MCPViewerScreen,
         )
 
@@ -8246,6 +8251,7 @@ class DeepAgentsApp(App):
             server_info=self._mcp_server_info or [],
             connecting=self._connecting,
             pending_reconnect=self._pending_mcp_reconnect,
+            on_toggle_disable=self._toggle_mcp_server_disabled,
         )
         self._active_mcp_viewer = screen
 
@@ -8255,22 +8261,6 @@ class DeepAgentsApp(App):
                 # `action_reconnect` gates dismiss on pending state, so
                 # `force=False` is correct.
                 self.call_later(self._reconnect_from_viewer_safe)
-                return
-            if result and result.startswith(MCP_VIEWER_TOGGLE_DISABLE_PREFIX):
-                server_name = result[len(MCP_VIEWER_TOGGLE_DISABLE_PREFIX) :]
-                if not server_name:
-                    logger.warning(
-                        "Empty server name in MCP disable sentinel; ignoring",
-                    )
-                    return
-                known_names = {info.name for info in self._mcp_server_info or ()}
-                if server_name not in known_names:
-                    logger.warning(
-                        "Unknown server %r in MCP disable sentinel; ignoring",
-                        server_name,
-                    )
-                    return
-                self.call_later(self._toggle_mcp_server_disabled, server_name)
                 return
             if result:
                 # User picked an unauthenticated server — start login.
@@ -8305,8 +8295,27 @@ class DeepAgentsApp(App):
         the toggle is correct regardless of whether the server was disabled
         in a previous session or by an external edit of `config.toml`.
         Persists the new value, updates pending reconnect state, and
-        re-opens the viewer so the user can see the new status.
+        refreshes the open viewer in-place — keeping the cursor on the
+        same server header — so the user sees the updated status without
+        a screen-swap flicker.
+
+        Args:
+            server_name: Name of the MCP server to toggle. Empty or
+                unknown names are rejected with a warning log; this
+                guards against a stale viewer reference holding a name
+                that has since been removed from the config.
         """
+        if not server_name:
+            logger.warning("Empty server name in disable toggle; ignoring")
+            return
+        known_names = {info.name for info in self._mcp_server_info or ()}
+        if server_name not in known_names:
+            logger.warning(
+                "Unknown server %r in disable toggle; ignoring",
+                server_name,
+            )
+            return
+
         from deepagents_code.mcp_disabled import (
             is_server_disabled,
             set_server_disabled,
@@ -8349,9 +8358,17 @@ class DeepAgentsApp(App):
                 message += " Run `/mcp reconnect` to apply."
         self._sync_pending_mcp_reconnect()
         self.notify(message, markup=False)
-        # Re-open the viewer so the user sees the new disabled marker and
-        # the Ctrl+R reconnect hint without an extra keystroke.
-        await self._show_mcp_viewer()
+        # Refresh the viewer in place so the new status glyph and the
+        # `Ctrl+R` reconnect hint appear without tearing the screen
+        # down. `suppress` matches the precedent at the server-ready
+        # refresh site: a stale viewer reference is non-fatal.
+        if self._active_mcp_viewer is not None:
+            with suppress(Exception):
+                await self._active_mcp_viewer.apply_server_disable_toggle(
+                    self._mcp_server_info or [],
+                    toggled_server=server_name,
+                    pending_reconnect=self._pending_mcp_reconnect,
+                )
 
     def _apply_optimistic_disabled_state(
         self,

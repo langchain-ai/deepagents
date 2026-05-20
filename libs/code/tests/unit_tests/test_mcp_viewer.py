@@ -1,5 +1,7 @@
 """Tests for the MCP viewer modal screen."""
 
+import asyncio
+
 from textual.app import App, ComposeResult
 from textual.widget import Widget
 from textual.widgets import Static
@@ -7,7 +9,6 @@ from textual.widgets import Static
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.widgets.mcp_viewer import (
     MCP_VIEWER_RECONNECT_REQUEST,
-    MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
     MCPServerHeaderItem,
     MCPToolItem,
     MCPViewerScreen,
@@ -195,8 +196,210 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert dismissed
 
-    async def test_f2_dismisses_with_disable_toggle_sentinel_on_header(self) -> None:
-        """F2 on a server header requests a disable/enable toggle."""
+    async def test_f2_invokes_toggle_callback_without_dismissing(self) -> None:
+        """F2 on a server header fires the callback in place; no screen swap."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[str | None] = []
+            toggled: list[str] = []
+
+            def on_dismiss(result: str | None) -> None:
+                outcomes.append(result)
+
+            async def on_toggle(server_name: str) -> None:
+                toggled.append(server_name)
+                # `await asyncio.sleep(0)` keeps the coroutine actually async
+                # so the lint check confirms callback signature matches.
+                await asyncio.sleep(0)
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen, on_dismiss)
+            await pilot.pause()
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            assert toggled == ["filesystem"]
+            # The viewer must stay mounted — no dismiss callback firing
+            # means no pop/push flicker.
+            assert outcomes == []
+            assert app.screen is screen
+
+    async def test_f2_refresh_preserves_list_and_selection(self) -> None:
+        """After F2 + in-place refresh, headers and tools still render."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+
+            async def on_toggle(server_name: str) -> None:
+                # Simulate the app's "disable" path: rebuild the server
+                # entry with status="disabled" and patch in place.
+                updated = [
+                    MCPServerInfo(
+                        name=info.name,
+                        transport=info.transport,
+                        status="disabled" if info.name == server_name else info.status,
+                        tools=() if info.name == server_name else info.tools,
+                        error=(
+                            "Disabled by user (pending reconnect)."
+                            if info.name == server_name
+                            else None
+                        ),
+                    )
+                    for info in _sample_info()
+                ]
+                await screen.apply_server_disable_toggle(
+                    updated,
+                    toggled_server=server_name,
+                    pending_reconnect=True,
+                )
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            headers = screen.query(".mcp-server-header")
+            assert len(headers) == 2
+            # Selection lands on the toggled server.
+            assert isinstance(
+                screen._row_widgets[screen._selected_index], MCPServerHeaderItem
+            )
+            assert (
+                screen._row_widgets[screen._selected_index].server.name == "filesystem"
+            )
+            # The other server's tools must still render.
+            tools = screen.query(".mcp-tool-item")
+            tool_text = " ".join(_widget_text(t) for t in tools)
+            assert "search" in tool_text
+
+    async def test_f2_patch_preserves_unrelated_widget_identity(self) -> None:
+        """In-place patch must NOT re-create widgets for unrelated servers.
+
+        Guards against a regression to the full-rebuild path: the other
+        server's header and tool rows must be the same Python instances
+        before and after the toggle. A full rebuild would replace them.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+
+            async def on_toggle(server_name: str) -> None:
+                updated = [
+                    MCPServerInfo(
+                        name=info.name,
+                        transport=info.transport,
+                        status="disabled" if info.name == server_name else info.status,
+                        tools=() if info.name == server_name else info.tools,
+                        error=(
+                            "Disabled by user (pending reconnect)."
+                            if info.name == server_name
+                            else None
+                        ),
+                    )
+                    for info in _sample_info()
+                ]
+                await screen.apply_server_disable_toggle(
+                    updated,
+                    toggled_server=server_name,
+                    pending_reconnect=True,
+                )
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            other_header_before = next(
+                w
+                for w in screen._row_widgets
+                if isinstance(w, MCPServerHeaderItem) and w.server.name == "remote-api"
+            )
+            other_tool_before = next(
+                w
+                for w in screen._row_widgets
+                if isinstance(w, MCPToolItem) and w.tool_name == "search"
+            )
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            other_header_after = next(
+                w
+                for w in screen._row_widgets
+                if isinstance(w, MCPServerHeaderItem) and w.server.name == "remote-api"
+            )
+            other_tool_after = next(
+                w
+                for w in screen._row_widgets
+                if isinstance(w, MCPToolItem) and w.tool_name == "search"
+            )
+
+            # Same Python objects -> no re-mount -> no flicker on this row.
+            assert other_header_after is other_header_before
+            assert other_tool_after is other_tool_before
+
+    async def test_f2_patch_updates_footer_when_pending_reconnect_changes(
+        self,
+    ) -> None:
+        """Toggling a server on must show `Ctrl+R reconnect` in the footer.
+
+        The footer is mounted once in `_mount_body`; the in-place patch
+        must keep it in sync when `pending_reconnect` flips, otherwise
+        the user wouldn't see the reconnect hint until the next viewer
+        open.
+        """
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen_holder: dict[str, MCPViewerScreen] = {}
+
+            async def on_toggle(server_name: str) -> None:
+                updated = [
+                    MCPServerInfo(
+                        name=info.name,
+                        transport=info.transport,
+                        status="disabled" if info.name == server_name else info.status,
+                        tools=() if info.name == server_name else info.tools,
+                        error=(
+                            "Disabled by user (pending reconnect)."
+                            if info.name == server_name
+                            else None
+                        ),
+                    )
+                    for info in _sample_info()
+                ]
+                await screen_holder["screen"].apply_server_disable_toggle(
+                    updated,
+                    toggled_server=server_name,
+                    pending_reconnect=True,
+                )
+
+            screen = MCPViewerScreen(
+                server_info=_sample_info(),
+                pending_reconnect=False,
+                on_toggle_disable=on_toggle,
+            )
+            screen_holder["screen"] = screen
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_static = screen.query_one(".mcp-viewer-help", Static)
+            assert "Ctrl+R reconnect" not in _widget_text(help_static)
+
+            await pilot.press("f2")
+            await pilot.pause()
+
+            assert "Ctrl+R reconnect" in _widget_text(help_static)
+
+    async def test_f2_is_noop_without_callback(self) -> None:
+        """Without a callback the screen stays mounted and nothing fires."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
             outcomes: list[str | None] = []
@@ -211,19 +414,22 @@ class TestMCPViewerScreen:
             await pilot.press("f2")
             await pilot.pause()
 
-            assert outcomes == [f"{MCP_VIEWER_TOGGLE_DISABLE_PREFIX}filesystem"]
+            assert outcomes == []
 
     async def test_f2_is_noop_on_tool_row(self) -> None:
         """F2 only toggles server headers, not individual tools."""
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
-            outcomes: list[str | None] = []
+            toggled: list[str] = []
 
-            def on_dismiss(result: str | None) -> None:
-                outcomes.append(result)
+            async def on_toggle(server_name: str) -> None:
+                toggled.append(server_name)
+                await asyncio.sleep(0)
 
-            screen = MCPViewerScreen(server_info=_sample_info())
-            app.push_screen(screen, on_dismiss)
+            screen = MCPViewerScreen(
+                server_info=_sample_info(), on_toggle_disable=on_toggle
+            )
+            app.push_screen(screen)
             await pilot.pause()
 
             await pilot.press("down")
@@ -231,7 +437,7 @@ class TestMCPViewerScreen:
             await pilot.pause()
 
             assert isinstance(screen._row_widgets[screen._selected_index], MCPToolItem)
-            assert outcomes == []
+            assert toggled == []
 
     async def test_single_server_singular_labels(self) -> None:
         """Title uses singular forms for 1 server and 1 tool."""

@@ -482,24 +482,18 @@ class TestInvokeMode:
             await tool.ainvoke({"description": "work", "mode": "invoke"})
             assert mock_create.call_count == after_construction
 
-    async def test_uses_bind_tools_when_response_schema_provided(self) -> None:
+    async def test_uses_with_structured_output_when_response_schema_provided(self) -> None:
         structured_result = {"label": "positive"}
-        bound_model = AsyncMock()
-        bound_model.ainvoke = AsyncMock(
-            return_value=AIMessage(
-                content=[],
-                tool_calls=[
-                    {
-                        "name": "structured_output",
-                        "args": structured_result,
-                        "id": "tc_1",
-                    }
-                ],
-            )
-        )
+        structured_model = AsyncMock()
+        structured_model.ainvoke = AsyncMock(return_value=structured_result)
 
         model = MagicMock()
-        model.bind_tools = MagicMock(return_value=bound_model)
+        model.with_structured_output = MagicMock(return_value=structured_model)
+
+        schema = {
+            "type": "object",
+            "properties": {"label": {"type": "string"}},
+        }
 
         tool = create_swarm_task_tool(subagents=[], default_model=model)
 
@@ -507,46 +501,15 @@ class TestInvokeMode:
             {
                 "description": "work",
                 "mode": "invoke",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {"label": {"type": "string"}},
-                },
+                "response_schema": schema,
             }
         )
 
-        model.bind_tools.assert_called_once_with(
-            [
-                {
-                    "name": "structured_output",
-                    "description": "Return the structured result.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"label": {"type": "string"}},
-                    },
-                },
-            ],
-            tool_choice="structured_output",
+        model.with_structured_output.assert_called_once_with(
+            {**schema, "title": "structured_output"}
         )
-        bound_model.ainvoke.assert_awaited_once()
+        structured_model.ainvoke.assert_awaited_once()
         assert result == json.dumps(structured_result)
-
-    async def test_throws_when_model_does_not_support_bind_tools(self) -> None:
-        model = _make_mock_model()
-        del model.bind_tools
-
-        tool = create_swarm_task_tool(subagents=[], default_model=model)
-
-        with pytest.raises(Exception, match="bind_tools"):
-            await tool.ainvoke(
-                {
-                    "description": "work",
-                    "mode": "invoke",
-                    "response_schema": {
-                        "type": "object",
-                        "properties": {"label": {"type": "string"}},
-                    },
-                }
-            )
 
     async def test_returns_string_content_from_model_response(self) -> None:
         model = _make_mock_model("the answer")

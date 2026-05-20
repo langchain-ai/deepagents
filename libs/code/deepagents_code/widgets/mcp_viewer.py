@@ -29,6 +29,14 @@ server name returned by `MCPServerInfo.name`, so callers can branch on
 this exact string without weakening the existing server-name dispatch.
 """
 
+MCP_VIEWER_TOGGLE_DISABLE_PREFIX = "\x00__mcp_toggle_disable__:"
+"""Sentinel prefix for a server-disable toggle request from the viewer.
+
+`MCPViewerScreen.dismiss` returns `MCP_VIEWER_TOGGLE_DISABLE_PREFIX +
+server_name` when the user presses Ctrl+D on a server header. The null
+byte keeps the value un-collidable with any valid `MCPServerInfo.name`.
+"""
+
 
 def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
     """Return the glyph character for a server `status`.
@@ -47,6 +55,8 @@ def _status_glyph(status: MCPServerStatus, glyphs: Glyphs) -> str:
         return glyphs.checkmark
     if status == "unauthenticated":
         return glyphs.warning
+    if status == "disabled":
+        return glyphs.pause
     return glyphs.error
 
 
@@ -69,6 +79,8 @@ def _status_color(status: MCPServerStatus, colors: theme.ThemeColors) -> str:
         return colors.success
     if status == "unauthenticated":
         return colors.warning
+    if status == "disabled":
+        return colors.muted
     return colors.error
 
 
@@ -574,6 +586,9 @@ class MCPViewerScreen(ModalScreen[str | None]):
         Binding("pageup", "page_up", "Page up", show=False, priority=True),
         Binding("pagedown", "page_down", "Page down", show=False, priority=True),
         Binding("ctrl+r", "reconnect", "Reconnect", show=False, priority=True),
+        Binding(
+            "ctrl+d", "toggle_disable", "Toggle disable", show=False, priority=True
+        ),
         Binding("escape", "cancel", "Close", show=False, priority=True),
     ]
     """Key bindings for navigation, expansion, and cancel.
@@ -817,6 +832,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         help_parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
             "Enter expand/login",
+            "Ctrl+D disable/enable",
             "Ctrl+E expand all",
         ]
         if self._pending_reconnect:
@@ -1079,3 +1095,17 @@ class MCPViewerScreen(ModalScreen[str | None]):
         if not self._pending_reconnect:
             return
         self.dismiss(MCP_VIEWER_RECONNECT_REQUEST)
+
+    def action_toggle_disable(self) -> None:
+        """Dismiss with a toggle-disable request for the selected server.
+
+        Only fires when a server header is selected — pressing Ctrl+D on a
+        tool row is a no-op. The app handles persistence and reconnect
+        state; the viewer just signals the request.
+        """
+        if not self._row_widgets:
+            return
+        row = self._row_widgets[self._selected_index]
+        if isinstance(row, MCPToolItem):
+            return
+        self.dismiss(f"{MCP_VIEWER_TOGGLE_DISABLE_PREFIX}{row.server.name}")

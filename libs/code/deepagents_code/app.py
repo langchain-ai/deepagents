@@ -8219,6 +8219,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.widgets.mcp_viewer import (
             MCP_VIEWER_RECONNECT_REQUEST,
+            MCP_VIEWER_TOGGLE_DISABLE_PREFIX,
             MCPViewerScreen,
         )
 
@@ -8235,6 +8236,10 @@ class DeepAgentsApp(App):
                 # `action_reconnect` gates dismiss on pending state, so
                 # `force=False` is correct.
                 self.call_later(self._reconnect_from_viewer_safe)
+                return
+            if result and result.startswith(MCP_VIEWER_TOGGLE_DISABLE_PREFIX):
+                server_name = result[len(MCP_VIEWER_TOGGLE_DISABLE_PREFIX) :]
+                self.call_later(self._toggle_mcp_server_disabled, server_name)
                 return
             if result:
                 # User picked an unauthenticated server — start login.
@@ -8261,6 +8266,99 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Reconnect failed: {type(exc).__name__}: {exc}"),
             )
+
+    async def _toggle_mcp_server_disabled(self, server_name: str) -> None:
+        """Flip the persistent disabled state for `server_name` and signal a reconnect.
+
+        Looks up the current state from the loaded `MCPServerInfo` list so
+        the toggle is correct regardless of whether the server was disabled
+        in a previous session or by an external edit of `config.toml`.
+        Persists the new value, marks an MCP reconnect as pending, and
+        re-opens the viewer so the user can see the new state and `Ctrl+R`
+        to apply it.
+        """
+        from deepagents_code.mcp_disabled import (
+            is_server_disabled,
+            set_server_disabled,
+        )
+
+        currently_disabled = is_server_disabled(server_name)
+        new_state = not currently_disabled
+        ok = set_server_disabled(server_name, new_state)
+        if not ok:
+            self.notify(
+                f"Could not persist disabled state for {server_name!r}. "
+                "Check `~/.deepagents/config.toml` permissions.",
+                severity="error",
+                markup=False,
+            )
+            return
+
+        verb = "disabled" if new_state else "enabled"
+        self._pending_mcp_reconnect = True
+        self._apply_optimistic_disabled_state(server_name, disabled=new_state)
+        self.notify(
+            f"MCP server {server_name!r} {verb}. Run `/mcp reconnect` to apply.",
+            markup=False,
+        )
+        # Re-open the viewer so the user sees the new disabled marker and
+        # the Ctrl+R reconnect hint without an extra keystroke.
+        await self._show_mcp_viewer()
+
+    def _apply_optimistic_disabled_state(
+        self,
+        server_name: str,
+        *,
+        disabled: bool,
+    ) -> None:
+        """Update `_mcp_server_info` so the viewer reflects the toggle immediately.
+
+        The authoritative state is recomputed on the next reconnect; this is
+        purely cosmetic so the user sees their action take effect without
+        waiting for the server restart.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+
+        info = self._mcp_server_info
+        if not info:
+            if disabled:
+                self._mcp_server_info = [
+                    MCPServerInfo(
+                        name=server_name,
+                        transport="unknown",
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                ]
+            return
+
+        updated: list[MCPServerInfo] = []
+        for entry in info:
+            if entry.name != server_name:
+                updated.append(entry)
+                continue
+            if disabled:
+                updated.append(
+                    MCPServerInfo(
+                        name=entry.name,
+                        transport=entry.transport,
+                        status="disabled",
+                        error="Disabled by user (pending reconnect).",
+                    ),
+                )
+            else:
+                # Best-effort re-enable: clear status to a neutral pending
+                # state. Real status (`ok` / `unauthenticated` / `error`)
+                # will be recomputed by the reconnect.
+                updated.append(
+                    MCPServerInfo(
+                        name=entry.name,
+                        transport=entry.transport,
+                        status="error",
+                        error="Re-enabled — run `/mcp reconnect` to load.",
+                    ),
+                )
+        self._mcp_server_info = updated
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Surface login worker failures that escaped the inner error handling."""

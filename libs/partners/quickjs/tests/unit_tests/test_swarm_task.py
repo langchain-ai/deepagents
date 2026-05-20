@@ -438,8 +438,6 @@ class TestAgentMode:
             assert mock_create.call_count == 1
 
 
-
-
 # ---------------------------------------------------------------------------
 # Invoke mode
 # ---------------------------------------------------------------------------
@@ -482,7 +480,9 @@ class TestInvokeMode:
             await tool.ainvoke({"description": "work", "mode": "invoke"})
             assert mock_create.call_count == after_construction
 
-    async def test_uses_with_structured_output_when_response_schema_provided(self) -> None:
+    async def test_uses_with_structured_output_when_schema_provided(
+        self,
+    ) -> None:
         structured_result = {"label": "positive"}
         structured_model = AsyncMock()
         structured_model.ainvoke = AsyncMock(return_value=structured_result)

@@ -48,28 +48,34 @@ class SwarmSubAgent:
     """Model override for this subagent. Falls back to the tool's `default_model`."""
 
 
-
 def _validate_response_schema(schema: dict[str, Any]) -> None:
     """Reject schemas that exceed size, depth, or property-count limits."""
     serialized = json.dumps(schema)
     if len(serialized) > _SCHEMA_MAX_BYTES:
-        msg = f"response_schema exceeds {_SCHEMA_MAX_BYTES} byte limit ({len(serialized)} bytes)"
+        msg = (
+            f"response_schema exceeds {_SCHEMA_MAX_BYTES}"
+            f" byte limit ({len(serialized)} bytes)"
+        )
         raise ValueError(msg)
 
-    def _check(node: object, depth: int, prop_count: list[int]) -> None:
+    def _check(node: dict[str, Any], depth: int, prop_count: list[int]) -> None:
         if depth > _SCHEMA_MAX_DEPTH:
-            msg = f"response_schema exceeds maximum nesting depth of {_SCHEMA_MAX_DEPTH}"
+            msg = (
+                f"response_schema exceeds maximum nesting depth of {_SCHEMA_MAX_DEPTH}"
+            )
             raise ValueError(msg)
-        if not isinstance(node, dict):
-            return
         props = node.get("properties")
         if isinstance(props, dict):
             prop_count[0] += len(props)
             if prop_count[0] > _SCHEMA_MAX_PROPERTIES:
-                msg = f"response_schema exceeds maximum of {_SCHEMA_MAX_PROPERTIES} properties"
+                msg = (
+                    "response_schema exceeds maximum of"
+                    f" {_SCHEMA_MAX_PROPERTIES} properties"
+                )
                 raise ValueError(msg)
             for v in props.values():
-                _check(v, depth + 1, prop_count)
+                if isinstance(v, dict):
+                    _check(v, depth + 1, prop_count)
         items = node.get("items")
         if isinstance(items, dict):
             _check(items, depth + 1, prop_count)
@@ -123,7 +129,6 @@ class VariantCache:
             return
         oldest_key = min(self._entries, key=lambda k: self._entries[k][1])
         del self._entries[oldest_key]
-
 
 
 async def _invoke_model(

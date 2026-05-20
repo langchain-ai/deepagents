@@ -313,40 +313,38 @@ class TestInterruptCleanup:
 class TestPersistContextTokens:
     """Tests for `_persist_context_tokens`."""
 
-    async def test_skips_aupdate_state_for_remote_agent(self) -> None:
-        """Remote agents must not call aupdate_state for _context_tokens.
+    async def test_writes_to_local_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persistence should go to the local cache, never aupdate_state.
 
-        When the agent is a RemoteAgent, aupdate_state goes over HTTP to the
-        dev server, which creates its own LangSmith trace that the client
-        cannot suppress with tracing_context(enabled=False). Skipping the call
-        is safe because persistence is best-effort.
+        Calling aupdate_state on remote agents creates server-side LangSmith
+        traces that we cannot suppress. The local cache sidesteps that.
         """
-        from deepagents_code.remote_client import RemoteAgent
+        from deepagents_code import context_tokens_cache
 
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aupdate_state = AsyncMock()
-
-        await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-1"}}, 1234
+        monkeypatch.setattr(
+            context_tokens_cache, "CONTEXT_TOKENS_DIR", tmp_path / "context_tokens"
         )
 
-        agent.aupdate_state.assert_not_called()
-
-    async def test_calls_aupdate_state_for_local_agent(self) -> None:
-        """Local agents should still call aupdate_state for _context_tokens."""
-        called_with: list[object] = []
-
-        def _capture(*args: object, **_kwargs: object) -> None:
-            called_with.append(args[1])  # the values dict
-
-        agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
-
         await _persist_context_tokens(
-            agent, {"configurable": {"thread_id": "t-2"}}, 9999
+            {"configurable": {"thread_id": "t-1"}}, 1234
         )
 
-        assert len(called_with) == 1
-        assert called_with[0] == {"_context_tokens": 9999}
+        assert context_tokens_cache.read_context_tokens("t-1") == 1234
+
+    async def test_no_thread_id_is_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing thread_id should be a silent no-op (no file written)."""
+        from deepagents_code import context_tokens_cache
+
+        cache_dir = tmp_path / "context_tokens"
+        monkeypatch.setattr(context_tokens_cache, "CONTEXT_TOKENS_DIR", cache_dir)
+
+        await _persist_context_tokens({"configurable": {}}, 9999)
+
+        assert not cache_dir.exists()
 
 
 class TestBuildStreamConfig:

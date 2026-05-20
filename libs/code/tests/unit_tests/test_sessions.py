@@ -241,6 +241,21 @@ class TestThreadFunctions:
             agent = asyncio.run(sessions.get_thread_agent("nonexistent"))
             assert agent is None
 
+    @pytest.fixture(autouse=True)
+    def _isolated_context_tokens_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Redirect the `_context_tokens` cache for every test in this class.
+
+        `delete_thread` now calls `delete_context_tokens` as part of cleanup.
+        Without this redirect the suite would `unlink` real files for any
+        test thread ID that happens to collide with a real one on disk.
+        """
+        from deepagents_code import context_tokens_cache
+
+        cache_dir = tmp_path / "context_tokens"
+        monkeypatch.setattr(context_tokens_cache, "CONTEXT_TOKENS_DIR", cache_dir)
+
     def test_delete_thread(self, temp_db):
         """Delete thread removes thread."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):
@@ -253,6 +268,34 @@ class TestThreadFunctions:
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("nonexistent"))
             assert result is False
+
+    def test_delete_thread_removes_context_tokens_cache(self, temp_db):
+        """`delete_thread` should also remove the per-thread cache file."""
+        from deepagents_code import context_tokens_cache
+
+        context_tokens_cache.write_context_tokens("thread1", 4242)
+        assert context_tokens_cache.read_context_tokens("thread1") == 4242
+
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            asyncio.run(sessions.delete_thread("thread1"))
+
+        assert context_tokens_cache.read_context_tokens("thread1") is None
+
+    def test_delete_thread_removes_cache_even_when_no_sql_row(self, temp_db):
+        """Remote-only threads (no local checkpoint) get their cache cleaned.
+
+        Without this, cache files would accumulate over time for any thread
+        whose checkpoint lives only on a remote LangGraph server.
+        """
+        from deepagents_code import context_tokens_cache
+
+        context_tokens_cache.write_context_tokens("remote-only", 999)
+
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            result = asyncio.run(sessions.delete_thread("remote-only"))
+
+        assert result is False
+        assert context_tokens_cache.read_context_tokens("remote-only") is None
 
 
 class TestGetCheckpointer:

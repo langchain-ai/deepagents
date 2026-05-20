@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2604,6 +2605,24 @@ class TestResumeThread:
 class TestFetchThreadHistoryData:
     """Tests for DeepAgentsApp._fetch_thread_history_data."""
 
+    @pytest.fixture(autouse=True)
+    def _isolated_context_tokens_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Redirect the `_context_tokens` cache to a temp dir.
+
+        `_fetch_thread_history_data` now reads the cache first and falls back
+        to graph state. Without this redirect, tests would hit the real
+        `~/.deepagents/.state/context_tokens/` and behave non-deterministically.
+        """
+        from deepagents_code import context_tokens_cache
+
+        monkeypatch.setattr(
+            context_tokens_cache,
+            "CONTEXT_TOKENS_DIR",
+            tmp_path / "context_tokens",
+        )
+
     async def test_returns_empty_when_agent_missing(self) -> None:
         """No active agent should return an empty history payload."""
         app = DeepAgentsApp()
@@ -2653,21 +2672,27 @@ class TestFetchThreadHistoryData:
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 
+        # Two `to_thread` calls now: cache read (returns None — no cache
+        # entry exists, fixture-redirected dir is empty) then message
+        # conversion.
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            side_effect=[None, converted],
         ) as to_thread_mock:
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.messages == converted
-        to_thread_mock.assert_awaited_once()
-        await_args = to_thread_mock.await_args
-        assert await_args is not None
-        assert await_args.args[1] == raw_messages
+        assert to_thread_mock.await_count == 2
+        conversion_call = to_thread_mock.await_args_list[-1]
+        assert conversion_call.args[1] == raw_messages
 
-    async def test_extracts_nonzero_context_tokens(self) -> None:
-        """Persisted _context_tokens should propagate to the payload."""
+    async def test_extracts_nonzero_context_tokens_from_graph_state(self) -> None:
+        """A persisted graph-state value should be returned when cache is empty.
+
+        Covers the migration fallback path for threads written by older
+        builds that still carry `_context_tokens` in checkpoint state.
+        """
         from deepagents_code.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
@@ -2681,28 +2706,96 @@ class TestFetchThreadHistoryData:
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            side_effect=[None, converted],  # cache miss, then conversion
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 
         assert payload.context_tokens == 12000
 
-    async def test_none_context_tokens_coerced_to_zero(self) -> None:
-        """`_context_tokens: None` in checkpoint should coerce to 0."""
+    async def test_cache_hit_overrides_graph_state(self) -> None:
+        """A live cache value should win over any stale graph-state value."""
+        from deepagents_code import context_tokens_cache
         from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        context_tokens_cache.write_context_tokens("tid-1", 7777)
 
         app = DeepAgentsApp()
         app._agent = MagicMock()
         raw_messages = [object()]
         state = MagicMock()
-        state.values = {"messages": raw_messages, "_context_tokens": None}
+        # Graph state still carries a stale value from before the migration.
+        state.values = {"messages": raw_messages, "_context_tokens": 99999}
         app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
+        converted = [MessageData(type=MessageType.USER, content="hi")]
+
+        # Only patch the message-conversion `to_thread`. The cache read uses
+        # the real `to_thread` against the fixture-redirected dir.
+        original_to_thread = asyncio.to_thread
+
+        # `fake_to_thread` mirrors `asyncio.to_thread`'s loose signature.
+        async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003, ANN202
+            if func is app._convert_messages_to_data:
+                return converted
+            return await original_to_thread(func, *args, **kwargs)
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new=fake_to_thread,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 7777
+
+    async def test_legitimate_zero_in_cache_does_not_fall_back(self) -> None:
+        """A legitimately persisted `0` should not trigger graph-state fallback.
+
+        Distinguishing cache miss (`None`) from a real `0` prevents a stale
+        non-zero graph-state value from resurrecting after the user clears
+        context.
+        """
+        from deepagents_code import context_tokens_cache
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        context_tokens_cache.write_context_tokens("tid-1", 0)
+
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        raw_messages = [object()]
+        state = MagicMock()
+        state.values = {"messages": raw_messages, "_context_tokens": 50000}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        converted = [MessageData(type=MessageType.USER, content="hi")]
+        original_to_thread = asyncio.to_thread
+
+        # `fake_to_thread` mirrors `asyncio.to_thread`'s loose signature.
+        async def fake_to_thread(func, *args, **kwargs):  # type: ignore[no-untyped-def]  # noqa: ANN002, ANN003, ANN202
+            if func is app._convert_messages_to_data:
+                return converted
+            return await original_to_thread(func, *args, **kwargs)
+
+        with patch(
+            "deepagents_code.app.asyncio.to_thread",
+            new=fake_to_thread,
+        ):
+            payload = await app._fetch_thread_history_data("tid-1")
+
+        assert payload.context_tokens == 0
+
+    async def test_no_cache_and_no_graph_state_yields_zero(self) -> None:
+        """Missing both sources should produce 0."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        state = MagicMock()
+        state.values = {"messages": [object()]}
+        app._agent.aget_state = AsyncMock(return_value=state)
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        converted = [MessageData(type=MessageType.USER, content="hi")]
 
         with patch(
             "deepagents_code.app.asyncio.to_thread",
             new_callable=AsyncMock,
-            return_value=converted,
+            side_effect=[None, converted],
         ):
             payload = await app._fetch_thread_history_data("tid-1")
 

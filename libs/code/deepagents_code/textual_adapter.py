@@ -1308,7 +1308,6 @@ async def execute_task_textual(
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     await _report_and_persist_tokens(
                         adapter,
-                        agent,
                         config,
                         captured_input_tokens,
                         captured_output_tokens,
@@ -1338,7 +1337,6 @@ async def execute_task_textual(
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     await _report_and_persist_tokens(
         adapter,
-        agent,
         config,
         captured_input_tokens,
         captured_output_tokens,
@@ -1437,7 +1435,6 @@ async def _handle_interrupt_cleanup(
     turn_stats.wall_time_seconds = time.monotonic() - start_time
     await _report_and_persist_tokens(
         adapter,
-        agent,
         config,
         captured_input_tokens,
         captured_output_tokens,
@@ -1447,57 +1444,32 @@ async def _handle_interrupt_cleanup(
 
 
 async def _persist_context_tokens(
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
     config: RunnableConfig,
     tokens: int,
 ) -> None:
-    """Best-effort persist of the context token count into graph state.
+    """Best-effort persist of the context token count to the local cache.
 
-    For local agents, the `aupdate_state` call is wrapped in
-    `tracing_context(enabled=False)` so this purely-internal bookkeeping write
-    does not surface as a separate `UpdateState` run in LangSmith.
-    `_context_tokens` is already marked `PrivateStateAttr`, but `aupdate_state`
-    itself creates its own traced run that would otherwise clutter the project's
-    traces.
-
-    For remote agents (e.g. a `langgraph dev` server), `aupdate_state` goes
-    over HTTP and the server creates its own LangSmith trace that the client
-    cannot suppress with `tracing_context`. Skipping the call is safe because
-    persistence is best-effort — a stale count on resume is acceptable.
+    See `context_tokens_cache` for why this lives on local disk instead of
+    graph state.
 
     Args:
-        agent: The LangGraph agent (must support `aupdate_state`).
-        config: Runnable config with `thread_id`.
+        config: Runnable config with `thread_id` in `configurable`.
         tokens: Total context tokens to persist.
     """
-    from deepagents_code.remote_client import RemoteAgent
+    from deepagents_code.context_tokens_cache import write_context_tokens
 
-    if isinstance(agent, RemoteAgent):
+    thread_id = (config.get("configurable") or {}).get("thread_id")
+    if not isinstance(thread_id, str) or not thread_id:
+        logger.debug(
+            "Skipping context-tokens persist: missing thread_id in config"
+        )
         return
-
-    from langsmith import tracing_context
-
-    try:
-        with tracing_context(enabled=False):
-            await agent.aupdate_state(config, {"_context_tokens": tokens})
-    except (httpx.TransportError, httpx.TimeoutException) as e:
-        logger.warning(
-            "Could not persist _context_tokens=%d (network): %s; "
-            "token count may be stale on resume",
-            tokens,
-            e,
-        )
-    except Exception:  # non-critical; stale count on resume is acceptable
-        logger.warning(
-            "Failed to persist _context_tokens=%d; token count may be stale on resume",
-            tokens,
-            exc_info=True,
-        )
+    # Offload the file write so the event loop is not blocked.
+    await asyncio.to_thread(write_context_tokens, thread_id, tokens)
 
 
 async def _report_and_persist_tokens(
     adapter: TextualUIAdapter,
-    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
     config: RunnableConfig,
     captured_input_tokens: int,
     captured_output_tokens: int,
@@ -1505,11 +1477,10 @@ async def _report_and_persist_tokens(
     shield: bool = False,
     approximate: bool = False,
 ) -> None:
-    """Update the token display and best-effort persist to graph state.
+    """Update the token display and best-effort persist to the local cache.
 
     Args:
         adapter: UI adapter with token callbacks.
-        agent: The LangGraph agent.
         config: Runnable config with `thread_id` in its configurable dict.
         captured_input_tokens: Total input tokens captured during the turn.
         captured_output_tokens: Total output tokens captured during the turn.
@@ -1522,15 +1493,19 @@ async def _report_and_persist_tokens(
         if adapter._on_tokens_update:
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
         if shield:
+            # `_persist_context_tokens` is already best-effort (cache write
+            # errors are logged and swallowed), so the only thing we still
+            # need to shield against during interrupt cleanup is
+            # `CancelledError` propagating from `asyncio.to_thread`.
             try:
-                await _persist_context_tokens(agent, config, captured_input_tokens)
-            except (Exception, asyncio.CancelledError):
+                await _persist_context_tokens(config, captured_input_tokens)
+            except asyncio.CancelledError:
                 logger.debug(
-                    "Token persist suppressed during interrupt cleanup",
+                    "Token persist cancelled during interrupt cleanup",
                     exc_info=True,
                 )
         else:
-            await _persist_context_tokens(agent, config, captured_input_tokens)
+            await _persist_context_tokens(config, captured_input_tokens)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
 

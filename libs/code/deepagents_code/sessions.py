@@ -1007,8 +1007,16 @@ async def delete_thread(thread_id: str) -> bool:
     Returns:
         True if thread was deleted, False if not found.
     """
+    # Drop the client-side `_context_tokens` cache entry unconditionally so
+    # remote-only threads (no local checkpoint row, so `deleted` stays False)
+    # don't leak cache files. Run after `commit()` rather than inside the
+    # transaction — filesystem ops can't be rolled back, and an orphan cache
+    # file is harmless if the SQL delete fails. Best-effort, off the loop.
+    from deepagents_code.context_tokens_cache import delete_context_tokens
+
     async with _connect() as conn:
         if not await _table_exists(conn, "checkpoints"):
+            await asyncio.to_thread(delete_context_tokens, thread_id)
             return False
 
         cursor = await conn.execute(
@@ -1023,6 +1031,7 @@ async def delete_thread(thread_id: str) -> bool:
             for key, rows in list(_recent_threads_cache.items()):
                 filtered = [row for row in rows if row["thread_id"] != thread_id]
                 _recent_threads_cache[key] = filtered
+        await asyncio.to_thread(delete_context_tokens, thread_id)
         return deleted
 
 

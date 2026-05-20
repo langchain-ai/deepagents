@@ -5576,7 +5576,7 @@ class DeepAgentsApp(App):
             self._on_tokens_update(result.tokens_after)
             from deepagents_code.textual_adapter import _persist_context_tokens
 
-            await _persist_context_tokens(self._agent, config, result.tokens_after)
+            await _persist_context_tokens(config, result.tokens_after)
 
         except OffloadModelError as exc:
             logger.warning("Offload model creation failed: %s", exc, exc_info=True)
@@ -5946,10 +5946,22 @@ class DeepAgentsApp(App):
             context-token count.
         """
         state_values = await self._get_thread_state_values(thread_id)
-        raw_tokens = state_values.get("_context_tokens")
-        context_tokens = (
-            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
-        )
+        # Prefer the local cache for `_context_tokens` (see
+        # `context_tokens_cache` for the rationale). Threads written before
+        # the move to local cache still carry the value in graph state, so
+        # fall back there on a true cache miss (sentinel `None`, distinct
+        # from a legitimate persisted `0`). This fallback can be removed
+        # once those threads have aged out.
+        from deepagents_code.context_tokens_cache import read_context_tokens
+
+        cached = await asyncio.to_thread(read_context_tokens, thread_id)
+        if cached is not None:
+            context_tokens = cached
+        else:
+            raw_tokens = state_values.get("_context_tokens")
+            context_tokens = (
+                raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+            )
         messages = state_values.get("messages", [])
 
         if not messages:

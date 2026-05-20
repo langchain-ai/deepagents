@@ -98,53 +98,22 @@ class TestTokenDisplayCallbacks:
 class TestPersistContextTokens:
     """Tests for the `_persist_context_tokens` helper."""
 
-    async def test_calls_aupdate_state_with_token_count(self):
-        """Happy path: persists the count via `aupdate_state`."""
-        from unittest.mock import AsyncMock
-
+    async def test_writes_to_local_cache(
+        self, tmp_path, monkeypatch
+    ):
+        """Happy path: persists the count to the local cache."""
+        from deepagents_code import context_tokens_cache
         from deepagents_code.textual_adapter import _persist_context_tokens
 
-        agent = AsyncMock()
+        monkeypatch.setattr(
+            context_tokens_cache, "CONTEXT_TOKENS_DIR", tmp_path / "context_tokens"
+        )
         config = {"configurable": {"thread_id": "t-1"}}
 
-        await _persist_context_tokens(agent, config, 4200)  # type: ignore[arg-type]
+        await _persist_context_tokens(config, 4200)  # type: ignore[arg-type]
 
-        agent.aupdate_state.assert_awaited_once_with(config, {"_context_tokens": 4200})
+        assert context_tokens_cache.read_context_tokens("t-1") == 4200
 
-    async def test_suppresses_exceptions(self):
-        """Failures should be swallowed (non-critical persistence)."""
-        from unittest.mock import AsyncMock
-
-        from deepagents_code.textual_adapter import _persist_context_tokens
-
-        agent = AsyncMock()
-        agent.aupdate_state.side_effect = RuntimeError("checkpointer down")
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        # Should not raise
-        await _persist_context_tokens(agent, config, 1000)  # type: ignore[arg-type]
-
-    async def test_disables_tracing_during_update(self):
-        """`aupdate_state` should run with LangSmith tracing disabled.
-
-        The token-count write is a private bookkeeping update; surfacing it as a
-        standalone `UpdateState` run in LangSmith clutters traces.
-        """
-        from unittest.mock import AsyncMock
-
-        from langsmith import get_tracing_context
-
-        from deepagents_code.textual_adapter import _persist_context_tokens
-
-        captured: dict[str, object] = {}
-
-        async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029  # AsyncMock side_effect must be a coroutine function
-            captured["enabled"] = get_tracing_context().get("enabled")
-
-        agent = AsyncMock()
-        agent.aupdate_state.side_effect = _capture
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        await _persist_context_tokens(agent, config, 4200)  # type: ignore[arg-type]
-
-        assert captured["enabled"] is False
+    # OSError swallowing is now owned by `write_context_tokens` itself
+    # (covered in `test_context_tokens_cache.py`); `_persist_context_tokens`
+    # is just an async wrapper around it.

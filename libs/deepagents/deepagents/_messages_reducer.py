@@ -10,6 +10,7 @@ side — so we skip the per-message coercion.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, cast
 
 from langchain_core.messages import (
@@ -21,16 +22,14 @@ from langchain_core.messages import (
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 
-def _messages_delta_reducer(  # noqa: C901
+def _messages_delta_reducer(  # noqa: C901, PLR0912
     state: list[AnyMessage], writes: list[list[AnyMessage]]
 ) -> list[AnyMessage]:
     """Batch reducer for use with `DeltaChannel` on the messages key.
 
     Dedups by ID, tombstones via `RemoveMessage`, resets on
-    `REMOVE_ALL_MESSAGES`. ID-less messages are appended without ID
-    assignment — checkpointers serialize pending writes before
-    `update()` runs, so IDs assigned inside the reducer never reach
-    stored writes and would differ on replay, defeating deduplication.
+    `REMOVE_ALL_MESSAGES`. ID-less messages are assigned a UUID before
+    being appended, matching the behaviour of `add_messages`.
 
     Raw dict / string / tuple inputs are coerced to typed `BaseMessage` so
     HTTP-driven graphs work without a separate coercion step.
@@ -60,11 +59,19 @@ def _messages_delta_reducer(  # noqa: C901
         state_msgs = []
         msgs = msgs[remove_all_idx + 1 :]
 
-    index: dict[str, int] = {m.id: i for i, m in enumerate(state_msgs) if m.id is not None}
-    result: list[AnyMessage | None] = list(state_msgs)
+    result: list[AnyMessage | None] = []
+    index: dict[str, int] = {}
+    for m in state_msgs:
+        if m.id is None:
+            m.id = str(uuid.uuid4())
+        index[m.id] = len(result)
+        result.append(m)
     for msg in msgs:
         mid = msg.id
         if mid is None:
+            msg.id = str(uuid.uuid4())
+            mid = msg.id
+            index[mid] = len(result)
             result.append(msg)
         elif isinstance(msg, RemoveMessage):
             if mid in index:

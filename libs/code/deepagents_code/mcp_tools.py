@@ -51,8 +51,13 @@ class MCPToolInfo:
     """
 
 
-MCPServerStatus = Literal["ok", "unauthenticated", "error"]
-"""Load states a configured MCP server can end up in."""
+MCPServerStatus = Literal["ok", "unauthenticated", "error", "disabled"]
+"""Load states a configured MCP server can end up in.
+
+`disabled` is set when the user has turned the server off via the TUI
+(`/mcp` -> F2). No connection is attempted and no tools are loaded, but
+the entry is still surfaced in the viewer so the user can re-enable it.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,14 +68,16 @@ class MCPServerInfo:
     """Server name from the MCP configuration."""
 
     transport: str
-    """Transport identifier — `stdio`, `sse`, `http`, or the synthetic
-    `config` value used for entries surfacing a bad config file."""
+    """Transport identifier — `stdio`, `sse`, `http`, the synthetic
+    `config` value used for entries surfacing a bad config file, or
+    `unknown` for a disabled server whose original config could not be
+    classified."""
 
     tools: tuple[MCPToolInfo, ...] = ()
     """Tools exposed by this server (empty when `status != "ok"`)."""
 
     status: MCPServerStatus = "ok"
-    """Load status — `ok`, `unauthenticated`, or `error`."""
+    """Load status — `ok`, `unauthenticated`, `error`, or `disabled`."""
 
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
@@ -1572,6 +1579,31 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, _bad_config_infos()
 
+    from deepagents_code.mcp_disabled import get_disabled_servers
+
+    disabled_names = get_disabled_servers()
+    disabled_infos: list[MCPServerInfo] = []
+    if disabled_names:
+        active: dict[str, Any] = {}
+        for server_name, server_config in merged["mcpServers"].items():
+            if server_name in disabled_names:
+                disabled_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=_resolve_server_type(server_config)
+                        if isinstance(server_config, dict)
+                        else "unknown",
+                        status="disabled",
+                        error="Disabled by user (`/mcp` F2 to re-enable).",
+                    ),
+                )
+            else:
+                active[server_name] = server_config
+        merged = {"mcpServers": active}
+
+    if not merged.get("mcpServers"):
+        return [], None, disabled_infos + _bad_config_infos()
+
     try:
         for server_name, server_config in merged["mcpServers"].items():
             _validate_server_config(server_name, server_config)
@@ -1584,5 +1616,6 @@ async def resolve_and_load_mcp_tools(
         stateless=stateless,
         session_manager=session_manager,
     )
+    server_infos.extend(disabled_infos)
     server_infos.extend(_bad_config_infos())
     return tools, manager, server_infos

@@ -1210,7 +1210,7 @@ requires-dist = [
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.2,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.0.7,<2.0.0" },
-    { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.6.4,<2.0.0" },
+    { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.6.6,<2.0.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.2.2,<1.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.4,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
@@ -2837,7 +2837,7 @@ wheels = [
 
 [[package]]
 name = "langchain-litellm"
-version = "0.6.4"
+version = "0.6.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -2845,9 +2845,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "litellm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/37/ccc1f284a42900ca5b267a50da8e50145e9f264b32ee955ce91aa360d188/langchain_litellm-0.6.4.tar.gz", hash = "sha256:663281db392b3de1f07f891d0f80f9d4b26c0f0d2abbf854ef9b186d99c309ee", size = 339457, upload-time = "2026-04-03T16:56:47.886Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/17/70/e1f42ceccd5fdad78ed7fd1a150c12661b63b92647d768168cd9efcdcf15/langchain_litellm-0.6.6.tar.gz", hash = "sha256:fb4399ae4c239b5bb85c19574a5bb4c17988433d48ec716e62144f0dad4a63af", size = 346225, upload-time = "2026-05-21T11:27:56.869Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/e8/25c50bbad7a05106c7af65557e165d6cb6159c90854dae61de59debe735d/langchain_litellm-0.6.4-py3-none-any.whl", hash = "sha256:60f4e37be1a47dc88f94fac7085675ef8fa04bba92f48735792d82f492120744", size = 26360, upload-time = "2026-04-03T16:56:46.76Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/d0/adda5508115c28d78b408cc8f6b1e3fa3b2cc83a551b62cd613bb705535c/langchain_litellm-0.6.6-py3-none-any.whl", hash = "sha256:d49d0353254e10e38c351d7eae3d7b34128a0d31a3a22928ac289a8987c21a30", size = 26393, upload-time = "2026-05-21T11:27:55.709Z" },
 ]
 
 [[package]]
@@ -3319,7 +3319,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.83.0"
+version = "1.85.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3335,9 +3335,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/22/92/6ce9737554994ca8e536e5f4f6a87cc7c4774b656c9eb9add071caf7d54b/litellm-1.83.0.tar.gz", hash = "sha256:860bebc76c4bb27b4cf90b4a77acd66dba25aced37e3db98750de8a1766bfb7a", size = 17333062, upload-time = "2026-03-31T05:08:25.331Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/55/aebffceaa08688a989e9c68b3edc3a520a1f8338eb0346668774bd66ad88/litellm-1.85.1.tar.gz", hash = "sha256:3b8ef0c89ff2736cbd27109f17ff31f1bd0ab59dee9be8cadb28ec3cb167ce0d", size = 15346324, upload-time = "2026-05-21T02:30:38.185Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/2c/a670cc050fcd6f45c6199eb99e259c73aea92edba8d5c2fc1b3686d36217/litellm-1.83.0-py3-none-any.whl", hash = "sha256:88c536d339248f3987571493015784671ba3f193a328e1ea6780dbebaa2094a8", size = 15610306, upload-time = "2026-03-31T05:08:21.987Z" },
+    { url = "https://files.pythonhosted.org/packages/17/a0/263a13c2253201aa11563a69d9a87f3510030aa765a16f57fc40ceefcdf5/litellm-1.85.1-py3-none-any.whl", hash = "sha256:c89eb5dfd18cce3d40b59e79c74f7f645bc7814a417c6ab25e53c786f0a6ab7b", size = 16980080, upload-time = "2026-05-21T02:30:35.096Z" },
 ]
 
 [[package]]

@@ -258,6 +258,7 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
     return False
 
 
+
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
 

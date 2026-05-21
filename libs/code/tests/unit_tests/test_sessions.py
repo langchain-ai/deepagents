@@ -664,8 +664,8 @@ class TestListThreadsWithMessageCount:
 class TestPopulateThreadCheckpointDetails:
     """Tests for combined checkpoint-detail enrichment."""
 
-    async def test_shared_summary_populates_count_and_prompt_once(self) -> None:
-        """One batch lookup should fill both fields for a thread row."""
+    async def test_populates_count_and_prompt_from_separate_sources(self) -> None:
+        """Counts come from the checkpoint summary, prompts from the writes table."""
         threads: list[sessions.ThreadInfo] = [
             {
                 "thread_id": "thread-a",
@@ -689,15 +689,21 @@ class TestPopulateThreadCheckpointDetails:
                 return_value={
                     "thread-a": sessions._CheckpointSummary(
                         message_count=4,
-                        initial_prompt="hello world",
+                        initial_prompt=None,
                     ),
                 },
-            ) as mock_batch,
+            ) as mock_summary,
+            patch.object(
+                sessions,
+                "_load_initial_prompts_from_writes_batch",
+                new_callable=AsyncMock,
+                return_value={"thread-a": "hello world"},
+            ) as mock_prompts,
         ):
             await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
                 cast(
                     "aiosqlite.Connection",
-                    object(),  # connection is unused by the mocked loader
+                    object(),  # connection is unused by the mocked loaders
                 ),
                 threads,
                 include_message_count=True,
@@ -706,7 +712,102 @@ class TestPopulateThreadCheckpointDetails:
 
         assert threads[0]["message_count"] == 4
         assert threads[0]["initial_prompt"] == "hello world"
-        assert mock_batch.await_count == 1
+        assert mock_summary.await_count == 1
+        assert mock_prompts.await_count == 1
+
+    async def test_skips_prompt_query_when_not_requested(self) -> None:
+        """The writes-table prompt query should be skipped when prompts are off."""
+        threads: list[sessions.ThreadInfo] = [
+            {
+                "thread_id": "thread-a",
+                "agent_name": "agent",
+                "updated_at": "2026-03-08T02:00:00+00:00",
+                "latest_checkpoint_id": "cp_1",
+            }
+        ]
+
+        with (
+            patch.object(
+                sessions,
+                "_get_jsonplus_serializer",
+                new_callable=AsyncMock,
+                return_value=object(),
+            ),
+            patch.object(
+                sessions,
+                "_load_latest_checkpoint_summaries_batch",
+                new_callable=AsyncMock,
+                return_value={
+                    "thread-a": sessions._CheckpointSummary(2, None),
+                },
+            ),
+            patch.object(
+                sessions,
+                "_load_initial_prompts_from_writes_batch",
+                new_callable=AsyncMock,
+            ) as mock_prompts,
+        ):
+            await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
+                cast("aiosqlite.Connection", object()),
+                threads,
+                include_message_count=True,
+                include_initial_prompt=False,
+            )
+
+        mock_prompts.assert_not_awaited()
+
+    async def test_falls_back_to_checkpoint_prompt_when_writes_omit_thread(
+        self,
+    ) -> None:
+        """Sessions without message writes still show checkpoint-backed prompts."""
+        sessions._initial_prompt_cache.clear()
+        try:
+            threads: list[sessions.ThreadInfo] = [
+                {
+                    "thread_id": "thread-a",
+                    "agent_name": "agent",
+                    "updated_at": "2026-03-08T02:00:00+00:00",
+                    "latest_checkpoint_id": "cp_1",
+                }
+            ]
+
+            with (
+                patch.object(
+                    sessions,
+                    "_get_jsonplus_serializer",
+                    new_callable=AsyncMock,
+                    return_value=object(),
+                ),
+                patch.object(
+                    sessions,
+                    "_load_latest_checkpoint_summaries_batch",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "thread-a": sessions._CheckpointSummary(
+                            message_count=2,
+                            initial_prompt="hello from checkpoint",
+                        ),
+                    },
+                ) as mock_summary,
+                patch.object(
+                    sessions,
+                    "_load_initial_prompts_from_writes_batch",
+                    new_callable=AsyncMock,
+                    return_value={},
+                ) as mock_prompts,
+            ):
+                await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
+                    cast("aiosqlite.Connection", object()),
+                    threads,
+                    include_message_count=False,
+                    include_initial_prompt=True,
+                )
+
+            assert threads[0]["initial_prompt"] == "hello from checkpoint"
+            mock_summary.assert_awaited_once()
+            mock_prompts.assert_awaited_once()
+        finally:
+            sessions._initial_prompt_cache.clear()
 
 
 class TestApplyCachedThreadMessageCounts:
@@ -1838,10 +1939,16 @@ class TestBatchCheckpointSummaries:
                     "_load_latest_checkpoint_summaries_batch",
                     new_callable=AsyncMock,
                     return_value={
-                        "t1": sessions._CheckpointSummary(3, "prompt1"),
-                        "t2": sessions._CheckpointSummary(7, "prompt2"),
+                        "t1": sessions._CheckpointSummary(3, None),
+                        "t2": sessions._CheckpointSummary(7, None),
                     },
                 ) as mock_batch,
+                patch.object(
+                    sessions,
+                    "_load_initial_prompts_from_writes_batch",
+                    new_callable=AsyncMock,
+                    return_value={"t1": "prompt1", "t2": "prompt2"},
+                ) as mock_prompts,
             ):
                 await sessions._populate_checkpoint_fields(
                     cast("aiosqlite.Connection", object()),
@@ -1855,6 +1962,145 @@ class TestBatchCheckpointSummaries:
             assert threads[1]["message_count"] == 7
             assert threads[1]["initial_prompt"] == "prompt2"
             mock_batch.assert_awaited_once()
+            mock_prompts.assert_awaited_once()
         finally:
             sessions._message_count_cache.clear()
             sessions._initial_prompt_cache.clear()
+
+
+class TestLoadInitialPromptsFromWritesBatch:
+    """Tests for the writes-table initial-prompt loader."""
+
+    async def test_returns_prompt_from_dict_message(self) -> None:
+        """Initial input is an OpenAI-shape dict; helper should extract its text."""
+        serde = JsonPlusSerializer()
+        blob = serde.dumps_typed([{"role": "user", "content": "hi there"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.execute(
+                "INSERT INTO writes VALUES (?, '', ?, '', 0, 'messages', ?, ?)",
+                ("t1", "cp_a", blob[0], blob[1]),
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": "hi there"}
+
+    async def test_picks_earliest_messages_write(self) -> None:
+        """Earliest write by (checkpoint_id, idx) should win over later ones."""
+        serde = JsonPlusSerializer()
+        first_blob = serde.dumps_typed([{"role": "user", "content": "first"}])
+        later_blob = serde.dumps_typed([{"role": "user", "content": "second"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, '', ?, 'messages', ?, ?)",
+                [
+                    ("t1", "cp_b", 0, later_blob[0], later_blob[1]),
+                    ("t1", "cp_a", 0, first_blob[0], first_blob[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": "first"}
+
+    async def test_omits_threads_with_no_messages_writes(self) -> None:
+        """Threads without any messages-channel write should be absent from result."""
+        serde = JsonPlusSerializer()
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+
+            results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1", "t2"], serde
+            )
+
+        assert results == {}
+
+    async def test_empty_input_returns_empty(self) -> None:
+        """Empty thread list should short-circuit without touching the connection."""
+        serde = JsonPlusSerializer()
+        result = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+            None,  # type: ignore[arg-type]  # connection not used
+            [],
+            serde,
+        )
+        assert result == {}
+
+    async def test_corrupt_blob_is_skipped_without_raising(self) -> None:
+        """A row with valid type but undecodable bytes should be omitted, not raised."""
+        serde = JsonPlusSerializer()
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.execute(
+                "INSERT INTO writes VALUES (?, '', ?, '', 0, 'messages', ?, ?)",
+                ("t1", "cp_a", "msgpack", b"\xff\xff garbage"),
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {}
+
+
+class TestInitialPromptFromMessages:
+    """Tests for the message-list parser used by the writes-table reader."""
+
+    def test_handles_dict_with_user_role(self) -> None:
+        """OpenAI-shape dicts (the initial-input format) should match."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [{"role": "user", "content": "hello"}]
+        )
+        assert result == "hello"
+
+    def test_handles_human_message_object(self) -> None:
+        """LangChain `HumanMessage` objects continue to work."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [AIMessage(content="hi"), HumanMessage(content="hello")]
+        )
+        assert result == "hello"
+
+    def test_returns_none_for_no_human_message(self) -> None:
+        """Lists without any human/user message should return None."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [{"role": "assistant", "content": "ack"}]
+        )
+        assert result is None

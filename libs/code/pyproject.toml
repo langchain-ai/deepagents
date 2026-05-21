@@ -187,6 +187,12 @@ extra-paths = [
 [tool.ty.rules]
 # https://docs.astral.sh/ty/rules/
 division-by-zero = "error"
+# Optional-dependency imports (e.g., `boto3` from the `bedrock` extra) need
+# `ty: ignore[unresolved-import]` suppressions to keep CI green when the extra
+# isn't installed. Devs who do install the extra would otherwise hit
+# "unused suppression" warnings; silence that rule so suppressions are stable
+# across environments.
+unused-ignore-comment = "ignore"
 
 [tool.ruff.format]
 docstring-code-format = true

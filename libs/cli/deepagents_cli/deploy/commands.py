@@ -249,7 +249,32 @@ def _add_agents_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN0
 
 
 def execute_agents_command(args: argparse.Namespace) -> None:
-    raise NotImplementedError("filled in Task 16")
+    from deepagents_cli.deploy.api_client import ApiClient, ApiError
+
+    client = ApiClient.from_env()
+    try:
+        if args.agents_cmd == "list":
+            for agent in client.iter_agents(page_size=50):
+                print(f"{agent.get('id')}\t{agent.get('name', '')}\t{agent.get('updated_at', '')}")
+        elif args.agents_cmd == "get":
+            agent = client.get_agent(args.agent_id, include_files=args.include_files)
+            print(json.dumps(agent, indent=2))
+        elif args.agents_cmd == "delete":
+            if not args.yes:
+                try:
+                    answer = input(f"Delete agent {args.agent_id}? [y/N]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    print("Aborted.")
+                    return
+                if answer not in {"y", "yes"}:
+                    print("Aborted.")
+                    return
+            client.delete_agent(args.agent_id)
+            print(f"Deleted {args.agent_id}")
+    except ApiError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(1) from None
 
 
 def _add_mcp_servers_parser(subparsers: Any, make_help_action) -> None:  # noqa: ANN001

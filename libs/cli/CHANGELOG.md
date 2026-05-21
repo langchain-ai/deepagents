@@ -1,7 +1,29 @@
 # Deep Agents CLI Changelog
 
-From 0.1.0 onward, `deepagents-cli` only contains `deploy`, `dev`, and `init`.
+From 0.2.0 onward, `deepagents-cli` exposes `init`, `deploy`, `agents`, and
+`mcp-servers` against the Managed Deep Agents `/v1/deepagents/*` API.
 The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md).
+
+## 0.2.0 (2026-05-21) — Managed Deep Agents
+
+**Breaking changes** — `deepagents deploy` now targets the Managed Deep Agents
+API (`/v1/deepagents/*`) instead of `langgraph deploy`. The on-disk layout
+changes too:
+
+- `deepagents.toml` → `agent.json`
+- `mcp.json` → MCP servers registered via `deepagents mcp-servers add ...`,
+  with tool references living in `tools.json`
+- `[sandbox].scope` → `agent.json.runtime.backend_type`
+- `[frontend]`, `[auth]`, `[memories]` — removed (the platform owns these now)
+
+Removed: `deepagents dev` (no local-iteration path post-migration).
+
+New: `deepagents agents {list,get,delete}`, `deepagents mcp-servers
+{list,add,get,delete}`.
+
+Run `deepagents init --force` on an existing project, or migrate by hand —
+`deepagents deploy` prints a migration hint when it detects a legacy
+`deepagents.toml`.
 
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.1...deepagents-cli==0.1.2) (2026-05-21)
 

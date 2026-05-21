@@ -19,10 +19,12 @@
 uv tool install deepagents-cli
 ```
 
-Or with optional sandbox providers:
+You'll need a LangSmith API key with access to the Managed Deep Agents private
+preview ([waitlist](https://www.langchain.com/langsmith-managed-deep-agents-waitlist)).
+Export it before running any command:
 
 ```bash
-uv tool install 'deepagents-cli[all-sandboxes]'
+export LANGSMITH_API_KEY="..."
 ```
 
 ## Usage
@@ -31,11 +33,36 @@ uv tool install 'deepagents-cli[all-sandboxes]'
 # Scaffold a new project folder
 deepagents init my-agent
 
-# Run a local langgraph dev server against the project
-cd my-agent && deepagents dev
+# Register any MCP servers you intend to use (one-time, per workspace)
+deepagents mcp-servers add --url https://tools.langchain.com \
+                            --header X-Api-Key=$LANGSMITH_API_KEY \
+                            --name Fleet
 
-# Bundle and ship to LangSmith Deployment
-deepagents deploy
+# Upsert the project as a managed agent on /v1/deepagents/*
+cd my-agent && deepagents deploy
+```
+
+### Project layout
+
+```text
+my-agent/
+  agent.json              # name, description, runtime.model, permissions
+  AGENTS.md               # system prompt
+  tools.json              # tools the agent can call (optional)
+  skills/<name>/SKILL.md  # frontmatter-tagged skills (optional)
+  subagents/<name>/       # delegated subagent definitions (optional)
+```
+
+### Other commands
+
+```bash
+deepagents agents list                  # list workspace agents
+deepagents agents get <agent_id>        # show one agent
+deepagents agents delete <agent_id>     # delete an agent
+
+deepagents mcp-servers list             # list workspace MCP servers
+deepagents mcp-servers add --url URL    # register a server
+deepagents mcp-servers delete <id>      # remove a server
 ```
 
 ## 📖 Resources

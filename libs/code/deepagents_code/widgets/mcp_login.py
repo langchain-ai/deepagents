@@ -240,7 +240,6 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
                     (url, TStyle(link=url, underline=True)),
                 ),
             )
-        self._append_history(f"Authorize URL: {url}")
 
     async def request_callback_url(self) -> str:
         """Wait for the user to paste back the OAuth callback URL.

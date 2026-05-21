@@ -5,10 +5,9 @@ The coding agent (interactive TUI & headless CLI) moved to [`deepagents-code`](h
 
 ## [0.1.2](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.1...deepagents-cli==0.1.2) (2026-05-21)
 
-
 ### Bug Fixes
 
-* **cli:** expand `${VAR}` in `mcp.json` header values ([#3523](https://github.com/langchain-ai/deepagents/issues/3523)) ([6cfc5f9](https://github.com/langchain-ai/deepagents/commit/6cfc5f9004271c23c486a0b05e8f9f0002e75e2b))
+* Expand `${VAR}` in `mcp.json` header values ([#3523](https://github.com/langchain-ai/deepagents/issues/3523)) ([6cfc5f9](https://github.com/langchain-ai/deepagents/commit/6cfc5f9004271c23c486a0b05e8f9f0002e75e2b))
 
 ## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-cli==0.1.0...deepagents-cli==0.1.1) (2026-05-18)
 
